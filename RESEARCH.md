@@ -3,7 +3,7 @@
 ## The problem
 
 Asleep, the MacBook draws about 2.2 W (about 3.5 %/h). A night in the cabinet costs
-about half the battery. macOS on the same hardware loses a few percent overnight.
+about half the battery. macOS sleeps far deeper on this hardware (not measured here yet).
 Linux on Apple Silicon only has s2idle (`/sys/power/mem_sleep` = `[s2idle]`):
 the kernel freezes tasks, suspends devices and parks the CPUs in their deepest
 idle state. Nothing tells the SoC to enter the system-level sleep that macOS uses.
@@ -36,8 +36,8 @@ per core. There's no cluster-level or SoC-level state.
 1. Kernel: Omarchy linux-aurora 7.2.10 (from 2026-10-21), radios on. The new baseline.
 2. `sleep-drain-radios off`: Wi-Fi and Bluetooth soft-blocked while asleep.
 3. Later, from the diff data: unbind or power off whatever stays runtime-active or
-   keeps firing IRQs (Touch ID/SEP, the Neural Engine, the GPU, the touchbar-less
-   display pipe, USB-C/ATC PHYs, the NVMe controller).
+   keeps firing IRQs (Touch ID/SEP, the Neural Engine, the GPU, the display
+   pipeline, USB-C/ATC PHYs, the NVMe controller).
 
 The SMC's `Total System Power` (`/sys/class/hwmon/*/power*_input`, label
 `Total System Power`) lets you A/B test while awake in minutes. Use it to
