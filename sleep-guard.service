@@ -1,0 +1,15 @@
+[Unit]
+Description=Power off instead of suspending on lid close when the battery is low
+After=systemd-logind.service upower.service
+
+[Service]
+Environment=SLEEP_GUARD_DAY_THRESHOLD=15
+Environment=SLEEP_GUARD_NIGHT_THRESHOLD=55
+Environment=SLEEP_GUARD_DAY_START=7
+Environment=SLEEP_GUARD_DAY_END=17
+Environment=SLEEP_GUARD_GRACE=30
+ExecStart=/usr/local/bin/sleep-guard
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

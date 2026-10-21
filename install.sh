@@ -1,0 +1,15 @@
+#!/bin/bash
+# Install the drain logger and sleep-guard. Run as root (pkexec bash install.sh).
+set -euo pipefail
+cd "$(dirname "$0")"
+
+install -m 755 sleep-drain-log /usr/lib/systemd/system-sleep/sleep-drain-log
+install -m 755 sleep-guard /usr/local/bin/sleep-guard
+install -m 644 sleep-guard.service /etc/systemd/system/sleep-guard.service
+touch /var/log/sleep-drain.log
+chmod 644 /var/log/sleep-drain.log
+
+systemctl daemon-reload
+systemctl enable sleep-guard.service
+systemctl restart sleep-guard.service
+echo "installed"

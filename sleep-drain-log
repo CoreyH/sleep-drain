@@ -1,0 +1,103 @@
+#!/bin/bash
+# systemd-sleep hook: record battery state on each side of a suspend so the
+# s2idle drain can be measured, along with what was attached at the time.
+#
+# Installed to /usr/lib/systemd/system-sleep/. systemd-sleep calls it as
+# "pre suspend" before sleeping and "post suspend" after waking. A "pre" line
+# with no matching "post" means the battery ran out while suspended.
+
+LOG=/var/log/sleep-drain.log
+STATE=/run/sleep-drain.pre
+BAT=/sys/class/power_supply/macsmc-battery
+AC=/sys/class/power_supply/macsmc-ac
+
+[ "${2:-}" = suspend ] || exit 0
+
+rfkill_state() {
+  local r
+  for r in /sys/class/rfkill/rfkill*; do
+    [ "$(cat "$r/type")" = "$1" ] || continue
+    if [ "$(cat "$r/soft")$(cat "$r/hard")" = 00 ]; then echo on; else echo off; fi
+    return
+  done
+  echo none
+}
+
+typec_partners() {
+  local p out=
+  for p in /sys/class/typec/port*-partner; do
+    [ -e "$p/type" ] || continue
+    out+="${out:+,}$(basename "${p%-partner}"):$(cat "$p/type")"
+  done
+  echo "${out:--}"
+}
+
+drm_connected() {
+  local c out=
+  for c in /sys/class/drm/card*-*; do
+    [ "$(cat "$c/status" 2>/dev/null)" = connected ] || continue
+    out+="${out:+,}$(basename "$c" | sed 's/^card[0-9]*-//')"
+  done
+  echo "${out:--}"
+}
+
+usb_devices() {
+  local d out=
+  for d in /sys/bus/usb/devices/*; do
+    [ -e "$d/idVendor" ] && [ "$(cat "$d/bDeviceClass")" != 09 ] || continue
+    out+="${out:+,}$(cat "$d/idVendor"):$(cat "$d/idProduct")"
+  done
+  echo "${out:--}"
+}
+
+bt_connected() {
+  timeout 2 bluetoothctl devices Connected 2>/dev/null | grep -c '^Device'
+}
+
+snapshot() {
+  printf 'ts=%s energy_uwh=%s charge_uah=%s capacity=%s ac=%s' \
+    "$(date +%s)" "$(cat $BAT/energy_now)" "$(cat $BAT/charge_now)" \
+    "$(cat $BAT/capacity)" "$(cat $AC/online)"
+}
+
+attached() {
+  printf 'wifi=%s bt=%s bt_connected=%s typec=%s displays=%s usb=%s kernel=%s' \
+    "$(rfkill_state wlan)" "$(rfkill_state bluetooth)" "$(bt_connected)" \
+    "$(typec_partners)" "$(drm_connected)" "$(usb_devices)" "$(uname -r)"
+}
+
+case "$1" in
+  pre)
+    now=$(snapshot)
+    echo "$now" > "$STATE"
+    echo "$(date -Is) pre  $now $(attached)" >> "$LOG"
+    ;;
+  post)
+    now=$(snapshot)
+    line="$(date -Is) post $now $(attached)"
+    if [ -r "$STATE" ]; then
+      line+=" $(awk -v pre="$(cat "$STATE")" -v post="$now" '
+        function get(s, k,   a, i, n) {
+          n = split(s, a, " ")
+          for (i = 1; i <= n; i++) if (index(a[i], k "=") == 1) return substr(a[i], length(k) + 2)
+        }
+        BEGIN {
+          dt = get(post, "ts") - get(pre, "ts")
+          de = get(pre, "energy_uwh") - get(post, "energy_uwh")
+          dc = get(pre, "capacity") - get(post, "capacity")
+          # A charger plugged in at wake only matters if it charged during
+          # the sleep, so judge by the energy actually going up.
+          valid = "yes"
+          if (de <= 0) valid = "no-charged"
+          if (dt < 600) valid = "no-short"
+          mw = 0; pph = 0
+          if (dt > 0) { mw = de * 3.6 / dt; pph = dc * 3600 / dt }
+          printf "slept_s=%d drained_mwh=%.0f avg_mw=%.0f pct_per_h=%.2f valid=%s",
+            dt, de / 1000, mw, pph, valid
+        }')"
+      rm -f "$STATE"
+    fi
+    echo "$line" >> "$LOG"
+    ;;
+esac
+exit 0

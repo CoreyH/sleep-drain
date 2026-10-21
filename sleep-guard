@@ -1,0 +1,92 @@
+#!/bin/bash
+# sleep-guard: power off instead of suspending when the lid closes on battery
+# below a threshold that depends on the time of day.
+#
+# s2idle on this machine draws ~2.2 W (~3.5-3.9%/h), and there is neither
+# hibernation nor an RTC wake alarm to cut a long suspend short, so a lid
+# closed at low charge ends in a hard power loss overnight. While on battery
+# below the threshold, this holds a handle-lid-switch block inhibitor so logind
+# does not suspend, and powers off cleanly once the lid has stayed closed for
+# SLEEP_GUARD_GRACE seconds. Docked (external display) lid closes are left alone.
+#
+# During the day (SLEEP_GUARD_DAY_START to SLEEP_GUARD_DAY_END, in hours) a lid
+# close is likely short, so the threshold is low. Outside those hours it is
+# likely the night, which takes ~55% to survive.
+
+set -u
+DAY_THRESHOLD=${SLEEP_GUARD_DAY_THRESHOLD:-15}
+NIGHT_THRESHOLD=${SLEEP_GUARD_NIGHT_THRESHOLD:-55}
+DAY_START=${SLEEP_GUARD_DAY_START:-7}
+DAY_END=${SLEEP_GUARD_DAY_END:-17}
+GRACE=${SLEEP_GUARD_GRACE:-30}
+BAT=/sys/class/power_supply/macsmc-battery
+AC=/sys/class/power_supply/macsmc-ac
+inhibit_pid=
+
+logind() {
+  busctl --system get-property org.freedesktop.login1 /org/freedesktop/login1 \
+    org.freedesktop.login1.Manager "$1" 2>/dev/null | awk '{print $2}'
+}
+
+threshold() {
+  local hour=$((10#$(date +%H)))
+  if [ "$hour" -ge "$DAY_START" ] && [ "$hour" -lt "$DAY_END" ]; then
+    echo "$DAY_THRESHOLD"
+  else
+    echo "$NIGHT_THRESHOLD"
+  fi
+}
+
+at_risk() {
+  [ "$(cat $AC/online)" = 0 ] && [ "$(cat $BAT/capacity)" -lt "$(threshold)" ]
+}
+
+should_power_off() {
+  at_risk && [ "$(logind LidClosed)" = true ] && [ "$(logind Docked)" = false ]
+}
+
+hold() {
+  [ -n "$inhibit_pid" ] && kill -0 "$inhibit_pid" 2>/dev/null && return
+  systemd-inhibit --what=handle-lid-switch --who=sleep-guard --mode=block \
+    --why="Battery below $(threshold)%: closing the lid powers off instead of suspending" \
+    sleep infinity &
+  inhibit_pid=$!
+  echo "battery at $(cat $BAT/capacity)% on battery (threshold $(threshold)%): lid close will power off"
+}
+
+release() {
+  [ -n "$inhibit_pid" ] || return 0
+  kill "$inhibit_pid" 2>/dev/null
+  wait "$inhibit_pid" 2>/dev/null
+  inhibit_pid=
+  echo "lid close suspends normally again"
+}
+
+trap 'release; exit 0' TERM INT
+
+while :; do
+  if at_risk; then hold; else release; fi
+
+  if [ -n "$inhibit_pid" ] && should_power_off; then
+    echo "lid closed at $(cat $BAT/capacity)% on battery: powering off in ${GRACE}s unless it opens or AC returns"
+    waited=0
+    while [ "$waited" -lt "$GRACE" ] && should_power_off; do
+      sleep 2
+      waited=$((waited + 2))
+    done
+
+    if [ "$waited" -ge "$GRACE" ] && should_power_off; then
+      if systemctl poweroff --check-inhibitors=yes; then
+        sleep infinity
+      fi
+      echo "poweroff refused by an inhibitor: suspending instead"
+      release
+      systemctl suspend
+      sleep 60
+    else
+      echo "power-off cancelled"
+    fi
+  fi
+
+  sleep 5
+done

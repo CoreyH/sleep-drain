@@ -1,0 +1,22 @@
+#!/bin/bash
+# Summarise /var/log/sleep-drain.log: one row per suspend, plus suspends the
+# battery did not survive (a "pre" with no "post" before the next "pre").
+
+LOG=${1:-/var/log/sleep-drain.log}
+[ -r "$LOG" ] || { echo "no log at $LOG yet" >&2; exit 1; }
+
+awk '
+  function get(k,   i) { for (i = 3; i <= NF; i++) if (index($i, k "=") == 1) return substr($i, length(k) + 2); return "-" }
+  BEGIN { printf "%-16s %6s %8s %7s %6s %-9s %-5s %-4s %-24s %s\n", "slept at", "hours", "pct", "%/h", "mW", "valid", "wifi", "bt", "typec", "displays" }
+  $2 == "pre" {
+    if (pending) printf "%-16s %6s %8s %7s %6s %-9s %s\n", start, "?", startcap "->dead?", "-", "-", "no-post", "(no resume logged)"
+    pending = 1; start = substr($1, 1, 16); startcap = get("capacity") "%"; next
+  }
+  $2 == "post" && pending {
+    pending = 0
+    printf "%-16s %6.1f %8s %7s %6s %-9s %-5s %-4s %-24s %s\n", start, get("slept_s") / 3600,
+      startcap "->" get("capacity") "%", get("pct_per_h"), get("avg_mw"), get("valid"),
+      get("wifi"), get("bt"), get("typec"), get("displays")
+  }
+  END { if (pending) printf "%-16s %6s %8s %7s %6s %-9s %s\n", start, "?", startcap, "-", "-", "pending", "(suspended now, or did not resume)" }
+' "$LOG"
