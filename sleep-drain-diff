@@ -1,0 +1,57 @@
+#!/bin/bash
+# What happened during one suspend, from the pre/post snapshots the hook writes.
+#   sleep-drain-diff            the most recent suspend
+#   sleep-drain-diff <id>       a specific one (directory name under /var/log/sleep-drain)
+#
+# Shows interrupt counts that grew while suspended (each one woke a CPU),
+# wakeup sources that fired, CPU idle residency gained, the wakeup lines from
+# the kernel log, and power domains / runtime-PM devices that differ.
+set -uo pipefail
+
+snaps=/var/log/sleep-drain
+id=${1:-$(ls -1 "$snaps" 2>/dev/null | sort | tail -1)}
+d=$snaps/$id
+[[ -d $d/pre && -d $d/post ]] || { echo "no complete snapshot for '$id' in $snaps" >&2; exit 1; }
+
+secs=$(grep -h "snap=$id" /var/log/sleep-drain.log | grep -oE 'slept_s=[0-9]+' | cut -d= -f2)
+echo "== suspend $id, slept ${secs:-?} s, $(grep -h "post.*snap=$id" /var/log/sleep-drain.log | grep -oE 'avg_mw=[0-9-]+')"
+
+echo
+echo "== interrupts that fired while suspended (sum over CPUs)"
+awk '
+  FNR == 1 { next }
+  {
+    irq = $1; sum = 0; name = ""
+    for (i = 2; i <= NF; i++) { if ($i ~ /^[0-9]+$/) sum += $i; else { for (j = i; j <= NF; j++) name = name " " $j; break } }
+    if (FILENAME ~ /\/pre\//) pre[irq] = sum; else { post[irq] = sum; label[irq] = name }
+  }
+  END { for (k in post) { d = post[k] - pre[k]; if (d > 0) printf "%10d  %-6s%s\n", d, k, label[k] } }
+' "$d/pre/interrupts" "$d/post/interrupts" | sort -rn | head -25
+
+echo
+echo "== wakeup sources that fired (event_count delta)"
+awk '
+  FNR == 1 { next }
+  { name = $1; ev = $3; if (FILENAME ~ /\/pre\//) pre[name] = ev; else post[name] = ev }
+  END { for (k in post) { d = post[k] - pre[k]; if (d > 0) printf "%8d  %s\n", d, k } }
+' "$d/pre/wakeup_sources" "$d/post/wakeup_sources" 2>/dev/null | sort -rn | head -15
+
+echo
+echo "== CPU idle residency gained, seconds per state (summed over CPUs)"
+awk '
+  { key = $2 " " $3; split($5, t, "="); if (FILENAME ~ /\/pre\//) pre[key] += t[2]; else post[key] += t[2] }
+  END { for (k in post) printf "%10.1f  %s\n", (post[k] - pre[k]) / 1e6, k }
+' "$d/pre/cpuidle" "$d/post/cpuidle" 2>/dev/null | sort -k2
+
+echo
+echo "== kernel log: suspend, wakeup and errors"
+grep -iE 'suspend|resume|wakeup|wake up|freez|s2idle|error|fail|timeout' "$d/post/kernel.log" 2>/dev/null | head -40
+
+echo
+echo "== power domains whose state differs pre -> post"
+diff <(awk '{print $1, $2}' "$d/pre/genpd" 2>/dev/null) <(awk '{print $1, $2}' "$d/post/genpd" 2>/dev/null) | grep '^[<>]' | head -30
+
+echo
+echo "== runtime PM: devices active before suspend"
+grep -c ' active$' "$d/pre/runtime_pm" 2>/dev/null | sed 's/$/ devices active/'
+grep ' active$' "$d/pre/runtime_pm" 2>/dev/null | sed 's|^/sys/devices/||; s/ active$//' | head -40

@@ -7,16 +7,19 @@ LOG=${1:-/var/log/sleep-drain.log}
 
 awk '
   function get(k,   i) { for (i = 3; i <= NF; i++) if (index($i, k "=") == 1) return substr($i, length(k) + 2); return "-" }
-  BEGIN { printf "%-16s %6s %8s %7s %6s %-9s %-5s %-4s %-24s %s\n", "slept at", "hours", "pct", "%/h", "mW", "valid", "wifi", "bt", "typec", "displays" }
+  # 7.1.12-2-11.16-sep-ARCH -> 11.16 (iconidentify build), 7.2.10-1-2-ARCH -> 7.2.10
+  function kern(k,   a) { if (k == "-") return k; split(k, a, "-"); return (k ~ /-sep-/) ? a[3] : a[1] }
+  BEGIN { printf "%-16s %6s %8s %7s %6s %-9s %-7s %-6s %-5s %-4s %-24s %s\n", "slept at", "hours", "pct", "%/h", "mW", "valid", "kernel", "radios", "wifi", "bt", "typec", "displays" }
   $2 == "pre" {
     if (pending) printf "%-16s %6s %8s %7s %6s %-9s %s\n", start, "?", startcap "->dead?", "-", "-", "no-post", "(no resume logged)"
-    pending = 1; start = substr($1, 1, 16); startcap = get("capacity") "%"; next
+    pending = 1; start = substr($1, 1, 16); startcap = get("capacity") "%"; radios = get("radios"); wifi = get("wifi"); bt = get("bt"); next
   }
   $2 == "post" && pending {
     pending = 0
-    printf "%-16s %6.1f %8s %7s %6s %-9s %-5s %-4s %-24s %s\n", start, get("slept_s") / 3600,
+    # wifi/bt as they were going to sleep (post sees them after the hook restored them)
+    printf "%-16s %6.1f %8s %7s %6s %-9s %-7s %-6s %-5s %-4s %-24s %s\n", start, get("slept_s") / 3600,
       startcap "->" get("capacity") "%", get("pct_per_h"), get("avg_mw"), get("valid"),
-      get("wifi"), get("bt"), get("typec"), get("displays")
+      kern(get("kernel")), radios, wifi, bt, get("typec"), get("displays")
   }
   END { if (pending) printf "%-16s %6s %8s %7s %6s %-9s %s\n", start, "?", startcap, "-", "-", "pending", "(suspended now, or did not resume)" }
 ' "$LOG"

@@ -5,9 +5,28 @@
 # Installed to /usr/lib/systemd/system-sleep/. systemd-sleep calls it as
 # "pre suspend" before sleeping and "post suspend" after waking. A "pre" line
 # with no matching "post" means the battery ran out while suspended.
+#
+# Everything that has to happen in order lives in this one script: systemd-sleep
+# runs the hooks in its directory in parallel, so a separate radios hook would
+# race the state recorded here.
+#
+# Per suspend it also writes a snapshot directory, /var/log/sleep-drain/<id>/
+# {pre,post}/, with the kernel's view of what could keep the SoC awake:
+# interrupt counts, wakeup sources, power domains, runtime PM, CPU idle
+# residency, SMC power rails and the kernel log of the sleep itself. Compare the
+# two sides with sleep-drain-diff <id>.
+#
+# Experiment switch: if /etc/sleep-drain/radios-off exists, Wi-Fi and Bluetooth
+# are soft-blocked for the sleep and the ones that were on are unblocked after.
+# Toggle it with sleep-drain-radios.
 
 LOG=/var/log/sleep-drain.log
+SNAPS=/var/log/sleep-drain
+KEEP=60
 STATE=/run/sleep-drain.pre
+RADIOS=/run/sleep-drain.radios
+PMDEBUG=/run/sleep-drain.pmdebug
+RADIOS_OFF_FLAG=/etc/sleep-drain/radios-off
 BAT=/sys/class/power_supply/macsmc-battery
 AC=/sys/class/power_supply/macsmc-ac
 
@@ -66,17 +85,96 @@ attached() {
     "$(typec_partners)" "$(drm_connected)" "$(usb_devices)" "$(uname -r)"
 }
 
+# Soft-block every unblocked Wi-Fi and Bluetooth radio; remember which, so
+# post only unblocks what this script blocked.
+radios_off() {
+  local r
+  : > "$RADIOS"
+  for r in /sys/class/rfkill/rfkill*; do
+    case "$(cat "$r/type")" in wlan | bluetooth) ;; *) continue ;; esac
+    [ "$(cat "$r/soft")" = 0 ] || continue
+    echo 1 > "$r/soft" && echo "$r" >> "$RADIOS"
+  done
+}
+
+radios_restore() {
+  local r
+  [ -r "$RADIOS" ] || return 0
+  while read -r r; do
+    [ -e "$r/soft" ] && echo 0 > "$r/soft"
+  done < "$RADIOS"
+  rm -f "$RADIOS"
+}
+
+# Dump what the kernel can tell us about power state into $1. Every file is
+# best-effort: a missing source leaves an empty or absent file, never a failed
+# suspend.
+capture() {
+  local d=$1 f c s h
+  mkdir -p "$d"
+  mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+  cat /proc/interrupts > "$d/interrupts" 2>/dev/null
+  cat /sys/kernel/debug/wakeup_sources > "$d/wakeup_sources" 2>/dev/null
+  cat /sys/kernel/debug/pm_genpd/pm_genpd_summary > "$d/genpd" 2>/dev/null
+  grep -H '' /sys/power/suspend_stats/* > "$d/suspend_stats" 2>/dev/null
+  for c in /sys/devices/system/cpu/cpu[0-9]*; do
+    for s in "$c"/cpuidle/state*; do
+      [ -d "$s" ] || continue
+      printf '%s %s %s usage=%s time_us=%s\n' "${c##*/}" "${s##*/}" \
+        "$(cat "$s/name")" "$(cat "$s/usage")" "$(cat "$s/time")"
+    done
+  done > "$d/cpuidle" 2>/dev/null
+  find /sys/devices -path '*/power/runtime_status' 2>/dev/null |
+    while read -r f; do
+      read -r s < "$f" 2>/dev/null || continue
+      [ "$s" = unsupported ] || echo "${f%/power/runtime_status} $s"
+    done > "$d/runtime_pm"
+  grep -H '' /sys/class/rfkill/rfkill*/{name,type,soft,hard} > "$d/rfkill" 2>/dev/null
+  grep -H '' $BAT/* > "$d/battery" 2>/dev/null
+  for h in /sys/class/hwmon/hwmon*; do
+    [ "$(cat "$h/name")" = macsmc_hwmon ] || continue
+    for f in "$h"/*_label; do
+      echo "$(cat "$f")=$(cat "${f%_label}_input" 2>/dev/null)"
+    done
+  done > "$d/smc" 2>/dev/null
+  lsmod > "$d/lsmod" 2>/dev/null
+  { uname -a; cat /proc/cmdline; cat /sys/power/mem_sleep; } > "$d/system" 2>/dev/null
+}
+
+prune() {
+  ls -1d "$SNAPS"/*/ 2>/dev/null | sort | head -n -"$KEEP" | xargs -r rm -rf
+}
+
 case "$1" in
   pre)
+    id=$(date +%Y%m%dT%H%M%S)
     now=$(snapshot)
-    echo "$now" > "$STATE"
-    echo "$(date -Is) pre  $now $(attached)" >> "$LOG"
+    att=$(attached)
+    capture "$SNAPS/$id/pre"
+    # Name the wakeup IRQ in the kernel log (PM: ... wakeup from IRQ N).
+    cat /sys/power/pm_debug_messages > "$PMDEBUG" 2>/dev/null &&
+      echo 1 > /sys/power/pm_debug_messages
+    radios=on
+    if [ -e "$RADIOS_OFF_FLAG" ]; then radios_off; radios=off; fi
+    echo "$now id=$id" > "$STATE"
+    echo "$(date -Is) pre  $now $att radios=$radios snap=$id" >> "$LOG"
     ;;
   post)
+    radios_restore
     now=$(snapshot)
     line="$(date -Is) post $now $(attached)"
     if [ -r "$STATE" ]; then
-      line+=" $(awk -v pre="$(cat "$STATE")" -v post="$now" '
+      pre=$(cat "$STATE")
+      id=$(echo "$pre" | grep -oE 'id=[^ ]+' | cut -d= -f2)
+      pre_ts=$(echo "$pre" | grep -oE 'ts=[0-9]+' | cut -d= -f2)
+      if [ -n "$id" ]; then
+        capture "$SNAPS/$id/post"
+        journalctl -k --no-pager -o short-monotonic --since "@$pre_ts" \
+          > "$SNAPS/$id/post/kernel.log" 2>/dev/null
+        chmod -R a+rX "$SNAPS/$id"
+        line+=" snap=$id"
+      fi
+      line+=" $(awk -v pre="$pre" -v post="$now" '
         function get(s, k,   a, i, n) {
           n = split(s, a, " ")
           for (i = 1; i <= n; i++) if (index(a[i], k "=") == 1) return substr(a[i], length(k) + 2)
@@ -97,7 +195,9 @@ case "$1" in
         }')"
       rm -f "$STATE"
     fi
+    [ -r "$PMDEBUG" ] && cat "$PMDEBUG" > /sys/power/pm_debug_messages && rm -f "$PMDEBUG"
     echo "$line" >> "$LOG"
+    prune
     ;;
 esac
 exit 0
