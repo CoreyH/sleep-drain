@@ -69,6 +69,19 @@ usb_devices() {
   echo "${out:--}"
 }
 
+# Whether the AOP (always-on processor: ambient light, lid angle, mics) has its
+# driver bound. Unbound, its mailbox stops waking the CPUs (IRQ 40), but on
+# t6000 it cannot be rebound without a reboot.
+aop_state() {
+  local d
+  for d in /sys/bus/platform/devices/*.aop; do
+    [ -e "$d" ] || continue
+    if [ -e "$d/driver" ]; then echo bound; else echo unbound; fi
+    return
+  done
+  echo none
+}
+
 bt_connected() {
   timeout 2 bluetoothctl devices Connected 2>/dev/null | grep -c '^Device'
 }
@@ -80,9 +93,9 @@ snapshot() {
 }
 
 attached() {
-  printf 'wifi=%s bt=%s bt_connected=%s typec=%s displays=%s usb=%s kernel=%s' \
+  printf 'wifi=%s bt=%s bt_connected=%s typec=%s displays=%s usb=%s kernel=%s aop=%s' \
     "$(rfkill_state wlan)" "$(rfkill_state bluetooth)" "$(bt_connected)" \
-    "$(typec_partners)" "$(drm_connected)" "$(usb_devices)" "$(uname -r)"
+    "$(typec_partners)" "$(drm_connected)" "$(usb_devices)" "$(uname -r)" "$(aop_state)"
 }
 
 # Soft-block every unblocked Wi-Fi and Bluetooth radio; remember which, so
