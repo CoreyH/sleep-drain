@@ -20,6 +20,45 @@ Silicon, and aurora-linux #99 was closed as unsupported.
 
 The three nights are consistent, so a change of about 100 mW or more should show up in a single night.
 
+## Results
+
+| night | kernel | radios | hours | drain | avg |
+|---|---|---|---|---|---|
+| 2026-10-21 | 7.2.10 (omacom) | on | 22.0 | 97% → 32% | **1838 mW** (−340 mW, −15%) |
+
+## Finding 1: the AOP wakes the SoC about 3.6 times a second all night (2026-10-22)
+
+`sleep-drain-diff 20261021T141534`: over 79,040 s asleep, IRQ 40
+(`293408000.mbox-recv`) fired 286,255 times (3.6/s), followed by about 278k
+function-call IPIs and 184k arch_timer ticks. The kernel log shows s2idle
+re-entering constantly: "Timekeeping suspended for" never more than 0.38 s
+(avg 0.275 s; the log only kept 4,548 of these lines). Nothing else is significant: NVMe 285,
+the SMC mailbox 417, Wi-Fi/BT single digits. The only wakeup source is macsmc-input (2).
+
+That mailbox belongs to the **AOP** (Always-On Processor, `293c00000.aop`),
+which serves `las` (lid angle), `als` (ambient light) and `audio` (the mics).
+
+- Awake, the same IRQ runs at about 6/s with nobody reading the sensors
+  (iio-sensor-proxy isn't running).
+- `drivers/iio/common/aop_sensors/aop_als.rs` (omacom/linux-aurora): `enable_als()`
+  arms the sensor at probe with `ALS_INTERVAL_US = 200000`, i.e. 5 reports/s.
+  The driver has **no suspend/resume**, and `unbind` only unregisters the listener.
+- `rmmod aop_als` doesn't change the rate (119 → 119 → 120 per 20 s), as the
+  code predicts: the interval stays armed in the AOP.
+
+Hypothesis: ALS reports (plus some LAS) keep waking the CPUs out of s2idle. Each
+wake costs a full exit and re-entry on every core, which is a plausible share of the 1.8 W.
+
+Next: patch `aop_als` with PM ops: set `ALS_PROP_INTERVAL` to 0 on suspend and
+restore it on resume (or on runtime-PM when no reader is attached). Count IRQ 40
+awake first; one night tells the drain. It's still unconfirmed which AOP
+endpoint sends each message (aop.rs has no per-endpoint counter), so a debug
+counter in `recv_rb` may be needed to attribute ALS vs LAS vs audio.
+
+Build note: the headers package has `rust/` without .rmeta, and the kernel was
+built with rustc 1.85.0, so an out-of-tree Rust module build isn't possible.
+It needs a full omacom/linux-aurora build with a pinned 1.85 toolchain.
+
 ## What gets recorded now
 
 On every suspend, `sleep-drain-log` writes `/var/log/sleep-drain/<id>/{pre,post}/`
