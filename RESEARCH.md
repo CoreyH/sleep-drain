@@ -55,6 +55,26 @@ awake first; one night tells the drain. It's still unconfirmed which AOP
 endpoint sends each message (aop.rs has no per-endpoint counter), so a debug
 counter in `recv_rb` may be needed to attribute ALS vs LAS vs audio.
 
+### Unbind test (2026-10-22, awake, 20 s per phase)
+
+| phase | IRQ 40 | Total System Power |
+|---|---|---|
+| apple_aop bound | 120 | 16.0 W |
+| unbound | **0** | 14.4 W |
+| bind attempted (failed) | 0 | 14.5 W |
+
+Unbinding `293c00000.aop` stops the mailbox interrupts completely. The awake
+drop of about 1.5 W is suggestive but unproven: it's a short sample, and the unbind also
+removed the AOP audio card (`aop_audio`, "J314 HPAI", the built-in mics), which
+may have been streaming. Rebinding fails on t6000: every endpoint (0x20–0x2b)
+times out its shutdown acknowledgment, then "Failed to stop AOP ETIMEDOUT",
+then on bind "RTKit: endpoint discovery failed: -62". That matches
+`quiesce_on_unbind: false` for T6000 in aop.rs. So the AOP stays gone until a
+reboot, and unbind/bind around each suspend isn't a usable workaround. The lid
+switch comes from the SMC (macsmc-input), so suspend and wake are unaffected.
+
+Night experiment: 2026-10-22, AOP left unbound (no reboot), radios on, 7.2.10.
+
 Build note: the headers package has `rust/` without .rmeta, and the kernel was
 built with rustc 1.85.0, so an out-of-tree Rust module build isn't possible.
 It needs a full omacom/linux-aurora build with a pinned 1.85 toolchain.
