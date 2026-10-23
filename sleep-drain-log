@@ -111,12 +111,20 @@ radios_off() {
 }
 
 radios_restore() {
-  local r
+  local r wifi=
   [ -r "$RADIOS" ] || return 0
   while read -r r; do
     [ -e "$r/soft" ] && echo 0 > "$r/soft"
+    [ "$(cat "$r/type" 2>/dev/null)" = wlan ] && wifi=1
   done < "$RADIOS"
   rm -f "$RADIOS"
+  # Unblocking alone leaves NetworkManager's Wi-Fi radio off and the laptop
+  # offline (seen 2026-10-23: no network 90 s after rfkill unblock). Turn it
+  # back on and rescan, as omarchy-restart-wifi does. Backgrounded: NM may
+  # still be resuming.
+  if [ -n "$wifi" ] && command -v nmcli > /dev/null; then
+    (nmcli radio wifi on; nmcli device wifi rescan) > /dev/null 2>&1 &
+  fi
 }
 
 # Dump what the kernel can tell us about power state into $1. Every file is
