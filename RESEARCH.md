@@ -104,6 +104,24 @@ Method from here: budget device power awake with the SMC `Total System Power`
 sensor (display off, idle, toggle one device at a time), then confirm the
 biggest delta with one night.
 
+### Awake power budget, first run (2026-10-23): inconclusive
+
+`results/budget-20261023T103432.txt`. The baselines drifted steadily down
+(13.05 → 12.68 → 12.74 → 12.52 → 12.35 → 12.13 W over 12 minutes, charger
+plugged in at about 49%), and "display on" read lower than "display off" (12.05
+vs 12.13 W). So either `hyprctl dispatch dpms off` doesn't power the panel down
+on DCP, or the drift swamps everything. Only Wi-Fi off looks like a saving
+(−0.2 to −0.4 W against the neighbouring baselines). Bluetooth off, SD runtime PM
+(the SD reader stayed `active` anyway), SD removal and SD L1.1/L1.2 showed
+nothing beyond the drift. Next time: on battery, after the system has settled,
+with a longer baseline, and with the screen off by a method that verifiably
+saves power.
+
+Side effects of that run: `rfkill unblock wlan` didn't bring the network back
+(NetworkManager's radio stays off; `nmcli radio wifi on` is needed, which is now
+done in both scripts). And awake idle at 12–13 W is very high for an M1 Pro,
+which deserves its own look (yesterday's log had `PS gfx: Failed to reach power state`).
+
 Build note: the headers package has `rust/` without .rmeta, and the kernel was
 built with rustc 1.85.0, so an out-of-tree Rust module build isn't possible.
 It needs a full omacom/linux-aurora build with a pinned 1.85 toolchain.
