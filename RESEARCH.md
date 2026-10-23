@@ -25,6 +25,7 @@ The three nights are consistent, so a change of about 100 mW or more should show
 | night | kernel | radios | hours | drain | avg |
 |---|---|---|---|---|---|
 | 2026-10-21 | 7.2.10 (omacom) | on | 22.0 | 97% → 32% | **1838 mW** (−340 mW, −15%) |
+| 2026-10-22 | 7.2.10, AOP unbound | on | 17.6 | 99% → 48% | **1825 mW** (no change) |
 
 ## Finding 1: the AOP wakes the SoC about 3.6 times a second all night (2026-10-22)
 
@@ -74,6 +75,34 @@ reboot, and unbind/bind around each suspend isn't a usable workaround. The lid
 switch comes from the SMC (macsmc-input), so suspend and wake are unaffected.
 
 Night experiment: 2026-10-22, AOP left unbound (no reboot), radios on, 7.2.10.
+
+## Finding 2: the drain is static, not wakeups (2026-10-23)
+
+With the AOP unbound, the 2026-10-22 night drew 1825 mW, the same as 1838 mW
+with it bound. Yet the CPUs were almost perfectly quiet: s2idle stretches
+averaged 228 s, the longest was 3600 s, and the night's totals were 3,344
+arch_timer ticks, 7,242 function-call IPIs and 1,304 NVMe interrupts. So the
+3.6/s AOP wakeups cost little. ALS stopping at suspend would still be a nice
+upstream cleanup, but it's not the fix.
+
+The 1.8 W is a floor: something stays powered while everything sleeps. cpuidle
+offers `CPU PD` per core ("CPU/cluster powered down") and nothing for the rest of
+the SoC (fabric, memory controller, coprocessors, PCIe). The per-state
+`s2idle/time` counters are useless for this: they only cover a few seconds over
+two nights, because timekeeping is suspended during the deep part of s2idle.
+
+Candidates for the floor, roughly from cheapest test to most effort:
+- The PCIe devices stay runtime-active (both root ports, 01:00.0 brcmfmac
+  Wi-Fi, 01:00.1 bcm4377 BT, 02:00.0, likely the SD reader), so the links and
+  controller stay up. Test: radios off, then remove the PCIe devices before sleep.
+- NVMe (ANS coprocessor) power state during s2idle.
+- The display pipeline (DCP) with the lid closed.
+- DRAM and the fabric not entering the SoC sleep state macOS uses. That's the
+  hard one, and it needs the m1n1 hypervisor trace.
+
+Method from here: budget device power awake with the SMC `Total System Power`
+sensor (display off, idle, toggle one device at a time), then confirm the
+biggest delta with one night.
 
 Build note: the headers package has `rust/` without .rmeta, and the kernel was
 built with rustc 1.85.0, so an out-of-tree Rust module build isn't possible.
