@@ -66,8 +66,16 @@ wait_net() {
   return 1
 }
 
+# rfkill unblock alone leaves NetworkManager's Wi-Fi radio off (2026-10-23).
+wifi_on() {
+  rfkill unblock wlan
+  runuser -u corey -- nmcli radio wifi on > /dev/null 2>&1 || nmcli radio wifi on > /dev/null 2>&1
+  nmcli device wifi rescan > /dev/null 2>&1
+}
+
 restore() {
-  rfkill unblock wlan bluetooth 2> /dev/null
+  rfkill unblock bluetooth 2> /dev/null
+  wifi_on
   [ -e "$SD" ] || { echo 1 > /sys/bus/pci/rescan; sleep 3; }
   if [ -e "$SD" ]; then
     echo on > "$SD/power/control" 2> /dev/null
@@ -88,7 +96,7 @@ measure base-a 15
 
 rfkill block wlan
 measure wifi-off
-rfkill unblock wlan
+wifi_on
 measure base-b 25
 
 rfkill block bluetooth
