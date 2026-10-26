@@ -26,6 +26,7 @@ The three nights are consistent, so a change of about 100 mW or more should show
 |---|---|---|---|---|---|
 | 2026-10-21 | 7.2.10 (omacom) | on | 22.0 | 97% → 32% | **1838 mW** (−340 mW, −15%) |
 | 2026-10-22 | 7.2.10, AOP unbound | on | 17.6 | 99% → 48% | **1825 mW** (no change) |
+| 2026-10-25 | 7.2.10 | **off** | 17.0 | 100% → 52% | **1797 mW** (−41 mW vs 1838) |
 
 ## Finding 1: the AOP wakes the SoC about 3.6 times a second all night (2026-10-22)
 
@@ -103,6 +104,41 @@ Candidates for the floor, roughly from cheapest test to most effort:
 Method from here: budget device power awake with the SMC `Total System Power`
 sensor (display off, idle, toggle one device at a time), then confirm the
 biggest delta with one night.
+
+## Finding 3: which power domains stay on during s2idle (2026-10-26)
+
+The hook now turns on dynamic debug for `pmgr-pwrstate.c` around the sleep, so
+the kernel log has a `PS <name>: pwrstate = 0x0|0xf` line for every PMGR
+domain switch. `sleep-drain-diff` lists what switched off between "suspend
+entry" and "resume from suspend-to-idle". A 68 s suspend was enough
+(`20261026T091412`).
+
+- 108 domains are on before suspend. **73 are `apple,always-on` in the device
+  tree**: genpd never powers them off. They are the DRAM controllers (dcs_00–15,
+  amcc0–3), the fabric (afnc*, afi, afc), the nub/aon/SPMI blocks, sep, pmp,
+  pms, soc_dpe, aic, dwi, the four ATC ports' common/pcie/usb_aon blocks, and
+  debug/debug_usb/debug_auth. This is the part s2idle can't reach.
+- 24 switched off for the sleep, including gfx, ans2 (NVMe), audio, i2c/spi/uart,
+  sio, one ATC USB block, dispext1 and the SD reader's PCIe link.
+- On before, not always-on, and **never switched off**: `atc0_usb atc1_usb
+  atc2_usb` (USB-C), `apcie_gp pcie0_ref` (the Wi-Fi/BT PCIe link), `disp0_cpu0
+  disp0_fe pmp-disp0` (internal DCP), `dispext0_cpu0 dispext0_fe pmp-dispext0
+  pmp-dispext1` (an external DCP with nothing attached).
+
+Why the USB-C blocks stay on: the three bound `dwc3-apple` controllers are
+wakeup-enabled, and pmgr-pwrstate.c gives domains that are on at boot
+`GENPD_FLAG_DEFER_OFF | GENPD_FLAG_ACTIVE_WAKEUP`, so a wakeup-enabled device
+keeps its domain on through suspend. With `/etc/sleep-drain/wake-off`
+(`sleep-drain-wake off`: the USB controllers and Wi-Fi stop being wakeup
+sources for the sleep, while lid and power button still wake), a 65 s suspend
+(`20261026T091720`) switched **atc0–3_usb all off**. The Wi-Fi PCIe link
+(apcie_gp, pcie0_ref) stayed on even with brcmfmac's wakeup off; something else
+holds it (the driver keeping the chip in D0?). After resume the wakeup settings
+were restored and Wi-Fi reconnected.
+
+Night experiment 2026-10-26: radios off + wake off (vs 1797 mW, radios off).
+Left to explain after that: the DCP domains (internal and dispext0 stay
+powered; dispext1, never bound, does switch off) and the 73 always-on domains.
 
 ### Awake power budget, first run (2026-10-23): inconclusive
 
