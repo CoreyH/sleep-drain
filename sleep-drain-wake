@@ -1,0 +1,23 @@
+#!/bin/bash
+# Turn the wakeup-sources-off-during-sleep experiment on or off.
+#   sleep-drain-wake off     USB-C controllers and Wi-Fi can't wake the Mac while suspended
+#   sleep-drain-wake on      wakeup sources stay as they are (the default)
+#   sleep-drain-wake         show the current setting
+# The sleep-drain-log hook reads /etc/sleep-drain/wake-off at each suspend,
+# so a change applies from the next suspend on.
+set -euo pipefail
+
+flag=/etc/sleep-drain/wake-off
+
+case "${1:-status}" in
+  off) sudo install -D -m 644 /dev/null "$flag" ;;
+  on) sudo rm -f "$flag" ;;
+  status) ;;
+  *) echo "usage: sleep-drain-wake [off|on]" >&2; exit 2 ;;
+esac
+
+if [[ -e $flag ]]; then
+  echo "wakeup: USB-C and Wi-Fi wakeup off during sleep"
+else
+  echo "wakeup: left as is during sleep"
+fi

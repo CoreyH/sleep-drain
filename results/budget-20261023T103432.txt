@@ -1,0 +1,17 @@
+== power budget 2026-10-23T10:34:32+02:00, kernel 7.2.10-1-2-ARCH, ac=1
+   sensor /sys/class/hwmon/hwmon2/power1_input; phases: 10 s settle + 50 x 1 s
+base-a         mean=13.052 W  sd=0.587  load=0.54  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+wifi-off       mean=12.475 W  sd=0.032  load=0.25  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+base-b         mean=12.681 W  sd=0.026  load=0.07  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+bt-off         mean=12.782 W  sd=0.336  load=0.02  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+base-c         mean=12.735 W  sd=0.049  load=0.08  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+sd-rpm-auto    mean=12.665 W  sd=0.075  load=0.03  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+base-d         mean=12.521 W  sd=0.053  load=0.10  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+sd-removed     mean=12.812 W  sd=0.042  load=0.04  pci: 00:00.0=active 00:01.0=suspended 01:00.0=active 01:00.1=active 
+   SD reader back after rescan
+base-e         mean=12.348 W  sd=0.051  load=0.08  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+sd-l1ss        mean=12.276 W  sd=0.202  load=0.44  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+base-f         mean=12.134 W  sd=0.070  load=0.39  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+display-on     mean=12.052 W  sd=0.075  load=0.37  pci: 00:00.0=active 00:01.0=active 01:00.0=active 01:00.1=active 02:00.0=active 
+== done 2026-10-23T10:47:02+02:00
+network: NOT back after 90 s
