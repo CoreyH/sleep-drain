@@ -27,6 +27,11 @@ STATE=/run/sleep-drain.pre
 RADIOS=/run/sleep-drain.radios
 PMDEBUG=/run/sleep-drain.pmdebug
 RADIOS_OFF_FLAG=/etc/sleep-drain/radios-off
+# Log every Apple PMGR power-domain switch ("PS <name>: pwrstate = 0x0" is off,
+# 0xf on) during the sleep, so the kernel log shows which domains really power
+# down. Logging only; it does not change what the domains do.
+DDC=/sys/kernel/debug/dynamic_debug/control
+PMGR_DEBUG='file pmgr-pwrstate.c'
 BAT=/sys/class/power_supply/macsmc-battery
 AC=/sys/class/power_supply/macsmc-ac
 
@@ -175,6 +180,7 @@ case "$1" in
     # Name the wakeup IRQ in the kernel log (PM: ... wakeup from IRQ N).
     cat /sys/power/pm_debug_messages > "$PMDEBUG" 2>/dev/null &&
       echo 1 > /sys/power/pm_debug_messages
+    echo "$PMGR_DEBUG +p" > "$DDC" 2>/dev/null
     radios=on
     if [ -e "$RADIOS_OFF_FLAG" ]; then radios_off; radios=off; fi
     echo "$now id=$id" > "$STATE"
@@ -192,6 +198,7 @@ case "$1" in
         capture "$SNAPS/$id/post"
         journalctl -k --no-pager -o short-monotonic --since "@$pre_ts" \
           > "$SNAPS/$id/post/kernel.log" 2>/dev/null
+        echo "$PMGR_DEBUG -p" > "$DDC" 2>/dev/null
         chmod -R a+rX "$SNAPS/$id"
         line+=" snap=$id"
       fi

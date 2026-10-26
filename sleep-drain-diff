@@ -48,6 +48,29 @@ echo "== kernel log: suspend, wakeup and errors"
 grep -iE 'suspend|resume|wakeup|wake up|freez|s2idle|error|fail|timeout' "$d/post/kernel.log" 2>/dev/null | head -40
 
 echo
+echo "== power domains during the sleep (from PMGR debug lines, if logged)"
+log=$d/post/kernel.log
+if grep -q 'PS [^ ]*: pwrstate = ' "$log" 2>/dev/null; then
+  # Last state each domain was switched to between suspend entry and resume.
+  awk '/PM: suspend entry/ {p = 1} /PM: resume from suspend-to-idle/ {p = 2}
+       p == 1 && match($0, /PS [^ ]+: pwrstate = 0x[0-9a-f]+/) {
+         split(substr($0, RSTART, RLENGTH), a, " "); n = a[2]; sub(/:$/, "", n); last[n] = a[5] }
+       END { for (n in last) print last[n], n }' "$log" | sort > "$d/.sleep-states"
+  echo "switched off (0x0) for the sleep: $(awk '$1 == "0x0" {print $2}' "$d/.sleep-states" | tr '\n' ' ')"
+  echo "clock-gated (0x4): $(awk '$1 == "0x4" {print $2}' "$d/.sleep-states" | tr '\n' ' ')"
+  # Always-on domains from the device tree; genpd never powers these off.
+  aon=$(for f in $(find /sys/firmware/devicetree/base/soc -path '*power-management*' -name 'apple,always-on' 2>/dev/null); do
+          tr -d '\0' < "$(dirname "$f")/label"; echo; done | sort)
+  echo "always-on per device tree ($(echo "$aon" | grep -c .)): $(echo "$aon" | tr '\n' ' ')"
+  echo "on before suspend, not always-on, never switched off (suspects):"
+  awk 'NR > 2 && $2 == "on" {print $1}' "$d/pre/genpd" | sort |
+    comm -23 - <(echo "$aon") | comm -23 - <(awk '$1 == "0x0" || $1 == "0x4" {print $2}' "$d/.sleep-states" | sort) |
+    tr '\n' ' '; echo
+else
+  echo "(no PMGR debug lines in this suspend's kernel log)"
+fi
+
+echo
 echo "== power domains whose state differs pre -> post"
 diff <(awk '{print $1, $2}' "$d/pre/genpd" 2>/dev/null) <(awk '{print $1, $2}' "$d/post/genpd" 2>/dev/null) | grep '^[<>]' | head -30
 
