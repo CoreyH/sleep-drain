@@ -137,6 +137,26 @@ holds it (the driver keeping the chip in D0?). After resume the wakeup settings
 were restored and Wi-Fi reconnected.
 
 Night experiment 2026-10-26: radios off + wake off (vs 1797 mW, radios off).
+
+### Upstream angle for the USB-C finding (omacom/linux-aurora)
+
+`drivers/usb/dwc3/dwc3-apple.c` calls `devm_device_init_wakeup(dev)` at probe
+("Like a PCI xHCI controller, allow USB devices to wake the system by
+default"). But the DWC3 core and its xHCI only come up when a cable connects
+(and stay up across sleep as a syscore device, which keeps the domain on
+anyway). With nothing attached nothing can signal a wakeup, yet the
+wakeup-enabled glue device keeps its `atcN_usb` domain on through s2idle via
+`GENPD_FLAG_ACTIVE_WAKEUP`.
+
+Proposed fix, correct for every user: be wakeup-*capable* only while the core
+is up (`device_set_wakeup_capable()` on core start/stop), or otherwise keep an
+idle port out of the wakeup path. A docked, lid-closed setup with a USB keyboard
+still wakes the Mac; an empty port powers down. Tonight's number decides how
+much it's worth, and it goes in the patch or issue.
+
+Local policy on corey-mbp14-omarchy (Corey doesn't wake from USB at all):
+disable wakeup on the dwc3-apple controllers permanently with a udev rule in
+dotfiles `system/`, instead of the experiment flag, once the result is in.
 Left to explain after that: the DCP domains (internal and dispext0 stay
 powered; dispext1, never bound, does switch off) and the 73 always-on domains.
 
