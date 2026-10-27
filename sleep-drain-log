@@ -25,7 +25,6 @@ SNAPS=/var/log/sleep-drain
 KEEP=60
 STATE=/run/sleep-drain.pre
 RADIOS=/run/sleep-drain.radios
-PMDEBUG=/run/sleep-drain.pmdebug
 RADIOS_OFF_FLAG=/etc/sleep-drain/radios-off
 # Experiment: with this flag, the USB-C controllers and the Wi-Fi chip stop
 # being wakeup sources for the sleep. Their PMGR domains carry
@@ -202,9 +201,10 @@ case "$1" in
     now=$(snapshot)
     att=$(attached)
     capture "$SNAPS/$id/pre"
-    # Name the wakeup IRQ in the kernel log (PM: ... wakeup from IRQ N).
-    cat /sys/power/pm_debug_messages > "$PMDEBUG" 2>/dev/null &&
-      echo 1 > /sys/power/pm_debug_messages
+    # No pm_debug_messages: it logs "Timekeeping suspended" on every s2idle
+    # wakeup, and with the AOP waking the SoC 3.6 times/s an overnight sleep
+    # overran the kernel log (2026-10-26: 313k lines lost, including the PMGR
+    # lines from suspend entry). The interrupt deltas name the wakeup IRQs.
     echo "$PMGR_DEBUG +p" > "$DDC" 2>/dev/null
     radios=on
     if [ -e "$RADIOS_OFF_FLAG" ]; then radios_off; radios=off; fi
@@ -251,7 +251,6 @@ case "$1" in
         }')"
       rm -f "$STATE"
     fi
-    [ -r "$PMDEBUG" ] && cat "$PMDEBUG" > /sys/power/pm_debug_messages && rm -f "$PMDEBUG"
     echo "$line" >> "$LOG"
     prune
     ;;

@@ -27,6 +27,21 @@ The three nights are consistent, so a change of about 100 mW or more should show
 | 2026-10-21 | 7.2.10 (omacom) | on | 22.0 | 97% → 32% | **1838 mW** (−340 mW, −15%) |
 | 2026-10-22 | 7.2.10, AOP unbound | on | 17.6 | 99% → 48% | **1825 mW** (no change) |
 | 2026-10-25 | 7.2.10 | **off** | 17.0 | 100% → 52% | **1797 mW** (−41 mW vs 1838) |
+| 2026-10-26 | 7.2.10, USB/PCIe wake off | off | 24.2 | 36% → (charged) → 44% | **no result** |
+
+The 2026-10-26 run doesn't count. The laptop went to sleep at 10:31 at 36%, was
+charged while asleep, unplugged while asleep, and stayed asleep until 10:45 the
+next day. With no reading at the unplug, there's no way to split charging from
+drain. The snapshot did show:
+- 54 `macsmc-ac`/`macsmc-battery` wakeup events that never woke the system;
+- the AOP mailbox at 3.62/s again (315,770 IRQs in 87,229 s);
+- `/dev/kmsg buffer overrun`: 313,418 kernel messages lost. `pm_debug_messages`
+  logs a "Timekeeping suspended" line on every s2idle wakeup, so overnight it
+  pushed the PMGR suspend-entry lines out of the ring buffer.
+
+The hook no longer turns on `pm_debug_messages`. For a valid night, the laptop
+must be awake on battery right before the sleep: if it went to sleep plugged in,
+open the lid after unplugging and close it again.
 
 ## Finding 1: the AOP wakes the SoC about 3.6 times a second all night (2026-10-22)
 
