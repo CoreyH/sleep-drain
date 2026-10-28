@@ -28,6 +28,7 @@ The three nights are consistent, so a change of about 100 mW or more should show
 | 2026-10-22 | 7.2.10, AOP unbound | on | 17.6 | 99% → 48% | **1825 mW** (no change) |
 | 2026-10-25 | 7.2.10 | **off** | 17.0 | 100% → 52% | **1797 mW** (−41 mW vs 1838) |
 | 2026-10-26 | 7.2.10, USB/PCIe wake off | off | 24.2 | 36% → (charged) → 44% | **no result** |
+| 2026-10-27 | **7.2.11**, USB/PCIe wake off | off | 17.7 | 100% → 50% | **1759 mW** (−38 mW vs 1797) |
 
 The 2026-10-26 run doesn't count. The laptop went to sleep at 10:31 at 36%, was
 charged while asleep, unplugged while asleep, and stayed asleep until 10:45 the
@@ -42,6 +43,22 @@ drain. The snapshot did show:
 The hook no longer turns on `pm_debug_messages`. For a valid night, the laptop
 must be awake on battery right before the sleep: if it went to sleep plugged in,
 open the lid after unplugging and close it again.
+
+The 2026-10-27 night is the valid re-run. The kernel log confirms that
+atc0–3_usb switched off for the sleep. As in the 68 s test, the Wi-Fi PCIe
+link (apcie_gp, pcie0_ref) and the DCP domains stayed on. Two things changed
+against 2026-10-25, though: USB/PCIe wake off, and the kernel (7.2.10 →
+7.2.11, installed that morning). So −38 mW is an upper bound for what USB-C
+wake costs. Either way it is small, like the radios (−41 mW). Together, radios
+off and wake off take 1838 → 1759 mW (−79 mW, −4%). The AOP mailbox still fired
+3.6 times a second (230,527 in 63,685 s).
+
+`sleep-drain-diff` read that night wrong at first, listing atc*_usb as never
+switched off. "PM: resume from suspend-to-idle" is a `pm_pr_dbg` line, so it
+stopped being logged once the hook dropped `pm_debug_messages`. The diff then
+took each domain's last state from the whole log, which is the state after
+resume. Without that marker it now takes the deepest state each domain reached
+before "suspend exit".
 
 ## Finding 1: the AOP wakes the SoC about 3.6 times a second all night (2026-10-22)
 
@@ -151,7 +168,8 @@ sources for the sleep, while lid and power button still wake), a 65 s suspend
 holds it (the driver keeping the chip in D0?). After resume the wakeup settings
 were restored and Wi-Fi reconnected.
 
-Night experiment 2026-10-26: radios off + wake off (vs 1797 mW, radios off).
+Night experiment: radios off + wake off. Result 2026-10-27: 1759 mW vs 1797 mW
+(radios off alone), on a newer kernel; see Results.
 
 ### Upstream angle for the USB-C finding (omacom/linux-aurora)
 

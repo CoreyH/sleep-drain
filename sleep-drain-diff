@@ -54,10 +54,22 @@ states=$(mktemp)
 trap 'rm -f "$states"' EXIT
 if grep -q 'PS [^ ]*: pwrstate = ' "$log" 2>/dev/null; then
   # Last state each domain was switched to between suspend entry and resume.
-  awk '/PM: suspend entry/ {p = 1} /PM: resume from suspend-to-idle/ {p = 2}
+  # "resume from suspend-to-idle" is a pm_pr_dbg line, only logged with
+  # pm_debug_messages, which the hook stopped turning on (7264ee3). Without it
+  # the resume side can't be told apart, so take the deepest state each domain
+  # reached before "suspend exit" instead (0x0 off < 0x4 gated < on).
+  marker=1
+  grep -q 'PM: resume from suspend-to-idle' "$log" || marker=0
+  [ "$marker" = 1 ] || echo "(no resume marker logged: showing the deepest state each domain reached during the suspend)"
+  awk -v marker="$marker" '
+       function rank(s) { return s == "0x0" ? 0 : (s == "0x4" ? 1 : 2) }
+       /PM: suspend entry/ {p = 1}
+       /PM: resume from suspend-to-idle/ || /PM: suspend exit/ {p = 2}
        p == 1 && match($0, /PS [^ ]+: pwrstate = 0x[0-9a-f]+/) {
-         split(substr($0, RSTART, RLENGTH), a, " "); n = a[2]; sub(/:$/, "", n); last[n] = a[5] }
-       END { for (n in last) print last[n], n }' "$log" | sort > "$states"
+         split(substr($0, RSTART, RLENGTH), a, " "); n = a[2]; sub(/:$/, "", n); s = a[5]
+         last[n] = s
+         if (!(n in deep) || rank(s) < rank(deep[n])) deep[n] = s }
+       END { for (n in last) print (marker ? last[n] : deep[n]), n }' "$log" | sort > "$states"
   echo "switched off (0x0) for the sleep: $(awk '$1 == "0x0" {print $2}' "$states" | tr '\n' ' ')"
   echo "clock-gated (0x4): $(awk '$1 == "0x4" {print $2}' "$states" | tr '\n' ' ')"
   # Always-on domains from the device tree; genpd never powers these off.
