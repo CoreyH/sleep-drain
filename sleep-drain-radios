@@ -1,0 +1,23 @@
+#!/bin/bash
+# Turn the radios-off-during-sleep experiment on or off.
+#   sleep-drain-radios off     Wi-Fi and Bluetooth are soft-blocked while suspended
+#   sleep-drain-radios on      radios stay as they are (the default)
+#   sleep-drain-radios         show the current setting
+# The sleep-drain-log hook reads /etc/sleep-drain/radios-off at each suspend,
+# so a change applies from the next suspend on.
+set -euo pipefail
+
+flag=/etc/sleep-drain/radios-off
+
+case "${1:-status}" in
+  off) sudo install -D -m 644 /dev/null "$flag" ;;
+  on) sudo rm -f "$flag" ;;
+  status) ;;
+  *) echo "usage: sleep-drain-radios [off|on]" >&2; exit 2 ;;
+esac
+
+if [[ -e $flag ]]; then
+  echo "radios: off during sleep"
+else
+  echo "radios: left on during sleep"
+fi

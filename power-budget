@@ -1,0 +1,156 @@
+#!/bin/bash
+# Awake power budget: change one thing at a time and read the SMC's Total
+# System Power. Display off, ABA design (a baseline between every change),
+# each phase settles 10 s and then averages 50 one-second samples.
+#
+#   pkexec /path/to/power-budget "$HYPRLAND_INSTANCE_SIGNATURE" [results-dir]
+#
+# Runs as root (PCI runtime PM, ASPM and remove/rescan need it). Every change is
+# undone at the end of its phase and again by the EXIT trap. The script does
+# not exit until the network answers again, so a remote session over Wi-Fi
+# gets its connection back.
+#
+# Only the SD reader gets the riskier changes (remove/rescan, L1 substates):
+# it is alone on its root port (00:01.0), so a mistake there can't take Wi-Fi
+# down. Wi-Fi and Bluetooth are only soft-blocked.
+set -u
+
+SIG=${1:?usage: power-budget HYPRLAND_INSTANCE_SIGNATURE [results-dir]}
+OUTDIR=${2:-/home/corey/src/sleep-drain/results}
+OUT=$OUTDIR/budget-$(date +%Y%m%dT%H%M%S).txt
+SD=/sys/bus/pci/devices/0000:02:00.0
+SD_PORT=/sys/bus/pci/devices/0000:00:01.0
+
+P=
+for h in /sys/class/hwmon/hwmon*; do
+  [ "$(cat "$h/name")" = macsmc_hwmon ] || continue
+  for l in "$h"/power*_label; do
+    [ "$(cat "$l")" = "Total System Power" ] && P=${l%_label}_input
+  done
+done
+[ -n "$P" ] || { echo "no Total System Power sensor" >&2; exit 1; }
+
+mkdir -p "$OUTDIR"
+log() { echo "$*" | tee -a "$OUT"; }
+
+hypr() {
+  runuser -u corey -- env XDG_RUNTIME_DIR=/run/user/1001 \
+    HYPRLAND_INSTANCE_SIGNATURE="$SIG" hyprctl "$@" > /dev/null 2>&1
+}
+
+pci_state() {
+  local d out=
+  for d in /sys/bus/pci/devices/*; do
+    out+="${d##*/0000:}=$(cat "$d/power/runtime_status") "
+  done
+  echo "$out"
+}
+
+# measure <name> [settle seconds]
+measure() {
+  local name=$1 settle=${2:-10} i
+  sleep "$settle"
+  local load; load=$(cut -d' ' -f1 /proc/loadavg)
+  local st; st=$(pci_state)
+  for i in $(seq 50); do cat "$P"; sleep 1; done | awk -v n="$name" -v l="$load" -v s="$st" '
+    { v = $1 / 1e6; t += v; tt += v * v; c++ }
+    END { m = t / c; printf "%-14s mean=%6.3f W  sd=%.3f  load=%s  pci: %s\n", n, m, sqrt(tt / c - m * m), l, s }' | tee -a "$OUT"
+}
+
+wait_net() {
+  local i
+  for i in $(seq 90); do
+    ping -c1 -W2 1.1.1.1 > /dev/null 2>&1 && getent hosts api.anthropic.com > /dev/null && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# 0 (unblocked), 1 (blocked) or none: the soft state of the first radio of a type.
+soft_state() {
+  local r
+  for r in /sys/class/rfkill/rfkill*; do
+    [ "$(cat "$r/type" 2> /dev/null)" = "$1" ] && { cat "$r/soft"; return; }
+  done
+  echo none
+}
+
+# The radios as they were before the test, so restoring puts back exactly that
+# and doesn't turn on a radio that was off.
+WLAN_WAS=$(soft_state wlan)
+BT_WAS=$(soft_state bluetooth)
+NM_WIFI_WAS=$(timeout 3 nmcli radio wifi 2> /dev/null)
+case $NM_WIFI_WAS in
+  enabled | disabled) ;;
+  *) echo "can't read NetworkManager's Wi-Fi state, so it couldn't be put back: not starting" >&2; exit 1 ;;
+esac
+
+# rfkill unblock alone leaves NetworkManager's Wi-Fi radio off (2026-10-23).
+wifi_restore() {
+  [ "$WLAN_WAS" = 0 ] && rfkill unblock wlan
+  if [ "$NM_WIFI_WAS" = enabled ]; then
+    runuser -u corey -- nmcli radio wifi on > /dev/null 2>&1 || nmcli radio wifi on > /dev/null 2>&1
+    nmcli device wifi rescan > /dev/null 2>&1
+  fi
+}
+
+bt_restore() {
+  [ "$BT_WAS" = 0 ] && rfkill unblock bluetooth 2> /dev/null
+}
+
+restore() {
+  bt_restore
+  wifi_restore
+  [ -e "$SD" ] || { echo 1 > /sys/bus/pci/rescan; sleep 3; }
+  if [ -e "$SD" ]; then
+    echo on > "$SD/power/control" 2> /dev/null
+    echo 0 > "$SD/link/l1_2_aspm" 2> /dev/null
+    echo 0 > "$SD/link/l1_1_aspm" 2> /dev/null
+  fi
+  hypr dispatch dpms on
+  if [ "$NM_WIFI_WAS" != enabled ]; then log "network: Wi-Fi was off before the test, left off"
+  elif wait_net; then log "network: back"; else log "network: NOT back after 90 s"; fi
+  chown -R corey:corey "$OUTDIR"
+}
+trap restore EXIT
+
+log "== power budget $(date -Is), kernel $(uname -r), ac=$(cat /sys/class/power_supply/macsmc-ac/online)"
+log "   sensor $P; phases: 10 s settle + 50 x 1 s"
+
+hypr dispatch dpms off
+measure base-a 15
+
+rfkill block wlan
+measure wifi-off
+wifi_restore
+measure base-b 25
+
+rfkill block bluetooth
+measure bt-off
+bt_restore
+measure base-c 15
+
+echo auto > "$SD/power/control"
+measure sd-rpm-auto
+echo on > "$SD/power/control"
+measure base-d
+
+echo 1 > "$SD/remove"
+measure sd-removed
+echo 1 > /sys/bus/pci/rescan
+sleep 3
+[ -e "$SD" ] && log "   SD reader back after rescan" || log "   SD reader MISSING after rescan"
+measure base-e
+
+if echo 1 > "$SD/link/l1_1_aspm" && echo 1 > "$SD/link/l1_2_aspm"; then
+  measure sd-l1ss
+else
+  log "sd-l1ss        could not enable L1.1/L1.2 on the SD link"
+fi
+echo 0 > "$SD/link/l1_2_aspm" 2> /dev/null
+echo 0 > "$SD/link/l1_1_aspm" 2> /dev/null
+measure base-f
+
+hypr dispatch dpms on
+measure display-on
+log "== done $(date -Is)"

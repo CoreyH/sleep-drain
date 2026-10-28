@@ -1,0 +1,345 @@
+#!/bin/bash
+# systemd-sleep hook: record battery state on each side of a suspend so the
+# s2idle drain can be measured, along with what was attached at the time.
+#
+# Installed to /usr/lib/systemd/system-sleep/. systemd-sleep calls it as
+# "pre suspend" before sleeping and "post suspend" after waking. A "pre" line
+# with no matching "post" means the battery ran out while suspended.
+#
+# Everything that has to happen in order lives in this one script: systemd-sleep
+# runs the hooks in its directory in parallel, so a separate radios hook would
+# race the state recorded here.
+#
+# Per suspend it also writes a snapshot directory, /var/log/sleep-drain/<id>/
+# {pre,post}/, with the kernel's view of what could keep the SoC awake:
+# interrupt counts, wakeup sources, power domains, runtime PM, CPU idle
+# residency, SMC power rails and the kernel log of the sleep itself. Compare the
+# two sides with sleep-drain-diff <id>.
+#
+# Experiment switch: if /etc/sleep-drain/radios-off exists, Wi-Fi and Bluetooth
+# are soft-blocked for the sleep and the ones that were on are unblocked after.
+# Toggle it with sleep-drain-radios.
+# Two more switches work the same way: wake-off (sleep-drain-wake) and
+# pcie-off (sleep-drain-pcie), described where their flags are defined below.
+
+LOG=/var/log/sleep-drain.log
+SNAPS=/var/log/sleep-drain
+KEEP=60
+STATE=/run/sleep-drain.pre
+RADIOS=/run/sleep-drain.radios
+RADIOS_OFF_FLAG=/etc/sleep-drain/radios-off
+# Experiment: with this flag, the USB-C controllers and the Wi-Fi chip stop
+# being wakeup sources for the sleep. Their PMGR domains carry
+# GENPD_FLAG_ACTIVE_WAKEUP, so a wakeup-enabled device keeps its domain (atc*_usb,
+# apcie_gp/pcie0_ref) powered all night. Lid and power button wake through
+# macsmc-input, which is left alone.
+WAKE_OFF_FLAG=/etc/sleep-drain/wake-off
+WAKE=/run/sleep-drain.wake
+# Experiment: with this flag, the Wi-Fi/Bluetooth chip's PCI functions are
+# removed for the sleep and rescanned after, so nothing holds its root port and
+# the link's domains (apcie_gp, pcie0_ref) are free to power off. It replaces
+# radios-off for that sleep: soft-blocking a radio that is about to be removed
+# would have systemd-rfkill restore it blocked when it comes back.
+PCIE_OFF_FLAG=/etc/sleep-drain/pcie-off
+PCIE=/run/sleep-drain.pcie
+# NetworkManager's Wi-Fi switch as it was before radios-off or pcie-off, so
+# post turns it back on only if it was on.
+NM_WIFI=/run/sleep-drain.nm-wifi
+# Log every Apple PMGR power-domain switch ("PS <name>: pwrstate = 0x0" is off,
+# 0xf on) during the sleep, so the kernel log shows which domains really power
+# down. Logging only; it does not change what the domains do.
+DDC=/sys/kernel/debug/dynamic_debug/control
+PMGR_DEBUG='file pmgr-pwrstate.c'
+BAT=/sys/class/power_supply/macsmc-battery
+AC=/sys/class/power_supply/macsmc-ac
+
+[ "${2:-}" = suspend ] || exit 0
+
+rfkill_state() {
+  local r
+  for r in /sys/class/rfkill/rfkill*; do
+    [ "$(cat "$r/type")" = "$1" ] || continue
+    if [ "$(cat "$r/soft")$(cat "$r/hard")" = 00 ]; then echo on; else echo off; fi
+    return
+  done
+  echo none
+}
+
+typec_partners() {
+  local p out=
+  for p in /sys/class/typec/port*-partner; do
+    [ -e "$p/type" ] || continue
+    out+="${out:+,}$(basename "${p%-partner}"):$(cat "$p/type")"
+  done
+  echo "${out:--}"
+}
+
+drm_connected() {
+  local c out=
+  for c in /sys/class/drm/card*-*; do
+    [ "$(cat "$c/status" 2>/dev/null)" = connected ] || continue
+    out+="${out:+,}$(basename "$c" | sed 's/^card[0-9]*-//')"
+  done
+  echo "${out:--}"
+}
+
+usb_devices() {
+  local d out=
+  for d in /sys/bus/usb/devices/*; do
+    [ -e "$d/idVendor" ] && [ "$(cat "$d/bDeviceClass")" != 09 ] || continue
+    out+="${out:+,}$(cat "$d/idVendor"):$(cat "$d/idProduct")"
+  done
+  echo "${out:--}"
+}
+
+# Whether the AOP (always-on processor: ambient light, lid angle, mics) has its
+# driver bound. Unbound, its mailbox stops waking the CPUs (IRQ 40), but on
+# t6000 it cannot be rebound without a reboot.
+aop_state() {
+  local d
+  for d in /sys/bus/platform/devices/*.aop; do
+    [ -e "$d" ] || continue
+    if [ -e "$d/driver" ]; then echo bound; else echo unbound; fi
+    return
+  done
+  echo none
+}
+
+bt_connected() {
+  timeout 2 bluetoothctl devices Connected 2>/dev/null | grep -c '^Device'
+}
+
+snapshot() {
+  printf 'ts=%s energy_uwh=%s charge_uah=%s capacity=%s ac=%s' \
+    "$(date +%s)" "$(cat $BAT/energy_now)" "$(cat $BAT/charge_now)" \
+    "$(cat $BAT/capacity)" "$(cat $AC/online)"
+}
+
+attached() {
+  printf 'wifi=%s bt=%s bt_connected=%s typec=%s displays=%s usb=%s kernel=%s aop=%s' \
+    "$(rfkill_state wlan)" "$(rfkill_state bluetooth)" "$(bt_connected)" \
+    "$(typec_partners)" "$(drm_connected)" "$(usb_devices)" "$(uname -r)" "$(aop_state)"
+}
+
+# Soft-block every unblocked Wi-Fi and Bluetooth radio; remember which, so
+# post only unblocks what this script blocked.
+radios_off() {
+  local r
+  : > "$RADIOS"
+  for r in /sys/class/rfkill/rfkill*; do
+    case "$(cat "$r/type")" in wlan | bluetooth) ;; *) continue ;; esac
+    [ "$(cat "$r/soft")" = 0 ] || continue
+    echo 1 > "$r/soft" && echo "$r" >> "$RADIOS"
+  done
+}
+
+wake_off() {
+  local d
+  : > "$WAKE"
+  for d in /sys/bus/platform/devices/*.usb /sys/bus/pci/devices/*; do
+    [ "$(cat "$d/power/wakeup" 2>/dev/null)" = enabled ] || continue
+    echo disabled > "$d/power/wakeup" && echo "$d" >> "$WAKE"
+  done
+}
+
+wake_restore() {
+  local d
+  [ -r "$WAKE" ] || return 0
+  while read -r d; do
+    [ -e "$d/power/wakeup" ] && echo enabled > "$d/power/wakeup"
+  done < "$WAKE"
+  rm -f "$WAKE"
+}
+
+# Remove every function of the chip behind the Wi-Fi interface's root port
+# (Wi-Fi and Bluetooth share it), and remember the port.
+pcie_off() {
+  local dev port f
+  dev=$(readlink -f /sys/class/net/wlan0/device 2>/dev/null) || return 0
+  [ -e "$dev" ] || return 0
+  port=$(dirname "$dev")
+  echo "$port" > "$PCIE"
+  for f in "$port"/0000:*; do
+    [ -e "$f/remove" ] && echo 1 > "$f/remove"
+  done
+}
+
+# Rescan, and if the chip doesn't come back, remove and rescan its root port
+# once (what wifi-link-budget does). Prints restored, port-rescan or missing.
+pcie_restore() {
+  local port i
+  [ -r "$PCIE" ] || return 0
+  port=$(cat "$PCIE")
+  rm -f "$PCIE"
+  echo 1 > /sys/bus/pci/rescan
+  for i in $(seq 20); do
+    ls -d "$port"/0000:* > /dev/null 2>&1 && { echo restored; return; }
+    sleep 0.5
+  done
+  [ -e "$port/remove" ] && echo 1 > "$port/remove"
+  sleep 1
+  echo 1 > /sys/bus/pci/rescan
+  for i in $(seq 20); do
+    ls -d "$port"/0000:* > /dev/null 2>&1 && { echo port-rescan; return; }
+    sleep 0.5
+  done
+  echo missing
+}
+
+# Fails when NetworkManager is there but its Wi-Fi switch can't be read: post
+# couldn't know whether to turn it back on, so the caller must leave the radios
+# alone. Without NetworkManager there is nothing to restore.
+nm_wifi_save() {
+  local state
+  rm -f "$NM_WIFI"
+  command -v nmcli > /dev/null || return 0
+  state=$(timeout 3 nmcli radio wifi 2>/dev/null) || return 1
+  case "$state" in
+    enabled | disabled) echo "$state" > "$NM_WIFI" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Blocking the radio, or removing the chip, turns NetworkManager's Wi-Fi switch
+# off, and bringing the radio back leaves it off and the laptop offline (seen
+# 2026-10-23: no network 90 s after rfkill unblock). Turn it back on and rescan,
+# as omarchy-restart-wifi does, but only if it was on before the sleep.
+# Backgrounded: NM may still be resuming.
+nm_wifi_restore() {
+  [ -r "$NM_WIFI" ] || return 0
+  if [ "$(cat "$NM_WIFI")" = enabled ]; then
+    (nmcli radio wifi on; nmcli device wifi rescan) > /dev/null 2>&1 &
+  fi
+  rm -f "$NM_WIFI"
+}
+
+radios_restore() {
+  local r
+  [ -r "$RADIOS" ] || return 0
+  while read -r r; do
+    [ -e "$r/soft" ] && echo 0 > "$r/soft"
+  done < "$RADIOS"
+  rm -f "$RADIOS"
+}
+
+# Dump what the kernel can tell us about power state into $1. Every file is
+# best-effort: a missing source leaves an empty or absent file, never a failed
+# suspend.
+capture() {
+  local d=$1 f c s h
+  mkdir -p "$d"
+  mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+  cat /proc/interrupts > "$d/interrupts" 2>/dev/null
+  cat /sys/kernel/debug/wakeup_sources > "$d/wakeup_sources" 2>/dev/null
+  cat /sys/kernel/debug/pm_genpd/pm_genpd_summary > "$d/genpd" 2>/dev/null
+  grep -H '' /sys/power/suspend_stats/* > "$d/suspend_stats" 2>/dev/null
+  for c in /sys/devices/system/cpu/cpu[0-9]*; do
+    for s in "$c"/cpuidle/state*; do
+      [ -d "$s" ] || continue
+      printf '%s %s %s usage=%s time_us=%s\n' "${c##*/}" "${s##*/}" \
+        "$(cat "$s/name")" "$(cat "$s/usage")" "$(cat "$s/time")"
+    done
+  done > "$d/cpuidle" 2>/dev/null
+  find /sys/devices -path '*/power/runtime_status' 2>/dev/null |
+    while read -r f; do
+      read -r s < "$f" 2>/dev/null || continue
+      [ "$s" = unsupported ] || echo "${f%/power/runtime_status} $s"
+    done > "$d/runtime_pm"
+  grep -H '' /sys/class/rfkill/rfkill*/{name,type,soft,hard} > "$d/rfkill" 2>/dev/null
+  grep -H '' $BAT/* > "$d/battery" 2>/dev/null
+  for h in /sys/class/hwmon/hwmon*; do
+    [ "$(cat "$h/name")" = macsmc_hwmon ] || continue
+    for f in "$h"/*_label; do
+      echo "$(cat "$f")=$(cat "${f%_label}_input" 2>/dev/null)"
+    done
+  done > "$d/smc" 2>/dev/null
+  lsmod > "$d/lsmod" 2>/dev/null
+  { uname -a; cat /proc/cmdline; cat /sys/power/mem_sleep; } > "$d/system" 2>/dev/null
+}
+
+prune() {
+  ls -1d "$SNAPS"/*/ 2>/dev/null | sort | head -n -"$KEEP" | xargs -r rm -rf
+}
+
+case "$1" in
+  pre)
+    id=$(date +%Y%m%dT%H%M%S)
+    now=$(snapshot)
+    att=$(attached)
+    capture "$SNAPS/$id/pre"
+    # No pm_debug_messages: it logs "Timekeeping suspended" on every s2idle
+    # wakeup, and with the AOP waking the SoC 3.6 times/s an overnight sleep
+    # overran the kernel log (2026-10-26: 313k lines lost, including the PMGR
+    # lines from suspend entry). The interrupt deltas name the wakeup IRQs.
+    echo "$PMGR_DEBUG +p" > "$DDC" 2>/dev/null
+    pcie=on
+    [ -e "$PCIE_OFF_FLAG" ] && pcie=off
+    radios=on
+    if [ "$pcie" = off ] || [ -e "$RADIOS_OFF_FLAG" ]; then
+      if ! nm_wifi_save; then
+        # The night won't test what the flags say; the log line shows it.
+        radios=skipped
+        [ "$pcie" = off ] && pcie=skipped
+      elif [ "$pcie" = off ]; then
+        radios=removed
+      else
+        radios_off
+        radios=off
+      fi
+    fi
+    wake=on
+    if [ -e "$WAKE_OFF_FLAG" ]; then wake_off; wake=off; fi
+    # After wake_off, which records the chip's wakeup setting for post.
+    [ "$pcie" = off ] && pcie_off
+    echo "$now id=$id" > "$STATE"
+    echo "$(date -Is) pre  $now $att radios=$radios wake=$wake pcie=$pcie snap=$id" >> "$LOG"
+    ;;
+  post)
+    pcie_back=$(pcie_restore)
+    radios_restore
+    nm_wifi_restore
+    wake_restore
+    now=$(snapshot)
+    line="$(date -Is) post $now $(attached)"
+    [ -n "$pcie_back" ] && line+=" pcie_back=$pcie_back"
+    if [ -r "$STATE" ]; then
+      pre=$(cat "$STATE")
+      id=$(echo "$pre" | grep -oE 'id=[^ ]+' | cut -d= -f2)
+      pre_ts=$(echo "$pre" | grep -oE 'ts=[0-9]+' | cut -d= -f2)
+      if [ -n "$id" ]; then
+        capture "$SNAPS/$id/post"
+        journalctl -k --no-pager -o short-monotonic --since "@$pre_ts" \
+          > "$SNAPS/$id/post/kernel.log" 2>/dev/null
+        echo "$PMGR_DEBUG -p" > "$DDC" 2>/dev/null
+        chmod -R a+rX "$SNAPS/$id"
+        line+=" snap=$id"
+      fi
+      line+=" $(awk -v pre="$pre" -v post="$now" '
+        function get(s, k,   a, i, n) {
+          n = split(s, a, " ")
+          for (i = 1; i <= n; i++) if (index(a[i], k "=") == 1) return substr(a[i], length(k) + 2)
+        }
+        BEGIN {
+          dt = get(post, "ts") - get(pre, "ts")
+          de = get(pre, "energy_uwh") - get(post, "energy_uwh")
+          dc = get(pre, "capacity") - get(post, "capacity")
+          # A charger plugged in at wake only matters if it charged during
+          # the sleep, so judge by the energy actually going up. A sleep that
+          # started on the charger never counts: if it was unplugged while
+          # asleep, the drain only began then, and the average would be low.
+          valid = "yes"
+          if (get(pre, "ac") != 0) valid = "no-ac"
+          if (de <= 0) valid = "no-charged"
+          if (dt < 600) valid = "no-short"
+          mw = 0; pph = 0
+          if (dt > 0) { mw = de * 3.6 / dt; pph = dc * 3600 / dt }
+          printf "slept_s=%d drained_mwh=%.0f avg_mw=%.0f pct_per_h=%.2f valid=%s",
+            dt, de / 1000, mw, pph, valid
+        }')"
+      rm -f "$STATE"
+    fi
+    echo "$line" >> "$LOG"
+    prune
+    ;;
+esac
+exit 0
