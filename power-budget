@@ -66,16 +66,37 @@ wait_net() {
   return 1
 }
 
+# 0 (unblocked), 1 (blocked) or none: the soft state of the first radio of a type.
+soft_state() {
+  local r
+  for r in /sys/class/rfkill/rfkill*; do
+    [ "$(cat "$r/type" 2> /dev/null)" = "$1" ] && { cat "$r/soft"; return; }
+  done
+  echo none
+}
+
+# The radios as they were before the test, so restoring puts back exactly that
+# and doesn't turn on a radio that was off.
+WLAN_WAS=$(soft_state wlan)
+BT_WAS=$(soft_state bluetooth)
+NM_WIFI_WAS=$(timeout 3 nmcli radio wifi 2> /dev/null)
+
 # rfkill unblock alone leaves NetworkManager's Wi-Fi radio off (2026-10-23).
-wifi_on() {
-  rfkill unblock wlan
-  runuser -u corey -- nmcli radio wifi on > /dev/null 2>&1 || nmcli radio wifi on > /dev/null 2>&1
-  nmcli device wifi rescan > /dev/null 2>&1
+wifi_restore() {
+  [ "$WLAN_WAS" = 0 ] && rfkill unblock wlan
+  if [ "$NM_WIFI_WAS" = enabled ]; then
+    runuser -u corey -- nmcli radio wifi on > /dev/null 2>&1 || nmcli radio wifi on > /dev/null 2>&1
+    nmcli device wifi rescan > /dev/null 2>&1
+  fi
+}
+
+bt_restore() {
+  [ "$BT_WAS" = 0 ] && rfkill unblock bluetooth 2> /dev/null
 }
 
 restore() {
-  rfkill unblock bluetooth 2> /dev/null
-  wifi_on
+  bt_restore
+  wifi_restore
   [ -e "$SD" ] || { echo 1 > /sys/bus/pci/rescan; sleep 3; }
   if [ -e "$SD" ]; then
     echo on > "$SD/power/control" 2> /dev/null
@@ -83,7 +104,8 @@ restore() {
     echo 0 > "$SD/link/l1_1_aspm" 2> /dev/null
   fi
   hypr dispatch dpms on
-  if wait_net; then log "network: back"; else log "network: NOT back after 90 s"; fi
+  if [ "$NM_WIFI_WAS" != enabled ]; then log "network: Wi-Fi was off before the test, left off"
+  elif wait_net; then log "network: back"; else log "network: NOT back after 90 s"; fi
   chown -R corey:corey "$OUTDIR"
 }
 trap restore EXIT
@@ -96,12 +118,12 @@ measure base-a 15
 
 rfkill block wlan
 measure wifi-off
-wifi_on
+wifi_restore
 measure base-b 25
 
 rfkill block bluetooth
 measure bt-off
-rfkill unblock bluetooth
+bt_restore
 measure base-c 15
 
 echo auto > "$SD/power/control"

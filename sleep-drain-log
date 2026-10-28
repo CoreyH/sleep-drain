@@ -42,6 +42,9 @@ WAKE=/run/sleep-drain.wake
 # would have systemd-rfkill restore it blocked when it comes back.
 PCIE_OFF_FLAG=/etc/sleep-drain/pcie-off
 PCIE=/run/sleep-drain.pcie
+# NetworkManager's Wi-Fi switch as it was before radios-off or pcie-off, so
+# post turns it back on only if it was on.
+NM_WIFI=/run/sleep-drain.nm-wifi
 # Log every Apple PMGR power-domain switch ("PS <name>: pwrstate = 0x0" is off,
 # 0xf on) during the sleep, so the kernel log shows which domains really power
 # down. Logging only; it does not change what the domains do.
@@ -183,21 +186,31 @@ pcie_restore() {
   echo missing
 }
 
+nm_wifi_save() {
+  command -v nmcli > /dev/null || return 0
+  timeout 3 nmcli radio wifi > "$NM_WIFI" 2>/dev/null || rm -f "$NM_WIFI"
+}
+
+# Blocking the radio, or removing the chip, turns NetworkManager's Wi-Fi switch
+# off, and bringing the radio back leaves it off and the laptop offline (seen
+# 2026-10-23: no network 90 s after rfkill unblock). Turn it back on and rescan,
+# as omarchy-restart-wifi does, but only if it was on before the sleep.
+# Backgrounded: NM may still be resuming.
+nm_wifi_restore() {
+  [ -r "$NM_WIFI" ] || return 0
+  if [ "$(cat "$NM_WIFI")" = enabled ]; then
+    (nmcli radio wifi on; nmcli device wifi rescan) > /dev/null 2>&1 &
+  fi
+  rm -f "$NM_WIFI"
+}
+
 radios_restore() {
-  local r wifi=
+  local r
   [ -r "$RADIOS" ] || return 0
   while read -r r; do
     [ -e "$r/soft" ] && echo 0 > "$r/soft"
-    [ "$(cat "$r/type" 2>/dev/null)" = wlan ] && wifi=1
   done < "$RADIOS"
   rm -f "$RADIOS"
-  # Unblocking alone leaves NetworkManager's Wi-Fi radio off and the laptop
-  # offline (seen 2026-10-23: no network 90 s after rfkill unblock). Turn it
-  # back on and rescan, as omarchy-restart-wifi does. Backgrounded: NM may
-  # still be resuming.
-  if [ -n "$wifi" ] && command -v nmcli > /dev/null; then
-    (nmcli radio wifi on; nmcli device wifi rescan) > /dev/null 2>&1 &
-  fi
 }
 
 # Dump what the kernel can tell us about power state into $1. Every file is
@@ -253,8 +266,8 @@ case "$1" in
     pcie=on
     [ -e "$PCIE_OFF_FLAG" ] && pcie=off
     radios=on
-    if [ "$pcie" = off ]; then radios=removed
-    elif [ -e "$RADIOS_OFF_FLAG" ]; then radios_off; radios=off; fi
+    if [ "$pcie" = off ]; then nm_wifi_save; radios=removed
+    elif [ -e "$RADIOS_OFF_FLAG" ]; then nm_wifi_save; radios_off; radios=off; fi
     wake=on
     if [ -e "$WAKE_OFF_FLAG" ]; then wake_off; wake=off; fi
     # After wake_off, which records the chip's wakeup setting for post.
@@ -264,10 +277,8 @@ case "$1" in
     ;;
   post)
     pcie_back=$(pcie_restore)
-    if [ -n "$pcie_back" ] && command -v nmcli > /dev/null; then
-      (nmcli radio wifi on; nmcli device wifi rescan) > /dev/null 2>&1 &
-    fi
     radios_restore
+    nm_wifi_restore
     wake_restore
     now=$(snapshot)
     line="$(date -Is) post $now $(attached)"
@@ -294,8 +305,11 @@ case "$1" in
           de = get(pre, "energy_uwh") - get(post, "energy_uwh")
           dc = get(pre, "capacity") - get(post, "capacity")
           # A charger plugged in at wake only matters if it charged during
-          # the sleep, so judge by the energy actually going up.
+          # the sleep, so judge by the energy actually going up. A sleep that
+          # started on the charger never counts: if it was unplugged while
+          # asleep, the drain only began then, and the average would be low.
           valid = "yes"
+          if (get(pre, "ac") != 0) valid = "no-ac"
           if (de <= 0) valid = "no-charged"
           if (dt < 600) valid = "no-short"
           mw = 0; pph = 0

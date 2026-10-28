@@ -31,6 +31,8 @@ done
 [ -e "$WIFI" ] || { echo "no Wi-Fi at $WIFI" >&2; exit 1; }
 
 mkdir -p "$OUTDIR"
+# NetworkManager's Wi-Fi switch before the test, to put back as it was.
+NM_WIFI_WAS=$(timeout 3 nmcli radio wifi 2> /dev/null)
 mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug 2>/dev/null
 log() { echo "$*" | tee -a "$OUT"; }
 
@@ -90,10 +92,14 @@ restore() {
       wait_wifi || log "   Wi-Fi STILL MISSING after a port rescan: reboot to get it back"
     fi
   fi
-  runuser -u corey -- nmcli radio wifi on > /dev/null 2>&1 || nmcli radio wifi on > /dev/null 2>&1
-  nmcli device wifi rescan > /dev/null 2>&1
+  # Only if it was on: the test must not switch on a Wi-Fi that was off.
+  if [ "$NM_WIFI_WAS" = enabled ]; then
+    runuser -u corey -- nmcli radio wifi on > /dev/null 2>&1 || nmcli radio wifi on > /dev/null 2>&1
+    nmcli device wifi rescan > /dev/null 2>&1
+  fi
   hypr dispatch dpms on
-  if wait_net; then log "network: back"; else log "network: NOT back after 90 s"; fi
+  if [ "$NM_WIFI_WAS" != enabled ]; then log "network: Wi-Fi was off before the test, left off"
+  elif wait_net; then log "network: back"; else log "network: NOT back after 90 s"; fi
   chown -R corey:corey "$OUTDIR"
 }
 trap restore EXIT
