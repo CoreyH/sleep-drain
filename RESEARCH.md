@@ -60,6 +60,32 @@ took each domain's last state from the whole log, which is the state after
 resume. Without that marker it now takes the deepest state each domain reached
 before "suspend exit".
 
+## Kernel context: what aurora already does for j314s (2026-10-28)
+
+Two omacom/linux-aurora PRs merged on 2026-10-15 and are in every 7.2 kernel
+tested here:
+
+- **#91 (pmgr-misc, PMP for j314s)** turns on PMP, the power-management
+  coprocessor, for this board in the device tree. The boot log says so:
+  "apple-pmgr-misc …: PMP manages fabric and DCS p-states". The PR measured
+  s2idle at 2.72 → 2.25 W on 5 V input, which most likely explains the −340 mW
+  from 11.16 to 7.2.10 (2026-10-21). The same PR adds an idle fabric governor
+  (`apple_pmgr_misc.idle_fabric_pstate`, 0 here). It refuses to run while PMP
+  owns the fabric, and it only acts while awake, so it is no knob for sleep.
+  Open item from the PR: the fabric save and restore around suspend is a host
+  workaround; a proper firmware sleep handshake needs reverse engineering.
+- **#92 (thunderbolt, opt-in s2idle port teardown)**:
+  `thunderbolt_apple.s2idle_teardown` (N here) powers off connected
+  Thunderbolt/USB4 ports that carry no PCIe tunnel for the sleep. It measured
+  4.03 → 2.71 W with an M4 Mac attached. It does nothing with no cable plugged
+  in, which is how every night here is measured. Turn it on if the laptop sleeps
+  attached to a Thunderbolt peer or a non-charging dock.
+
+Kernel 7.2.11.aurora9 (installed 2026-10-28, built that morning) is mostly
+M3-family (T603x, G15 GPU) and display work. Nothing in it touches the t6000
+sleep path, so the 2026-10-28 night counts aurora8 → aurora9 as no change. If
+its result looks off, re-run the 10-27 flags on aurora9 to check.
+
 ## Finding 1: the AOP wakes the SoC about 3.6 times a second all night (2026-10-22)
 
 `sleep-drain-diff 20261021T141534`: over 79,040 s asleep, IRQ 40
