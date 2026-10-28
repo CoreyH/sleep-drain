@@ -171,6 +171,26 @@ were restored and Wi-Fi reconnected.
 Night experiment: radios off + wake off. Result 2026-10-27: 1759 mW vs 1797 mW
 (radios off alone), on a newer kernel; see Results.
 
+### The Wi-Fi link's domains are held by the PCIe controller (2026-10-28)
+
+`pcie-off` (`sleep-drain-pcie off`) removes the Wi-Fi/Bluetooth chip's PCI
+functions for the sleep and rescans after. The awake pre-screen
+(`wifi-link-budget`, results/wifi-link-20261028T100742.txt) and a 70 s suspend
+(`20261028T102904`) both brought the chip back cleanly on a plain rescan
+(`pcie_back=restored`), with Wi-Fi reconnected and Bluetooth powered. But
+**apcie_gp and pcie0_ref stayed on** in both, and the genpd tree shows why:
+
+    pcie0_ref <- apcie_gp <- apcie_gp_sys   apple,always-on; holds 590000000.pcie and two IOMMUs
+    pcie1_ref <- apcie_st <- apcie_st_sys   not always-on; the SD reader's chain does switch off
+
+A parent domain can't power off while a child is on. The PCIe controller's own
+domain is marked always-on in the device tree, so the Wi-Fi port's refclock and
+gp domain are on for as long as the controller is, whatever happens to the chip.
+pcie-apple has no system suspend/resume (no saving and restoring of controller
+state, no retraining links on resume), which is presumably why its domain is
+always-on. Powering the controller down in s2idle is kernel work in pcie-apple,
+not something a hook can do. No night was spent on pcie-off.
+
 ### Upstream angle for the USB-C finding (omacom/linux-aurora)
 
 `drivers/usb/dwc3/dwc3-apple.c` calls `devm_device_init_wakeup(dev)` at probe
