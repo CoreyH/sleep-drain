@@ -80,6 +80,10 @@ soft_state() {
 WLAN_WAS=$(soft_state wlan)
 BT_WAS=$(soft_state bluetooth)
 NM_WIFI_WAS=$(timeout 3 nmcli radio wifi 2> /dev/null)
+case $NM_WIFI_WAS in
+  enabled | disabled) ;;
+  *) echo "can't read NetworkManager's Wi-Fi state, so it couldn't be put back: not starting" >&2; exit 1 ;;
+esac
 
 # rfkill unblock alone leaves NetworkManager's Wi-Fi radio off (2026-10-23).
 wifi_restore() {

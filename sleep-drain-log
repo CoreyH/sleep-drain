@@ -186,9 +186,18 @@ pcie_restore() {
   echo missing
 }
 
+# Fails when NetworkManager is there but its Wi-Fi switch can't be read: post
+# couldn't know whether to turn it back on, so the caller must leave the radios
+# alone. Without NetworkManager there is nothing to restore.
 nm_wifi_save() {
+  local state
+  rm -f "$NM_WIFI"
   command -v nmcli > /dev/null || return 0
-  timeout 3 nmcli radio wifi > "$NM_WIFI" 2>/dev/null || rm -f "$NM_WIFI"
+  state=$(timeout 3 nmcli radio wifi 2>/dev/null) || return 1
+  case "$state" in
+    enabled | disabled) echo "$state" > "$NM_WIFI" ;;
+    *) return 1 ;;
+  esac
 }
 
 # Blocking the radio, or removing the chip, turns NetworkManager's Wi-Fi switch
@@ -266,8 +275,18 @@ case "$1" in
     pcie=on
     [ -e "$PCIE_OFF_FLAG" ] && pcie=off
     radios=on
-    if [ "$pcie" = off ]; then nm_wifi_save; radios=removed
-    elif [ -e "$RADIOS_OFF_FLAG" ]; then nm_wifi_save; radios_off; radios=off; fi
+    if [ "$pcie" = off ] || [ -e "$RADIOS_OFF_FLAG" ]; then
+      if ! nm_wifi_save; then
+        # The night won't test what the flags say; the log line shows it.
+        radios=skipped
+        [ "$pcie" = off ] && pcie=skipped
+      elif [ "$pcie" = off ]; then
+        radios=removed
+      else
+        radios_off
+        radios=off
+      fi
+    fi
     wake=on
     if [ -e "$WAKE_OFF_FLAG" ]; then wake_off; wake=off; fi
     # After wake_off, which records the chip's wakeup setting for post.
