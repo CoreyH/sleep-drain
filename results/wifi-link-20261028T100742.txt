@@ -1,0 +1,8 @@
+== Wi-Fi link budget 2026-10-28T10:07:42+01:00, kernel 7.2.11-8-1-ARCH, ac=1
+   sensor /sys/class/hwmon/hwmon2/power1_input; phases: settle + 50 x 1 s
+base-a         mean=14.519 W  sd=0.978  port=active apcie_gp=on pcie0_ref=on apcie_gp= 
+chip-removed   mean=13.344 W  sd=0.142  port=suspended apcie_gp=on pcie0_ref=on apcie_gp= 
+   Wi-Fi back after rescan
+base-b         mean=17.181 W  sd=3.773  port=active apcie_gp=on pcie0_ref=on apcie_gp= 
+== done 2026-10-28T10:11:04+01:00
+network: back

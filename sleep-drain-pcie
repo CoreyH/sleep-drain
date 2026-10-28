@@ -1,0 +1,23 @@
+#!/bin/bash
+# Turn the Wi-Fi-chip-off-the-PCIe-bus experiment on or off.
+#   sleep-drain-pcie off     Wi-Fi/Bluetooth chip removed from PCI for the sleep, rescanned after
+#   sleep-drain-pcie on      chip left in place (the default)
+#   sleep-drain-pcie         show the current setting
+# The sleep-drain-log hook reads /etc/sleep-drain/pcie-off at each suspend,
+# so a change applies from the next suspend on.
+set -euo pipefail
+
+flag=/etc/sleep-drain/pcie-off
+
+case "${1:-status}" in
+  off) sudo install -D -m 644 /dev/null "$flag" ;;
+  on) sudo rm -f "$flag" ;;
+  status) ;;
+  *) echo "usage: sleep-drain-pcie [off|on]" >&2; exit 2 ;;
+esac
+
+if [[ -e $flag ]]; then
+  echo "pcie: Wi-Fi/Bluetooth chip removed during sleep (radios-off is skipped)"
+else
+  echo "pcie: chip left in place during sleep"
+fi

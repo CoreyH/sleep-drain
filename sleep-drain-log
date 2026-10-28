@@ -19,6 +19,8 @@
 # Experiment switch: if /etc/sleep-drain/radios-off exists, Wi-Fi and Bluetooth
 # are soft-blocked for the sleep and the ones that were on are unblocked after.
 # Toggle it with sleep-drain-radios.
+# Two more switches work the same way: wake-off (sleep-drain-wake) and
+# pcie-off (sleep-drain-pcie), described where their flags are defined below.
 
 LOG=/var/log/sleep-drain.log
 SNAPS=/var/log/sleep-drain
@@ -33,6 +35,13 @@ RADIOS_OFF_FLAG=/etc/sleep-drain/radios-off
 # macsmc-input, which is left alone.
 WAKE_OFF_FLAG=/etc/sleep-drain/wake-off
 WAKE=/run/sleep-drain.wake
+# Experiment: with this flag, the Wi-Fi/Bluetooth chip's PCI functions are
+# removed for the sleep and rescanned after, so nothing holds its root port and
+# the link's domains (apcie_gp, pcie0_ref) are free to power off. It replaces
+# radios-off for that sleep: soft-blocking a radio that is about to be removed
+# would have systemd-rfkill restore it blocked when it comes back.
+PCIE_OFF_FLAG=/etc/sleep-drain/pcie-off
+PCIE=/run/sleep-drain.pcie
 # Log every Apple PMGR power-domain switch ("PS <name>: pwrstate = 0x0" is off,
 # 0xf on) during the sleep, so the kernel log shows which domains really power
 # down. Logging only; it does not change what the domains do.
@@ -139,6 +148,41 @@ wake_restore() {
   rm -f "$WAKE"
 }
 
+# Remove every function of the chip behind the Wi-Fi interface's root port
+# (Wi-Fi and Bluetooth share it), and remember the port.
+pcie_off() {
+  local dev port f
+  dev=$(readlink -f /sys/class/net/wlan0/device 2>/dev/null) || return 0
+  [ -e "$dev" ] || return 0
+  port=$(dirname "$dev")
+  echo "$port" > "$PCIE"
+  for f in "$port"/0000:*; do
+    [ -e "$f/remove" ] && echo 1 > "$f/remove"
+  done
+}
+
+# Rescan, and if the chip doesn't come back, remove and rescan its root port
+# once (what wifi-link-budget does). Prints restored, port-rescan or missing.
+pcie_restore() {
+  local port i
+  [ -r "$PCIE" ] || return 0
+  port=$(cat "$PCIE")
+  rm -f "$PCIE"
+  echo 1 > /sys/bus/pci/rescan
+  for i in $(seq 20); do
+    ls -d "$port"/0000:* > /dev/null 2>&1 && { echo restored; return; }
+    sleep 0.5
+  done
+  [ -e "$port/remove" ] && echo 1 > "$port/remove"
+  sleep 1
+  echo 1 > /sys/bus/pci/rescan
+  for i in $(seq 20); do
+    ls -d "$port"/0000:* > /dev/null 2>&1 && { echo port-rescan; return; }
+    sleep 0.5
+  done
+  echo missing
+}
+
 radios_restore() {
   local r wifi=
   [ -r "$RADIOS" ] || return 0
@@ -206,18 +250,28 @@ case "$1" in
     # overran the kernel log (2026-10-26: 313k lines lost, including the PMGR
     # lines from suspend entry). The interrupt deltas name the wakeup IRQs.
     echo "$PMGR_DEBUG +p" > "$DDC" 2>/dev/null
+    pcie=on
+    [ -e "$PCIE_OFF_FLAG" ] && pcie=off
     radios=on
-    if [ -e "$RADIOS_OFF_FLAG" ]; then radios_off; radios=off; fi
+    if [ "$pcie" = off ]; then radios=removed
+    elif [ -e "$RADIOS_OFF_FLAG" ]; then radios_off; radios=off; fi
     wake=on
     if [ -e "$WAKE_OFF_FLAG" ]; then wake_off; wake=off; fi
+    # After wake_off, which records the chip's wakeup setting for post.
+    [ "$pcie" = off ] && pcie_off
     echo "$now id=$id" > "$STATE"
-    echo "$(date -Is) pre  $now $att radios=$radios wake=$wake snap=$id" >> "$LOG"
+    echo "$(date -Is) pre  $now $att radios=$radios wake=$wake pcie=$pcie snap=$id" >> "$LOG"
     ;;
   post)
+    pcie_back=$(pcie_restore)
+    if [ -n "$pcie_back" ] && command -v nmcli > /dev/null; then
+      (nmcli radio wifi on; nmcli device wifi rescan) > /dev/null 2>&1 &
+    fi
     radios_restore
     wake_restore
     now=$(snapshot)
     line="$(date -Is) post $now $(attached)"
+    [ -n "$pcie_back" ] && line+=" pcie_back=$pcie_back"
     if [ -r "$STATE" ]; then
       pre=$(cat "$STATE")
       id=$(echo "$pre" | grep -oE 'id=[^ ]+' | cut -d= -f2)

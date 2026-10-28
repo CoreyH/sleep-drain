@@ -1,0 +1,113 @@
+#!/bin/bash
+# Awake test: what the Wi-Fi/Bluetooth PCIe link costs, and whether its power
+# domains (apcie_gp, pcie0_ref) switch off once the chip is gone. Display off,
+# ABA design: baseline, Wi-Fi and Bluetooth functions removed from PCI, then
+# rescanned and a second baseline. Each phase settles and then averages 50
+# one-second samples of the SMC's Total System Power.
+#
+#   pkexec /path/to/wifi-link-budget "$HYPRLAND_INSTANCE_SIGNATURE" [results-dir]
+#
+# This is the pre-screen for the pcie-off sleep experiment. Wi-Fi is the only
+# network here, so the script does not exit until the network answers again:
+# a session over Wi-Fi gets its connection back. If a plain rescan doesn't
+# bring the chip back, it removes and rescans the whole root port once more.
+set -u
+
+SIG=${1:?usage: wifi-link-budget HYPRLAND_INSTANCE_SIGNATURE [results-dir]}
+OUTDIR=${2:-/home/corey/src/sleep-drain/results}
+OUT=$OUTDIR/wifi-link-$(date +%Y%m%dT%H%M%S).txt
+PORT=/sys/bus/pci/devices/0000:00:00.0
+WIFI=/sys/bus/pci/devices/0000:01:00.0
+GENPD=/sys/kernel/debug/pm_genpd/pm_genpd_summary
+
+P=
+for h in /sys/class/hwmon/hwmon*; do
+  [ "$(cat "$h/name")" = macsmc_hwmon ] || continue
+  for l in "$h"/power*_label; do
+    [ "$(cat "$l")" = "Total System Power" ] && P=${l%_label}_input
+  done
+done
+[ -n "$P" ] || { echo "no Total System Power sensor" >&2; exit 1; }
+[ -e "$WIFI" ] || { echo "no Wi-Fi at $WIFI" >&2; exit 1; }
+
+mkdir -p "$OUTDIR"
+mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+log() { echo "$*" | tee -a "$OUT"; }
+
+hypr() {
+  runuser -u corey -- env XDG_RUNTIME_DIR=/run/user/1001 \
+    HYPRLAND_INSTANCE_SIGNATURE="$SIG" hyprctl "$@" > /dev/null 2>&1
+}
+
+link_state() {
+  printf 'port=%s ' "$(cat "$PORT/power/runtime_status" 2>/dev/null)"
+  awk '($1 == "apcie_gp" || $1 == "pcie0_ref") && !seen[$1]++ {printf "%s=%s ", $1, $2}' "$GENPD" 2>/dev/null
+}
+
+# measure <name> [settle seconds]
+measure() {
+  local name=$1 settle=${2:-10} i
+  sleep "$settle"
+  local st; st=$(link_state)
+  for i in $(seq 50); do cat "$P"; sleep 1; done | awk -v n="$name" -v s="$st" '
+    { v = $1 / 1e6; t += v; tt += v * v; c++ }
+    END { m = t / c; printf "%-14s mean=%6.3f W  sd=%.3f  %s\n", n, m, sqrt(tt / c - m * m), s }' | tee -a "$OUT"
+}
+
+wait_net() {
+  local i
+  for i in $(seq 90); do
+    ping -c1 -W2 1.1.1.1 > /dev/null 2>&1 && getent hosts api.anthropic.com > /dev/null && return 0
+    sleep 1
+  done
+  return 1
+}
+
+wait_wifi() {
+  local i
+  for i in $(seq 20); do
+    [ -e "$WIFI" ] && return 0
+    sleep 0.5
+  done
+  return 1
+}
+
+remove_chip() {
+  local f
+  for f in "$PORT"/0000:01:00.*; do
+    [ -e "$f/remove" ] && echo 1 > "$f/remove"
+  done
+}
+
+restore() {
+  if [ ! -e "$WIFI" ]; then
+    echo 1 > /sys/bus/pci/rescan
+    if ! wait_wifi; then
+      log "   Wi-Fi not back after rescan; removing and rescanning the root port"
+      [ -e "$PORT/remove" ] && echo 1 > "$PORT/remove"
+      sleep 1
+      echo 1 > /sys/bus/pci/rescan
+      wait_wifi || log "   Wi-Fi STILL MISSING after a port rescan: reboot to get it back"
+    fi
+  fi
+  runuser -u corey -- nmcli radio wifi on > /dev/null 2>&1 || nmcli radio wifi on > /dev/null 2>&1
+  nmcli device wifi rescan > /dev/null 2>&1
+  hypr dispatch dpms on
+  if wait_net; then log "network: back"; else log "network: NOT back after 90 s"; fi
+  chown -R corey:corey "$OUTDIR"
+}
+trap restore EXIT
+
+log "== Wi-Fi link budget $(date -Is), kernel $(uname -r), ac=$(cat /sys/class/power_supply/macsmc-ac/online)"
+log "   sensor $P; phases: settle + 50 x 1 s"
+
+hypr dispatch dpms off
+measure base-a 15
+
+remove_chip
+measure chip-removed 15
+echo 1 > /sys/bus/pci/rescan
+if wait_wifi; then log "   Wi-Fi back after rescan"; else log "   Wi-Fi MISSING after rescan"; fi
+measure base-b 20
+
+log "== done $(date -Is)"
