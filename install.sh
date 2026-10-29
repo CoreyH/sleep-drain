@@ -11,6 +11,7 @@ install -m 755 sleep-drain-diff /usr/local/bin/sleep-drain-diff
 install -m 755 sleep-drain-wake /usr/local/bin/sleep-drain-wake
 install -m 755 sleep-drain-pcie /usr/local/bin/sleep-drain-pcie
 install -m 755 sleep-drain-pmp /usr/local/bin/sleep-drain-pmp
+install -m 755 test-kernel /usr/local/bin/test-kernel
 cc -O2 -Wall -o /usr/local/bin/pmp-request pmp-request.c
 # The pmp_sleep_release experiment module, built for the running kernel in a
 # scratch copy so the repo gets no root-owned build files. Installed outside

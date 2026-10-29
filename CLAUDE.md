@@ -25,6 +25,9 @@ lab notebook: the problem, every night's result, and the findings so far.
   Power. They run as root and restore everything, including the network, before
   exiting.
 - `sleep-guard`: powers off instead of sleeping when the battery is too low.
+- `test-kernel`: installs an aurora kernel package (such as an upstream PR's
+  CI build) beside the regular linux-aurora, boots it once via grub-reboot,
+  and removes it again, without touching anything pacman owns.
 - `results/`: raw output of the awake tests.
 
 ## How changes land
