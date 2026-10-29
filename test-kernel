@@ -44,8 +44,14 @@ check_name() {
 script_of() { echo "/etc/grub.d/43_aurora_test_$1"; }
 
 # grub.cfg without the section grub-mkconfig wrote for one /etc/grub.d script.
+# grub-mkconfig puts an empty line before every section's BEGIN marker, so that
+# line goes too; otherwise adding a section reads as one extra empty line.
 without_section() {
-  sed "\\|^### BEGIN $2 ###\$|,\\|^### END $2 ###\$|d" "$1"
+  awk -v begin="### BEGIN $2 ###" -v end="### END $2 ###" '
+    skip { if ($0 == end) skip = 0; next }
+    $0 == begin { skip = 1; if (held && prev == "") held = 0; next }
+    { if (held) print prev; prev = $0; held = 1 }
+    END { if (held) print prev }' "$1"
 }
 
 # Regenerate grub.cfg, and take it only if it differs from the current one in
