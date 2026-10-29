@@ -314,6 +314,37 @@ the same kernel and flags, by `avg_mw_cc`. If it saves real power, the upstream
 fix is marking report@d (and maybe report@c) `apple,release-for-sleep` in
 `t600x-die0.dtsi`, on top of #274.
 
+**Result (2026-10-29): no.** Three lid-closed sleeps on battery, kernel
+aurora9, radios off, measured by `avg_mw_cc`:
+
+| run | withdrawn in sleep | slept | avg (cc) | avg current |
+|---|---|---|---|---|
+| 1 | 0xd (pmp-dispext0) | 824 s | 2012 mW | 162 mA |
+| 2 | nothing (control) | 682 s | 1987 mW | 163.0 mA |
+| 3 | 0xc + 0xd (pmp-disp0 too) | 672 s | 1945 mW | 161.6 mA |
+
+The module withdrew the requests every time (`pmp_released` 0x2000, then
+0x3000), the PMP acknowledged them, both were asserted again with no
+failures, and the screen came back normally. Withdrawing pmp-dispext0 saved
+nothing. Withdrawing both display requests came out 42 mW below the control,
+but the current barely moved (163.0 → 161.6 mA): most of that difference is
+the battery voltage dropping between runs (12.19 → 12.04 V), and the rest is
+inside the run-to-run spread. On T600x the display processors' PMP requests
+don't hold s2idle power up, unlike T6030, where withdrawing them saved about
+1.25 W. Marking report@c or report@d `apple,release-for-sleep` isn't worth
+proposing for power.
+
+Two method notes from these runs:
+- `energy_now` went *up* by 0.66–0.85 Wh in every one of these sleeps, with
+  no charger attached: the gauge re-estimating after a rest, as #274 warned.
+  The energy-based average read −3.5 to −4.5 W. Short runs need the coulomb
+  counter.
+- A 12-minute run includes a few seconds awake at each end (the hook reads its
+  pre snapshot before capturing and suspending, and its post snapshot after
+  restoring), roughly +100 mW at this length. That cancels in an A/B of
+  similar lengths, but these numbers sit above the overnight averages for that
+  reason.
+
 `charge_counter` counts mA·s on this machine, not µAh: over 61 s awake it gave
 12.3 W against `energy_now`'s 12.1 W. The hook now logs it (`cc=`, with
 `uv=` for the voltage) and reports `avg_mw_cc`.
