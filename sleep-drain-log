@@ -45,6 +45,12 @@ PCIE=/run/sleep-drain.pcie
 # NetworkManager's Wi-Fi switch as it was before radios-off or pcie-off, so
 # post turns it back on only if it was on.
 NM_WIFI=/run/sleep-drain.nm-wifi
+# Experiment: while the pmp_sleep_release module is loaded (sleep-drain-pmp),
+# it withdraws the PMP report requests in its ids (0xd is pmp-dispext0) in the
+# noirq phase of each sleep and asserts them again on resume, as
+# omacom/linux-aurora #274 does for the M3 Pro's external display requests, under
+# the pmp-report driver's lock. The hook only logs what it did.
+PMP_MODULE=/sys/module/pmp_sleep_release/parameters
 # Log every Apple PMGR power-domain switch ("PS <name>: pwrstate = 0x0" is off,
 # 0xf on) during the sleep, so the kernel log shows which domains really power
 # down. Logging only; it does not change what the domains do.
@@ -109,10 +115,15 @@ bt_connected() {
   timeout 2 bluetoothctl devices Connected 2>/dev/null | grep -c '^Device'
 }
 
+# cc is the SMC coulomb counter (charge_counter). macsmc reports it in mA·s,
+# not the µAh the power_supply ABI documents: over 61 s awake on 2026-10-29 it
+# gave 12.3 W against energy_now's 12.1 W. It is exact enough for short sleeps,
+# where energy_now's estimate can jump ±55 mAh (aurora #274).
 snapshot() {
-  printf 'ts=%s energy_uwh=%s charge_uah=%s capacity=%s ac=%s' \
+  printf 'ts=%s energy_uwh=%s charge_uah=%s capacity=%s ac=%s cc=%s uv=%s' \
     "$(date +%s)" "$(cat $BAT/energy_now)" "$(cat $BAT/charge_now)" \
-    "$(cat $BAT/capacity)" "$(cat $AC/online)"
+    "$(cat $BAT/capacity)" "$(cat $AC/online)" \
+    "$(cat $BAT/charge_counter 2>/dev/null || echo -)" "$(cat $BAT/voltage_now 2>/dev/null || echo -)"
 }
 
 attached() {
@@ -291,8 +302,10 @@ case "$1" in
     if [ -e "$WAKE_OFF_FLAG" ]; then wake_off; wake=off; fi
     # After wake_off, which records the chip's wakeup setting for post.
     [ "$pcie" = off ] && pcie_off
+    pmp=-
+    [ -r "$PMP_MODULE/ids" ] && pmp=$(cat "$PMP_MODULE/ids")
     echo "$now id=$id" > "$STATE"
-    echo "$(date -Is) pre  $now $att radios=$radios wake=$wake pcie=$pcie snap=$id" >> "$LOG"
+    echo "$(date -Is) pre  $now $att radios=$radios wake=$wake pcie=$pcie pmp_release=$pmp snap=$id" >> "$LOG"
     ;;
   post)
     pcie_back=$(pcie_restore)
@@ -302,6 +315,10 @@ case "$1" in
     now=$(snapshot)
     line="$(date -Is) post $now $(attached)"
     [ -n "$pcie_back" ] && line+=" pcie_back=$pcie_back"
+    # What the module withdrew in this sleep (a mask) and its unacknowledged
+    # writes so far.
+    [ -r "$PMP_MODULE/last_released" ] &&
+      line+=" pmp_released=$(printf '0x%x' "$(cat "$PMP_MODULE/last_released")") pmp_failures=$(cat "$PMP_MODULE/failures")"
     if [ -r "$STATE" ]; then
       pre=$(cat "$STATE")
       id=$(echo "$pre" | grep -oE 'id=[^ ]+' | cut -d= -f2)
@@ -333,8 +350,15 @@ case "$1" in
           if (dt < 600) valid = "no-short"
           mw = 0; pph = 0
           if (dt > 0) { mw = de * 3.6 / dt; pph = dc * 3600 / dt }
-          printf "slept_s=%d drained_mwh=%.0f avg_mw=%.0f pct_per_h=%.2f valid=%s",
-            dt, de / 1000, mw, pph, valid
+          # The same from the coulomb counter (mA·s) at the mean of the two
+          # voltages: mA·s × V / s is mW. "-" when either side lacks it.
+          ccpre = get(pre, "cc"); ccpost = get(post, "cc")
+          uvpre = get(pre, "uv"); uvpost = get(post, "uv")
+          mwcc = "-"
+          if (dt > 0 && ccpre ~ /^-?[0-9]+$/ && ccpost ~ /^-?[0-9]+$/ && uvpre > 0 && uvpost > 0)
+            mwcc = sprintf("%.0f", (ccpre - ccpost) * (uvpre + uvpost) / 2e6 / dt)
+          printf "slept_s=%d drained_mwh=%.0f avg_mw=%.0f avg_mw_cc=%s pct_per_h=%.2f valid=%s",
+            dt, de / 1000, mw, mwcc, pph, valid
         }')"
       rm -f "$STATE"
     fi

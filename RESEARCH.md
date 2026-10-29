@@ -235,6 +235,45 @@ Build note: the headers package has `rust/` without .rmeta, and the kernel was
 built with rustc 1.85.0, so an out-of-tree Rust module build isn't possible.
 It needs a full omacom/linux-aurora build with a pinned 1.85 toolchain.
 
+## Lead: the display processors' PMP requests stay up through sleep (2026-10-29)
+
+omacom/linux-aurora #274 (M3 Pro, J514S) took s2idle from about 2.6 W to
+1.35 W. Most of that came from patch 6, which withdraws the external display
+processors' PMP report requests in `suspend_noirq` and asserts them again in
+`resume_noirq`, for entries marked `apple,release-for-sleep`. Its author also
+found `energy_now` useless for short runs (the gauge's estimate jumps ±55 mAh
+after a rest), and measured 300 s sleeps with `charge_counter` instead.
+
+T600x has the same mechanism: `pmp_report@28e3c0000`
+(`apple,t6000-pmp-v2-report`), whose entries bind the same
+`apple,t6000-pmp-v2-report-entry` driver patch 6 extends. In
+`t600x-die0.dtsi`, `pmp-disp0` (report@c) and `pmp-dispext0` (report@d) are
+`apple,always-on`. `pmp-dispext1` (report@e) is not, and its PMGR parent
+(dispext1_cpu0) switches off in s2idle, so genpd already drops that one. Read
+awake with `pmp-request` on 2026-10-29, nothing attached: status 0x1,
+target = actual = 0x7000, so requests 0xc, 0xd and 0xe are asserted and
+acknowledged. pmp-dispext0's request therefore stays asserted all night.
+
+Experiment: `sleep-drain-pmp release 0xd` loads `pmp_sleep_release`, an
+out-of-tree module that does what patch 6 does. In each sleep's noirq phase,
+after every device's suspend callback has run, it withdraws request 0xd if the
+PMP has acknowledged it. It asserts it again in resume_noirq, before any
+device resumes. Both writes run under the pmp-report driver's own lock: the
+driver is built in, so the module reaches it through the report device's
+drvdata, with the struct layout checked against the kernel's BTF and verified
+again at load. An earlier draft did the write from userspace in the sleep hook.
+Review (#3) pointed out that a userspace read-modify-write of the shared mask
+can silently overwrite a concurrent driver update, and nothing in userspace can
+prevent that. `pmp-request` is now read-only. Measure with short sleeps (lid
+closed at least 10 min, on battery), A/B with the module loaded and unloaded on
+the same kernel and flags, by `avg_mw_cc`. If it saves real power, the upstream
+fix is marking report@d (and maybe report@c) `apple,release-for-sleep` in
+`t600x-die0.dtsi`, on top of #274.
+
+`charge_counter` counts mA·s on this machine, not µAh: over 61 s awake it gave
+12.3 W against `energy_now`'s 12.1 W. The hook now logs it (`cc=`, with
+`uv=` for the voltage) and reports `avg_mw_cc`.
+
 ## What gets recorded now
 
 On every suspend, `sleep-drain-log` writes `/var/log/sleep-drain/<id>/{pre,post}/`
