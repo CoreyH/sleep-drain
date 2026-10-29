@@ -16,17 +16,20 @@
 # - without its dtbs: m1n1's boot.bin takes the device trees of the
 #   pacman-owned linux-aurora (/etc/default/update-m1n1), so these would go
 #   unused. Compare them with cmp if a test depends on them;
-# - the kernel and initramfs as /boot/vmlinuz-aurora-<name> and
-#   /boot/initramfs-aurora-<name>.img, with a GRUB entry from
-#   /etc/grub.d/43_aurora_test_<name> that is never the default.
+# - the kernel and initramfs in /boot/aurora-test/<name>/, outside the
+#   /boot/vmlinuz-* (and vmlinux-*, kernel-*, Image) names GRUB's 10_linux
+#   scans, so the only menu entry is the one from
+#   /etc/grub.d/43_aurora_test_<name>, which is never the default.
 #
-# grub.cfg is rewritten only when the regenerated one differs from the current
+# grub.cfg is replaced only when the regenerated one differs from the current
 # one by the test entry alone. Otherwise it is left as it is and the
-# difference shown.
+# difference shown. The new config is staged beside grub.cfg and renamed into
+# place once complete, so a failed write leaves the live one intact.
 set -euo pipefail
 
 STATE=/var/lib/sleep-drain/test-kernels
 GRUB_CFG=/boot/grub/grub.cfg
+IMAGES=/boot/aurora-test
 
 die() { echo "test-kernel: $*" >&2; exit 1; }
 usage() {
@@ -46,24 +49,34 @@ without_section() {
 }
 
 # Regenerate grub.cfg, and take it only if it differs from the current one in
-# the given script's section alone.
+# the given script's section alone. Callers use this in a conditional, where
+# set -e doesn't apply, so every step is checked here: the new config is
+# staged beside grub.cfg (grub-mkconfig itself checks it), the current one
+# backed up, and only then renamed over it.
 regen_grub() {
-  local script=$1 new
-  new=$(mktemp)
-  if ! grub-mkconfig -o "$new" > /dev/null 2>&1 || ! grub-script-check "$new"; then
-    rm -f "$new"
-    die "grub-mkconfig failed; grub.cfg left as it is"
-  fi
-  if cmp -s <(without_section "$new" "$script") <(without_section "$GRUB_CFG" "$script"); then
-    cp "$GRUB_CFG" "$GRUB_CFG.test-kernel.bak"
-    cat "$new" > "$GRUB_CFG"
-    rm -f "$new"
-    return 0
-  fi
-  echo "test-kernel: grub-mkconfig would change more than the test entry; grub.cfg left as it is:" >&2
-  diff <(without_section "$GRUB_CFG" "$script") <(without_section "$new" "$script") >&2 || true
+  local script=$1 new=$GRUB_CFG.test-kernel.new
   rm -f "$new"
-  return 1
+  if ! grub-mkconfig -o "$new" > /dev/null 2>&1; then
+    rm -f "$new"
+    echo "test-kernel: grub-mkconfig failed; grub.cfg left as it is" >&2
+    return 1
+  fi
+  if ! cmp -s <(without_section "$new" "$script") <(without_section "$GRUB_CFG" "$script"); then
+    echo "test-kernel: grub-mkconfig would change more than the test entry; grub.cfg left as it is:" >&2
+    diff <(without_section "$GRUB_CFG" "$script") <(without_section "$new" "$script") >&2 || true
+    rm -f "$new"
+    return 1
+  fi
+  if ! cp "$GRUB_CFG" "$GRUB_CFG.test-kernel.bak"; then
+    rm -f "$new"
+    echo "test-kernel: couldn't back up grub.cfg; left as it is" >&2
+    return 1
+  fi
+  if ! sync "$new" || ! mv -f "$new" "$GRUB_CFG"; then
+    rm -f "$new"
+    echo "test-kernel: couldn't put the new grub.cfg in place; the old one stays" >&2
+    return 1
+  fi
 }
 
 install_kernel() {
@@ -84,6 +97,14 @@ install_kernel() {
   [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"
   boot_uuid=$(grub-probe --target=fs_uuid /boot)
 
+  # /boot is a small vfat partition: room for the kernel, an initramfs as big
+  # as the regular one, and a margin, before anything is written.
+  local need avail
+  need=$(( ( $(tar --zstd -xOf "$pkg" "usr/lib/modules/$release/vmlinuz" | wc -c) \
+           + $(stat -c %s /boot/initramfs-linux-aurora.img) ) / 1048576 + 32 ))
+  avail=$(df --output=avail -BM /boot | tail -1 | tr -dc 0-9)
+  (( avail >= need )) || die "/boot has ${avail} MiB free; $name needs about ${need} MiB"
+
   stage=$(mktemp -d)
   tar --zstd -xf "$pkg" -C "$stage" "usr/lib/modules/$release"
   rm -f "$stage/usr/lib/modules/$release/pkgbase"
@@ -94,8 +115,9 @@ install_kernel() {
   echo "$release" > "$STATE/$name"
 
   depmod "$release"
-  cp "/usr/lib/modules/$release/vmlinuz" "/boot/vmlinuz-aurora-$name"
-  mkinitcpio -k "$release" -g "/boot/initramfs-aurora-$name.img"
+  mkdir -p "$IMAGES/$name"
+  cp "/usr/lib/modules/$release/vmlinuz" "$IMAGES/$name/vmlinuz"
+  mkinitcpio -k "$release" -g "$IMAGES/$name/initramfs.img"
 
   cat > "$script" <<EOF
 #!/bin/sh
@@ -108,8 +130,8 @@ menuentry 'Test kernel $name ($release)' --class omarchy --class gnu-linux --id 
     insmod fat
     insmod btrfs
     search --no-floppy --fs-uuid --set=root $boot_uuid
-    linux /vmlinuz-aurora-$name $cmdline
-    initrd /initramfs-aurora-$name.img
+    linux /aurora-test/$name/vmlinuz $cmdline
+    initrd /aurora-test/$name/initramfs.img
 }
 MENU
 EOF
@@ -144,7 +166,7 @@ remove_kernel() {
   if grub-editenv - list | grep -qx "next_entry=aurora-test-$name"; then
     grub-editenv - unset next_entry
   fi
-  rm -f "/boot/vmlinuz-aurora-$name" "/boot/initramfs-aurora-$name.img"
+  rm -rf -- "${IMAGES:?}/${name:?}"
   # Only a tree no package owns: never the regular kernel's.
   if [[ -n $release && -d /usr/lib/modules/$release ]] && ! pacman -Qqo "/usr/lib/modules/$release" > /dev/null 2>&1; then
     rm -rf -- "/usr/lib/modules/${release:?}"
