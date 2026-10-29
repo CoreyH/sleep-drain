@@ -59,12 +59,17 @@ The 2026-10-28 night (USB-C wake back on, radios off, kernel aurora9) drew
 night; atc3, with no controller bound, switched off. The AOP rate was
 unchanged (3.62/s), and nothing else looked different. Three nights with radios
 off now bracket the question: 1797 (7.2.10, wake on), 1759 (aurora8, wake
-off), 1844 (aurora9, wake on). Night-to-night noise is about 15 mW
-(2026-10-21 vs -22). Two readings fit the data:
+off), 1844 (aurora9, wake on). There is no clean measure of night-to-night
+noise yet. The closest pair, 2026-10-21 and -22 (1838 and 1825 mW), is not a
+repeat: the AOP was unbound on the second night. Their 13 mW gap is only an
+observed spread. The gauge may also be noisier than that: aurora #274 found
+`energy_now` jumping ±55 mAh after a rest. Taking the differences at face
+value, two readings fit:
 - USB-C wakeup costs about 85 mW, and 7.2.10 → aurora8 added about 47 mW;
 - or it costs about 38 mW, and aurora9 added about 47 mW.
-Re-running the 2026-10-27 flags (radios off + wake off) on aurora9 tells
-them apart.
+Re-running the 2026-10-27 flags (radios off + wake off) on aurora9 would tell
+them apart, if gauge noise doesn't swamp the difference. Nights logged with
+the coulomb counter (`avg_mw_cc`) won't depend on the gauge.
 
 `sleep-drain-diff` read that night wrong at first, listing atc*_usb as never
 switched off. "PM: resume from suspend-to-idle" is a `pm_pr_dbg` line, so it
