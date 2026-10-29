@@ -254,14 +254,21 @@ awake with `pmp-request` on 2026-10-29, nothing attached: status 0x1,
 target = actual = 0x7000, so requests 0xc, 0xd and 0xe are asserted and
 acknowledged. pmp-dispext0's request therefore stays asserted all night.
 
-Experiment: `sleep-drain-pmp release 0xd` withdraws it as the hook's last step
-before the sleep (with `pmp-request`, the driver's own register sequence) and
-asserts it again as the first step after. Unlike patch 6, the withdrawal comes
-before the display processors suspend rather than at noirq, so this is a
-pre-screen, not the fix. Measure with short sleeps (lid closed at least 10 min,
-on battery), A/B on the same kernel and flags, by `avg_mw_cc`. If it saves real
-power, the upstream fix is marking report@d (and maybe report@c)
-`apple,release-for-sleep` in `t600x-die0.dtsi`, on top of #274.
+Experiment: `sleep-drain-pmp release 0xd` loads `pmp_sleep_release`, an
+out-of-tree module that does what patch 6 does. In each sleep's noirq phase,
+after every device's suspend callback has run, it withdraws request 0xd if the
+PMP has acknowledged it. It asserts it again in resume_noirq, before any
+device resumes. Both writes run under the pmp-report driver's own lock: the
+driver is built in, so the module reaches it through the report device's
+drvdata, with the struct layout checked against the kernel's BTF and verified
+again at load. An earlier draft did the write from userspace in the sleep hook.
+Review (#3) pointed out that a userspace read-modify-write of the shared mask
+can silently overwrite a concurrent driver update, and nothing in userspace can
+prevent that. `pmp-request` is now read-only. Measure with short sleeps (lid
+closed at least 10 min, on battery), A/B with the module loaded and unloaded on
+the same kernel and flags, by `avg_mw_cc`. If it saves real power, the upstream
+fix is marking report@d (and maybe report@c) `apple,release-for-sleep` in
+`t600x-die0.dtsi`, on top of #274.
 
 `charge_counter` counts mA·s on this machine, not µAh: over 61 s awake it gave
 12.3 W against `energy_now`'s 12.1 W. The hook now logs it (`cc=`, with

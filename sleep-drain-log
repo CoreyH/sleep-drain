@@ -45,15 +45,12 @@ PCIE=/run/sleep-drain.pcie
 # NetworkManager's Wi-Fi switch as it was before radios-off or pcie-off, so
 # post turns it back on only if it was on.
 NM_WIFI=/run/sleep-drain.nm-wifi
-# Experiment: the PMP report requests listed in this file (ids such as 0xd,
-# pmp-dispext0) are withdrawn for the sleep and asserted again after, as
-# omacom/linux-aurora #274 does for the M3 Pro's external display requests.
-# On T600x, disp0 and dispext0 are apple,always-on in the device tree, so their
-# requests otherwise stay asserted all night. pmp-request does the writes;
-# only the requests this hook withdrew are asserted again.
-PMP_RELEASE_FLAG=/etc/sleep-drain/pmp-release
-PMP_RELEASED=/run/sleep-drain.pmp
-PMP_REQUEST=/usr/local/bin/pmp-request
+# Experiment: while the pmp_sleep_release module is loaded (sleep-drain-pmp),
+# it withdraws the PMP report requests in its ids (0xd is pmp-dispext0) in the
+# noirq phase of each sleep and asserts them again on resume, as
+# omacom/linux-aurora #274 does for the M3 Pro's external display requests, under
+# the pmp-report driver's lock. The hook only logs what it did.
+PMP_MODULE=/sys/module/pmp_sleep_release/parameters
 # Log every Apple PMGR power-domain switch ("PS <name>: pwrstate = 0x0" is off,
 # 0xf on) during the sleep, so the kernel log shows which domains really power
 # down. Logging only; it does not change what the domains do.
@@ -227,56 +224,6 @@ nm_wifi_restore() {
   rm -f "$NM_WIFI"
 }
 
-# Prints the ids withdrawn, comma-separated, or "-".
-pmp_release() {
-  local id out=
-  : > "$PMP_RELEASED"
-  [ -x "$PMP_REQUEST" ] || { echo -; return 0; }
-  for id in $(grep -oE '0x[0-9a-fA-F]+|[0-9]+' "$PMP_RELEASE_FLAG"); do
-    # 0 withdrawn, 1 written but not acknowledged, 5 withdrawn while the mask
-    # changed elsewhere: each is asserted again after. 3 means it wasn't
-    # asserted and 4 that another request was settling: nothing was written.
-    "$PMP_REQUEST" clear "$id" > /dev/null 2>&1
-    case $? in
-      0 | 1) echo "$id" >> "$PMP_RELEASED"; out+="${out:+,}$id" ;;
-      5) echo "$id" >> "$PMP_RELEASED"; out+="${out:+,}$id:raced" ;;
-      4) out+="${out:+,}$id:busy" ;;
-    esac
-  done
-  echo "${out:--}"
-}
-
-# Prints ok when every withdrawn request is asserted again. Otherwise, per id:
-# <id>:early, something asserted it before this did, so the withdrawal didn't
-# last the whole sleep; <id>:failed, it still wasn't asserted after a second of
-# retries. A request left withdrawn would starve that display processor, so a
-# write the PMP didn't acknowledge in time, or one refused while another
-# request was settling, is retried.
-pmp_restore() {
-  local id i rc first out=
-  [ -s "$PMP_RELEASED" ] || { rm -f "$PMP_RELEASED"; return 0; }
-  while read -r id; do
-    first=
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-      "$PMP_REQUEST" set "$id" > /dev/null 2>&1
-      rc=$?
-      [ -n "$first" ] || first=$rc
-      case $rc in 0 | 3 | 5) break ;; esac
-      sleep 0.1
-    done
-    # "Already asserted" after an unacknowledged write is that write landing.
-    if [ "$rc" = 0 ] || [ "$rc" = 5 ] || { [ "$rc" = 3 ] && [ "$first" != 3 ]; }; then
-      :
-    elif [ "$rc" = 3 ]; then
-      out+="${out:+,}$id:early"
-    else
-      out+="${out:+,}$id:failed"
-    fi
-  done < "$PMP_RELEASED"
-  rm -f "$PMP_RELEASED"
-  echo "${out:-ok}"
-}
-
 radios_restore() {
   local r
   [ -r "$RADIOS" ] || return 0
@@ -355,16 +302,12 @@ case "$1" in
     if [ -e "$WAKE_OFF_FLAG" ]; then wake_off; wake=off; fi
     # After wake_off, which records the chip's wakeup setting for post.
     [ "$pcie" = off ] && pcie_off
-    # Last, so the requests are down for as little of the awake time as
-    # possible.
     pmp=-
-    [ -e "$PMP_RELEASE_FLAG" ] && pmp=$(pmp_release)
+    [ -r "$PMP_MODULE/ids" ] && pmp=$(cat "$PMP_MODULE/ids")
     echo "$now id=$id" > "$STATE"
     echo "$(date -Is) pre  $now $att radios=$radios wake=$wake pcie=$pcie pmp_release=$pmp snap=$id" >> "$LOG"
     ;;
   post)
-    # First, so the requests are back before anything else runs awake.
-    pmp_back=$(pmp_restore)
     pcie_back=$(pcie_restore)
     radios_restore
     nm_wifi_restore
@@ -372,7 +315,10 @@ case "$1" in
     now=$(snapshot)
     line="$(date -Is) post $now $(attached)"
     [ -n "$pcie_back" ] && line+=" pcie_back=$pcie_back"
-    [ -n "$pmp_back" ] && line+=" pmp_back=$pmp_back"
+    # What the module withdrew in this sleep (a mask) and its unacknowledged
+    # writes so far.
+    [ -r "$PMP_MODULE/last_released" ] &&
+      line+=" pmp_released=$(printf '0x%x' "$(cat "$PMP_MODULE/last_released")") pmp_failures=$(cat "$PMP_MODULE/failures")"
     if [ -r "$STATE" ]; then
       pre=$(cat "$STATE")
       id=$(echo "$pre" | grep -oE 'id=[^ ]+' | cut -d= -f2)

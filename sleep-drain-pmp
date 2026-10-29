@@ -1,15 +1,16 @@
 #!/bin/bash
-# Turn the release-PMP-requests-during-sleep experiment on or off.
-#   sleep-drain-pmp release 0xd [0xc ...]   withdraw these PMP report requests for the sleep
-#   sleep-drain-pmp keep                    leave every request as it is (the default)
+# Turn the release-PMP-requests-during-sleep experiment on or off by loading or
+# unloading the pmp_sleep_release module (pmp-sleep-release/).
+#   sleep-drain-pmp release 0xd [0xc ...]   withdraw these PMP report requests in each sleep
+#   sleep-drain-pmp keep                    unload it: requests stay as they are (the default)
 #   sleep-drain-pmp                         show the current setting
 # Ids are the report entries' reg values under pmp_report@28e3c0000 on T600x:
-# 0xc pmp-disp0, 0xd pmp-dispext0, 0xe pmp-dispext1. The sleep-drain-log hook
-# reads /etc/sleep-drain/pmp-release at each suspend, so a change applies from
-# the next suspend on.
+# 0xc pmp-disp0, 0xd pmp-dispext0, 0xe pmp-dispext1. Nothing loads the module
+# at boot, so a reboot always ends the experiment.
 set -euo pipefail
 
-flag=/etc/sleep-drain/pmp-release
+ko=/usr/local/lib/sleep-drain/pmp_sleep_release.ko
+params=/sys/module/pmp_sleep_release/parameters
 
 case "${1:-status}" in
   release)
@@ -18,15 +19,16 @@ case "${1:-status}" in
     for id in "$@"; do
       [[ $id =~ ^(0x[0-9a-fA-F]+|[0-9]+)$ ]] || { echo "sleep-drain-pmp: bad id $id" >&2; exit 2; }
     done
-    printf '%s\n' "$@" | sudo tee "$flag" > /dev/null
+    [[ -d $params ]] && sudo rmmod pmp_sleep_release
+    sudo insmod "$ko" "ids=$(IFS=,; echo "$*")"
     ;;
-  keep) sudo rm -f "$flag" ;;
+  keep) [[ ! -d $params ]] || sudo rmmod pmp_sleep_release ;;
   status) ;;
   *) echo "usage: sleep-drain-pmp [release <id>... | keep]" >&2; exit 2 ;;
 esac
 
-if [[ -e $flag ]]; then
-  echo "pmp: withdrawn during sleep: $(tr '\n' ' ' < "$flag")"
+if [[ -d $params ]]; then
+  echo "pmp: withdrawn in each sleep: $(cat "$params/ids") (sleeps so far: $(cat "$params/sleeps"), unacknowledged writes: $(cat "$params/failures"))"
 else
   echo "pmp: requests left as they are during sleep"
 fi

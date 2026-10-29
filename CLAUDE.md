@@ -15,9 +15,12 @@ lab notebook: the problem, every night's result, and the findings so far.
   happened during one suspend (interrupts, wakeups, power domains).
 - `sleep-drain-radios`, `sleep-drain-wake`, `sleep-drain-pcie`, `sleep-drain-pmp`:
   toggle the experiment flags (radios-off, wake-off, pcie-off, pmp-release).
-- `pmp-request.c`: reads or changes one PMP report request on T600x through
-  /dev/mem, with the pmp-report driver's own register sequence. `install.sh`
-  builds it into /usr/local/bin.
+- `pmp-sleep-release/`: an out-of-tree module (C, built against the running
+  kernel's headers by `install.sh`) that withdraws chosen PMP report requests in
+  each sleep's noirq phase, under the pmp-report driver's lock, as aurora #274's
+  patch 6 does. `sleep-drain-pmp` loads and unloads it; nothing loads it at boot.
+- `pmp-request.c`: shows the PMP report masks on T600x through /dev/mem,
+  read-only. `install.sh` builds it into /usr/local/bin.
 - `power-budget`, `wifi-link-budget`: awake A/B tests on the SMC's Total System
   Power. They run as root and restore everything, including the network, before
   exiting.

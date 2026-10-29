@@ -3,6 +3,8 @@
 set -uo pipefail
 
 systemctl disable --now sleep-guard.service
+rmmod pmp_sleep_release 2> /dev/null
+rm -rf /usr/local/lib/sleep-drain
 rm -f /etc/systemd/system/sleep-guard.service /usr/local/bin/sleep-guard \
   /usr/lib/systemd/system-sleep/sleep-drain-log /run/sleep-drain.pre \
   /usr/local/bin/sleep-drain-radios /usr/local/bin/sleep-drain-diff \
