@@ -29,6 +29,7 @@ The three nights are consistent, so a change of about 100 mW or more should show
 | 2026-10-25 | 7.2.10 | **off** | 17.0 | 100% → 52% | **1797 mW** (−41 mW vs 1838) |
 | 2026-10-26 | 7.2.10, USB/PCIe wake off | off | 24.2 | 36% → (charged) → 44% | **no result** |
 | 2026-10-27 | **7.2.11**, USB/PCIe wake off | off | 17.7 | 100% → 50% | **1759 mW** (−38 mW vs 1797) |
+| 2026-10-28 | 7.2.11 **aurora9**, USB/PCIe wake **on** | off | 19.8 | 88% → 28% | **1844 mW** (+85 mW vs 1759) |
 
 The 2026-10-26 run doesn't count. The laptop went to sleep at 10:31 at 36%, was
 charged while asleep, unplugged while asleep, and stayed asleep until 10:45 the
@@ -52,6 +53,18 @@ against 2026-10-25, though: USB/PCIe wake off, and the kernel (7.2.10 →
 wake costs. Either way it is small, like the radios (−41 mW). Together, radios
 off and wake off take 1838 → 1759 mW (−79 mW, −4%). The AOP mailbox still fired
 3.6 times a second (230,527 in 63,685 s).
+
+The 2026-10-28 night (USB-C wake back on, radios off, kernel aurora9) drew
+1844 mW, 85 mW more than 2026-10-27. As expected, atc0–2_usb stayed on all
+night; atc3, with no controller bound, switched off. The AOP rate was
+unchanged (3.62/s), and nothing else looked different. Three nights with radios
+off now bracket the question: 1797 (7.2.10, wake on), 1759 (aurora8, wake
+off), 1844 (aurora9, wake on). Night-to-night noise is about 15 mW
+(2026-10-21 vs -22). Two readings fit the data:
+- USB-C wakeup costs about 85 mW, and 7.2.10 → aurora8 added about 47 mW;
+- or it costs about 38 mW, and aurora9 added about 47 mW.
+Re-running the 2026-10-27 flags (radios off + wake off) on aurora9 tells
+them apart.
 
 `sleep-drain-diff` read that night wrong at first, listing atc*_usb as never
 switched off. "PM: resume from suspend-to-idle" is a `pm_pr_dbg` line, so it
