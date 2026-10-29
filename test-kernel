@@ -1,0 +1,197 @@
+#!/bin/bash
+# Install an omacom/linux-aurora kernel package beside the regular linux-aurora,
+# such as the CI build of an upstream PR, and boot it exactly once.
+#
+#   test-kernel install <linux-aurora-*.pkg.tar.zst> <name>
+#   test-kernel boot <name>      boot it at the next restart only (grub-reboot)
+#   test-kernel remove <name>
+#   test-kernel list
+#
+# Run as root (pkexec). Nothing pacman owns is touched:
+# - the modules go to /usr/lib/modules/<release>, refused if that release is
+#   there already, so the installed linux-aurora can't be overwritten;
+# - without the package's pkgbase file: mkinitcpio's pacman hook treats every
+#   module tree whose pkgbase is linux-aurora as linux-aurora, and could copy
+#   this kernel over /boot/vmlinuz-linux-aurora;
+# - without its dtbs: m1n1's boot.bin takes the device trees of the
+#   pacman-owned linux-aurora (/etc/default/update-m1n1), so these would go
+#   unused. Compare them with cmp if a test depends on them;
+# - the kernel and initramfs in /boot/aurora-test/<name>/, outside the
+#   /boot/vmlinuz-* (and vmlinux-*, kernel-*, Image) names GRUB's 10_linux
+#   scans, so the only menu entry is the one from
+#   /etc/grub.d/43_aurora_test_<name>, which is never the default.
+#
+# grub.cfg is replaced only when the regenerated one differs from the current
+# one by the test entry alone. Otherwise it is left as it is and the
+# difference shown. The new config is staged beside grub.cfg and renamed into
+# place once complete, so a failed write leaves the live one intact.
+set -euo pipefail
+
+STATE=/var/lib/sleep-drain/test-kernels
+GRUB_CFG=/boot/grub/grub.cfg
+IMAGES=/boot/aurora-test
+
+die() { echo "test-kernel: $*" >&2; exit 1; }
+usage() {
+  echo "usage: test-kernel install <pkg.tar.zst> <name> | boot <name> | remove <name> | list" >&2
+  exit 2
+}
+
+check_name() {
+  [[ ${1:-} =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die "a name is lowercase letters, digits and dashes"
+}
+
+script_of() { echo "/etc/grub.d/43_aurora_test_$1"; }
+
+# grub.cfg without the section grub-mkconfig wrote for one /etc/grub.d script.
+without_section() {
+  sed "\\|^### BEGIN $2 ###\$|,\\|^### END $2 ###\$|d" "$1"
+}
+
+# Regenerate grub.cfg, and take it only if it differs from the current one in
+# the given script's section alone. Callers use this in a conditional, where
+# set -e doesn't apply, so every step is checked here: the new config is
+# staged beside grub.cfg (grub-mkconfig itself checks it), the current one
+# backed up, and only then renamed over it.
+regen_grub() {
+  local script=$1 new=$GRUB_CFG.test-kernel.new
+  rm -f "$new"
+  if ! grub-mkconfig -o "$new" > /dev/null 2>&1; then
+    rm -f "$new"
+    echo "test-kernel: grub-mkconfig failed; grub.cfg left as it is" >&2
+    return 1
+  fi
+  if ! cmp -s <(without_section "$new" "$script") <(without_section "$GRUB_CFG" "$script"); then
+    echo "test-kernel: grub-mkconfig would change more than the test entry; grub.cfg left as it is:" >&2
+    diff <(without_section "$GRUB_CFG" "$script") <(without_section "$new" "$script") >&2 || true
+    rm -f "$new"
+    return 1
+  fi
+  if ! cp "$GRUB_CFG" "$GRUB_CFG.test-kernel.bak"; then
+    rm -f "$new"
+    echo "test-kernel: couldn't back up grub.cfg; left as it is" >&2
+    return 1
+  fi
+  if ! sync "$new" || ! mv -f "$new" "$GRUB_CFG"; then
+    rm -f "$new"
+    echo "test-kernel: couldn't put the new grub.cfg in place; the old one stays" >&2
+    return 1
+  fi
+}
+
+install_kernel() {
+  local pkg=${1:-} name=${2:-} release stage script cmdline boot_uuid
+  check_name "$name"
+  [[ -f $pkg ]] || die "no package at $pkg"
+  [[ ! -e $STATE/$name ]] || die "$name is installed already"
+  # No head here: under pipefail an early-closed pipe would end the script.
+  release=$(tar --zstd -tf "$pkg" | sed -n 's|^usr/lib/modules/\([^/]*\)/vmlinuz$|\1|p')
+  [[ -n $release ]] || die "no usr/lib/modules/<release>/vmlinuz in $pkg"
+  [[ $release != *$'\n'* ]] || die "more than one kernel in $pkg"
+  [[ ! -e /usr/lib/modules/$release ]] || die "/usr/lib/modules/$release exists; refusing to touch it"
+  script=$(script_of "$name")
+
+  # The regular entry's kernel command line, so the test kernel boots the same
+  # root the same way.
+  cmdline=$(awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }' "$GRUB_CFG")
+  [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"
+  boot_uuid=$(grub-probe --target=fs_uuid /boot)
+
+  # /boot is a small vfat partition: room for the kernel, an initramfs as big
+  # as the regular one, and a margin, before anything is written.
+  local need avail
+  need=$(( ( $(tar --zstd -xOf "$pkg" "usr/lib/modules/$release/vmlinuz" | wc -c) \
+           + $(stat -c %s /boot/initramfs-linux-aurora.img) ) / 1048576 + 32 ))
+  avail=$(df --output=avail -BM /boot | tail -1 | tr -dc 0-9)
+  (( avail >= need )) || die "/boot has ${avail} MiB free; $name needs about ${need} MiB"
+
+  stage=$(mktemp -d)
+  tar --zstd -xf "$pkg" -C "$stage" "usr/lib/modules/$release"
+  rm -f "$stage/usr/lib/modules/$release/pkgbase"
+  rm -rf -- "${stage:?}/usr/lib/modules/$release/dtbs"
+  mv "$stage/usr/lib/modules/$release" "/usr/lib/modules/$release"
+  rm -rf -- "${stage:?}"
+  mkdir -p "$STATE"
+  echo "$release" > "$STATE/$name"
+
+  depmod "$release"
+  mkdir -p "$IMAGES/$name"
+  cp "/usr/lib/modules/$release/vmlinuz" "$IMAGES/$name/vmlinuz"
+  mkinitcpio -k "$release" -g "$IMAGES/$name/initramfs.img"
+
+  cat > "$script" <<EOF
+#!/bin/sh
+# Written by test-kernel for $release; remove with: test-kernel remove $name
+cat <<'MENU'
+menuentry 'Test kernel $name ($release)' --class omarchy --class gnu-linux --id aurora-test-$name {
+    load_video
+    set gfxpayload=keep
+    insmod part_gpt
+    insmod fat
+    insmod btrfs
+    search --no-floppy --fs-uuid --set=root $boot_uuid
+    linux /aurora-test/$name/vmlinuz $cmdline
+    initrd /aurora-test/$name/initramfs.img
+}
+MENU
+EOF
+  chmod 755 "$script"
+  if regen_grub "$script"; then
+    echo "installed $name ($release). Boot it once with: test-kernel boot $name, then restart"
+  else
+    echo "installed $name ($release), but not in grub.cfg yet (see above)" >&2
+    exit 1
+  fi
+}
+
+boot_kernel() {
+  local name=${1:-}
+  check_name "$name"
+  [[ -e $STATE/$name ]] || die "$name isn't installed"
+  grep -q -- "--id aurora-test-$name " "$GRUB_CFG" || die "$name has no entry in $GRUB_CFG"
+  grub-reboot "aurora-test-$name"
+  echo "the next restart boots $name once; every restart after that, the regular kernel"
+}
+
+remove_kernel() {
+  local name=${1:-} release script
+  check_name "$name"
+  [[ -e $STATE/$name ]] || die "$name isn't installed"
+  release=$(cat "$STATE/$name")
+  script=$(script_of "$name")
+  [[ $release != "$(uname -r)" ]] || die "$name is the running kernel; restart into the regular one first"
+
+  rm -f "$script"
+  regen_grub "$script" || die "grub.cfg not regenerated; $name's files are still in place"
+  if grub-editenv - list | grep -qx "next_entry=aurora-test-$name"; then
+    grub-editenv - unset next_entry
+  fi
+  rm -rf -- "${IMAGES:?}/${name:?}"
+  # Only a tree no package owns: never the regular kernel's.
+  if [[ -n $release && -d /usr/lib/modules/$release ]] && ! pacman -Qqo "/usr/lib/modules/$release" > /dev/null 2>&1; then
+    rm -rf -- "/usr/lib/modules/${release:?}"
+  fi
+  rm -f "$STATE/$name"
+  echo "removed $name ($release)"
+}
+
+list_kernels() {
+  local f name next
+  next=$(grub-editenv - list | sed -n 's/^next_entry=//p')
+  for f in "$STATE"/*; do
+    [[ -e $f ]] || continue
+    name=${f##*/}
+    printf '%s\t%s\t%s%s\n' "$name" "$(cat "$f")" \
+      "$(grep -q -- "--id aurora-test-$name " "$GRUB_CFG" && echo "in grub.cfg" || echo "NOT in grub.cfg")" \
+      "$([[ $next == "aurora-test-$name" ]] && echo ", boots next" || true)"
+  done
+}
+
+[[ $EUID -eq 0 ]] || die "run as root (pkexec)"
+case "${1:-}" in
+  install) shift; install_kernel "$@" ;;
+  boot) shift; boot_kernel "$@" ;;
+  remove) shift; remove_kernel "$@" ;;
+  list) list_kernels ;;
+  *) usage ;;
+esac
