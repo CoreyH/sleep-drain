@@ -29,6 +29,7 @@ The three nights are consistent, so a change of about 100 mW or more should show
 | 2026-10-25 | 7.2.10 | **off** | 17.0 | 100% → 52% | **1797 mW** (−41 mW vs 1838) |
 | 2026-10-26 | 7.2.10, USB/PCIe wake off | off | 24.2 | 36% → (charged) → 44% | **no result** |
 | 2026-10-27 | **7.2.11**, USB/PCIe wake off | off | 17.7 | 100% → 50% | **1759 mW** (−38 mW vs 1797) |
+| 2026-10-28 | 7.2.11 **aurora9**, USB/PCIe wake **on** | off | 19.8 | 88% → 28% | **1844 mW** (+85 mW vs 1759) |
 
 The 2026-10-26 run doesn't count. The laptop went to sleep at 10:31 at 36%, was
 charged while asleep, unplugged while asleep, and stayed asleep until 10:45 the
@@ -53,12 +54,55 @@ wake costs. Either way it is small, like the radios (−41 mW). Together, radios
 off and wake off take 1838 → 1759 mW (−79 mW, −4%). The AOP mailbox still fired
 3.6 times a second (230,527 in 63,685 s).
 
+The 2026-10-28 night (USB-C wake back on, radios off, kernel aurora9) drew
+1844 mW, 85 mW more than 2026-10-27. As expected, atc0–2_usb stayed on all
+night; atc3, with no controller bound, switched off. The AOP rate was
+unchanged (3.62/s), and nothing else looked different. Three nights with radios
+off now bracket the question: 1797 (7.2.10, wake on), 1759 (aurora8, wake
+off), 1844 (aurora9, wake on). There is no clean measure of night-to-night
+noise yet. The closest pair, 2026-10-21 and -22 (1838 and 1825 mW), is not a
+repeat: the AOP was unbound on the second night. Their 13 mW gap is only an
+observed spread. The gauge may also be noisier than that: aurora #274 found
+`energy_now` jumping ±55 mAh after a rest. Taking the differences at face
+value, two readings fit:
+- USB-C wakeup costs about 85 mW, and 7.2.10 → aurora8 added about 47 mW;
+- or it costs about 38 mW, and aurora9 added about 47 mW.
+Re-running the 2026-10-27 flags (radios off + wake off) on aurora9 would tell
+them apart, if gauge noise doesn't swamp the difference. Nights logged with
+the coulomb counter (`avg_mw_cc`) won't depend on the gauge.
+
 `sleep-drain-diff` read that night wrong at first, listing atc*_usb as never
 switched off. "PM: resume from suspend-to-idle" is a `pm_pr_dbg` line, so it
 stopped being logged once the hook dropped `pm_debug_messages`. The diff then
 took each domain's last state from the whole log, which is the state after
 resume. Without that marker it now takes the deepest state each domain reached
 before "suspend exit".
+
+## Kernel context: what aurora already does for j314s (2026-10-28)
+
+Two omacom/linux-aurora PRs merged on 2026-10-15 and are in every 7.2 kernel
+tested here:
+
+- **#91 (pmgr-misc, PMP for j314s)** turns on PMP, the power-management
+  coprocessor, for this board in the device tree. The boot log says so:
+  "apple-pmgr-misc …: PMP manages fabric and DCS p-states". The PR measured
+  s2idle at 2.72 → 2.25 W on 5 V input, which most likely explains the −340 mW
+  from 11.16 to 7.2.10 (2026-10-21). The same PR adds an idle fabric governor
+  (`apple_pmgr_misc.idle_fabric_pstate`, 0 here). It refuses to run while PMP
+  owns the fabric, and it only acts while awake, so it is no knob for sleep.
+  Open item from the PR: the fabric save and restore around suspend is a host
+  workaround; a proper firmware sleep handshake needs reverse engineering.
+- **#92 (thunderbolt, opt-in s2idle port teardown)**:
+  `thunderbolt_apple.s2idle_teardown` (N here) powers off connected
+  Thunderbolt/USB4 ports that carry no PCIe tunnel for the sleep. It measured
+  4.03 → 2.71 W with an M4 Mac attached. It does nothing with no cable plugged
+  in, which is how every night here is measured. Turn it on if the laptop sleeps
+  attached to a Thunderbolt peer or a non-charging dock.
+
+Kernel 7.2.11.aurora9 (installed 2026-10-28, built that morning) is mostly
+M3-family (T603x, G15 GPU) and display work. Nothing in it touches the t6000
+sleep path, so the 2026-10-28 night counts aurora8 → aurora9 as no change. If
+its result looks off, re-run the 10-27 flags on aurora9 to check.
 
 ## Finding 1: the AOP wakes the SoC about 3.6 times a second all night (2026-10-22)
 
