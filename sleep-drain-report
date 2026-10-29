@@ -11,7 +11,7 @@ awk '
   function kern(k,   a) { if (k == "-") return k; split(k, a, "-"); return (k ~ /-sep-/) ? a[3] : a[1] }
   BEGIN { printf "%-16s %6s %8s %7s %6s %6s %-9s %-7s %-7s %-4s %-4s %-5s %-7s %-5s %-4s %-24s %s\n", "slept at", "hours", "pct", "%/h", "mW", "mW(cc)", "valid", "kernel", "radios", "wake", "pcie", "pmp", "aop", "wifi", "bt", "typec", "displays" }
   $2 == "pre" {
-    if (pending) printf "%-16s %6s %8s %7s %6s %-9s %s\n", start, "?", startcap "->dead?", "-", "-", "no-post", "(no resume logged)"
+    if (pending) printf "%-16s %6s %8s %7s %6s %6s %-9s %s\n", start, "?", startcap "->dead?", "-", "-", "-", "no-post", "(no resume logged)"
     pending = 1; start = substr($1, 1, 16); startcap = get("capacity") "%"; radios = get("radios"); wake = get("wake"); pcie = get("pcie"); pmp = get("pmp_release"); aop = get("aop"); wifi = get("wifi"); bt = get("bt"); next
   }
   $2 == "post" && pending {
@@ -21,5 +21,5 @@ awk '
       startcap "->" get("capacity") "%", get("pct_per_h"), get("avg_mw"), get("avg_mw_cc"), get("valid"),
       kern(get("kernel")), radios, wake, pcie, pmp, aop, wifi, bt, get("typec"), get("displays")
   }
-  END { if (pending) printf "%-16s %6s %8s %7s %6s %-9s %s\n", start, "?", startcap, "-", "-", "pending", "(suspended now, or did not resume)" }
+  END { if (pending) printf "%-16s %6s %8s %7s %6s %6s %-9s %s\n", start, "?", startcap, "-", "-", "-", "pending", "(suspended now, or did not resume)" }
 ' "$LOG"

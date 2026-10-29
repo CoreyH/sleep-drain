@@ -14,10 +14,23 @@
 // writeq are. It refuses to run unless the live device tree describes this
 // exact report block, so it can't write to the wrong address on another Mac.
 //
-// Exit status: 0 changed and acknowledged, 1 written but not acknowledged in
-// time, 2 usage or setup error, 3 already in that state (nothing written).
+// The kernel driver changes the same mask under its own spinlock, which
+// userspace can't take. So this refuses to write while any request is still
+// settling (target != actual: the driver may be mid-update), does its
+// read-modify-write as back-to-back instructions at SCHED_FIFO priority, and
+// reports if the mask changed anywhere else while the write was acknowledged.
+// What remains is a window of a few instructions. If the driver updated another
+// request inside it, that update would be lost and its power-on or power-off
+// would time out once. This is an experiment tool; the fix belongs in the
+// driver (aurora #274, patch 6), under its lock.
+//
+// Exit status: 0 changed and acknowledged; 1 written but not acknowledged in
+// time; 2 usage or setup error; 3 already in that state, nothing written;
+// 4 another request was still settling, nothing written; 5 changed and
+// acknowledged, but the mask also changed elsewhere meanwhile.
 #include <errno.h>
 #include <fcntl.h>
+#include <sched.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -117,24 +130,40 @@ static double now(void)
 
 static int change(unsigned int id, int enable)
 {
-	uint64_t bit = 1ULL << id, val;
+	struct sched_param fifo = { .sched_priority = sched_get_priority_max(SCHED_FIFO) };
+	uint64_t bit = 1ULL << id, actual, target, expect;
 	double until;
 
 	if (!(rd(STATUS) & REPORT_READY)) {
 		fprintf(stderr, "pmp-request: report not ready; leaving it alone\n");
 		return 2;
 	}
-	if (!!(rd(TGT_READ) & bit) == enable && !!(rd(ACTUAL) & bit) == enable)
+	// Best effort: nothing in the window below may be preempted by a normal task.
+	if (sched_setscheduler(0, SCHED_FIFO, &fifo))
+		perror("pmp-request: SCHED_FIFO (continuing)");
+
+	actual = rd(ACTUAL);
+	target = rd(TGT_READ);
+	if (target != actual) {
+		fprintf(stderr, "pmp-request: a request is still settling (target 0x%llx, actual 0x%llx); "
+			"leaving it alone\n", (unsigned long long)target, (unsigned long long)actual);
+		return 4;
+	}
+	if (!!(target & bit) == enable)
 		return 3;
+	expect = enable ? target | bit : target & ~bit;
+	wr(TGT_WRITE, expect);
 
-	val = rd(TGT_READ) & ~bit;
-	if (enable)
-		val |= bit;
-	wr(TGT_WRITE, val);
-
-	for (until = now() + 0.05; now() < until; usleep(100))
-		if (!!(rd(ACTUAL) & bit) == enable)
-			return 0;
+	for (until = now() + 0.05; now() < until; usleep(100)) {
+		if (!!(rd(ACTUAL) & bit) != enable)
+			continue;
+		if (rd(TGT_READ) != expect) {
+			fprintf(stderr, "pmp-request: request 0x%x changed, but the mask changed elsewhere "
+				"meanwhile (now 0x%llx)\n", id, (unsigned long long)rd(TGT_READ));
+			return 5;
+		}
+		return 0;
+	}
 	fprintf(stderr, "pmp-request: request 0x%x not acknowledged within 50 ms\n", id);
 	return 1;
 }

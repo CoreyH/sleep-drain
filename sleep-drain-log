@@ -233,10 +233,15 @@ pmp_release() {
   : > "$PMP_RELEASED"
   [ -x "$PMP_REQUEST" ] || { echo -; return 0; }
   for id in $(grep -oE '0x[0-9a-fA-F]+|[0-9]+' "$PMP_RELEASE_FLAG"); do
-    # 0 withdrawn, 1 written but not acknowledged: either way it is asserted
-    # again after. 3 means it wasn't asserted, so it is left alone.
+    # 0 withdrawn, 1 written but not acknowledged, 5 withdrawn while the mask
+    # changed elsewhere: each is asserted again after. 3 means it wasn't
+    # asserted and 4 that another request was settling: nothing was written.
     "$PMP_REQUEST" clear "$id" > /dev/null 2>&1
-    case $? in 0 | 1) echo "$id" >> "$PMP_RELEASED"; out+="${out:+,}$id" ;; esac
+    case $? in
+      0 | 1) echo "$id" >> "$PMP_RELEASED"; out+="${out:+,}$id" ;;
+      5) echo "$id" >> "$PMP_RELEASED"; out+="${out:+,}$id:raced" ;;
+      4) out+="${out:+,}$id:busy" ;;
+    esac
   done
   echo "${out:--}"
 }
@@ -245,7 +250,8 @@ pmp_release() {
 # <id>:early, something asserted it before this did, so the withdrawal didn't
 # last the whole sleep; <id>:failed, it still wasn't asserted after a second of
 # retries. A request left withdrawn would starve that display processor, so a
-# write the PMP didn't acknowledge in time is retried.
+# write the PMP didn't acknowledge in time, or one refused while another
+# request was settling, is retried.
 pmp_restore() {
   local id i rc first out=
   [ -s "$PMP_RELEASED" ] || { rm -f "$PMP_RELEASED"; return 0; }
@@ -255,11 +261,11 @@ pmp_restore() {
       "$PMP_REQUEST" set "$id" > /dev/null 2>&1
       rc=$?
       [ -n "$first" ] || first=$rc
-      case $rc in 0 | 3) break ;; esac
+      case $rc in 0 | 3 | 5) break ;; esac
       sleep 0.1
     done
     # "Already asserted" after an unacknowledged write is that write landing.
-    if [ "$rc" = 0 ] || { [ "$rc" = 3 ] && [ "$first" != 3 ]; }; then
+    if [ "$rc" = 0 ] || [ "$rc" = 5 ] || { [ "$rc" = 3 ] && [ "$first" != 3 ]; }; then
       :
     elif [ "$rc" = 3 ]; then
       out+="${out:+,}$id:early"
