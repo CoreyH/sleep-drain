@@ -235,6 +235,38 @@ Build note: the headers package has `rust/` without .rmeta, and the kernel was
 built with rustc 1.85.0, so an out-of-tree Rust module build isn't possible.
 It needs a full omacom/linux-aurora build with a pinned 1.85 toolchain.
 
+## Lead: the display processors' PMP requests stay up through sleep (2026-10-29)
+
+omacom/linux-aurora #274 (M3 Pro, J514S) took s2idle from about 2.6 W to
+1.35 W. Most of that came from patch 6, which withdraws the external display
+processors' PMP report requests in `suspend_noirq` and asserts them again in
+`resume_noirq`, for entries marked `apple,release-for-sleep`. Its author also
+found `energy_now` useless for short runs (the gauge's estimate jumps ±55 mAh
+after a rest), and measured 300 s sleeps with `charge_counter` instead.
+
+T600x has the same mechanism: `pmp_report@28e3c0000`
+(`apple,t6000-pmp-v2-report`), whose entries bind the same
+`apple,t6000-pmp-v2-report-entry` driver patch 6 extends. In
+`t600x-die0.dtsi`, `pmp-disp0` (report@c) and `pmp-dispext0` (report@d) are
+`apple,always-on`. `pmp-dispext1` (report@e) is not, and its PMGR parent
+(dispext1_cpu0) switches off in s2idle, so genpd already drops that one. Read
+awake with `pmp-request` on 2026-10-29, nothing attached: status 0x1,
+target = actual = 0x7000, so requests 0xc, 0xd and 0xe are asserted and
+acknowledged. pmp-dispext0's request therefore stays asserted all night.
+
+Experiment: `sleep-drain-pmp release 0xd` withdraws it as the hook's last step
+before the sleep (with `pmp-request`, the driver's own register sequence) and
+asserts it again as the first step after. Unlike patch 6, the withdrawal comes
+before the display processors suspend rather than at noirq, so this is a
+pre-screen, not the fix. Measure with short sleeps (lid closed at least 10 min,
+on battery), A/B on the same kernel and flags, by `avg_mw_cc`. If it saves real
+power, the upstream fix is marking report@d (and maybe report@c)
+`apple,release-for-sleep` in `t600x-die0.dtsi`, on top of #274.
+
+`charge_counter` counts mA·s on this machine, not µAh: over 61 s awake it gave
+12.3 W against `energy_now`'s 12.1 W. The hook now logs it (`cc=`, with
+`uv=` for the voltage) and reports `avg_mw_cc`.
+
 ## What gets recorded now
 
 On every suspend, `sleep-drain-log` writes `/var/log/sleep-drain/<id>/{pre,post}/`

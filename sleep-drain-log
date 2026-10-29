@@ -45,6 +45,15 @@ PCIE=/run/sleep-drain.pcie
 # NetworkManager's Wi-Fi switch as it was before radios-off or pcie-off, so
 # post turns it back on only if it was on.
 NM_WIFI=/run/sleep-drain.nm-wifi
+# Experiment: the PMP report requests listed in this file (ids such as 0xd,
+# pmp-dispext0) are withdrawn for the sleep and asserted again after, as
+# omacom/linux-aurora #274 does for the M3 Pro's external display requests.
+# On T600x, disp0 and dispext0 are apple,always-on in the device tree, so their
+# requests otherwise stay asserted all night. pmp-request does the writes;
+# only the requests this hook withdrew are asserted again.
+PMP_RELEASE_FLAG=/etc/sleep-drain/pmp-release
+PMP_RELEASED=/run/sleep-drain.pmp
+PMP_REQUEST=/usr/local/bin/pmp-request
 # Log every Apple PMGR power-domain switch ("PS <name>: pwrstate = 0x0" is off,
 # 0xf on) during the sleep, so the kernel log shows which domains really power
 # down. Logging only; it does not change what the domains do.
@@ -109,10 +118,15 @@ bt_connected() {
   timeout 2 bluetoothctl devices Connected 2>/dev/null | grep -c '^Device'
 }
 
+# cc is the SMC coulomb counter (charge_counter). macsmc reports it in mA·s,
+# not the µAh the power_supply ABI documents: over 61 s awake on 2026-10-29 it
+# gave 12.3 W against energy_now's 12.1 W. It is exact enough for short sleeps,
+# where energy_now's estimate can jump ±55 mAh (aurora #274).
 snapshot() {
-  printf 'ts=%s energy_uwh=%s charge_uah=%s capacity=%s ac=%s' \
+  printf 'ts=%s energy_uwh=%s charge_uah=%s capacity=%s ac=%s cc=%s uv=%s' \
     "$(date +%s)" "$(cat $BAT/energy_now)" "$(cat $BAT/charge_now)" \
-    "$(cat $BAT/capacity)" "$(cat $AC/online)"
+    "$(cat $BAT/capacity)" "$(cat $AC/online)" \
+    "$(cat $BAT/charge_counter 2>/dev/null || echo -)" "$(cat $BAT/voltage_now 2>/dev/null || echo -)"
 }
 
 attached() {
@@ -213,6 +227,31 @@ nm_wifi_restore() {
   rm -f "$NM_WIFI"
 }
 
+# Prints the ids withdrawn, comma-separated, or "-".
+pmp_release() {
+  local id out=
+  : > "$PMP_RELEASED"
+  [ -x "$PMP_REQUEST" ] || { echo -; return 0; }
+  for id in $(grep -oE '0x[0-9a-fA-F]+|[0-9]+' "$PMP_RELEASE_FLAG"); do
+    # 0 withdrawn, 1 written but not acknowledged: either way it is asserted
+    # again after. 3 means it wasn't asserted, so it is left alone.
+    "$PMP_REQUEST" clear "$id" > /dev/null 2>&1
+    case $? in 0 | 1) echo "$id" >> "$PMP_RELEASED"; out+="${out:+,}$id" ;; esac
+  done
+  echo "${out:--}"
+}
+
+# Prints ok, or the ids that could not be asserted again.
+pmp_restore() {
+  local id bad=
+  [ -s "$PMP_RELEASED" ] || { rm -f "$PMP_RELEASED"; return 0; }
+  while read -r id; do
+    "$PMP_REQUEST" set "$id" > /dev/null 2>&1 || bad+="${bad:+,}$id"
+  done < "$PMP_RELEASED"
+  rm -f "$PMP_RELEASED"
+  echo "${bad:-ok}"
+}
+
 radios_restore() {
   local r
   [ -r "$RADIOS" ] || return 0
@@ -291,10 +330,16 @@ case "$1" in
     if [ -e "$WAKE_OFF_FLAG" ]; then wake_off; wake=off; fi
     # After wake_off, which records the chip's wakeup setting for post.
     [ "$pcie" = off ] && pcie_off
+    # Last, so the requests are down for as little of the awake time as
+    # possible.
+    pmp=-
+    [ -e "$PMP_RELEASE_FLAG" ] && pmp=$(pmp_release)
     echo "$now id=$id" > "$STATE"
-    echo "$(date -Is) pre  $now $att radios=$radios wake=$wake pcie=$pcie snap=$id" >> "$LOG"
+    echo "$(date -Is) pre  $now $att radios=$radios wake=$wake pcie=$pcie pmp_release=$pmp snap=$id" >> "$LOG"
     ;;
   post)
+    # First, so the requests are back before anything else runs awake.
+    pmp_back=$(pmp_restore)
     pcie_back=$(pcie_restore)
     radios_restore
     nm_wifi_restore
@@ -302,6 +347,7 @@ case "$1" in
     now=$(snapshot)
     line="$(date -Is) post $now $(attached)"
     [ -n "$pcie_back" ] && line+=" pcie_back=$pcie_back"
+    [ -n "$pmp_back" ] && line+=" pmp_back=$pmp_back"
     if [ -r "$STATE" ]; then
       pre=$(cat "$STATE")
       id=$(echo "$pre" | grep -oE 'id=[^ ]+' | cut -d= -f2)
@@ -333,8 +379,15 @@ case "$1" in
           if (dt < 600) valid = "no-short"
           mw = 0; pph = 0
           if (dt > 0) { mw = de * 3.6 / dt; pph = dc * 3600 / dt }
-          printf "slept_s=%d drained_mwh=%.0f avg_mw=%.0f pct_per_h=%.2f valid=%s",
-            dt, de / 1000, mw, pph, valid
+          # The same from the coulomb counter (mA·s) at the mean of the two
+          # voltages: mA·s × V / s is mW. "-" when either side lacks it.
+          ccpre = get(pre, "cc"); ccpost = get(post, "cc")
+          uvpre = get(pre, "uv"); uvpost = get(post, "uv")
+          mwcc = "-"
+          if (dt > 0 && ccpre ~ /^-?[0-9]+$/ && ccpost ~ /^-?[0-9]+$/ && uvpre > 0 && uvpost > 0)
+            mwcc = sprintf("%.0f", (ccpre - ccpost) * (uvpre + uvpost) / 2e6 / dt)
+          printf "slept_s=%d drained_mwh=%.0f avg_mw=%.0f avg_mw_cc=%s pct_per_h=%.2f valid=%s",
+            dt, de / 1000, mw, mwcc, pph, valid
         }')"
       rm -f "$STATE"
     fi

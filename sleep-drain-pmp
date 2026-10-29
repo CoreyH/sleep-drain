@@ -1,0 +1,32 @@
+#!/bin/bash
+# Turn the release-PMP-requests-during-sleep experiment on or off.
+#   sleep-drain-pmp release 0xd [0xc ...]   withdraw these PMP report requests for the sleep
+#   sleep-drain-pmp keep                    leave every request as it is (the default)
+#   sleep-drain-pmp                         show the current setting
+# Ids are the report entries' reg values under pmp_report@28e3c0000 on T600x:
+# 0xc pmp-disp0, 0xd pmp-dispext0, 0xe pmp-dispext1. The sleep-drain-log hook
+# reads /etc/sleep-drain/pmp-release at each suspend, so a change applies from
+# the next suspend on.
+set -euo pipefail
+
+flag=/etc/sleep-drain/pmp-release
+
+case "${1:-status}" in
+  release)
+    shift
+    [[ $# -gt 0 ]] || { echo "usage: sleep-drain-pmp release <id>..." >&2; exit 2; }
+    for id in "$@"; do
+      [[ $id =~ ^(0x[0-9a-fA-F]+|[0-9]+)$ ]] || { echo "sleep-drain-pmp: bad id $id" >&2; exit 2; }
+    done
+    printf '%s\n' "$@" | sudo tee "$flag" > /dev/null
+    ;;
+  keep) sudo rm -f "$flag" ;;
+  status) ;;
+  *) echo "usage: sleep-drain-pmp [release <id>... | keep]" >&2; exit 2 ;;
+esac
+
+if [[ -e $flag ]]; then
+  echo "pmp: withdrawn during sleep: $(tr '\n' ' ' < "$flag")"
+else
+  echo "pmp: requests left as they are during sleep"
+fi

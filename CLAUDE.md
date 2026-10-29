@@ -13,8 +13,11 @@ lab notebook: the problem, every night's result, and the findings so far.
   `/etc/sleep-drain/`.
 - `sleep-drain-report`: one row per night. `sleep-drain-diff [id]`: what
   happened during one suspend (interrupts, wakeups, power domains).
-- `sleep-drain-radios`, `sleep-drain-wake`, `sleep-drain-pcie`: toggle the
-  experiment flags (radios-off, wake-off, pcie-off).
+- `sleep-drain-radios`, `sleep-drain-wake`, `sleep-drain-pcie`, `sleep-drain-pmp`:
+  toggle the experiment flags (radios-off, wake-off, pcie-off, pmp-release).
+- `pmp-request.c`: reads or changes one PMP report request on T600x through
+  /dev/mem, with the pmp-report driver's own register sequence. `install.sh`
+  builds it into /usr/local/bin.
 - `power-budget`, `wifi-link-budget`: awake A/B tests on the SMC's Total System
   Power. They run as root and restore everything, including the network, before
   exiting.
