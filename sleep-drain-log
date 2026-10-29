@@ -241,15 +241,34 @@ pmp_release() {
   echo "${out:--}"
 }
 
-# Prints ok, or the ids that could not be asserted again.
+# Prints ok when every withdrawn request is asserted again. Otherwise, per id:
+# <id>:early, something asserted it before this did, so the withdrawal didn't
+# last the whole sleep; <id>:failed, it still wasn't asserted after a second of
+# retries. A request left withdrawn would starve that display processor, so a
+# write the PMP didn't acknowledge in time is retried.
 pmp_restore() {
-  local id bad=
+  local id i rc first out=
   [ -s "$PMP_RELEASED" ] || { rm -f "$PMP_RELEASED"; return 0; }
   while read -r id; do
-    "$PMP_REQUEST" set "$id" > /dev/null 2>&1 || bad+="${bad:+,}$id"
+    first=
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      "$PMP_REQUEST" set "$id" > /dev/null 2>&1
+      rc=$?
+      [ -n "$first" ] || first=$rc
+      case $rc in 0 | 3) break ;; esac
+      sleep 0.1
+    done
+    # "Already asserted" after an unacknowledged write is that write landing.
+    if [ "$rc" = 0 ] || { [ "$rc" = 3 ] && [ "$first" != 3 ]; }; then
+      :
+    elif [ "$rc" = 3 ]; then
+      out+="${out:+,}$id:early"
+    else
+      out+="${out:+,}$id:failed"
+    fi
   done < "$PMP_RELEASED"
   rm -f "$PMP_RELEASED"
-  echo "${bad:-ok}"
+  echo "${out:-ok}"
 }
 
 radios_restore() {
