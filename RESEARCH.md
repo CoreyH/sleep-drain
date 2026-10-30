@@ -388,6 +388,50 @@ Read through `spmi_nvmem0` (the pmic@f node, world-readable):
 driver port: `rtc-macsmc`'s alarm (from #274), plus clearing 0x14c0, plus the
 t600x DT cells and interrupts.
 
+### Awake test: the alarm fires, and how its event clears (2026-10-30)
+
+`pkexec pmu-alarm test 20` (`results/pmu-alarm-20261030.txt`):
+- Armed 20 s ahead (control 0x41), it **fired on the target second**: control
+  0x03 (enable cleared, bit 1 set) and 0x14c0 bit 0 set.
+- Writing 1 to 0x14c0 clears 0x14c0. Writing the control byte back as read
+  (bit 1 as 1, T6030's acknowledgment in #274) **leaves bit 1 set**. Writing
+  it with bit 1 as 0 clears it. Both registers needed their own write, before
+  arming and after firing, as on the M2 Pro (Aurora-DeepIdle).
+- It also cleared macOS's stale dasd alarm, latched since 15:03.
+- The timebase fits the merged driver: CLKM >> 15 (972075.6) matched the PMU's
+  seconds (972076). J314s keeps a tick offset (`rtc_offset` at 0x1411, 6
+  bytes), so the driver's tick-offset path applies, not `offset_in_seconds`.
+
+So the driver port needs one change: on a PMU with an `rtc_alarm_event` cell,
+clear the event by writing 1 there instead of writing the control byte back.
+The control byte's bit 1 then clears where the driver writes the control byte
+with it as 0. The SPMI interrupt is an edge, so a 0x14c0 left set would block
+every later alarm.
+
+### Testing the driver without a new device tree
+
+A device tree saved from one boot can't be booted again. iBoot places the
+SEP's firmware and the NVMe controller's (`flash@`) memory anew every boot
+(the `OF: reserved mem:` lines differ between consecutive boots), and m1n1
+writes the addresses into the tree. A stale tree would hand that memory to
+Linux. m1n1's boot.bin carries the tree for every boot, so it isn't a one-off
+test either.
+
+`rtc-alarm-test/` makes the change in the running kernel instead
+(`pkexec rtc-alarm-test/load`, undone by any restart):
+- `pmu-alarm-dt.ko` adds the t600x DT change to the live tree with an
+  `of_changeset`: nub-spmi0 as an interrupt controller on AIC 636, the alarm's
+  four nvmem cells, and the rtc node's cells, interrupt and `wakeup-source`;
+- `spmi-apple-wake.ko` is the integration branch's SPMI controller at
+  2037f3505288, which sets `IRQCHIP_SKIP_SET_WAKE`. aurora9 predates it, so its
+  controller can raise the alarm's interrupt but `enable_irq_wake()` fails;
+- `rtc-macsmc-alarm.ko` is the merged `rtc-macsmc` (integration 0d8a55c70a26)
+  plus the `rtc_alarm_event` cell.
+
+The load script unloads `rtc_macsmc` and `macsmc_reboot` (the holders of the
+PMU's nvmem cells) and `spmi_apple_controller`, applies the tree change, then
+loads the test drivers. Both drivers read the new properties only at probe.
+
 ## What gets recorded now
 
 On every suspend, `sleep-drain-log` writes `/var/log/sleep-drain/<id>/{pre,post}/`

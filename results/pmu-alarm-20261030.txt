@@ -1,0 +1,16 @@
+$ pkexec pmu-alarm test 20    (2026-10-30, aurora9, awake)
+before:  secs=974197 alarm=971706 (-2491 s) ctrl=0x03 (en=0 fired=1) event=0x01 mask=0x00
+before: event latched (ctrl fired=1, 0x14c0=1)
+  wrote 1 to 0x14c0 (event W1C) -> ctrl fired=1, 0x14c0=0
+  wrote ctrl back as read (T6030: bit 1 W1C) -> ctrl fired=1, 0x14c0=0
+  wrote ctrl with bit 1 as 0 (Maverick, per Aurora-DeepIdle) -> ctrl fired=0, 0x14c0=0
+armed:   secs=974197 alarm=974217 (+20 s) ctrl=0x41 (en=1 fired=0) event=0x00 mask=0x00
+t-20s:  secs=974197 alarm=974217 (+20 s) ctrl=0x41 (en=1 fired=0) event=0x00 mask=0x00
+t +0s:  secs=974217 alarm=974217 (+0 s) ctrl=0x03 (en=0 fired=1) event=0x01 mask=0x00
+result: FIRED (target 974217, counter now 974217)
+after: event latched (ctrl fired=1, 0x14c0=1)
+  wrote 1 to 0x14c0 (event W1C) -> ctrl fired=1, 0x14c0=0
+  wrote ctrl back as read (T6030: bit 1 W1C) -> ctrl fired=1, 0x14c0=0
+  wrote ctrl with bit 1 as 0 (Maverick, per Aurora-DeepIdle) -> ctrl fired=0, 0x14c0=0
+cleanup: event cleared
+final:   secs=974217 alarm=974217 (+0 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x00
