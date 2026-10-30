@@ -133,7 +133,9 @@ def run(fail):
         log = os.path.join(tmp, "log")
         open(log, "w").close()
         cmd = ["bwrap", "--unshare-user", "--uid", "0", "--ro-bind", "/", "/",
-               "--bind", os.path.join(tmp, "sys"), "/sys", "--proc", "/proc", "--dev", "/dev",
+               "--bind", os.path.join(tmp, "sys"), "/sys", "--dev", "/dev",
+               # A /proc of its own: the host's has no device-tree link on x86
+               "--tmpfs", "/proc", "--symlink", "/sys/firmware/devicetree/base", "/proc/device-tree",
                "--bind", tmp, tmp, "--setenv", "PATH", os.path.join(tmp, "stubs") + ":/usr/bin",
                "--setenv", "FAIL", fail, "--setenv", "LOG", log,
                "/bin/bash", os.path.join(test, "load")]
