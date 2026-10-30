@@ -1,0 +1,112 @@
+#!/bin/bash
+# Swap the PMU RTC alarm test into the running kernel on J314s (aurora9),
+# without a restart and without writing anything to disk:
+#
+#   make -C rtc-alarm-test && pkexec rtc-alarm-test/load
+#
+# 1. Unload rtc_macsmc and macsmc_reboot, which hold the PMU's nvmem cells, and
+#    spmi_apple_controller, which takes the PMU's nvmem device with it.
+# 2. pmu-alarm-dt.ko describes the alarm in the live device tree.
+# 3. spmi-apple-wake.ko probes nub-spmi0 again, now as an interrupt
+#    controller, and the PMU's nvmem device comes back with the alarm's cells.
+# 4. macsmc_reboot goes back in, and rtc-macsmc-alarm.ko becomes the RTC.
+#
+# If a step fails or a driver doesn't bind, the script goes back to the stock
+# drivers and exits with the failure. A restart undoes all of it: the tree
+# change lives only in memory.
+set -euo pipefail
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+SPMI_DT=/proc/device-tree/soc/spmi@2920a1300
+PMIC=/soc/spmi@2920a1300/pmic@f
+
+die() { echo "load: $*" >&2; exit 1; }
+# Inside the swap, a failure must go through the ERR trap, which exit skips.
+fail() { echo "load: $*" >&2; return 1; }
+loaded() { [[ -d /sys/module/$1 ]]; }
+# The module whose driver a platform device is bound to, or "unbound"
+driver_of() {
+  local m
+  m=$(readlink -f "/sys/bus/platform/devices/$1/driver/module" 2> /dev/null) || true
+  if [[ -n $m ]]; then echo "${m##*/}"; else echo unbound; fi
+}
+
+[[ $EUID -eq 0 ]] || die "run as root (pkexec)"
+tr '\0' '\n' < /proc/device-tree/compatible | grep -qx 'apple,j314s' || die "this isn't a J314s"
+for ko in pmu-alarm-dt spmi-apple-wake rtc-macsmc-alarm; do
+  [[ -f $DIR/$ko.ko ]] || die "no $ko.ko: run make -C $DIR first"
+  [[ $(modinfo -F vermagic "$DIR/$ko.ko" | cut -d' ' -f1) == "$(uname -r)" ]] ||
+    die "$ko.ko isn't built for $(uname -r): run make -C $DIR again"
+done
+if [[ -e $SPMI_DT/interrupt-controller ]]; then
+  die "the alarm is described already (loaded before this boot?); restart to start over"
+fi
+for m in rtc_macsmc macsmc_reboot spmi_apple_controller apple_nvmem_spmi; do
+  loaded "$m" || die "$m isn't loaded; this expects the stock drivers"
+done
+
+# Back to the stock drivers, whatever stage the swap reached. A test module can
+# stay loaded with its probe failed, so each one goes, not only the missing
+# stock ones come back; and the PMU's nvmem consumers go before the controller
+# that takes the nvmem device with it.
+restore() {
+  local rc=$?
+  trap - ERR
+  set +e
+  echo "load: failed; going back to the stock drivers" >&2
+  loaded rtc_macsmc_alarm && rmmod rtc_macsmc_alarm
+  if loaded spmi_apple_wake; then
+    loaded macsmc_reboot && rmmod macsmc_reboot
+    rmmod spmi_apple_wake
+  fi
+  loaded spmi_apple_controller || modprobe spmi_apple_controller
+  loaded macsmc_reboot || modprobe macsmc_reboot
+  loaded rtc_macsmc || modprobe rtc_macsmc
+  echo "load: now SPMI $(driver_of 2920a1300.spmi), reboot $(driver_of macsmc-reboot)," \
+    "RTC $(driver_of macsmc-rtc). A restart puts everything back." >&2
+  exit $((rc ? rc : 1))
+}
+trap restore ERR
+
+echo "1. unloading rtc_macsmc, macsmc_reboot, spmi_apple_controller"
+rmmod rtc_macsmc
+rmmod macsmc_reboot
+rmmod spmi_apple_controller
+
+echo "2. describing the alarm in the live device tree"
+insmod "$DIR/pmu-alarm-dt.ko"
+[[ -e $SPMI_DT/interrupt-controller ]] || fail "pmu-alarm-dt loaded, but the tree didn't change"
+
+echo "3. probing nub-spmi0 with spmi-apple-wake"
+insmod "$DIR/spmi-apple-wake.ko"
+[[ $(driver_of 2920a1300.spmi) == spmi_apple_wake ]] || fail "spmi-apple-wake didn't bind (see dmesg)"
+nvmem=
+for _ in $(seq 50); do
+  for d in /sys/bus/nvmem/devices/*; do
+    if [[ $(readlink -f "$d/of_node" 2>/dev/null) == */firmware/devicetree/base$PMIC ]]; then
+      nvmem=$d
+    fi
+  done
+  if [[ -n $nvmem ]]; then break; fi
+  sleep 0.1
+done
+[[ -n $nvmem ]] || fail "the PMU's nvmem device didn't come back"
+echo "   PMU nvmem: ${nvmem##*/}"
+
+echo "4. macsmc_reboot, and rtc-macsmc-alarm"
+modprobe macsmc_reboot
+[[ $(driver_of macsmc-reboot) == macsmc_reboot ]] || fail "macsmc_reboot didn't bind (see dmesg)"
+insmod "$DIR/rtc-macsmc-alarm.ko"
+[[ $(driver_of macsmc-rtc) == rtc_macsmc_alarm ]] || fail "rtc-macsmc-alarm didn't bind (see dmesg)"
+rtc=
+for r in /sys/class/rtc/rtc*; do
+  if [[ $(readlink -f "$r/device") == "$(readlink -f /sys/bus/platform/devices/macsmc-rtc)" ]]; then
+    rtc=$r
+  fi
+done
+[[ -n $rtc ]] || fail "rtc-macsmc-alarm bound, but registered no RTC"
+trap - ERR
+
+echo "done: ${rtc##*/}, wakealarm $([[ -e $rtc/wakealarm ]] && echo present || echo MISSING)," \
+  "wakeup $(cat "$rtc/device/power/wakeup" 2>/dev/null || echo n/a)"
+grep -E 'spmi|macsmc-rtc' /proc/interrupts || echo "no SPMI interrupt in /proc/interrupts"
