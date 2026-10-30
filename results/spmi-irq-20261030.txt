@@ -1,0 +1,31 @@
+# 2026-10-30, aurora9: rtc-alarm-test/load with AIC 636 described, integration
+# controller (notify at 256). Kernel log after the swap:
+spmi spmi-0: failed to wait for RX FIFO not empty
+macsmc-reboot macsmc-reboot: Failed to write boot_stage
+spmi spmi-0: failed to wait for RX FIFO not empty
+macsmc-reboot macsmc-reboot: Failed to read boot_error_count (-110)
+spmi spmi-0: failed to wait for RX FIFO not empty
+macsmc-rtc macsmc-rtc: no alarm: -110
+spmi spmi-0: failed to wait for RX FIFO not empty
+macsmc-rtc macsmc-rtc: registered as rtc0
+spmi spmi-0: failed to wait for RX FIFO not empty
+macsmc-rtc macsmc-rtc: hctosys: unable to read the hardware clock
+
+# AIC 636 (virq 143, hwirq 66172) per-CPU count: 0,0,0,0,0,0,0,0
+
+# macOS 26.6.2 IODeviceTree, nub-spmi0@920A1300:
+#   interrupts = 0xc0 (self), 0x27c (AIC), then self: 0xc8 0xc9 0xcc 0xcd
+#                0xc4 0xc5 0xca 0xd7-0xdd 0xc6 0xc7 0xcb
+#   error-interrupts = 0xc8 0xc9 0xcc 0xcd
+
+# pmu-alarm status (one read, timed out), then: pkexec rtc-alarm-test/spmi-peek
+status: 00030100 (rx fifo NOT empty)
+word 0 (irqs   0- 31): mask@0x20 00000000  ack@0x60 00000000
+word 1 (irqs  32- 63): mask@0x24 00000000  ack@0x64 0d000000
+word 2 (irqs  64- 95): mask@0x28 00000000  ack@0x68 00000000
+word 3 (irqs  96-127): mask@0x2c 00000000  ack@0x6c 00000000
+word 4 (irqs 128-159): mask@0x30 00000000  ack@0x70 00000000
+word 5 (irqs 160-191): mask@0x34 00000000  ack@0x74 00000000
+word 6 (irqs 192-223): mask@0x38 00000000  ack@0x78 00000001
+word 7 (irqs 224-255): mask@0x3c 00000000  ack@0x7c 00000100
+word 8 (irqs 256-287): mask@0x40 00000001  ack@0x80 00000000
