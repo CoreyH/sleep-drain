@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
+ * Test copy: omacom/linux-aurora integration/aurora at 2037f3505288 ("spmi:
+ * apple: Let peripheral interrupts wake the system"), which aurora9 predates.
+ * Built as spmi-apple-wake.ko to stand in for the stock spmi_apple_controller.
+ */
+/*
  * Apple SoC SPMI device driver
  *
  * Copyright The Asahi Linux Contributors

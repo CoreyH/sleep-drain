@@ -31,6 +31,11 @@ lab notebook: the problem, every night's result, and the findings so far.
 - `pmu-alarm`: reads the PMU's RTC wake alarm on J314s through its nvmem
   interface, and test-fires it awake (`test`, as root) to check the register map
   before the driver port.
+- `rtc-alarm-test/`: the PMU RTC alarm driver test on J314s. Out-of-tree
+  modules (the alarm `rtc-macsmc`, the integration SPMI controller, and an
+  `of_changeset` that describes the alarm in the live device tree), swapped in
+  by `pkexec rtc-alarm-test/load` after `make -C rtc-alarm-test`. Undone by a
+  restart; not installed by `install.sh`.
 - `tests/`: hardware-free checks (`python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU).
 - `results/`: raw output of the awake tests.
