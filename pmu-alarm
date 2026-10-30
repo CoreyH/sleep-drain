@@ -16,6 +16,7 @@ a firing only latches the event, which the test clears again. It refuses to run
 unless the board is apple,j314s and the nvmem device is that node.
 """
 import os
+import signal
 import sys
 import time
 
@@ -90,31 +91,52 @@ def fired(st):
 
 
 def clear_event(pmu, label):
-    """Clear a latched event and report which write did it."""
-    st = pmu.state()
-    if not any(fired(st)):
+    """Clear a latched event, trying each known acknowledgment in turn, and
+    report which one did it. The PMU families differ: T6030 clears the control
+    byte's bit 1 when it is written back as 1 (aurora #274); the M2 Pro's
+    Maverick only when it is written as 0 (JJRPF/Aurora-DeepIdle)."""
+    def latched():
+        return fired(pmu.state())
+
+    steps = [
+        ("wrote 1 to 0x14c0 (event W1C)",
+         lambda: pmu.write(EVENT, b"\x01")),
+        ("wrote ctrl back as read (T6030: bit 1 W1C)",
+         lambda: pmu.write(CTRL, bytes([pmu.u8(CTRL)]))),
+        ("wrote ctrl with bit 1 as 0 (Maverick, per Aurora-DeepIdle)",
+         lambda: pmu.write(CTRL, bytes([pmu.u8(CTRL) & ~CTRL_FIRED & 0xff]))),
+    ]
+    if not any(latched()):
         return True
-    print(f"{label}: event latched (ctrl fired={int(fired(st)[0])}, 0x14c0={int(fired(st)[1])})")
-    pmu.write(EVENT, b"\x01")
-    st = pmu.state()
-    print(f"  wrote 1 to 0x14c0 -> ctrl fired={int(fired(st)[0])}, 0x14c0={int(fired(st)[1])}")
-    if fired(st)[0]:
-        pmu.write(CTRL, bytes([st["ctrl"]]))
-        st = pmu.state()
-        print(f"  wrote ctrl back as read -> ctrl fired={int(fired(st)[0])}, 0x14c0={int(fired(st)[1])}")
-    return not any(fired(st))
+    print(f"{label}: event latched (ctrl fired={int(latched()[0])}, 0x14c0={int(latched()[1])})")
+    for desc, act in steps:
+        if not any(latched()):
+            break
+        act()
+        ctrl_fired, event = latched()
+        print(f"  {desc} -> ctrl fired={int(ctrl_fired)}, 0x14c0={int(event)}")
+    return not any(latched())
 
 
 def disarm(pmu):
     ctrl = pmu.u8(CTRL)
     if ctrl & CTRL_EN:
-        # Writing bit 1 back as 0 leaves a latched event alone.
-        pmu.write(CTRL, bytes([ctrl & ~(CTRL_EN | CTRL_FIRED)]))
+        # Bit 1 goes as 0: on T6030 that leaves a latched event alone, on
+        # Maverick it clears it. Either is fine here.
+        pmu.write(CTRL, bytes([ctrl & ~(CTRL_EN | CTRL_FIRED) & 0xff]))
+
+
+def on_signal(signum, frame):
+    # Unwind through the cleanup in test() instead of dying on the spot.
+    raise SystemExit(128 + signum)
 
 
 def test(seconds):
     if os.geteuid() != 0:
         die("test writes the PMU: run as root (pkexec)")
+    # Before the first write: SIGTERM or SIGHUP mid-test must still disarm.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, on_signal)
     pmu = Pmu(write=True)
     show(pmu.state(), "before:  ")
     try:
@@ -124,7 +146,7 @@ def test(seconds):
         target = st["secs"] + seconds
         pmu.write(ALARM, target.to_bytes(4, "little"))
         ctrl = pmu.u8(CTRL)
-        pmu.write(CTRL, bytes([(ctrl & ~CTRL_FIRED) | CTRL_EN]))
+        pmu.write(CTRL, bytes([(ctrl & ~CTRL_FIRED & 0xff) | CTRL_EN]))
         show(pmu.state(), "armed:   ")
         deadline = time.monotonic() + seconds + 10
         last = None
@@ -145,11 +167,16 @@ def test(seconds):
         print(f"cleanup: event {'cleared' if cleared else 'STILL LATCHED'}")
         return 0 if ok and cleared else 1
     finally:
+        # A second signal must not cut the cleanup short.
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)
         disarm(pmu)
         show(pmu.state(), "final:   ")
 
 
 def main(argv):
+    # Progress shows as it happens, even through a pipe or tee.
+    sys.stdout.reconfigure(line_buffering=True)
     check_machine()
     if len(argv) >= 1 and argv[0] == "status":
         show(Pmu(write=False).state())

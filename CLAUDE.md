@@ -31,6 +31,8 @@ lab notebook: the problem, every night's result, and the findings so far.
 - `pmu-alarm`: reads the PMU's RTC wake alarm on J314s through its nvmem
   interface, and test-fires it awake (`test`, as root) to check the register map
   before the driver port.
+- `tests/`: hardware-free checks (`python3 -I tests/pmu_alarm_test.py` runs
+  `pmu-alarm`'s real test against a fake PMU).
 - `results/`: raw output of the awake tests.
 
 ## How changes land
