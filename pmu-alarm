@@ -1,0 +1,193 @@
+#!/usr/bin/python3 -I
+"""pmu-alarm: read, and test-fire, the PMU's RTC wake alarm on a 14-inch
+MacBook Pro M1 Pro (J314s).
+
+  pmu-alarm status            the alarm registers, read-only (no root needed)
+  pmu-alarm test [SECONDS]    arm the alarm SECONDS ahead (default 20), watch it
+                              fire, report which writes clear it, and clean up
+
+The register map is macOS's own, from this Mac's IODeviceTree (spmi-mpmu@F,
+"pmu,maverick"): seconds counter in the upper four bytes of info-rtc (0x1406),
+which only latch when the read starts at 0x1406 (reading 0x1408 alone returns
+the value from the last latching read), alarm at 0x140c, control at 0x1401 (enable 0x40, monitor 0x01), event at 0x14c0,
+interrupt mask at 0x14c2. The PMU is reached through the kernel's nvmem
+interface for the pmic@f node. Linux doesn't wire the alarm's interrupt yet, so
+a firing only latches the event, which the test clears again. It refuses to run
+unless the board is apple,j314s and the nvmem device is that node.
+"""
+import os
+import signal
+import sys
+import time
+
+NVMEM = "/sys/bus/nvmem/devices/spmi_nvmem0"
+NODE = "/soc/spmi@2920a1300/pmic@f"
+
+RTC = 0x1406        # info-rtc: 6 bytes LE; seconds in the upper four. The read
+                    # must start here: it latches them.
+ALARM = 0x140c      # alarm compare value, 4 bytes LE, in those seconds
+CTRL = 0x1401       # info-rtc_alarm_ctrl
+CTRL_EN = 0x40      # info-rtc_alarm_ctrl_en_mask
+CTRL_FIRED = 0x02   # latched when the alarm fires (seen on this machine)
+EVENT = 0x14c0      # info-rtc_alarm_event, bit 0
+IRQ_MASK = 0x14c2   # info-rtc_irq_mask_offset, bit 0
+
+
+def die(msg, code=2):
+    print(f"pmu-alarm: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def check_machine():
+    try:
+        with open("/proc/device-tree/compatible", "rb") as f:
+            compat = f.read().split(b"\0")
+    except OSError as e:
+        die(f"can't read the device tree: {e}")
+    if b"apple,j314s" not in compat:
+        die("this isn't a J314s (apple,j314s); refusing")
+    node = os.path.realpath(f"{NVMEM}/of_node")
+    if not node.endswith(NODE):
+        die(f"{NVMEM} is {node}, not {NODE}; refusing")
+
+
+class Pmu:
+    def __init__(self, write):
+        self.fd = os.open(f"{NVMEM}/nvmem", os.O_RDWR if write else os.O_RDONLY)
+
+    def read(self, off, n):
+        data = os.pread(self.fd, n, off)
+        if len(data) != n:
+            die(f"short read at {off:#x}")
+        return data
+
+    def u8(self, off):
+        return self.read(off, 1)[0]
+
+    def u32(self, off):
+        return int.from_bytes(self.read(off, 4), "little")
+
+    def write(self, off, data):
+        if os.pwrite(self.fd, data, off) != len(data):
+            die(f"short write at {off:#x}")
+
+    def secs(self):
+        return int.from_bytes(self.read(RTC, 6)[2:], "little")
+
+    def state(self):
+        return {"secs": self.secs(), "alarm": self.u32(ALARM), "ctrl": self.u8(CTRL),
+                "event": self.u8(EVENT), "mask": self.u8(IRQ_MASK)}
+
+
+def show(st, prefix=""):
+    print(f"{prefix}secs={st['secs']} alarm={st['alarm']} ({st['alarm'] - st['secs']:+d} s) "
+          f"ctrl={st['ctrl']:#04x} (en={int(bool(st['ctrl'] & CTRL_EN))} "
+          f"fired={int(bool(st['ctrl'] & CTRL_FIRED))}) event={st['event']:#04x} "
+          f"mask={st['mask']:#04x}")
+
+
+def fired(st):
+    return bool(st["ctrl"] & CTRL_FIRED), bool(st["event"] & 1)
+
+
+def clear_event(pmu, label):
+    """Clear a latched event, trying each known acknowledgment in turn, and
+    report which one did it. The PMU families differ: T6030 clears the control
+    byte's bit 1 when it is written back as 1 (aurora #274); the M2 Pro's
+    Maverick only when it is written as 0 (JJRPF/Aurora-DeepIdle)."""
+    def latched():
+        return fired(pmu.state())
+
+    steps = [
+        ("wrote 1 to 0x14c0 (event W1C)",
+         lambda: pmu.write(EVENT, b"\x01")),
+        ("wrote ctrl back as read (T6030: bit 1 W1C)",
+         lambda: pmu.write(CTRL, bytes([pmu.u8(CTRL)]))),
+        ("wrote ctrl with bit 1 as 0 (Maverick, per Aurora-DeepIdle)",
+         lambda: pmu.write(CTRL, bytes([pmu.u8(CTRL) & ~CTRL_FIRED & 0xff]))),
+    ]
+    if not any(latched()):
+        return True
+    print(f"{label}: event latched (ctrl fired={int(latched()[0])}, 0x14c0={int(latched()[1])})")
+    for desc, act in steps:
+        if not any(latched()):
+            break
+        act()
+        ctrl_fired, event = latched()
+        print(f"  {desc} -> ctrl fired={int(ctrl_fired)}, 0x14c0={int(event)}")
+    return not any(latched())
+
+
+def disarm(pmu):
+    ctrl = pmu.u8(CTRL)
+    if ctrl & CTRL_EN:
+        # Bit 1 goes as 0: on T6030 that leaves a latched event alone, on
+        # Maverick it clears it. Either is fine here.
+        pmu.write(CTRL, bytes([ctrl & ~(CTRL_EN | CTRL_FIRED) & 0xff]))
+
+
+def on_signal(signum, frame):
+    # Unwind through the cleanup in test() instead of dying on the spot.
+    raise SystemExit(128 + signum)
+
+
+def test(seconds):
+    if os.geteuid() != 0:
+        die("test writes the PMU: run as root (pkexec)")
+    # Before the first write: SIGTERM or SIGHUP mid-test must still disarm.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, on_signal)
+    pmu = Pmu(write=True)
+    show(pmu.state(), "before:  ")
+    try:
+        if not clear_event(pmu, "before"):
+            die("couldn't clear the stale event; leaving the alarm alone", 1)
+        st = pmu.state()
+        target = st["secs"] + seconds
+        pmu.write(ALARM, target.to_bytes(4, "little"))
+        ctrl = pmu.u8(CTRL)
+        pmu.write(CTRL, bytes([(ctrl & ~CTRL_FIRED & 0xff) | CTRL_EN]))
+        show(pmu.state(), "armed:   ")
+        deadline = time.monotonic() + seconds + 10
+        last = None
+        while time.monotonic() < deadline:
+            st = pmu.state()
+            now = (bool(st["ctrl"] & CTRL_EN), *fired(st))
+            if now != last:
+                show(st, f"t{st['secs'] - target:+3d}s:  ")
+                last = now
+            if any(fired(st)):
+                break
+            time.sleep(0.25)
+        st = pmu.state()
+        ok = any(fired(st)) and not st["ctrl"] & CTRL_EN
+        print(f"result: {'FIRED' if ok else 'DID NOT FIRE'} "
+              f"(target {target}, counter now {st['secs']})")
+        cleared = clear_event(pmu, "after")
+        print(f"cleanup: event {'cleared' if cleared else 'STILL LATCHED'}")
+        return 0 if ok and cleared else 1
+    finally:
+        # A second signal must not cut the cleanup short.
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)
+        disarm(pmu)
+        show(pmu.state(), "final:   ")
+
+
+def main(argv):
+    # Progress shows as it happens, even through a pipe or tee.
+    sys.stdout.reconfigure(line_buffering=True)
+    check_machine()
+    if len(argv) >= 1 and argv[0] == "status":
+        show(Pmu(write=False).state())
+        return 0
+    if len(argv) >= 1 and argv[0] == "test":
+        seconds = int(argv[1]) if len(argv) > 1 else 20
+        if not 5 <= seconds <= 600:
+            die("SECONDS must be 5-600")
+        return test(seconds)
+    die("usage: pmu-alarm status | test [SECONDS]")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

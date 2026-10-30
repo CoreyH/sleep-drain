@@ -349,6 +349,45 @@ Two method notes from these runs:
 12.3 W against `energy_now`'s 12.1 W. The hook now logs it (`cc=`, with
 `uv=` for the voltage) and reports `avg_mw_cc`.
 
+## The PMU's RTC wake alarm (2026-10-30)
+
+A timed wake is the piece unattended sleep tests need, and one real
+suspend-to-RAM needs. JJRPF/Aurora-DeepIdle got it working on the M2 Pro.
+omacom/linux-aurora #274 merged an alarm for the M3's PMU into `rtc-macsmc`.
+
+On this J314s, macOS's IODeviceTree (macOS 26.6.2, `/boot/macos-session/`)
+describes the PMU as `spmi-mpmu@F`, `"pmu,spmi","pmu,maverick"`, the same
+family as the M2 Pro, with the same map:
+
+| ADT property | offset |
+|---|---|
+| `info-rtc` | 0x1406 (6 bytes) |
+| `info-rtc_alarm_offset` | 0x140c (4 bytes) |
+| `info-rtc_alarm_ctrl` / `_en_mask` | 0x1401 / 0x40 |
+| `info-rtc_alarm_monitor_mask` | 0x01 |
+| `info-rtc_alarm_event` | 0x14c0 |
+| `info-rtc_irq_mask_offset` | 0x14c2 |
+| `info-clock_offset` | 0x1411 (6 bytes) |
+
+Its interrupt is peripheral 2 of `nub-spmi0`, and `nub-spmi0`'s own line is
+AIC 636 (the M3 Pro uses 485, the M2 Pro 724). macOS used it for 13 dark wakes
+during a 3-hour sleep. The Linux DT has none of this yet: `nub_spmi0` has no
+interrupts, and the rtc node only has `rtc_offset`.
+
+Read through `spmi_nvmem0` (the pmic@f node, world-readable):
+- The seconds sit in the upper four bytes of the 6-byte RTC. They **only latch
+  when a read starts at 0x1406**; reading 0x1408 alone returns the last latched
+  value. The low two bytes read `0a 00` and don't change.
+- The alarm compares against those seconds. One was found latched: macOS's last
+  scheduled wake (dasd, `wakeAt` 15:03:16), which fired under Linux and decodes
+  to 15:03:17. After firing, the control byte read `0x03` (enable cleared, bit 1
+  latched) **and** 0x14c0 bit 0 was set, so the event shows in both places, the
+  control byte like T6030's.
+
+`pmu-alarm test` arms it awake to see which writes clear the event, before the
+driver port: `rtc-macsmc`'s alarm (from #274), plus clearing 0x14c0, plus the
+t600x DT cells and interrupts.
+
 ## What gets recorded now
 
 On every suspend, `sleep-drain-log` writes `/var/log/sleep-drain/<id>/{pre,post}/`
