@@ -3,6 +3,7 @@
 Research and tooling for the s2idle battery drain on Corey's 14-inch M1 Pro
 MacBook Pro (Omarchy on the omacom/linux-aurora kernel). RESEARCH.md is the
 lab notebook: the problem, every night's result, and the findings so far.
+PLAN.md is what's next, in order, and how to pick it up: start there.
 
 ## Layout
 
