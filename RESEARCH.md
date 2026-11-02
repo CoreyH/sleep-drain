@@ -437,8 +437,10 @@ loads the test drivers. Both drivers read the new properties only at probe.
 The swap went through and every driver bound, but every SPMI read then timed
 out (`failed to wait for RX FIFO not empty`; `results/spmi-irq-20261030.txt`).
 Once the controller has an interrupt, it waits for its "notify" event instead
-of polling, and AIC 636 never fired: its count stayed 0 on all 8 CPUs. The
-RTC registered without its alarm (`no alarm: -110`).
+of polling, and the event never came. The RTC registered without its alarm
+(`no alarm: -110`). (AIC 636's interrupt count stayed 0, but that shows
+nothing: the controller is a chained handler, and those never update the
+per-CPU counts. It stayed 0 once the alarm worked, too.)
 
 The line is right: macOS's nub-spmi0 has one AIC interrupt, 636. Its own
 events are numbered from 0xc0, though, not 0x100. With a read's reply left in
@@ -449,6 +451,30 @@ follow them. `spmi-apple-wake` now takes the count per SoC: 192 for
 `apple,t6000-spmi`, 256 for the rest. Upstream needs this before any t600x DT
 gives nub-spmi0 its interrupt; with the stock driver the PMU becomes
 unreachable.
+
+### The alarm wakes J314s from s2idle (2026-11-02)
+
+With #9's controller, `rtc-alarm-test/load` came up clean: SPMI reads take
+about 20 ms with no timeouts, and `rtc0` has `wakealarm` with wakeup enabled
+(`results/rtc-alarm-20261102.txt`; aurora9, on the charger).
+- Awake, three times: each alarm fired on its second, and afterwards the PMU
+  read control 0x01 with 0x14c0 clear, disarmed and cleared by the driver's
+  handler. That's the event-cell change working.
+- **Every sleep that nothing else woke ended on the alarm:** 6 of 6
+  `rtcwake -m freeze` sleeps of 20-30 s, back to back, with `pm_wakeup_irq`
+  the RTC's IRQ. 8 suspends, 0 failures.
+- Two other sleeps ended early (8.4 s, 16.2 s) on the Touch ID/power key. The
+  SMC reported `BTN_TOUCHID` pressed and released, and `macsmc-input`'s
+  wakeup source counted the events; it wakes the system without an IRQ.
+  Nobody meant to press it, so this may be a spurious press report. Worth
+  watching: it would cut short timed sleep tests and nights alike.
+- An awake alarm raised the IRQ 5-6 times, a sleep's only once. Possibly the
+  PMU repeats the message until 0x14c0 is cleared; the extra ones find the
+  event already clear. Harmless, but look into it before upstream.
+
+This was the missing piece for short timed sleeps: `rtcwake -m freeze -s 600`
+on battery can now stand in for a whole night when comparing one variable.
+`rtc-alarm-test/check` reruns these checks.
 
 ## What gets recorded now
 

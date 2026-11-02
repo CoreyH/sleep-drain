@@ -1,0 +1,67 @@
+# 2026-11-02, aurora9 (7.2.11-9-1-ARCH), on the charger: rtc-alarm-test/load with
+# PR #9's controller (notify at 192). The PMU had lost power over the weekend,
+# so the RTC counts from 0 (1970); alarms are relative, so that doesn't matter.
+
+## pkexec rtc-alarm-test/load
+done: rtc0, wakealarm present, wakeup enabled
+ 144: 0 0 0 0 0 0 0 0  apple_spmi  2 Edge  macsmc-rtc
+(no 'failed to wait for RX FIFO' in the log; pmu-alarm status took 21 ms)
+
+## run 1 (the script that became rtc-alarm-test/check)
+== awake: alarm 20 s ahead
+armed: wakealarm=1075 rtc=1055
+pmu:   secs=1055 alarm=1075 (+20 s) ctrl=0x41 (en=1 fired=0) event=0x00 mask=0x00
+after 21 s: irq 144 0 -> 5; wakealarm=''
+pmu:   secs=1076 alarm=1075 (-1 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+alarm_IRQ : no;alrm_pending : no
+== sleep 1: rtcwake -m freeze -s 30
+rtcwake exit 0, 30.6 s; wakeup irq 144; irq 144 5 -> 6; rtc wakeup_count 0 -> 0
+pmu:   secs=1109 alarm=1107 (-2 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== sleep 2: rtcwake -m freeze -s 30
+rtcwake exit 0, 31.0 s; wakeup irq 144; irq 144 6 -> 7; rtc wakeup_count 0 -> 0
+pmu:   secs=1145 alarm=1143 (-2 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== sleep 3: rtcwake -m freeze -s 30
+rtcwake exit 0, 16.2 s; wakeup irq ?; irq 144 7 -> 7; rtc wakeup_count 0 -> 0
+pmu:   secs=1166 alarm=1179 (+13 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== suspend stats
+
+
+## run 2
+== awake: alarm 20 s ahead
+armed: wakealarm=1268 rtc=1248
+pmu:   secs=1248 alarm=1268 (+20 s) ctrl=0x41 (en=1 fired=0) event=0x00 mask=0x00
+after 21 s: irq 144 7 -> 13; wakealarm=''
+pmu:   secs=1269 alarm=1268 (-1 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+alarm_IRQ : no;alrm_pending : no
+== sleep 1: rtcwake -m freeze -s 30
+rtcwake exit 0, 8.4 s; wakeup irq ?; irq 144 13 -> 13; rtc wakeup_count 0 -> 0
+pmu:   secs=1279 alarm=1300 (+21 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== sleep 2: rtcwake -m freeze -s 30
+rtcwake exit 0, 30.7 s; wakeup irq 144; irq 144 13 -> 14; rtc wakeup_count 0 -> 0
+pmu:   secs=1315 alarm=1313 (-2 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== sleep 3: rtcwake -m freeze -s 30
+rtcwake exit 0, 31.0 s; wakeup irq 144; irq 144 14 -> 15; rtc wakeup_count 0 -> 0
+pmu:   secs=1351 alarm=1349 (-2 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== suspend stats
+
+
+## The early wakes (run 1 sleep 3 at 16.2 s, run 2 sleep 1 at 8.4 s): the only
+## wake sign in the log is the SMC reporting the Touch ID/power key (macsmc-input
+## BTN_TOUCHID 0x06, pressed then released); macsmc-input's wakeup source had 4
+## events afterwards, none from an IRQ:
+macsmc 290400000.smc: RTKit: syslog message: apComms.cpp:354: SMC HID Event: 01 06 01
+macsmc 290400000.smc: RTKit: syslog message: apComms.cpp:354: SMC HID Event: 01 06 00
+
+## pkexec rtc-alarm-test/check 2 20
+== awake: alarm 20 s ahead (rtc0 alarm IRQ 144)
+armed: wakealarm=1492 rtc=1472
+pmu:   secs=1472 alarm=1492 (+20 s) ctrl=0x41 (en=1 fired=0) event=0x00 mask=0x00
+after 21 s: IRQ 144 count 15 -> 20, wakealarm ''
+pmu:   secs=1493 alarm=1492 (-1 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== sleep 1: rtcwake -m freeze -s 20
+woke after 21.1 s on the alarm (rtcwake exit 0, IRQ count 20 -> 21)
+pmu:   secs=1516 alarm=1514 (-2 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== sleep 2: rtcwake -m freeze -s 20
+woke after 20.9 s on the alarm (rtcwake exit 0, IRQ count 21 -> 22)
+pmu:   secs=1542 alarm=1540 (-2 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== 2 of 2 sleeps ended on the alarm; suspend_stats success 8, fail 0
