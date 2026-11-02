@@ -13,14 +13,14 @@ the value from the last latching read), alarm at 0x140c, control at 0x1401 (enab
 interrupt mask at 0x14c2. The PMU is reached through the kernel's nvmem
 interface for the pmic@f node. Linux doesn't wire the alarm's interrupt yet, so
 a firing only latches the event, which the test clears again. It refuses to run
-unless the board is apple,j314s and the nvmem device is that node.
+unless the board is apple,j314s and exactly one nvmem device is that node.
 """
+import glob
 import os
 import signal
 import sys
 import time
 
-NVMEM = "/sys/bus/nvmem/devices/spmi_nvmem0"
 NODE = "/soc/spmi@2920a1300/pmic@f"
 
 RTC = 0x1406        # info-rtc: 6 bytes LE; seconds in the upper four. The read
@@ -46,14 +46,22 @@ def check_machine():
         die(f"can't read the device tree: {e}")
     if b"apple,j314s" not in compat:
         die("this isn't a J314s (apple,j314s); refusing")
-    node = os.path.realpath(f"{NVMEM}/of_node")
-    if not node.endswith(NODE):
-        die(f"{NVMEM} is {node}, not {NODE}; refusing")
+    find_nvmem()
+
+
+def find_nvmem():
+    """The nvmem device for NODE. Its number isn't fixed: each bind of the SPMI
+    controller registers a new one (spmi_nvmem2 after rtc-alarm-test/load)."""
+    found = [d for d in sorted(glob.glob("/sys/bus/nvmem/devices/spmi_nvmem*"))
+             if os.path.realpath(f"{d}/of_node").endswith(NODE)]
+    if len(found) != 1:
+        die(f"want one nvmem device for {NODE}, found {len(found)}; refusing")
+    return found[0]
 
 
 class Pmu:
     def __init__(self, write):
-        self.fd = os.open(f"{NVMEM}/nvmem", os.O_RDWR if write else os.O_RDONLY)
+        self.fd = os.open(f"{find_nvmem()}/nvmem", os.O_RDWR if write else os.O_RDONLY)
 
     def read(self, off, n):
         data = os.pread(self.fd, n, off)

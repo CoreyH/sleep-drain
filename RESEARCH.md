@@ -489,6 +489,33 @@ freeze. The hook runs before the sleep starts and counts a sleep under 600 s
 as `valid=no-short`, so arm with some margin over 600. wake-off leaves the RTC
 a wakeup source: it only disables USB and PCI wakeups.
 
+### aurora14, and the RTC at the real time (2026-11-02)
+
+After the Omarchy 4.5.0rc3 update (linux-aurora 7.2.11.aurora14, built
+2026-11-01), the same modules, rebuilt against aurora14's headers, behave the
+same (`results/rtc-alarm-aurora14-20261102.txt`, on the charger): the load
+came up clean, the awake alarm fired on time, and 3 of 3 sleeps ended on the
+alarm. aurora14's stock SPMI controller still has no per-SoC notify position,
+so the 192 fix is still needed upstream.
+
+Every run until then had the RTC at 1970: the PMU lost power over the
+weekend, which zeroed the offset. It also meant every boot set the system
+clock to 1970 when the RTC probed (`hctosys`), until timesyncd corrected it.
+This kernel has `RTC_HCTOSYS` but not `RTC_SYSTOHC`, so nothing writes the
+right time back. One `hwclock --systohc` fixed it, and gave the alarm its
+first test with a real offset (about 1.79e9 s): `wakealarm` 1793627079 became
+PMU alarm 8879, in the counter's seconds. It fired awake, and a 30 s sleep
+ended on it.
+
+The awake IRQ count isn't steady: 5-6 per alarm on aurora9, 7 on aurora14's
+first, 1 on the next (with the real offset). Sleeps always raised 1. Still to
+look into before upstream.
+
+`pmu-alarm` now finds the PMU's nvmem device by its node. The number isn't
+fixed: each bind of the SPMI controller registers a new one (`spmi_nvmem2`
+after this load), and the hardcoded `spmi_nvmem0` made `check`'s status lines
+refuse.
+
 ## What gets recorded now
 
 On every suspend, `sleep-drain-log` writes `/var/log/sleep-drain/<id>/{pre,post}/`

@@ -1,0 +1,63 @@
+# 2026-11-02, aurora14 (7.2.11-14-1-ARCH, built 2026-11-01) after the Omarchy
+# 4.5.0rc3 update, on the charger. Same test modules as aurora9, rebuilt
+# against aurora14's headers. The stock aurora14 controller still has no
+# T6000 notify position (no peripheral_irqs). The RTC still counted from 0
+# (1970), as on aurora9.
+
+## pkexec rtc-alarm-test/load
+1. unloading rtc_macsmc, macsmc_reboot, spmi_apple_controller
+2. describing the alarm in the live device tree
+3. probing nub-spmi0 with spmi-apple-wake
+   PMU nvmem: spmi_nvmem2
+4. macsmc_reboot, and rtc-macsmc-alarm
+done: rtc0, wakealarm present, wakeup enabled
+ 144:          0          0          0          0          0          0          0          0  apple_spmi              2 Edge      macsmc-rtc
+
+## pkexec rtc-alarm-test/check 3 30
+# pmu-alarm looked for the PMU at spmi_nvmem0, but the reload made it
+# spmi_nvmem2, so its status lines refused; fixed in the same PR (it now finds
+# the nvmem device by node).
+== awake: alarm 20 s ahead (rtc0 alarm IRQ 144)
+armed: wakealarm=8269 rtc=8249
+pmu-alarm: /sys/bus/nvmem/devices/spmi_nvmem0 is /sys/bus/nvmem/devices/spmi_nvmem0/of_node, not /soc/spmi@2920a1300/pmic@f; refusing
+pmu:   
+after 21 s: IRQ 144 count 0 -> 7, wakealarm ''
+pmu-alarm: /sys/bus/nvmem/devices/spmi_nvmem0 is /sys/bus/nvmem/devices/spmi_nvmem0/of_node, not /soc/spmi@2920a1300/pmic@f; refusing
+pmu:   
+== sleep 1: rtcwake -m freeze -s 30
+woke after 31.1 s on the alarm (IRQ count 7 -> 8)
+pmu-alarm: /sys/bus/nvmem/devices/spmi_nvmem0 is /sys/bus/nvmem/devices/spmi_nvmem0/of_node, not /soc/spmi@2920a1300/pmic@f; refusing
+pmu:   
+== sleep 2: rtcwake -m freeze -s 30
+woke after 30.9 s on the alarm (IRQ count 8 -> 9)
+pmu-alarm: /sys/bus/nvmem/devices/spmi_nvmem0 is /sys/bus/nvmem/devices/spmi_nvmem0/of_node, not /soc/spmi@2920a1300/pmic@f; refusing
+pmu:   
+== sleep 3: rtcwake -m freeze -s 30
+woke after 30.9 s on the alarm (IRQ count 9 -> 10)
+pmu-alarm: /sys/bus/nvmem/devices/spmi_nvmem0 is /sys/bus/nvmem/devices/spmi_nvmem0/of_node, not /soc/spmi@2920a1300/pmic@f; refusing
+pmu:   
+== 3 attempts: 3 ended on the alarm, 0 on the Touch ID/power key, 0 on something else; 0 didn't suspend
+suspend_stats success 3, fail 0
+exit 0
+
+## ./pmu-alarm status, with the fix, right after
+secs=8416 alarm=8373 (-43 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+
+## pkexec: hwclock --systohc --utc, then rtc-alarm-test/check 1 30
+# The first run with the RTC at the real time: the driver now has to subtract
+# a real rtc_offset (about 1.79e9 s) from the alarm. Before, the PMU had lost
+# power and the offset was about 0.
+before: rtc 8440 sys 1793626640
+after:  rtc 1793627059 sys 1793627059
+== awake: alarm 20 s ahead (rtc0 alarm IRQ 144)
+armed: wakealarm=1793627079 rtc=1793627059
+pmu:   secs=8858 alarm=8879 (+21 s) ctrl=0x41 (en=1 fired=0) event=0x00 mask=0x00
+after 22 s: IRQ 144 count 10 -> 11, wakealarm ''
+pmu:   secs=8880 alarm=8879 (-1 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== sleep 1: rtcwake -m freeze -s 30
+woke after 31.3 s on the alarm (IRQ count 11 -> 12)
+pmu:   secs=8914 alarm=8912 (-2 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+== 1 attempts: 1 ended on the alarm, 0 on the Touch ID/power key, 0 on something else; 0 didn't suspend
+suspend_stats success 4, fail 0
+exit 0
+(./pmu-alarm status after) secs=8917 alarm=8912 (-5 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
