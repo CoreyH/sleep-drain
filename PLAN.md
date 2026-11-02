@@ -98,7 +98,8 @@ only when a job needs one: the remote recovery for A5.
   `aarch64-unknown-none-softfloat` target), or cross-compile it on the
   desktop.
 - m1n1's udev rule (USB ID 1209:316d gives `/dev/m1n1` and `/dev/m1n1-sec`),
-  with the user in the group that rule names.
+  with the user in the serial device's owning group (e.g. `uucp` or
+  `dialout`): the rule only adds the links, no group.
 - A USB-C data cable from the desktop to the MacBook's **DFU port**: the
   rear-left port, next to MagSafe. A-to-C works too. Connect directly, not
   through a hub. Charge the MacBook through MagSafe while tracing.
