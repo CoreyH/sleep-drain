@@ -85,20 +85,30 @@ steps, and restarting the DCP and the PMP afterwards.
 
 ## The second computer
 
-What it has to be depends on the job.
+Decided on 2026-11-02: **Corey's Linux desktop** is the host for everything
+up to the trace (A3 and A4). An Apple Silicon Mac is available, and comes in
+only when a job needs one: the remote recovery for A5.
 
-**For the hypervisor trace (A4):**
-- Any Linux computer, or a Mac.
+**On the Linux desktop, for the hypervisor trace (A4):**
 - Python 3.9 or newer, with `pyserial` and `construct`.
-- m1n1 built from source: main from 2026-10-16 or later.
-- m1n1's udev rule.
-- A USB-C data cable to the MacBook's **DFU port**: the rear-left port, next
-  to MagSafe. Charge through MagSafe while tracing.
+- m1n1 built from source, main from 2026-10-16 or later. The host's
+  proxyclient and the m1n1 binary must come from the same commit: the proxy
+  protocol isn't stable. On an x86-64 desktop, build the binary either on the
+  MacBook (native aarch64; clang/lld plus Rust's
+  `aarch64-unknown-none-softfloat` target), or cross-compile it on the
+  desktop.
+- m1n1's udev rule (USB ID 1209:316d gives `/dev/m1n1` and `/dev/m1n1-sec`),
+  with the user in the serial device's owning group (e.g. `uucp` or
+  `dialout`): the rule only adds the links, no group.
+- A USB-C data cable from the desktop to the MacBook's **DFU port**: the
+  rear-left port, next to MagSafe. A-to-C works too. Connect directly, not
+  through a hub. Charge the MacBook through MagSafe while tracing.
+- Claude Code on the desktop, with this repo cloned.
 
-**For remote recovery in A5** (a hard reset and a serial console without
-anyone at the power key): macvdmtool. It only runs on an **Apple Silicon
-Mac**, and needs a USB-C cable to the same DFU port. If the other computer is
-an Apple Silicon Mac, it can do both jobs.
+**On the Mac, for remote recovery in A5:** macvdmtool, which only runs on an
+Apple Silicon Mac. It gives a hard reset and a serial console without anyone
+at the power key. It needs a USB-C cable to the same DFU port; the serial
+console needs a SuperSpeed C-to-C cable.
 
 **On the MacBook (A3)**, step by step with the session:
 1. A second APFS volume with macOS 14.8.3 or 14.8.9. macOS 26.6.2 can't be
@@ -142,8 +152,6 @@ omacom/linux-aurora#274 (issuecomment-6520008651).
 
 - `/etc/systemd/system/omarchy-wifi-resume-fix.service` fails on every
   resume, because its script is gone. Remove it?
-- Four merged branches are still on GitHub: fix/valid-by-coulomb-counter,
-  results/rtc-alarm-works, fix/t6000-spmi-notify and port/rtc-alarm-t600x.
 - dotfiles:
   - `master` is 2 commits behind;
   - `chromium-flags.conf` and `shell.json` have uncommitted changes;
