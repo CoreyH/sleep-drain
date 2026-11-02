@@ -432,6 +432,24 @@ The load script unloads `rtc_macsmc` and `macsmc_reboot` (the holders of the
 PMU's nvmem cells) and `spmi_apple_controller`, applies the tree change, then
 loads the test drivers. Both drivers read the new properties only at probe.
 
+### First swap: T6000's SPMI "reply ready" interrupt is 192, not 256 (2026-10-30)
+
+The swap went through and every driver bound, but every SPMI read then timed
+out (`failed to wait for RX FIFO not empty`; `results/spmi-irq-20261030.txt`).
+Once the controller has an interrupt, it waits for its "notify" event instead
+of polling, and AIC 636 never fired: its count stayed 0 on all 8 CPUs. The
+RTC registered without its alarm (`no alarm: -110`).
+
+The line is right: macOS's nub-spmi0 has one AIC interrupt, 636. Its own
+events are numbered from 0xc0, though, not 0x100. With a read's reply left in
+the FIFO, `spmi-peek` (read-only, /dev/mem) shows the pending bit at **192**
+(ack word 6, bit 0). The driver had unmasked 256 (mask word 8), T6030's
+position. So T6000's controller has 192 peripheral interrupts, and its events
+follow them. `spmi-apple-wake` now takes the count per SoC: 192 for
+`apple,t6000-spmi`, 256 for the rest. Upstream needs this before any t600x DT
+gives nub-spmi0 its interrupt; with the stock driver the PMU becomes
+unreachable.
+
 ## What gets recorded now
 
 On every suspend, `sleep-drain-log` writes `/var/log/sleep-drain/<id>/{pre,post}/`
