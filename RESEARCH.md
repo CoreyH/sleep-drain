@@ -472,9 +472,22 @@ about 20 ms with no timeouts, and `rtc0` has `wakealarm` with wakeup enabled
   PMU repeats the message until 0x14c0 is cleared; the extra ones find the
   event already clear. Harmless, but look into it before upstream.
 
-This was the missing piece for short timed sleeps: `rtcwake -m freeze -s 600`
-on battery can now stand in for a whole night when comparing one variable.
+This was the missing piece for short timed sleeps: on battery, a sleep ended
+by the alarm can stand in for a whole night when comparing one variable.
 `rtc-alarm-test/check` reruns these checks.
+
+A drain test can't sleep through `rtcwake -m freeze`, though. rtcwake writes
+`/sys/power/state` itself, so the sleep skips the systemd-sleep hook: no
+`sleep-drain-log` line, no snapshots, and none of the experiment flags
+(radios-off, wake-off, pcie-off) applied. That's fine for `check`, which tests
+the driver. For drain, arm the alarm on its own and suspend through systemd:
+
+    pkexec rtcwake -m no -s 900 && systemctl suspend
+
+`mem_sleep` offers only `[s2idle]` here, so `systemctl suspend` is the same
+freeze. The hook runs before the sleep starts and counts a sleep under 600 s
+as `valid=no-short`, so arm with some margin over 600. wake-off leaves the RTC
+a wakeup source: it only disables USB and PCI wakeups.
 
 ## What gets recorded now
 

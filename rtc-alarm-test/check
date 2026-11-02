@@ -7,8 +7,15 @@
 #
 # After each sleep it says what ended it: the alarm (pm_wakeup_irq is the
 # RTC's), the Touch ID/power key (macsmc-input reported events: it wakes the
-# system without an IRQ), or something else. Hands off the keyboard, lid and
+# system without an IRQ), or something else. An attempt that never suspended
+# (rtcwake failed, or suspend_stats/success didn't go up) is reported as such
+# and not attributed: pm_wakeup_irq still names the previous sleep's wake. Exits
+# non-zero if any attempt didn't suspend. Hands off the keyboard, lid and
 # Touch ID key while it runs.
+#
+# rtcwake writes /sys/power/state itself, so these sleeps skip the
+# systemd-sleep hook: no sleep-drain log line, snapshots or experiment flags.
+# That's right for testing the driver, not for measuring drain (RESEARCH.md).
 set -euo pipefail
 
 DIR=$(cd "$(dirname "$0")" && pwd)
@@ -46,25 +53,33 @@ sleep 1
 echo "after $(( $(date +%s) - t0 )) s: IRQ $irq count $i0 -> $(irqs), wakealarm '$(cat $R/wakealarm)'"
 echo "pmu:   $(pmu)"
 
-ok=0
+ok=0 key=0 other=0 nosleep=0
 for n in $(seq "$sleeps"); do
   echo "== sleep $n: rtcwake -m freeze -s $secs"
-  i0=$(irqs) k0=$(events macsmc-input) t0=$(date +%s.%N)
+  i0=$(irqs) k0=$(events macsmc-input) s0=$(cat /sys/power/suspend_stats/success) t0=$(date +%s.%N)
   rtc=0
-  rtcwake -m freeze -s "$secs" > /dev/null 2>&1 || rtc=$?
+  err=$(rtcwake -m freeze -s "$secs" 2>&1 > /dev/null) || rtc=$?
   t1=$(date +%s.%N)
   sleep 2
+  s1=$(cat /sys/power/suspend_stats/success)
   wirq=$(cat /sys/power/pm_wakeup_irq 2> /dev/null || echo none)
-  if [[ $wirq == "$irq" ]]; then
-    by="the alarm"; ok=$((ok + 1))
-  elif (( $(events macsmc-input) > k0 )); then
-    by="the Touch ID/power key"
+  if (( rtc != 0 || s1 == s0 )); then
+    nosleep=$((nosleep + 1))
+    echo "didn't suspend: rtcwake exit $rtc, suspend_stats success $s0 -> $s1${err:+, rtcwake said: ${err//$'\n'/; }}"
   else
-    by="something else (wakeup IRQ: $wirq)"
+    if [[ $wirq == "$irq" ]]; then
+      by="the alarm"; ok=$((ok + 1))
+    elif (( $(events macsmc-input) > k0 )); then
+      by="the Touch ID/power key"; key=$((key + 1))
+    else
+      by="something else (wakeup IRQ: $wirq)"; other=$((other + 1))
+    fi
+    awk -v a="$t0" -v b="$t1" -v by="$by" -v i0="$i0" -v i1="$(irqs)" \
+      'BEGIN { printf "woke after %.1f s on %s (IRQ count %s -> %s)\n", b - a, by, i0, i1 }'
   fi
-  awk -v a="$t0" -v b="$t1" -v r="$rtc" -v by="$by" -v i0="$i0" -v i1="$(irqs)" \
-    'BEGIN { printf "woke after %.1f s on %s (rtcwake exit %s, IRQ count %s -> %s)\n", b - a, by, r, i0, i1 }'
   echo "pmu:   $(pmu)"
   sleep 3
 done
-echo "== $ok of $sleeps sleeps ended on the alarm; suspend_stats success $(cat /sys/power/suspend_stats/success), fail $(cat /sys/power/suspend_stats/fail)"
+echo "== $sleeps attempts: $ok ended on the alarm, $key on the Touch ID/power key, $other on something else; $nosleep didn't suspend"
+echo "suspend_stats success $(cat /sys/power/suspend_stats/success), fail $(cat /sys/power/suspend_stats/fail)"
+(( nosleep == 0 ))
