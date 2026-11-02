@@ -437,8 +437,10 @@ loads the test drivers. Both drivers read the new properties only at probe.
 The swap went through and every driver bound, but every SPMI read then timed
 out (`failed to wait for RX FIFO not empty`; `results/spmi-irq-20261030.txt`).
 Once the controller has an interrupt, it waits for its "notify" event instead
-of polling, and AIC 636 never fired: its count stayed 0 on all 8 CPUs. The
-RTC registered without its alarm (`no alarm: -110`).
+of polling, and the event never came. The RTC registered without its alarm
+(`no alarm: -110`). (AIC 636's interrupt count stayed 0, but that shows
+nothing: the controller is a chained handler, and those never update the
+per-CPU counts. It stayed 0 once the alarm worked, too.)
 
 The line is right: macOS's nub-spmi0 has one AIC interrupt, 636. Its own
 events are numbered from 0xc0, though, not 0x100. With a read's reply left in
@@ -449,6 +451,70 @@ follow them. `spmi-apple-wake` now takes the count per SoC: 192 for
 `apple,t6000-spmi`, 256 for the rest. Upstream needs this before any t600x DT
 gives nub-spmi0 its interrupt; with the stock driver the PMU becomes
 unreachable.
+
+### The alarm wakes J314s from s2idle (2026-11-02)
+
+With #9's controller, `rtc-alarm-test/load` came up clean: SPMI reads take
+about 20 ms with no timeouts, and `rtc0` has `wakealarm` with wakeup enabled
+(`results/rtc-alarm-20261102.txt`; aurora9, on the charger).
+- Awake, three times: each alarm fired on its second, and afterwards the PMU
+  read control 0x01 with 0x14c0 clear, disarmed and cleared by the driver's
+  handler. That's the event-cell change working.
+- **Every sleep that nothing else woke ended on the alarm:** 6 of 6
+  `rtcwake -m freeze` sleeps of 20-30 s, back to back, with `pm_wakeup_irq`
+  the RTC's IRQ. 8 suspends, 0 failures.
+- Two other sleeps ended early (8.4 s, 16.2 s) on the Touch ID/power key. The
+  SMC reported `BTN_TOUCHID` pressed and released, and `macsmc-input`'s
+  wakeup source counted the events; it wakes the system without an IRQ.
+  Nobody meant to press it, so this may be a spurious press report. Worth
+  watching: it would cut short timed sleep tests and nights alike.
+- An awake alarm raised the IRQ 5-6 times, a sleep's only once. Possibly the
+  PMU repeats the message until 0x14c0 is cleared; the extra ones find the
+  event already clear. Harmless, but look into it before upstream.
+
+This was the missing piece for short timed sleeps: on battery, a sleep ended
+by the alarm can stand in for a whole night when comparing one variable.
+`rtc-alarm-test/check` reruns these checks.
+
+A drain test can't sleep through `rtcwake -m freeze`, though. rtcwake writes
+`/sys/power/state` itself, so the sleep skips the systemd-sleep hook: no
+`sleep-drain-log` line, no snapshots, and none of the experiment flags
+(radios-off, wake-off, pcie-off) applied. That's fine for `check`, which tests
+the driver. For drain, arm the alarm on its own and suspend through systemd:
+
+    pkexec rtcwake -m no -s 900 && systemctl suspend
+
+`mem_sleep` offers only `[s2idle]` here, so `systemctl suspend` is the same
+freeze. The hook runs before the sleep starts and counts a sleep under 600 s
+as `valid=no-short`, so arm with some margin over 600. wake-off leaves the RTC
+a wakeup source: it only disables USB and PCI wakeups.
+
+### aurora14, and the RTC at the real time (2026-11-02)
+
+After the Omarchy 4.5.0rc3 update (linux-aurora 7.2.11.aurora14, built
+2026-11-01), the same modules, rebuilt against aurora14's headers, behave the
+same (`results/rtc-alarm-aurora14-20261102.txt`, on the charger): the load
+came up clean, the awake alarm fired on time, and 3 of 3 sleeps ended on the
+alarm. aurora14's stock SPMI controller still has no per-SoC notify position,
+so the 192 fix is still needed upstream.
+
+Every run until then had the RTC at 1970: the PMU lost power over the
+weekend, which zeroed the offset. It also meant every boot set the system
+clock to 1970 when the RTC probed (`hctosys`), until timesyncd corrected it.
+This kernel has `RTC_HCTOSYS` but not `RTC_SYSTOHC`, so nothing writes the
+right time back. One `hwclock --systohc` fixed it, and gave the alarm its
+first test with a real offset (about 1.79e9 s): `wakealarm` 1793627079 became
+PMU alarm 8879, in the counter's seconds. It fired awake, and a 30 s sleep
+ended on it.
+
+The awake IRQ count isn't steady: 5-6 per alarm on aurora9, 7 on aurora14's
+first, 1 on the next (with the real offset). Sleeps always raised 1. Still to
+look into before upstream.
+
+`pmu-alarm` now finds the PMU's nvmem device by its node. The number isn't
+fixed: each bind of the SPMI controller registers a new one (`spmi_nvmem2`
+after this load), and the hardcoded `spmi_nvmem0` made `check`'s status lines
+refuse.
 
 ## What gets recorded now
 

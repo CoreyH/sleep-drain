@@ -35,12 +35,17 @@ lab notebook: the problem, every night's result, and the findings so far.
   modules (the alarm `rtc-macsmc`, the integration SPMI controller, and an
   `of_changeset` that describes the alarm in the live device tree), swapped in
   by `pkexec rtc-alarm-test/load` after `make -C rtc-alarm-test`. Undone by a
-  restart; not installed by `install.sh`. `rtc-alarm-test/spmi-peek.c` reads
-  nub-spmi0's interrupt mask and ack words, read-only.
+  restart; not installed by `install.sh`. `pkexec rtc-alarm-test/check`
+  then fires one alarm awake and wakes a few rtcwake sleeps with it, saying
+  what ended each. Those sleeps skip the systemd-sleep hook; a timed drain
+  test arms the alarm with `rtcwake -m no` and suspends through systemd.
+  `rtc-alarm-test/spmi-peek.c` reads nub-spmi0's interrupt mask and ack words,
+  read-only.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake
-  /sys, with one failure injected per case.
+  /sys, with one failure injected per case; `tests/rtc_alarm_check_test.py`
+  runs `rtc-alarm-test/check` the same way against a stub rtcwake.
 - `results/`: raw output of the awake tests.
 
 ## How changes land
