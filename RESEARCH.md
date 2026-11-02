@@ -568,9 +568,90 @@ pre-screen what a device costs before spending a night on it.
   power-state writes, the SMC keys, and what the AOP/RTKit coprocessors are told.
   That's how the sequence Linux is missing would be found. Needs: a second
   computer (Linux or macOS) and a USB-C cable, plus m1n1 from source.
-  VMs don't help here, because power state is hardware.
+  VMs don't help here, because power state is hardware. It only sees the way
+  into sleep, and here it needs a macOS 14.8.x guest (see the next section).
 - **SMC key dump** across macOS sleep and Linux s2idle, to compare what the SMC
   is asked to do.
 - **Upstream**: report issues and patches to omacom/linux-aurora (where aurora
   development moved on 2026-10-18), with these numbers. The Asahi Linux team
   owns the general s2idle story.
+
+## Deep sleep: what's known (desk research, 2026-11-02)
+
+This section was collected from public sources, and none of it has been
+checked on this Mac yet. Some of DeepIdle's material is AI-assisted reverse
+engineering that was later partly corrected (DeepIdle#5). "Inferred" marks
+our own reading.
+
+**What macOS does.**
+- XNU's deep-sleep path powers the cores off, with WFI retention disabled
+  ([machine_routines_asm.s](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/arm64/machine_routines_asm.s)).
+- On wake, a PMGR "reconfig engine" script restarts the CPU at the kernel's
+  reset vector, without iBoot
+  ([cpu.c](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/arm64/cpu.c)).
+  iBoot locks the boot CPU's RVBAR
+  ([Asahi](https://github.com/AsahiLinux/docs/blob/main/docs/fw/macho-boot-protocol.md)).
+- On the M2 Pro, a hypervisor trace showed this way into sleep
+  ([DeepIdle](https://github.com/JJRPF/Aurora-DeepIdle/blob/main/docs/hv-boot-trace-reference.md)):
+  1. the SMC key `MBSE` set to `slpw`;
+  2. a PMP handshake that turns the display domains off;
+  3. `MBSE` set to `slpa`;
+  4. `SetAPPower 0x201` sent to the SMC and the PMP;
+  5. CPU-start register writes, then every core in deep WFI.
+
+  The wake wasn't visible. `MBSW` reportedly holds the wake reason, and the
+  AOP and SEP stay powered (DeepIdle#5).
+- Upstream's macsmc-reboot knows the `MBSE` values `slpw` and `susp`, not
+  `slpa`. On an M4 Max, `susp` powered the machine off, and the "wake" was a
+  cold boot ([aurora-silicon#791](https://github.com/aurora-silicon/linux/discussions/791)).
+- macOS sleeps at 0.24 W on the M2 Pro (DeepIdle#3), against about 0.1 W on
+  this J314s (#290).
+
+**Where Linux is.** Nobody has powered the SoC down yet.
+- Sven Peter's PSCI-via-EFI RFC
+  ([LWN](https://lwn.net/Articles/1081810/)) puts a firmware call interface
+  in m1n1. It has no CPU_OFF and no SYSTEM_SUSPEND, covers T8103 only, and
+  the name drew objections on the list.
+- DeepIdle ported it to their kernel and U-Boot. A SYSTEM_SUSPEND stub there
+  ran 20 of 20 cycles, but with the SoC still on and one CPU running.
+- **Powering a core off and restarting it at RVBAR fails**, on the M2 Pro
+  ([worklog](https://github.com/JJRPF/Aurora-DeepIdle/blob/main/docs/worklog.md))
+  and in an earlier J314s attempt
+  ([linux-aurora#170](https://github.com/omacom/linux-aurora/pull/170)).
+  On the M2 Pro:
+  - the PMGR start strobes never restart a stopped core;
+  - a core in deep WFI without retention resumes after the WFI, not at RVBAR;
+  - the cluster-wide override killed the SoC;
+  - hotplug tests corrupted a filesystem.
+- **Other DeepIdle results:**
+  - `slpa` sent from s2idle lost the NVMe until a full power-off;
+  - the PMP acknowledges IDLE, but setting RUN never restarts it;
+  - resetting `ps_pmp` crashed the SoC.
+- The DCP driver doesn't support a full shutdown yet.
+- There is no code anywhere for the last PMGR steps (clock and PLL
+  quiesce, and an "S2R timer").
+
+**T6000 against T6020.**
+- XNU gives H13 and H14 the same sleep flags, so the CPU side likely carries
+  over (inferred).
+- The CPU-start block is at PMGR + 0x54000 on T6000 and + 0x28000 on T6020
+  ([smp.md](https://github.com/AsahiLinux/docs/blob/main/docs/hw/cpu/smp.md)).
+- T6000's S2R timer address and its `MBSE` values are unknown.
+- The PMU is the same Maverick part (above).
+
+**The hypervisor only sees the way in.**
+- m1n1 refuses the guest's write that turns off WFI return, and panics once
+  cores disappear
+  ([hv_exc.c](https://github.com/AsahiLinux/m1n1/blob/main/src/hv/hv_exc.c)).
+- On the M2 Pro, every sleep under it hung and needed the power key.
+- This Mac's macOS 26.6.2 uses SPTM and TXM (`sptm` and `trxm` boot objects
+  in `/boot/macos-session/iodevicetree.txt`). m1n1 runs SPTM guests only on
+  M2 and later, so the guest here has to be macOS 13.5 or 14.8.x, on its own
+  volume
+  ([hypervisor guide](https://asahilinux.org/docs/sw/m1n1-hypervisor/)).
+
+**Others on this.**
+- maralcbr/omarchy-mx-mac#281 is an M1 Pro sleep effort. It recovers hung
+  sleeps by hard-resetting through the DFU port with macvdmtool, from a
+  second Apple Silicon Mac.
+- PLAN.md has what we do with all this.

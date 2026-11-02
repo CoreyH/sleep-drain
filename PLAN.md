@@ -1,0 +1,157 @@
+# Plan
+
+Last updated 2026-11-02. RESEARCH.md is the lab notebook: what we found. This
+file is what we do next, in order. Update it at the end of every session, in
+the PR with that session's work.
+
+## Where things stand
+
+- **The drain is not fixed.** s2idle draws about 1.97 W (the aurora14
+  baseline, 2026-11-02), and macOS sleeps at about 0.1 W on this machine.
+  Device-level changes (radios, USB and PCIe wake, the Wi-Fi link, the display
+  PMP requests, the AOP) moved it by little or nothing. The gap is the SoC
+  never entering the sleep state macOS uses.
+- **Done: timed wakes.** The PMU's RTC alarm wakes J314s from s2idle
+  (`rtc-alarm-test/`), so a drain test takes 15 minutes instead of a night.
+
+## Picking this up
+
+- Start a fresh session for each step below, and tell it: "read PLAN.md and
+  do the next open step". On the other computer, clone CoreyH/sleep-drain:
+  CLAUDE.md, this file and RESEARCH.md hold everything. Claude's own notes
+  on the MacBook don't travel.
+- Every change goes branch → PR → Pullfrog → merge commit. Merging, and
+  anything posted outside this repo (issues, comments, upstream PRs), needs
+  Corey's explicit OK each time.
+- JJRPF/Aurora-DeepIdle: use its findings, not its code. It has no LICENSE
+  file (the README says GPL-2.0); DeepIdle#9 asks.
+- Never boot a saved device tree on this Mac (RESEARCH.md, "Testing the
+  driver without a new device tree").
+- Root goes through pkexec, which needs a healthy Omarchy shell.
+
+State that lives on the MacBook, not in git:
+- linux-aurora 7.2.11.aurora14 (Omarchy 4.5.0rc3). m1n1-aurora, uboot-asahi
+  and GRUB are held back in pacman.conf (IgnorePkg).
+- `/etc/sleep-drain/radios-off` is set. `install.sh` last ran at 3b79df2.
+- The alarm needs the test drivers after every boot:
+  `make -C rtc-alarm-test && pkexec rtc-alarm-test/load`.
+- The RTC was set to the real time on 2026-11-02. It had counted from 1970
+  since the battery ran flat.
+- `/boot/macos-session/`: macOS 26.6.2's IODeviceTree, `pmset` log and
+  battery readings from 2026-10-30.
+
+## Track A: deep sleep (the main track)
+
+What's known is in RESEARCH.md, "Deep sleep: what's known". In short: macOS
+powers the CPU cores off and restarts them at a locked reset vector. On the
+M2 Pro, its way into sleep is the SMC key `MBSE` = `slpw`, the display
+domains off through the PMP, `MBSE` = `slpa`, then AP power 0x201 to the SMC
+and the PMP. Nobody has a SoC sleep working under Linux on any Apple Silicon
+yet. The blockers are powering cores off and restarting them, the last PMGR
+steps, and restarting the DCP and the PMP afterwards.
+
+- [x] **A1. Desk research** into RESEARCH.md (this PR).
+- [ ] **A2. Read-only groundwork on this Mac.** It needs no second computer
+  and carries no risk.
+  - Read the sleep handshake's SMC keys (`MBSE`, `MBSW` and their
+    neighbours, from macsmc's key list), awake and around an s2idle sleep.
+  - Map T6000's PMGR power states and CPU-start block (PMGR + 0x54000)
+    through /dev/mem, read-only, as `spmi-peek` does.
+  - Read maralcbr/omarchy-mx-mac#281 (an M1 Pro sleep effort) and
+    DeepIdle's docs in full. Note what applies to T6000.
+  - Exit: a RESEARCH.md section with T6000's keys and registers, plus the
+    questions the trace has to answer.
+- [ ] **A3. The second computer and a test volume.** Corey does this, with
+  the session. See "The second computer" below.
+- [ ] **A4. Trace macOS going to sleep under the m1n1 hypervisor**, with a
+  macOS 14.8.x guest and `trace_smc`, `trace_pmp`, `trace_pmgr` and
+  `trace_spmi`. Expect the Mac to hang once the cores power off, as it did
+  on the M2 Pro. The trace covers the way into sleep, not the wake.
+  - Exit: T6000's sequence and `MBSE` values, compared with DeepIdle's
+    T6020 trace.
+- [ ] **A5. Plan the first Linux-side experiments** from A2 and A4, such as
+  the SMC handshake from s2idle, and CPU power-down and restart. These can
+  hang or crash the Mac, and on the M2 Pro they once corrupted a filesystem.
+  Before any of them:
+  - a recovery setup: someone at the power key, or a remote hard reset;
+  - a read-only or throwaway root;
+  - Corey's go-ahead for each experiment.
+- [ ] **A6. Talk to the others before duplicating work:**
+  - DeepIdle (#9 has no reply yet);
+  - maralcbr #281;
+  - Asahi: Sven Peter's PSCI-via-EFI RFC covers T8103 only.
+
+  Every post needs Corey's OK.
+
+## The second computer
+
+What it has to be depends on the job.
+
+**For the hypervisor trace (A4):**
+- Any Linux computer, or a Mac.
+- Python 3.9 or newer, with `pyserial` and `construct`.
+- m1n1 built from source: main from 2026-10-16 or later.
+- m1n1's udev rule.
+- A USB-C data cable to the MacBook's **DFU port**: the rear-left port, next
+  to MagSafe. Charge through MagSafe while tracing.
+
+**For remote recovery in A5** (a hard reset and a serial console without
+anyone at the power key): macvdmtool. It only runs on an **Apple Silicon
+Mac**, and needs a USB-C cable to the same DFU port. If the other computer is
+an Apple Silicon Mac, it can do both jobs.
+
+**On the MacBook (A3)**, step by step with the session:
+1. A second APFS volume with macOS 14.8.3 or 14.8.9. macOS 26.6.2 can't be
+   the guest: it uses SPTM, and m1n1's hypervisor doesn't support that on M1.
+   Check the free space in macOS first.
+2. In that volume's recovery: `bputil -nkcas`, `csrutil disable`, and
+   `kmutil configure-boot` with a bare m1n1, which always starts the proxy.
+
+Boot policy is per volume, so Linux and the main macOS stay as they are. The
+risk is picking the wrong volume in those commands. Apple's catalog no longer
+lists 14.8.3, and an older installer may refuse to run on macOS 26; the Asahi
+hypervisor guide links an archived installer.
+
+## Track B: upstream the RTC alarm (in parallel, small)
+
+- [ ] **B1.** Find out why an awake alarm raises its IRQ 1 to 7 times while a
+  sleep raises it once. This needs awake alarms only.
+- [ ] **B2.** Turn `rtc-alarm-test/` into patches against linux-aurora, in
+  this order:
+  1. the SPMI T6000 notify fix (192);
+  2. the rtc-macsmc `rtc_alarm_event` cell;
+  3. the `apple,smc-rtc` binding;
+  4. the t600x DT: nub_spmi0's interrupt and interrupt-controller, the nvmem
+     cells, and the rtc node.
+- [ ] **B3.** Draft the PR for Corey, and post it only with Corey's OK. Credit
+  JJRPF's Maverick map.
+
+## Track C: keyboard wake (once A is under way)
+
+The internal keyboard can't wake the Mac on either kernel. spi-hid-apple's
+wake code is compiled out (`IRQ_WAKE_SUPPORT` is never defined), and the
+apple-gpio irqchip has no `irq_set_wake`. The results are on
+omacom/linux-aurora#274 (issuecomment-6520008651).
+
+## Watch
+
+- The Touch ID/power key reported presses that woke the Mac with nobody
+  touching it (two on 2026-11-02).
+
+## Loose ends (Corey's call)
+
+- `/etc/systemd/system/omarchy-wifi-resume-fix.service` fails on every
+  resume, because its script is gone. Remove it?
+- Four merged branches are still on GitHub: fix/valid-by-coulomb-counter,
+  results/rtc-alarm-works, fix/t6000-spmi-notify and port/rtc-alarm-t600x.
+- dotfiles:
+  - `master` is 2 commits behind;
+  - `chromium-flags.conf` and `shell.json` have uncommitted changes;
+  - PRs #83 and #84 are open.
+
+## Session hygiene
+
+- One step per session. End it by updating this file's checkboxes and
+  "Where things stand".
+- Hand web research and long reads to subagents. Keep their conclusions, with
+  links, in RESEARCH.md.
