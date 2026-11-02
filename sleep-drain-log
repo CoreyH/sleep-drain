@@ -340,22 +340,26 @@ case "$1" in
           dt = get(post, "ts") - get(pre, "ts")
           de = get(pre, "energy_uwh") - get(post, "energy_uwh")
           dc = get(pre, "capacity") - get(post, "capacity")
+          ccpre = get(pre, "cc"); ccpost = get(post, "cc")
+          uvpre = get(pre, "uv"); uvpost = get(post, "uv")
+          hascc = ccpre ~ /^-?[0-9]+$/ && ccpost ~ /^-?[0-9]+$/
           # A charger plugged in at wake only matters if it charged during
-          # the sleep, so judge by the energy actually going up. A sleep that
-          # started on the charger never counts: if it was unplugged while
-          # asleep, the drain only began then, and the average would be low.
+          # the sleep, so judge by the charge actually going up: by the
+          # coulomb counter when both sides have it. The gauge's energy can't
+          # tell; it re-estimates after a rest and rose 0.6-0.9 Wh in sleeps
+          # on battery (RESEARCH.md). A sleep that started on the charger
+          # never counts: if it was unplugged while asleep, the drain only
+          # began then, and the average would be low.
           valid = "yes"
           if (get(pre, "ac") != 0) valid = "no-ac"
-          if (de <= 0) valid = "no-charged"
+          if (hascc ? ccpre - ccpost <= 0 : de <= 0) valid = "no-charged"
           if (dt < 600) valid = "no-short"
           mw = 0; pph = 0
           if (dt > 0) { mw = de * 3.6 / dt; pph = dc * 3600 / dt }
           # The same from the coulomb counter (mA·s) at the mean of the two
           # voltages: mA·s × V / s is mW. "-" when either side lacks it.
-          ccpre = get(pre, "cc"); ccpost = get(post, "cc")
-          uvpre = get(pre, "uv"); uvpost = get(post, "uv")
           mwcc = "-"
-          if (dt > 0 && ccpre ~ /^-?[0-9]+$/ && ccpost ~ /^-?[0-9]+$/ && uvpre > 0 && uvpost > 0)
+          if (dt > 0 && hascc && uvpre > 0 && uvpost > 0)
             mwcc = sprintf("%.0f", (ccpre - ccpost) * (uvpre + uvpost) / 2e6 / dt)
           printf "slept_s=%d drained_mwh=%.0f avg_mw=%.0f avg_mw_cc=%s pct_per_h=%.2f valid=%s",
             dt, de / 1000, mw, mwcc, pph, valid
