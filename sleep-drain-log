@@ -345,11 +345,12 @@ case "$1" in
           hascc = ccpre ~ /^-?[0-9]+$/ && ccpost ~ /^-?[0-9]+$/
           # A charger plugged in at wake only matters if it charged during
           # the sleep, so judge by the charge actually going up: by the
-          # coulomb counter when both sides have it. The gauge's energy can't
-          # tell; it re-estimates after a rest and rose 0.6-0.9 Wh in sleeps
-          # on battery (RESEARCH.md). A sleep that started on the charger
-          # never counts: if it was unplugged while asleep, the drain only
-          # began then, and the average would be low.
+          # coulomb counter when both sides have it. The energy of the gauge
+          # cannot tell; it re-estimates after a rest and rose 0.6-0.9 Wh in
+          # sleeps on battery (RESEARCH.md). A sleep that started on the
+          # charger never counts: if it was unplugged while asleep, the drain
+          # only began then, and the average would be low.
+          # (No apostrophes in this program: it is single-quoted in the shell.)
           valid = "yes"
           if (get(pre, "ac") != 0) valid = "no-ac"
           if (hascc ? ccpre - ccpost <= 0 : de <= 0) valid = "no-charged"

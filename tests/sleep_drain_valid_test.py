@@ -1,6 +1,8 @@
 #!/usr/bin/python3 -I
-"""Hardware-free checks for the summary sleep-drain-log appends at resume: its
-awk program, taken from the hook as it stands, run on pre/post state lines.
+"""Hardware-free checks for the summary sleep-drain-log appends at resume: the
+hook's own statement (the awk program single-quoted inside it), taken as it
+stands and run through bash on pre/post state lines, so a quoting slip in the
+program fails here too.
 
   python3 -I tests/sleep_drain_valid_test.py      (from the repo root)
 
@@ -17,19 +19,24 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOK = os.path.join(ROOT, "sleep-drain-log")
 
 
-def program():
+def statement():
+    """The hook's line+=" $(awk ... '...')" statement, verbatim."""
     with open(HOOK) as f:
         src = f.read()
-    m = re.search(r"""awk -v pre="\$pre" -v post="\$now" '(.*?)'\)"$""", src, re.S | re.M)
+    m = re.search(r"""^\s*(line\+=" \$\(awk -v pre="\$pre" -v post="\$now" '.*?'\)")$""", src, re.S | re.M)
     if not m:
-        sys.exit("can't find the summary's awk program in sleep-drain-log")
+        sys.exit("can't find the resume summary in sleep-drain-log")
     return m.group(1)
 
 
 def summary(pre, post):
-    p = subprocess.run(["awk", "-v", "pre=" + pre, "-v", "post=" + post, program()],
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    return dict(kv.split("=", 1) for kv in p.stdout.split())
+    script = 'pre=$1 now=$2 line=""\n' + statement() + '\nprintf "%s\\n" "$line"\n'
+    p = subprocess.run(["bash", "-c", script, "bash", pre, post],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    got = dict(kv.split("=", 1) for kv in p.stdout.split() if "=" in kv)
+    if p.returncode or p.stderr:
+        got["error"] = p.stderr.strip() or f"exit {p.returncode}"
+    return got
 
 
 # From /var/log/sleep-drain.log, 2026-11-02 15:06:38 -> 15:21:37 (trimmed)
@@ -61,7 +68,7 @@ if __name__ == "__main__":
     failed = 0
     for name, pre, post, want in CASES:
         got = summary(pre, post)
-        ok = all(got.get(k) == v for k, v in want.items())
+        ok = "error" not in got and all(got.get(k) == v for k, v in want.items())
         print(("ok   " if ok else "FAIL ") + name)
         if not ok:
             failed += 1
