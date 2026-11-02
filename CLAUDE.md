@@ -45,7 +45,9 @@ lab notebook: the problem, every night's result, and the findings so far.
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake
   /sys, with one failure injected per case; `tests/rtc_alarm_check_test.py`
-  runs `rtc-alarm-test/check` the same way against a stub rtcwake.
+  runs `rtc-alarm-test/check` the same way against a stub rtcwake;
+  `tests/sleep_drain_valid_test.py` runs `sleep-drain-log`'s resume summary
+  (drain and validity) on recorded snapshots.
 - `results/`: raw output of the awake tests.
 
 ## How changes land
@@ -65,7 +67,10 @@ lab notebook: the problem, every night's result, and the findings so far.
   kernel; a kernel update counts as a variable.
 - A night is valid only if the laptop was awake on battery right before the
   sleep (`valid=yes` in the log). A sleep that starts on the charger, or charges
-  while asleep, doesn't count.
+  while asleep (by the coulomb counter, not the gauge's energy), doesn't count.
+- Short timed sleeps: arm the alarm with `pkexec rtcwake -m no -s 900`, then
+  `systemctl suspend`, so the hook runs. Needs `rtc-alarm-test/load` on this
+  boot. Compare by `avg_mw_cc`.
 - A one-minute lid close is enough to see which power domains switch off
   (`sleep-drain-diff`). Use it to decide whether a night is worth spending.
 - The goal is an upstream fix (omacom/linux-aurora), framed as the right

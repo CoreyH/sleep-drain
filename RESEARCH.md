@@ -516,6 +516,27 @@ fixed: each bind of the SPMI controller registers a new one (`spmi_nvmem2`
 after this load), and the hardcoded `spmi_nvmem0` made `check`'s status lines
 refuse.
 
+### The first timed drain sleep: the aurora14 baseline (2026-11-02)
+
+`pkexec rtcwake -m no -s 900 && systemctl suspend` on battery at 98%, with
+`rtc-alarm-test` loaded and the `radios-off` flag (snapshot 20261102T150637).
+The sleep ran from 15:06:38 to 15:21:37, ending on the second the alarm was
+set for: `pm_wakeup_irq` 144, no macsmc-input events.
+
+**1974 mW by the coulomb counter** (157 mA at 12.6 V). That's inside the
+1945-2012 mW spread of the 2026-10-29 short sleeps on aurora9 with radios off
+(control 1987 mW, 163 mA at 12.1 V). It's also close to the 1945 mW of the
+2026-10-30 sleep on aurora10 with #274. So neither aurora14 nor the newly live
+alarm and SPMI interrupt cost anything visible. This is the baseline for timed
+A/B sleeps on aurora14.
+
+The gauge's energy rose 0.78 Wh again, so the hook flagged the sleep
+`no-charged`. The hook now judges charging by the coulomb counter whenever
+both snapshots have one, and falls back to energy otherwise. Timed sleeps on
+battery now come out `valid=yes`; lines already in the log keep their old
+flag. `tests/sleep_drain_valid_test.py` runs the hook's summary on this
+sleep's own snapshots.
+
 ## What gets recorded now
 
 On every suspend, `sleep-drain-log` writes `/var/log/sleep-drain/<id>/{pre,post}/`
