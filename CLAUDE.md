@@ -42,13 +42,28 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   test arms the alarm with `rtcwake -m no` and suspends through systemd.
   `rtc-alarm-test/spmi-peek.c` reads nub-spmi0's interrupt mask and ack words,
   read-only.
+- `smc-peek/`: an out-of-tree module (`make -C smc-peek`, against the running
+  kernel's headers) that lists the SMC's keys through macsmc, read-only, in
+  `/sys/kernel/debug/smc-peek/{keys,values}`. It never writes a key, and reads
+  a function key only if `read_funcs` names it. `smc-keys` decodes and diffs
+  its dumps.
+- `pmgr-peek.c`: reads PMGR registers through /dev/mem, read-only, and refuses
+  any address outside the PMGR windows of the live device tree (`--cpu-start`
+  adds the CPU-start block's four words). `pmgr-map` builds its address list
+  from macOS's device tree (`/boot/macos-session/iodevicetree.txt`) and
+  decodes what it reads.
+- `sleep-peek`: both of the above as root (`pkexec`), awake and around one
+  timed s2idle sleep that goes through the hook; writes
+  `results/sleep-peek-<time>/`. Not installed by `install.sh`.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake
   /sys, with one failure injected per case; `tests/rtc_alarm_check_test.py`
   runs `rtc-alarm-test/check` the same way against a stub rtcwake;
   `tests/sleep_drain_valid_test.py` runs `sleep-drain-log`'s resume summary
-  (drain and validity) on recorded snapshots.
+  (drain and validity) on recorded snapshots; `tests/peek_decoders_test.py`
+  checks `pmgr-map` and `smc-keys` on synthetic input, and `pmgr-map` on this
+  Mac's ADT dump when it's there.
 - `results/`: raw output of the awake tests.
 
 ## How changes land

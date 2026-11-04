@@ -1,0 +1,200 @@
+#!/bin/bash
+# sleep-peek (J314s, as root): the SMC's keys and the PMGR's power states,
+# read-only, awake and around one timed s2idle sleep (PLAN.md, A2).
+#
+#   make -C smc-peek && make -C rtc-alarm-test && cc -O2 -Wall -o pmgr-peek pmgr-peek.c
+#   pkexec ./sleep-peek [--cpu-start] [--sleep-regs] [--read-funcs KEYS] [SECONDS]
+#
+# Keep the lid open and hands off the Touch ID key while it runs (about 3
+# minutes plus the sleep): a sleep or wake it didn't plan spoils the run.
+#
+# It writes results/sleep-peek-<time>/, owned by the user who ran pkexec:
+#   smc-keys.txt                 the key table: name, type, size, flags
+#   smc-awake-1.txt, -2.txt      every readable, non-function key's value, 60 s apart
+#   smc-resumed.txt              the same, a few seconds after the sleep
+#   pmgr-awake-1.txt, -2.txt     every power-state register (pmgr-map list)
+#   pmgr-resumed.txt             the same, after the sleep
+#   pmgr-cpu-start.txt           with --cpu-start: the CPU-start block, read after the rest
+#   pmgr-sleep-regs.txt          with --sleep-regs: macOS's sleep-entry registers, read last
+#   log.txt                      what ran, and the sleep: what ended it, its hook line
+#
+# The sleep (default 90 s) ends on the PMU's RTC alarm, so rtc-alarm-test must be
+# loaded on this boot; sleep-peek loads it if it isn't. The sleep goes through
+# systemd, so the sleep-drain-log hook runs with the current experiment flags; a
+# sleep under 600 s is logged valid=no-short. The alarm is disarmed whatever
+# ends the sleep, and on any exit after it was armed.
+#
+# --read-funcs KEYS: also read these function keys (comma-separated), which
+# smc_peek otherwise leaves alone. --cpu-start reads the CPU-start block's four
+# words (pmgr-peek --cpu-start) after everything else is saved: that block is
+# outside the PMGR windows Linux maps. --sleep-regs then reads nine words macOS
+# writes on its way into sleep (pmgr-peek --sleep-regs: the AP wake masks, a
+# PMGR sequencer word and the likely S2R timer), in blocks no Linux driver
+# maps: if any read faults the kernel panics, so these come after the rest.
+#
+# Run from an agent's shell, start it in the background and follow log.txt:
+# output to a closed pipe no longer kills it (tee -p), but a tool's timeout
+# shouldn't decide when it stops.
+set -euo pipefail
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+KO=$DIR/smc-peek/smc_peek.ko
+PEEK=$DIR/pmgr-peek
+DBG=/sys/kernel/debug/smc-peek
+STATS=/sys/power/suspend_stats
+
+die() { echo "sleep-peek: $*" >&2; exit 1; }
+
+secs=90 cpu_start=0 sleep_regs=0 funcs=
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --cpu-start) cpu_start=1 ;;
+    --sleep-regs) sleep_regs=1 ;;
+    --read-funcs) shift; funcs=${1:?--read-funcs needs keys} ;;
+    [0-9]*) secs=$1 ;;
+    *) die "usage: sleep-peek [--cpu-start] [--sleep-regs] [--read-funcs KEYS] [SECONDS]" ;;
+  esac
+  shift
+done
+[[ $secs =~ ^[0-9]+$ && $secs -ge 30 && $secs -le 3600 ]] || die "SECONDS must be 30-3600"
+[[ -z $funcs || $funcs =~ ^[[:graph:]]{4}(,[[:graph:]]{4})*$ ]] || die "bad --read-funcs: $funcs"
+
+[[ $EUID -eq 0 ]] || die "run as root (pkexec)"
+tr '\0' '\n' < /proc/device-tree/compatible | grep -qx 'apple,j314s' || die "this isn't a J314s"
+[[ -f $KO ]] || die "no $KO: run make -C $DIR/smc-peek"
+[[ $(modinfo -F vermagic "$KO" | cut -d' ' -f1) == "$(uname -r)" ]] ||
+  die "smc_peek.ko isn't built for $(uname -r): run make -C $DIR/smc-peek again"
+[[ -x $PEEK ]] || die "no $PEEK: cc -O2 -Wall -o $PEEK $DIR/pmgr-peek.c"
+[[ ! -d /sys/module/smc_peek ]] || die "smc_peek is loaded already; rmmod it first"
+mountpoint -q /sys/kernel/debug || die "debugfs isn't mounted"
+
+out=$DIR/results/sleep-peek-$(date +%Y%m%dT%H%M%S)
+mkdir -p "$out"
+owner=${PKEXEC_UID:-${SUDO_UID:-0}}
+rtc='' armed=0
+# tee -p: a closed stdout must not kill the run (least of all mid-load).
+log() { echo "$*" | tee -p -a "$out/log.txt"; }
+disarm() {
+  if ((armed)) && [[ -n $rtc ]]; then echo 0 > "/sys/class/rtc/$rtc/wakealarm" || true; fi
+  armed=0
+}
+finish() {
+  disarm
+  # A walk still open (the script was signalled mid-read) holds the module.
+  for _ in 1 2 3 4 5; do
+    [[ -d /sys/module/smc_peek ]] || break
+    rmmod smc_peek 2> /dev/null || sleep 1
+  done
+  [[ ! -d /sys/module/smc_peek ]] || echo "sleep-peek: smc_peek is still loaded; rmmod it" >&2
+  chown -R "$owner" "$out" || true
+  sync
+}
+trap finish EXIT
+# With these, bash waits for the command in progress before running finish.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+log "sleep-peek $(date -Is) on $(uname -r): sleep ${secs} s, cpu-start ${cpu_start}," \
+  "sleep-regs ${sleep_regs}, read-funcs '${funcs}'"
+log "power: $(cat /sys/class/power_supply/macsmc-battery/status), $(cat /sys/class/power_supply/macsmc-battery/capacity)%"
+log "flags: $(shopt -s nullglob; f=(/etc/sleep-drain/*); f=("${f[@]##*/}"); echo "${f[*]:-none}")"
+
+if [[ ! -d /sys/module/rtc_macsmc_alarm ]]; then
+  log "loading rtc-alarm-test"
+  "$DIR/rtc-alarm-test/load" 2>&1 | tee -p -a "$out/log.txt"
+fi
+for r in /sys/class/rtc/rtc*; do
+  [[ -e $r/wakealarm && $(readlink -f "$r/device") == "$(readlink -f /sys/bus/platform/devices/macsmc-rtc)" ]] && rtc=${r##*/}
+done
+[[ -n $rtc ]] || die "no PMU alarm RTC; rtc-alarm-test/load didn't work"
+[[ $(cat "/sys/class/rtc/$rtc/device/power/wakeup") == enabled ]] || die "$rtc can't wake the system"
+rtc_irq=$(awk -F: '/macsmc-rtc/ { gsub(/ /, "", $1); print $1 }' /proc/interrupts)
+events() {  # events <wakeup source name>
+  local w
+  for w in /sys/class/wakeup/*; do
+    [[ $(cat "$w/name") == "$1" ]] && { cat "$w/event_count"; return; }
+  done
+  echo 0
+}
+
+# The PMGR's power states, then the SMC's keys. Each file is synced as it's
+# written: a reboot mid-run keeps what was read before it. smc_whole checks
+# that a walk reached its end: an SMC that stopped answering mustn't sleep.
+pmgr() { python3 -I "$DIR/pmgr-map" list | "$PEEK" > "$out/$1"; sync; }
+smc() { cat "$DBG/$1" > "$out/$2"; sync; tail -n 1 "$out/$2" | tee -p -a "$out/log.txt"; }
+smc_whole() { [[ $(tail -n 1 "$out/$1") == "# end "* ]] || die "the walk in $1 stopped early; not sleeping"; }
+
+ok=$(cat $STATS/success) failed=$(cat $STATS/fail)
+insmod "$KO" ${funcs:+read_funcs=$funcs}
+log "awake 1"
+pmgr pmgr-awake-1.txt
+smc keys smc-keys.txt
+smc_whole smc-keys.txt
+smc values smc-awake-1.txt
+smc_whole smc-awake-1.txt
+sleep 60
+log "awake 2"
+pmgr pmgr-awake-2.txt
+smc values smc-awake-2.txt
+smc_whole smc-awake-2.txt
+[[ $(cat $STATS/success) == "$ok" && $(cat $STATS/fail) == "$failed" ]] ||
+  die "a suspend happened during the awake phase; the awake dumps aren't all awake"
+
+key0=$(events macsmc-input)
+log "suspending for ${secs} s at $(date -Is)"
+# Armed first: a signal during rtcwake must still disarm. Disarming an alarm
+# that was never set does nothing.
+armed=1
+rtcwake -d "$rtc" -m no -s "$secs" | tee -p -a "$out/log.txt"
+systemctl suspend
+for ((i = 0; i < secs + 300; i++)); do
+  [[ $(cat $STATS/success) != "$ok" || $(cat $STATS/fail) != "$failed" ]] && break
+  sleep 1
+done
+sleep 5
+ok1=$(cat $STATS/success) failed1=$(cat $STATS/fail)
+# An empty wakealarm means the alarm fired; anything else ended the sleep early.
+left=$(cat "/sys/class/rtc/$rtc/wakealarm")
+disarm
+if ((ok1 != ok + 1)); then
+  log "didn't suspend as planned: success $ok -> $ok1, fail $failed -> $failed1," \
+    "last failed step $(cat $STATS/last_failed_step 2>/dev/null)," \
+    "device $(cat $STATS/last_failed_dev 2>/dev/null), errno $(cat $STATS/last_failed_errno 2>/dev/null)"
+  die "no resumed dumps: see $out/log.txt"
+fi
+wirq=$(cat /sys/power/pm_wakeup_irq 2> /dev/null || echo none)
+if [[ -z $left && $wirq == "$rtc_irq" ]]; then
+  by="the alarm"
+elif (( $(events macsmc-input) > key0 )); then
+  by="the Touch ID/power key or the lid (macsmc-input events), alarm ${left:-fired}"
+else
+  by="something else: wakeup IRQ $wirq, alarm ${left:-fired}"
+fi
+log "resumed at $(date -Is), woken by $by"
+log "hook: $(tail -n 1 /var/log/sleep-drain.log)"
+pmgr pmgr-resumed.txt
+smc values smc-resumed.txt
+rmmod smc_peek
+
+# Each opt-in read is saved and synced before the next, and the results are
+# handed to their owner first: a read that faults panics the kernel.
+if ((cpu_start || sleep_regs)); then
+  chown -R "$owner" "$out"
+  sync
+fi
+if ((cpu_start)); then
+  log "cpu-start block"
+  sync
+  "$PEEK" --cpu-start < /dev/null > "$out/pmgr-cpu-start.txt"
+  tee -p -a "$out/log.txt" < "$out/pmgr-cpu-start.txt"
+  sync
+fi
+if ((sleep_regs)); then
+  log "sleep-entry registers"
+  sync
+  "$PEEK" --sleep-regs < /dev/null > "$out/pmgr-sleep-regs.txt"
+  tee -p -a "$out/log.txt" < "$out/pmgr-sleep-regs.txt"
+  sync
+fi
+log "done: $out"
