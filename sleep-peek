@@ -130,6 +130,7 @@ insmod "$KO" ${funcs:+read_funcs=$funcs}
 log "awake 1"
 pmgr pmgr-awake-1.txt
 smc keys smc-keys.txt
+smc_whole smc-keys.txt
 smc values smc-awake-1.txt
 smc_whole smc-awake-1.txt
 sleep 60
@@ -142,8 +143,10 @@ smc_whole smc-awake-2.txt
 
 key0=$(events macsmc-input)
 log "suspending for ${secs} s at $(date -Is)"
-rtcwake -d "$rtc" -m no -s "$secs" | tee -p -a "$out/log.txt"
+# Armed first: a signal during rtcwake must still disarm. Disarming an alarm
+# that was never set does nothing.
 armed=1
+rtcwake -d "$rtc" -m no -s "$secs" | tee -p -a "$out/log.txt"
 systemctl suspend
 for ((i = 0; i < secs + 300; i++)); do
   [[ $(cat $STATS/success) != "$ok" || $(cat $STATS/fail) != "$failed" ]] && break
