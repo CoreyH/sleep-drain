@@ -41,7 +41,12 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   what ended each. Those sleeps skip the systemd-sleep hook; a timed drain
   test arms the alarm with `rtcwake -m no` and suspends through systemd.
   `rtc-alarm-test/spmi-peek.c` reads nub-spmi0's interrupt mask and ack words,
-  read-only.
+  read-only. `rtc-alarm-test/trace-irq` (root) traces awake alarms with
+  kprobes on the SPMI controller and the alarm's handler. Its
+  `--zero-fraction` option briefly clears the RTC offset's sub-second part and
+  restores it. `rtc-alarm-test/rtc-phase` times the PMU's counter against
+  rtc0 (read-only). The kernel's alarmtimer holds the alarm RTC's module once
+  it loads, so only a restart swaps it.
 - `smc-peek/`: an out-of-tree module (`make -C smc-peek`, against the running
   kernel's headers) that lists the SMC's keys through macsmc, read-only, in
   `/sys/kernel/debug/smc-peek/{keys,values}`. It never writes a key, and reads
