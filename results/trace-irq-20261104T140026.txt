@@ -1,0 +1,67 @@
+trace-irq 2026-11-04T14:00:26+01:00 on 7.2.11-14-1-ARCH: rtc0, IRQ 144, 1 alarm(s), zero-fraction 0
+/sys/bus/nvmem/devices/spmi_nvmem2: tick offset 58778733787803 = 1793784600 s + 0.4579 s
+PMU 12626 at 0 (±0.03 ms), rtc0 1793797227 at +547.9 ms (±0.21 ms): rtc0 - offset = 12627; CLKM lags the PMU by +5.7 ms
+PMU 12627 at 0 (±0.03 ms), rtc0 1793797228 at +547.8 ms (±0.20 ms): rtc0 - offset = 12628; CLKM lags the PMU by +5.6 ms
+CLKM lags the PMU's counter by 5.6-5.7 ms; an alarm fires before rtc0 reaches its second when the offset's fraction is under that.
+== alarm 1: IRQ 144 count 6 -> 7 (1)
+       trace-irq-12278   [000] d....  1231.463338: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x3d reg=0x1411 wlen=0 rlen=6
+       herdr-app-4464    [001] d.h..  1231.463369: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+       trace-irq-12278   [000] d..1.  1231.463410: spmi_ret: (spmi_read_cmd+0x50/0x64 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+       trace-irq-12278   [000] d....  1231.463663: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x3d reg=0x1411 wlen=0 rlen=6
+           Timer-4541    [000] d.h..  1231.463682: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+       trace-irq-12278   [000] d..1.  1231.463745: spmi_ret: (spmi_read_cmd+0x50/0x64 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+       trace-irq-12278   [000] d....  1231.463986: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x3d reg=0x1411 wlen=0 rlen=6
+          <idle>-0       [002] d.h1.  1231.464008: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+       trace-irq-12278   [000] d..1.  1231.464078: spmi_ret: (spmi_read_cmd+0x50/0x64 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+       trace-irq-12278   [000] d....  1231.464082: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x3d reg=0x1411 wlen=0 rlen=6
+          <idle>-0       [000] d.h1.  1231.464101: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+       trace-irq-12278   [000] d..1.  1231.464148: spmi_ret: (spmi_read_cmd+0x50/0x64 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+       trace-irq-12278   [000] d....  1231.464154: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x38 reg=0x1401 wlen=0 rlen=1
+          <idle>-0       [001] d.h1.  1231.464172: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+       trace-irq-12278   [000] d..1.  1231.464202: spmi_ret: (spmi_read_cmd+0x50/0x64 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+       trace-irq-12278   [000] d....  1231.464218: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x30 reg=0x14c0 wlen=1 rlen=0
+          <idle>-0       [001] d.h1.  1231.464235: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+       trace-irq-12278   [000] d..1.  1231.464260: spmi_ret: (spmi_write_cmd+0x7c/0x90 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+       trace-irq-12278   [000] d....  1231.464265: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x33 reg=0x140c wlen=4 rlen=0
+          <idle>-0       [001] d.h1.  1231.464284: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+       trace-irq-12278   [000] d..1.  1231.464316: spmi_ret: (spmi_write_cmd+0x7c/0x90 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+       trace-irq-12278   [000] d....  1231.464320: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x30 reg=0x14c2 wlen=1 rlen=0
+          <idle>-0       [001] d.h1.  1231.464337: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+       trace-irq-12278   [000] d..1.  1231.464359: spmi_ret: (spmi_write_cmd+0x7c/0x90 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+       trace-irq-12278   [000] d....  1231.464361: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x30 reg=0x1401 wlen=1 rlen=0
+          <idle>-0       [001] d.h1.  1231.464379: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+       trace-irq-12278   [000] d..1.  1231.464405: spmi_ret: (spmi_write_cmd+0x7c/0x90 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+          <idle>-0       [002] d.h1.  1235.874125: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+          <idle>-0       [002] d.h1.  1235.874151: irq_handler_entry: irq=144 name=macsmc-rtc
+ irq/144-macsmc--6186    [005] d....  1235.874199: thread: (macsmc_rtc_alarm_irq+0x0/0xbc [rtc_macsmc_alarm])
+ irq/144-macsmc--6186    [005] d....  1235.874214: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x38 reg=0x1401 wlen=0 rlen=1
+       herdr-app-4464    [001] d.h..  1235.874247: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+ irq/144-macsmc--6186    [005] d..1.  1235.874294: spmi_ret: (spmi_read_cmd+0x50/0x64 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+ irq/144-macsmc--6186    [005] d....  1235.874295: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x38 reg=0x1401 wlen=0 rlen=1
+       herdr-app-4464    [001] d.h..  1235.874310: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+ irq/144-macsmc--6186    [005] d..1.  1235.874401: spmi_ret: (spmi_read_cmd+0x50/0x64 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+ irq/144-macsmc--6186    [005] d....  1235.874410: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x30 reg=0x14c0 wlen=1 rlen=0
+       herdr-app-4464    [001] d.h..  1235.874460: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+ irq/144-macsmc--6186    [005] d..1.  1235.874504: spmi_ret: (spmi_write_cmd+0x7c/0x90 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+ irq/144-macsmc--6186    [005] d....  1235.874511: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x30 reg=0x14c2 wlen=1 rlen=0
+       herdr-app-4464    [001] d.h..  1235.874527: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+ irq/144-macsmc--6186    [005] d..1.  1235.874571: spmi_ret: (spmi_write_cmd+0x7c/0x90 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+ irq/144-macsmc--6186    [005] d....  1235.874572: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x30 reg=0x1401 wlen=1 rlen=0
+       herdr-app-4464    [001] d.h..  1235.874590: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+ irq/144-macsmc--6186    [005] d..1.  1235.874675: spmi_ret: (spmi_write_cmd+0x7c/0x90 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+ irq/144-macsmc--6186    [005] d..1.  1235.874687: thread_ret: (irq_thread_fn+0x30/0x90 <- macsmc_rtc_alarm_irq) ret=1
+     kworker/5:2-222     [005] d....  1235.875403: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x3d reg=0x1411 wlen=0 rlen=6
+          <idle>-0       [002] d.h1.  1235.875424: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+     kworker/5:2-222     [005] d..1.  1235.875494: spmi_ret: (spmi_read_cmd+0x50/0x64 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+     kworker/5:2-222     [005] d....  1235.875502: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x38 reg=0x1401 wlen=0 rlen=1
+       herdr-app-4464    [001] d.h..  1235.875519: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+     kworker/5:2-222     [005] d..1.  1235.875551: spmi_ret: (spmi_read_cmd+0x50/0x64 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+     kworker/5:2-222     [005] d....  1235.875554: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x30 reg=0x14c0 wlen=1 rlen=0
+       herdr-app-4464    [001] d.h..  1235.875572: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+     kworker/5:2-222     [005] d..1.  1235.875601: spmi_ret: (spmi_write_cmd+0x7c/0x90 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+     kworker/5:2-222     [005] d....  1235.875603: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x30 reg=0x14c2 wlen=1 rlen=0
+       herdr-app-4464    [001] d.h..  1235.875621: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+     kworker/5:2-222     [005] d..1.  1235.875650: spmi_ret: (spmi_write_cmd+0x7c/0x90 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
+     kworker/5:2-222     [005] d....  1235.875652: spmi: (spmi_raw_cmd+0x0/0x3bc [spmi_apple_wake]) opc=0x30 reg=0x1401 wlen=1 rlen=0
+       herdr-app-4464    [001] d.h..  1235.875670: chained: (apple_spmi_irq_handler+0x0/0x1c0 [spmi_apple_wake])
+     kworker/5:2-222     [005] d..1.  1235.875700: spmi_ret: (spmi_write_cmd+0x7c/0x90 [spmi_apple_wake] <- spmi_raw_cmd) ret=0
