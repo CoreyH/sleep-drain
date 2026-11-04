@@ -71,7 +71,7 @@ mountpoint -q /sys/kernel/debug || die "debugfs isn't mounted"
 out=$DIR/results/sleep-peek-$(date +%Y%m%dT%H%M%S)
 mkdir -p "$out"
 owner=${PKEXEC_UID:-${SUDO_UID:-0}}
-rtc= armed=0
+rtc='' armed=0
 # tee -p: a closed stdout must not kill the run (least of all mid-load).
 log() { echo "$*" | tee -p -a "$out/log.txt"; }
 disarm() {
@@ -98,7 +98,7 @@ trap 'exit 143' TERM
 log "sleep-peek $(date -Is) on $(uname -r): sleep ${secs} s, cpu-start ${cpu_start}," \
   "sleep-regs ${sleep_regs}, read-funcs '${funcs}'"
 log "power: $(cat /sys/class/power_supply/macsmc-battery/status), $(cat /sys/class/power_supply/macsmc-battery/capacity)%"
-log "flags: $(ls /etc/sleep-drain/ 2>/dev/null | tr '\n' ' ')"
+log "flags: $(cd /etc/sleep-drain 2> /dev/null && printf '%s ' *)"
 
 if [[ ! -d /sys/module/rtc_macsmc_alarm ]]; then
   log "loading rtc-alarm-test"

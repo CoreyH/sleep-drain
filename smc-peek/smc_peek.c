@@ -35,7 +35,7 @@
  * A line "<index> ! errN" is a key whose name or info couldn't be had. The
  * first line is "# smc-peek key_count=N"; the last, "# end" with counts, is
  * missing if the walk stopped early (it says why on a "# stopped" line). It
- * stops at the first timeout: see stop_after_timeout().
+ * stops at the first timeout: see drain_after_timeout().
  */
 #include <linux/ctype.h>
 #include <linux/debugfs.h>
@@ -143,15 +143,21 @@ static bool may_read_func(smc_key key)
 /*
  * macsmc has one reply slot and no way to resynchronise: a reply that comes
  * after its command timed out completes whichever command is sent next. So
- * the walk stops at its first timeout, and holds the SMC's mutex for a while
- * so that the late reply finds no other driver's command waiting.
+ * the walk stops at its first timeout, takes the SMC's mutex at once and holds
+ * it for a while, so that the late reply most likely finds no other driver's
+ * command waiting.
+ *
+ * Only most likely: the exported calls release the mutex before they return
+ * -ETIMEDOUT, so a battery or hwmon command already queued on it can go first
+ * and take the late reply (one -EIO, "Command sequence mismatch"). Closing
+ * that needs macsmc to drain late replies itself, under its own lock. A
+ * timeout is rare: none in 37 boots' logs, nor in a walk so far.
  */
-static void stop_after_timeout(struct walk *w, u32 i)
+static void drain_after_timeout(void)
 {
 	mutex_lock(&smc->mutex);
 	msleep(DRAIN_MS);
 	mutex_unlock(&smc->mutex);
-	emit(w, "# stopped at %u: the SMC timed out\n", i);
 }
 
 static void walk(struct walk *w, bool values)
@@ -180,13 +186,14 @@ static void walk(struct walk *w, bool values)
 		ret = apple_smc_get_key_by_index(smc, i, &key);
 		if (ret >= 0)
 			ret = apple_smc_get_key_info(smc, key, &info);
+		if (ret == -ETIMEDOUT) {
+			drain_after_timeout();
+			emit(w, "%u ! err%d\n# stopped at %u: the SMC timed out\n", i, ETIMEDOUT, i);
+			return;
+		}
 		if (ret < 0) {
 			emit(w, "%u ! err%d\n", i, -ret);
 			errors++;
-			if (ret == -ETIMEDOUT) {
-				stop_after_timeout(w, i);
-				return;
-			}
 			continue;
 		}
 		fourcc(key, k);
@@ -204,13 +211,14 @@ static void walk(struct walk *w, bool values)
 			emit(w, "noread\n");
 		} else {
 			ret = apple_smc_read(smc, key, w->val, info.size);
+			if (ret == -ETIMEDOUT) {
+				drain_after_timeout();
+				emit(w, "err%d\n# stopped at %u: the SMC timed out\n", ETIMEDOUT, i);
+				return;
+			}
 			if (ret < 0) {
 				emit(w, "err%d\n", -ret);
 				errors++;
-				if (ret == -ETIMEDOUT) {
-					stop_after_timeout(w, i);
-					return;
-				}
 				continue;
 			}
 			if (ret)
