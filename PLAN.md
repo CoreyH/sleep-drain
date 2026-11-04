@@ -144,15 +144,13 @@ hypervisor guide links an archived installer.
 
 ## Track B: upstream the RTC alarm (in parallel, small)
 
-- [ ] **B1.** Find out why an awake alarm raises its IRQ 1 to 7 times while a
-  sleep raises it once. This needs awake alarms only.
-  - **Answered (2026-11-04).** The cause is an RTC-core re-arm loop: `CLKM`
-    lags the PMU's counter by about 6 ms, and the loop shows when the tick
-    offset's fraction is under that. RESEARCH.md has the details.
-  - **The fix** is in `rtc-alarm-test/rtc-macsmc-alarm.c`.
-  - **Open:** verify the fix after a restart. Load the test drivers, then run
-    `pkexec rtc-alarm-test/trace-irq --zero-fraction 3` and `trace-irq 3`;
-    each alarm should raise one IRQ. Then tick B1.
+- [x] **B1.** Why an awake alarm raised its IRQ 1 to 7 times while a sleep
+  raised it once (#15). The cause is an RTC-core re-arm loop: `CLKM` lags the
+  PMU's counter by about 6 ms, and the loop shows when the tick offset's
+  fraction is under that. RESEARCH.md has the details. The fix in
+  `rtc-alarm-test/rtc-macsmc-alarm.c` (arm a second later below 1/32 s of
+  fraction) is verified on device: one IRQ per alarm. It goes into B2's
+  rtc-macsmc patch.
 - [ ] **B2.** Turn `rtc-alarm-test/` into patches against linux-aurora, in
   this order:
   1. the SPMI T6000 notify fix (192);

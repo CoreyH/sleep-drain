@@ -549,21 +549,29 @@ the PMU repeating its message.
   long after rtc0 has caught up.
 
 The fix, in `rtc-alarm-test/rtc-macsmc-alarm.c`, for B2's patch: when the tick
-offset's fraction is under 1/32 s (about five times the lag), the alarm is
-armed one counter second later. It then fires within the set second, and
+offset's fraction is under 1/32 s (31 ms), the alarm is armed one counter
+second later. It then fires within the set second, and
 `read_alarm` still reports the time that was set. The cost: with a fraction
 between the lag and 1/32 s, about 3% of offsets, the alarm comes up to a
 second late, which the driver already allows ("the set second or up to one
 second after it"). The seconds-offset path (T6030) is unchanged. If T6030's
 `CLKM` lags its PMU too, it would loop on every awake alarm (untested).
 
-The fix can't be tried without a restart: the kernel's alarmtimer holds a
-reference on the first wake-capable RTC's module (`alarmtimer.3.auto` is a
-child of rtc0), so `rtc_macsmc_alarm` can't be unloaded. That's also why
-`rtc-alarm-test` is undone only by a restart. Verification: after a restart,
-`make -C rtc-alarm-test && pkexec rtc-alarm-test/load`, then
-`pkexec rtc-alarm-test/trace-irq --zero-fraction 3` and
-`pkexec rtc-alarm-test/trace-irq 3`. Each should raise one IRQ per alarm.
+Trying the fix took a restart. The kernel's alarmtimer holds a reference on
+the first wake-capable RTC's module (`alarmtimer.3.auto` is a child of rtc0),
+so `rtc_macsmc_alarm` can't be unloaded. That's also why `rtc-alarm-test` is
+undone only by a restart.
+
+**Verified after the restart.** With the fraction cleared, the three alarms
+raised one IRQ each, where the old driver raised 6, 5 and 5
+(`results/trace-irq-20261104T134316.txt`). With the offset as it is, also
+one each (`results/trace-irq-20261104T134347.txt`). In both, the alarm value
+is written once, when it's set; after the IRQ the RTC core disarms instead of
+re-arming. With the fraction cleared, a "+4 s" alarm fired 5 s later: the
+extra counter second, still within the set second by rtc0. The margin should
+stay well above `CLKM`'s lag. Five of six readings put it at 5.5-6.3 ms, but
+the first, right after boot, read 14-24 ms. If B2 sees more than that, raise
+the margin to 1/16 s.
 
 ### The first timed drain sleep: the aurora14 baseline (2026-11-02)
 
