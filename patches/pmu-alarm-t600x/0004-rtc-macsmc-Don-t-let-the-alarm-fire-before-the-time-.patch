@@ -1,4 +1,4 @@
-From 923d3ee774b7694fe2f0db1ef043ba32450596fa Mon Sep 17 00:00:00 2001
+From fcc001811597e189caecbe436b653472125b1d5f Mon Sep 17 00:00:00 2001
 From: Corey Henderson <nuwanda@gmail.com>
 Date: Wed, 4 Nov 2026 13:55:34 +0100
 Subject: [PATCH 4/5] rtc: macsmc: Don't let the alarm fire before the time
@@ -24,6 +24,7 @@ Tested on J314s (M1 Pro) with the offset's fraction cleared: three awake
 alarms raised one interrupt each, where they raised 6, 5 and 5 before.
 
 Assisted-by: Claude:claude-opus-5-5
+Signed-off-by: Corey Henderson <nuwanda@gmail.com>
 ---
  drivers/rtc/rtc-macsmc.c | 36 +++++++++++++++++++++++++++++-------
  1 file changed, 29 insertions(+), 7 deletions(-)

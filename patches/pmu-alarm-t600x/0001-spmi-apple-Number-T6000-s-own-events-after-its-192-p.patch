@@ -1,4 +1,4 @@
-From b8e02056e3641f9f757a238380a1f4e3a5abf389 Mon Sep 17 00:00:00 2001
+From 53ae05d0ebc745ecaed3f8614f26930b130ee823 Mon Sep 17 00:00:00 2001
 From: Corey Henderson <nuwanda@gmail.com>
 Date: Wed, 4 Nov 2026 13:54:32 +0100
 Subject: [PATCH 1/5] spmi: apple: Number T6000's own events after its 192
@@ -23,6 +23,7 @@ transfers complete in 40-60 us and the PMU's RTC alarm wakes the system
 from s2idle.
 
 Assisted-by: Claude:claude-opus-5-5
+Signed-off-by: Corey Henderson <nuwanda@gmail.com>
 ---
  drivers/spmi/spmi-apple-controller.c | 58 +++++++++++++++++++++-------
  1 file changed, 45 insertions(+), 13 deletions(-)

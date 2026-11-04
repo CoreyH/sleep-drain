@@ -156,11 +156,33 @@ hypervisor guide links an archived installer.
     `integration/aurora` 396f2d63. Its README lists them and what was checked:
     applies, builds, DTBs, dt-schema, checkpatch. The working tree is
     `~/src/linux-aurora`, branch `pmu-alarm-t600x` (a shallow, sparse clone).
-  - **Open:** boot a kernel built from the series and check the alarm works
-    with no test modules loaded.
-- [ ] **B3.** Draft the PR for Corey, and post it only with Corey's OK. Corey
-  adds his `Signed-off-by` to each patch first (AI tools may not). Credit
-  JJRPF's Maverick map.
+  - **Open:** boot a kernel built from the series. The kernel comes from
+    #351's CI once a maintainer adds `ci:build` (Corey isn't on
+    linux-aurora's vouch list). `test-kernel` installs it, and the test
+    needs one reboot.
+  - **Patch 5's tree can't boot with it yet.** `test-kernel` leaves out the
+    package's DTBs, since m1n1's boot.bin takes the pacman-owned
+    linux-aurora's trees for every boot. Putting patch 5's tree into boot.bin
+    would also boot the regular aurora14 with it, and aurora14's SPMI
+    controller, which lacks patch 1, then loses the PMU (RESEARCH.md, "First
+    swap"). GRUB's `devicetree` can't stand in either: it swaps m1n1's tree,
+    with the addresses m1n1 writes each boot, for a static one (the same
+    problem as a saved tree).
+  - So the boot test runs the CI kernel's own drivers (patches 1, 3 and 4),
+    with patch 5 applied live by `pmu-alarm-dt.ko` alone, built for that
+    kernel (CI keeps every `linux-aurora-*` package, so its headers should be
+    there). `rtc-alarm-test/load` needs a mode for this: apply the tree, then
+    reload the kernel's own `spmi_apple_controller`, `macsmc_reboot` and
+    `rtc_macsmc`. Patch 5 stays checked by comparison: the J314s DTB matches
+    the changeset property for property.
+  - A boot with patch 5 in boot.bin and no test module waits for a
+    linux-aurora release that carries patch 1.
+- [x] **B3.** Posted with Corey's OK and his `Signed-off-by`:
+  [omacom/linux-aurora#351](https://github.com/omacom/linux-aurora/pull/351)
+  (2026-11-04). The branch is `pmu-alarm-t600x` on CoreyH/aurora-linux, the
+  same fork network. It asks for `ci:build`, credits DeepIdle, and says the
+  boot test will follow. Next: answer reviews, and do B2's boot test when the
+  package exists.
 
 ## Track C: keyboard wake (once A is under way)
 

@@ -1,4 +1,4 @@
-From 8a9ee054fd8f8f73f6b4a1d877cd91d65153aa6d Mon Sep 17 00:00:00 2001
+From f2faf8a7092c1bdee4f48da42811b8be7cc0c2f7 Mon Sep 17 00:00:00 2001
 From: Corey Henderson <nuwanda@gmail.com>
 Date: Wed, 4 Nov 2026 13:54:52 +0100
 Subject: [PATCH 2/5] dt-bindings: rtc: apple,smc-rtc: Add the Maverick PMU's
@@ -10,6 +10,7 @@ interrupt silent until the event byte is cleared by writing 1 to it.
 Allow a fifth cell, rtc_alarm_event, after the four alarm cells.
 
 Assisted-by: Claude:claude-opus-5-5
+Signed-off-by: Corey Henderson <nuwanda@gmail.com>
 ---
  .../devicetree/bindings/rtc/apple,smc-rtc.yaml      | 13 ++++++++++++-
  1 file changed, 12 insertions(+), 1 deletion(-)
