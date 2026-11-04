@@ -69,6 +69,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   (drain and validity) on recorded snapshots; `tests/peek_decoders_test.py`
   checks `pmgr-map` and `smc-keys` on synthetic input, and `pmgr-map` on this
   Mac's ADT dump when it's there.
+- `patches/`: patch series for upstream, kept here for review before they're
+  posted. `patches/pmu-alarm-t600x/` is the PMU RTC alarm for omacom/linux-aurora
+  (B2); its README says what's in it and how it was checked.
 - `results/`: raw output of the awake tests.
 
 ## How changes land

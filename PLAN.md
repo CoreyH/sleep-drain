@@ -151,14 +151,15 @@ hypervisor guide links an archived installer.
   `rtc-alarm-test/rtc-macsmc-alarm.c` (arm a second later below 1/32 s of
   fraction) is verified on device: one IRQ per alarm. It goes into B2's
   rtc-macsmc patch.
-- [ ] **B2.** Turn `rtc-alarm-test/` into patches against linux-aurora, in
-  this order:
-  1. the SPMI T6000 notify fix (192);
-  2. the rtc-macsmc `rtc_alarm_event` cell;
-  3. the `apple,smc-rtc` binding;
-  4. the t600x DT: nub_spmi0's interrupt and interrupt-controller, the nvmem
-     cells, and the rtc node.
-- [ ] **B3.** Draft the PR for Corey, and post it only with Corey's OK. Credit
+- [ ] **B2.** Turn `rtc-alarm-test/` into patches against linux-aurora.
+  - **Drafted (2026-11-04):** `patches/pmu-alarm-t600x/`, five patches on
+    `integration/aurora` 396f2d63. Its README lists them and what was checked:
+    applies, builds, DTBs, dt-schema, checkpatch. The working tree is
+    `~/src/linux-aurora`, branch `pmu-alarm-t600x` (a shallow, sparse clone).
+  - **Open:** boot a kernel built from the series and check the alarm works
+    with no test modules loaded.
+- [ ] **B3.** Draft the PR for Corey, and post it only with Corey's OK. Corey
+  adds his `Signed-off-by` to each patch first (AI tools may not). Credit
   JJRPF's Maverick map.
 
 ## Track C: keyboard wake (once A is under way)

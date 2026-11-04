@@ -1,0 +1,54 @@
+From 8a9ee054fd8f8f73f6b4a1d877cd91d65153aa6d Mon Sep 17 00:00:00 2001
+From: Corey Henderson <nuwanda@gmail.com>
+Date: Wed, 4 Nov 2026 13:54:52 +0100
+Subject: [PATCH 2/5] dt-bindings: rtc: apple,smc-rtc: Add the Maverick PMU's
+ alarm event cell
+
+The Maverick PMUs (the M1 Pro's and the M2 Pro's) latch a fired alarm in
+an event byte as well as in the alarm control byte, and keep the alarm
+interrupt silent until the event byte is cleared by writing 1 to it.
+Allow a fifth cell, rtc_alarm_event, after the four alarm cells.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ .../devicetree/bindings/rtc/apple,smc-rtc.yaml      | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/devicetree/bindings/rtc/apple,smc-rtc.yaml b/Documentation/devicetree/bindings/rtc/apple,smc-rtc.yaml
+index f058139..16da929 100644
+--- a/Documentation/devicetree/bindings/rtc/apple,smc-rtc.yaml
++++ b/Documentation/devicetree/bindings/rtc/apple,smc-rtc.yaml
+@@ -33,6 +33,11 @@ properties:
+           PMU alarm compare value, a 32-bit count of whole seconds of the RTC
+           counter without the offset.
+       - description: PMU alarm mask byte.
++      - description:
++          PMU alarm event byte, write 1 to clear. Maverick PMUs, such as the
++          M1 Pro's and the M2 Pro's, latch a fired alarm here as well as in the
++          control byte, and keep the alarm interrupt silent until it is
++          cleared.
+ 
+   nvmem-cell-names:
+     oneOf:
+@@ -43,11 +48,17 @@ properties:
+           - const: rtc_ctrl
+           - const: rtc_alarm
+           - const: rtc_alarm_mask
++      - items:
++          - const: rtc_offset
++          - const: rtc_ctrl
++          - const: rtc_alarm
++          - const: rtc_alarm_mask
++          - const: rtc_alarm_event
+ 
+   interrupts:
+     maxItems: 1
+     description:
+-      The PMU's RTC alarm interrupt. Only used with the three alarm cells.
++      The PMU's RTC alarm interrupt. Only used with the alarm cells.
+ 
+   wakeup-source: true
+ 
+-- 
+2.56.0
+

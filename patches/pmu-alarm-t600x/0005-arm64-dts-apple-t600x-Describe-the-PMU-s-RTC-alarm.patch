@@ -1,0 +1,91 @@
+From b0a1a5408104458dbfb4f3a92f002c4130f19cc1 Mon Sep 17 00:00:00 2001
+From: Corey Henderson <nuwanda@gmail.com>
+Date: Wed, 4 Nov 2026 13:57:22 +0100
+Subject: [PATCH 5/5] arm64: dts: apple: t600x: Describe the PMU's RTC alarm
+
+The Maverick PMU on nub-spmi0 has an RTC alarm (macOS's device tree:
+info-rtc_alarm_ctrl 0x1401, info-rtc_alarm_offset 0x140c,
+info-rtc_alarm_event 0x14c0, info-rtc_irq_mask_offset 0x14c2). It raises
+peripheral interrupt 2 of nub-spmi0, whose own interrupt is AIC 636.
+Describe nub-spmi0 as an interrupt controller and the alarm's four
+cells, and give the SMC's rtc node the cells, the alarm interrupt and
+wakeup-source.
+
+This needs the SPMI controller to put T6000's notify event at 192
+(previous patches); without it, describing the interrupt breaks every
+SPMI transfer.
+
+Tested on J314s (M1 Pro) with the same description applied to the live
+device tree: the alarm fires on its second, and it wakes the system
+from s2idle.
+
+Assisted-by: Claude:claude-opus-5-5
+---
+ arch/arm64/boot/dts/apple/t600x-die0.dtsi | 29 +++++++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/apple/t600x-die0.dtsi b/arch/arm64/boot/dts/apple/t600x-die0.dtsi
+index 008276b..fa6680a 100644
+--- a/arch/arm64/boot/dts/apple/t600x-die0.dtsi
++++ b/arch/arm64/boot/dts/apple/t600x-die0.dtsi
+@@ -301,8 +301,13 @@ smc_hwmon: hwmon {
+ 
+ 		rtc {
+ 			compatible = "apple,smc-rtc";
+-			nvmem-cells = <&rtc_offset>;
+-			nvmem-cell-names = "rtc_offset";
++			nvmem-cells = <&rtc_offset>, <&rtc_ctrl>, <&rtc_alarm>,
++				<&rtc_alarm_mask>, <&rtc_alarm_event>;
++			nvmem-cell-names = "rtc_offset", "rtc_ctrl", "rtc_alarm",
++				"rtc_alarm_mask", "rtc_alarm_event";
++			/* The PMU's RTC alarm, peripheral interrupt 2 of nub-spmi0 */
++			interrupts-extended = <&nub_spmi0 2 IRQ_TYPE_EDGE_RISING>;
++			wakeup-source;
+ 		};
+ 	};
+ 
+@@ -345,6 +350,10 @@ nub_spmi0: spmi@2920a1300 {
+ 		reg = <0x2 0x920a1300 0x0 0x100>;
+ 		#address-cells = <2>;
+ 		#size-cells = <0>;
++		#interrupt-cells = <2>;
++		interrupt-controller;
++		interrupt-parent = <&aic>;
++		interrupts = <AIC_IRQ 0 636 IRQ_TYPE_LEVEL_HIGH>;
+ 
+ 		pmic1: pmic@f {
+ 			compatible = "apple,maverick-pmic", "apple,spmi-nvmem";
+@@ -355,14 +364,30 @@ nvmem-layout {
+ 				#address-cells = <1>;
+ 				#size-cells = <1>;
+ 
++				rtc_ctrl: rtc-ctrl@1401 {
++					reg = <0x1401 0x1>;
++				};
++
+ 				pm_setting: pm-setting@1405 {
+ 					reg = <0x1405 0x1>;
+ 				};
+ 
++				rtc_alarm: rtc-alarm@140c {
++					reg = <0x140c 0x4>;
++				};
++
+ 				rtc_offset: rtc-offset@1411 {
+ 					reg = <0x1411 0x6>;
+ 				};
+ 
++				rtc_alarm_event: rtc-alarm-event@14c0 {
++					reg = <0x14c0 0x1>;
++				};
++
++				rtc_alarm_mask: rtc-alarm-mask@14c2 {
++					reg = <0x14c2 0x1>;
++				};
++
+ 				boot_stage: boot-stage@6001 {
+ 					reg = <0x6001 0x1>;
+ 				};
+-- 
+2.56.0
+
