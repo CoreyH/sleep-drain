@@ -1024,9 +1024,13 @@ fill the gaps on 14.8.x. In order:
    - Which states does macOS turn off, in what order, and through which
      register? For the always-on ones in particular: the ATC blocks, PMP,
      the fabric and `apcie_gp_sys`.
-   - The hypervisor's "Dangerous write" lines show what macOS would power
-     off that the hypervisor keeps on: UART0, UART_P and SIO, plus the proxy
-     port's ATC blocks.
+   - The power states the hypervisor protects (UART0, UART_P and SIO, plus
+     the proxy port's ATC blocks and their parents) need decoding. It logs
+     "Dangerous write" on every guest write to them, keeps them on, and shows
+     the guest its own target as the actual state
+     ([map_essential](https://github.com/AsahiLinux/m1n1/blob/70757dc74c2dac485188acaa2fa7e73be5b108ee/proxyclient/m1n1/hv/__init__.py#L1532-L1544)).
+     Only a write whose target nibble is 0 (`data & 0xf`) is a power-off the
+     hypervisor blocked; the rest are ordinary updates.
    - trace_pmgr reads the power-state banks from the ADT, but it hardcodes
      T8103 addresses (its ignored ranges and eight hooked lanes at
      0x200200000) and traces only reg[0] and reg[1] in full. Replace those
