@@ -19,8 +19,9 @@ the PR with that session's work.
     published the sequence as replay tables in maralcbr/linux. The trace
     itself and the replay's results aren't public.
   - On this Mac, T6000's SMC has the sleep keys (`MBSE`, `MBSW`, `WKTP`,
-    `pmVC`). Linux's s2idle moves none of them; by its own clock, the SMC
-    never sleeps.
+    `pmVC`). Linux's s2idle moves none of the three it can read; `pmVC`,
+    the key macOS writes, wasn't read. `CLSP` reads 0 and `CLWK` doesn't
+    move, so the SMC apparently never registers a sleep (inferred).
   - The likely S2R timer is 0x2925c4000, which already reads 1 under Linux.
 
 ## Picking this up
@@ -60,11 +61,15 @@ yet. The blockers are powering cores off and restarting them, the last PMGR
 steps, and restarting the DCP and the PMP afterwards.
 
 - [x] **A1. Desk research** into RESEARCH.md (this PR).
-- [x] **A2. Read-only groundwork on this Mac** (#14). `smc-peek`,
-  `pmgr-peek`/`pmgr-map` and `sleep-peek` read the SMC's 2052 keys and all
-  206 PMGR power states, awake and around an alarm sleep. #281, DeepIdle,
-  Asahi/m1n1 and the Linux/XNU sources were read in full and fact-checked.
-  RESEARCH.md has the keys, the registers and the questions for the trace.
+- [x] **A2. Read-only groundwork on this Mac** (#14).
+  - `smc-peek`, `pmgr-peek`/`pmgr-map` and `sleep-peek` walked the SMC's
+    2052 keys and read all 206 PMGR power states, awake and around an alarm
+    sleep. That's 1634 key values, plus `MBSE`, `MBSW` and `WKTP`.
+  - #281, DeepIdle, Asahi/m1n1 and the Linux/XNU sources were read and
+    fact-checked: their sleep-related parts in full, but not DeepIdle's
+    awake-idle series or the PSCI RFC's list thread.
+  - RESEARCH.md has the keys, the registers and the questions for the
+    trace.
 - [ ] **A3. The second computer and a test volume.** Corey does this, with
   the session. See "The second computer" below.
 - [ ] **A4. Trace macOS going to sleep under the m1n1 hypervisor.** maralcbr
@@ -75,7 +80,8 @@ steps, and restarting the DCP and the PMP afterwards.
   into sleep, not the wake.
   - Before it, two tracers need fixing: `trace_spmi` stops on T6000 (it
     looks up `/arm-io/nub-spmi-a0` first), and `trace_pmgr` has T8103's
-    addresses. Point `trace_pmgr` at 0x2925c0000 and 0x28e224000 too.
+    addresses. Point `trace_pmgr` at 0x2925c0000, 0x28e224000 and
+    0x292004000 (the AP wake masks) too.
   - The guest: maralcbr ran 15.6.1 on M1, which Asahi's guide doesn't list.
     If that holds, it saves hunting for a 14.8.x installer.
   - Exit: T6000's sequence, with the answers to RESEARCH.md's questions,
