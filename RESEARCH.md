@@ -952,11 +952,11 @@ sleep (`pmgr-map show` decodes them).
   is). That's probably because m1n1's hypervisor forces on the USB port it
   talks over: ATCn_USB, ATCn_USB_AON and all their parents (inferred).
   Neither are the DRAM controllers (dcs_*, amcc*).
-  - macOS has PMP (0x0f0f0300) and PMS_SRAM (0x0f000300) at target 0,
-    actual 0, with auto-PM off. PMP's PS_MIN is f in macOS's value too, so
-    PS_MIN isn't what keeps it on. Linux keeps PMP at target f with auto-PM
-    on (0x1f0f03ff, the value DeepIdle read on T6020). DeepIdle crashed a
-    T6020 by resetting `ps_pmp`, so never touch 0x28e0802d8.
+- **PMP and PMS_SRAM.** macOS has PMP (0x0f0f0300) and PMS_SRAM (0x0f000300)
+  at target 0, actual 0, with auto-PM off. PMP's PS_MIN is f in macOS's
+  value too, so PS_MIN isn't what keeps it on. Linux keeps PMP at target f
+  with auto-PM on (0x1f0f03ff, the value DeepIdle read on T6020). DeepIdle
+  crashed a T6020 by resetting `ps_pmp`, so never touch 0x28e0802d8.
 
 ### The CPU-start block and macOS's sleep registers, read under Linux
 
@@ -973,8 +973,8 @@ faulted.
 - **The AP wake masks** read 0 in every word except word 1, 0x40 (source
   38). So nearly every wake source is unmasked under Linux, where macOS
   masks everything but its 21 named sources and the unnamed ids
-  0xcd-0xdf. It doesn't matter in s2idle, where the AIC wakes
-  the cores and the SoC never sleeps (inferred).
+  0xcd-0xdf. It doesn't matter in s2idle, where the AIC wakes the cores and
+  the SoC never sleeps (inferred).
 - **0x28e224000 reads 0x239.** macOS steps it through 0x219, 0x21b,
   0x8000021a and 0x21a just before its last write.
 - **0x2925c4000 already reads 1**, the value macOS writes there last.
