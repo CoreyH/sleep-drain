@@ -2,7 +2,9 @@
 
 These five patches turn `rtc-alarm-test/` into changes to omacom/linux-aurora.
 They're against `integration/aurora` at 396f2d63 (each patch has a
-`base-commit:` line).
+`base-commit:` line). They're posted as
+[omacom/linux-aurora#351](https://github.com/omacom/linux-aurora/pull/351)
+(B3), and these files are what was posted.
 
 1. `spmi: apple:` T6000's SPMI controller numbers its own events (notify
    first) after 192 peripheral interrupts, not 256.
@@ -30,15 +32,15 @@ They're against `integration/aurora` at 396f2d63 (each patch has a
 - **Schemas.** dt-schema 2026.9: `dt-doc-validate` passes the binding, and
   `dt-validate` finds nothing on the J314s RTC and SPMI nodes. A swapped
   cell order is rejected, which shows the check runs.
-- **checkpatch.** `checkpatch.pl --strict`: clean apart from the missing
-  `Signed-off-by`.
+- **checkpatch.** `checkpatch.pl --strict`: clean.
+- **Sign-off.** Each patch carries `Assisted-by` (Documentation/process/
+  coding-assistants.rst) and Corey's `Signed-off-by`, which only the human
+  submitter can give.
 
-## Before posting (B3)
+## Still to do
 
-- **Corey's `Signed-off-by` on each patch.** Only the human submitter can
-  certify the DCO; AI tools add `Assisted-by` (Documentation/process/
-  coding-assistants.rst), which these carry.
-- **A boot test of a kernel built from the series:** the alarm should work
-  with no test modules loaded. Either a local build or the PR's CI package
-  through `test-kernel`.
-- **Credit** JJRPF/Aurora-DeepIdle's Maverick register map in the PR.
+A boot of a kernel built from the series (PLAN.md, B2). It can't boot patch 5's
+tree yet: m1n1's boot.bin serves the pacman-owned linux-aurora's trees to every
+boot, and the regular kernel loses the PMU with patch 5's tree until it has
+patch 1. So the CI kernel's own drivers (patches 1, 3 and 4) run with patch 5
+applied live by `pmu-alarm-dt.ko`.

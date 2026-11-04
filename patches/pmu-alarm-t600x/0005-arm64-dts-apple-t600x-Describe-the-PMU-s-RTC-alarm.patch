@@ -1,4 +1,4 @@
-From b0a1a5408104458dbfb4f3a92f002c4130f19cc1 Mon Sep 17 00:00:00 2001
+From 6bfb23518f496712b9c48ac806885d9cb67bb6a3 Mon Sep 17 00:00:00 2001
 From: Corey Henderson <nuwanda@gmail.com>
 Date: Wed, 4 Nov 2026 13:57:22 +0100
 Subject: [PATCH 5/5] arm64: dts: apple: t600x: Describe the PMU's RTC alarm
@@ -20,6 +20,7 @@ device tree: the alarm fires on its second, and it wakes the system
 from s2idle.
 
 Assisted-by: Claude:claude-opus-5-5
+Signed-off-by: Corey Henderson <nuwanda@gmail.com>
 ---
  arch/arm64/boot/dts/apple/t600x-die0.dtsi | 29 +++++++++++++++++++++--
  1 file changed, 27 insertions(+), 2 deletions(-)
