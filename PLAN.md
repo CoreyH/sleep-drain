@@ -157,10 +157,15 @@ hypervisor guide links an archived installer.
     applies, builds, DTBs, dt-schema, checkpatch. The working tree is
     `~/src/linux-aurora`, branch `pmu-alarm-t600x` (a shallow, sparse clone).
   - **Open:** boot a kernel built from the series and check the alarm works
-    with no test modules loaded.
-- [ ] **B3.** Draft the PR for Corey, and post it only with Corey's OK. Corey
-  adds his `Signed-off-by` to each patch first (AI tools may not). Credit
-  JJRPF's Maverick map.
+    with no test modules loaded. The kernel comes from #351's CI once a
+    maintainer adds `ci:build` (Corey isn't on linux-aurora's vouch list).
+    Install it with `test-kernel`, which needs one reboot.
+- [x] **B3.** Posted with Corey's OK and his `Signed-off-by`:
+  [omacom/linux-aurora#351](https://github.com/omacom/linux-aurora/pull/351)
+  (2026-11-04). The branch is `pmu-alarm-t600x` on CoreyH/aurora-linux, the
+  same fork network. It asks for `ci:build`, credits DeepIdle, and says the
+  boot test will follow. Next: answer reviews, and do B2's boot test when the
+  package exists.
 
 ## Track C: keyboard wake (once A is under way)
 
