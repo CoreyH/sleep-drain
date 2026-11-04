@@ -98,7 +98,7 @@ trap 'exit 143' TERM
 log "sleep-peek $(date -Is) on $(uname -r): sleep ${secs} s, cpu-start ${cpu_start}," \
   "sleep-regs ${sleep_regs}, read-funcs '${funcs}'"
 log "power: $(cat /sys/class/power_supply/macsmc-battery/status), $(cat /sys/class/power_supply/macsmc-battery/capacity)%"
-log "flags: $(cd /etc/sleep-drain 2> /dev/null && printf '%s ' *)"
+log "flags: $(shopt -s nullglob; f=(/etc/sleep-drain/*); f=("${f[@]##*/}"); echo "${f[*]:-none}")"
 
 if [[ ! -d /sys/module/rtc_macsmc_alarm ]]; then
   log "loading rtc-alarm-test"
