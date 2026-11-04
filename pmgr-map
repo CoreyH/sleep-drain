@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""pmgr-map: T6000's PMGR power states, from macOS's device tree.
+
+The macOS IODeviceTree (`ioreg -l -p IODeviceTree`, saved on this Mac as
+/boot/macos-session/iodevicetree.txt) describes every PMGR power state: its
+name, id, parents and register. Linux's device tree describes most of them.
+This decodes the ADT's pmgr node as m1n1's proxyclient/m1n1/adt.py does
+(ps-regs, devices, power-domains) and matches it against the live device tree.
+
+  pmgr-map list            "ADDR LABEL" lines for pmgr-peek: every power-state
+                           register in the ADT, plus the ones only Linux names
+  pmgr-map show A [B]      decode pmgr-peek output; with B, side by side, and
+                           mark what changed
+  pmgr-map adt             the ADT's PMGR facts: power-state banks, devices
+                           Linux doesn't describe, clusters, AP wake sources
+
+Needs no root: it reads the ADT text and /sys/firmware/devicetree.
+"""
+import argparse
+import glob
+import os
+import re
+import struct
+import sys
+
+ADT = "/boot/macos-session/iodevicetree.txt"
+DT_SOC = "/sys/firmware/devicetree/base/soc"
+
+NODE_RE = re.compile(r'^([ |]*)\+-o (\S+)\s+<class ')
+PROP_RE = re.compile(r'^[ |]*"([^"]+)" = (.*)$')
+
+
+class Node:
+    def __init__(self, name, depth, parent):
+        self.name, self.depth, self.parent = name, depth, parent
+        self.props, self.children = {}, []
+
+    def data(self, key):
+        """A <hex> property's bytes, or None."""
+        v = self.props.get(key)
+        if v is None or not v.startswith("<") or v.startswith('<"'):
+            return None
+        return bytes.fromhex(v[1:v.index(">")])
+
+    def strings(self, key):
+        v = self.props.get(key)
+        if v is None or not v.startswith('<"'):
+            return []
+        return re.findall(r'"([^"]*)"', v[:v.rindex(">")])
+
+
+def parse_ioreg(path):
+    root = Node("", -1, None)
+    stack, cur = [root], None
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            m = NODE_RE.match(line)
+            if m:
+                depth = len(m.group(1))
+                while stack[-1].depth >= depth:
+                    stack.pop()
+                cur = Node(m.group(2), depth, stack[-1])
+                stack[-1].children.append(cur)
+                stack.append(cur)
+                continue
+            m = PROP_RE.match(line)
+            if m and cur is not None:
+                cur.props[m.group(1)] = m.group(2)
+    return root
+
+
+def find(root, pred):
+    out, todo = [], [root]
+    while todo:
+        n = todo.pop()
+        if pred(n):
+            out.append(n)
+        todo.extend(reversed(n.children))
+    return out
+
+
+def fourcc(b):
+    """An ADT FourCC: a little-endian u32 whose bytes read backwards."""
+    return b[::-1].decode("ascii", "replace")
+
+
+class PMGR:
+    def __init__(self, path):
+        root = parse_ioreg(path)
+        nodes = find(root, lambda n: re.match(r"pmgr@", n.name) is not None)
+        if len(nodes) != 1:
+            sys.exit(f"pmgr-map: expected one pmgr node in {path}, found {len(nodes)}")
+        self.root, pm = root, nodes[0]
+        self.node = pm
+        if pm.strings("compatible") != ["pmgr1,t6000"]:
+            sys.exit(f"pmgr-map: {path}: pmgr is {pm.strings('compatible')}, not pmgr1,t6000")
+        armio = pm.parent
+        rb = armio.data("ranges")
+        self.ranges = [struct.unpack_from("<QQQ", rb, i) for i in range(0, len(rb), 24)]
+        r = struct.unpack("<%dQ" % (len(pm.data("reg")) // 8), pm.data("reg"))
+        self.reg = [(self.translate(r[i]), r[i + 1]) for i in range(0, len(r), 2)]
+        b = pm.data("ps-regs")
+        self.psregs = [struct.unpack_from("<III", b, i) for i in range(0, len(b), 12)]
+        self.devs = self._devices(pm.data("devices"))
+        b = pm.data("power-domains")
+        self.pds = []
+        for i in range(0, len(b), 24):
+            _, _, _, pid = struct.unpack_from("<BBBB", b, i)
+            self.pds.append((pid, b[i + 8:i + 24].split(b"\0")[0].decode()))
+        # The cores this part has: (cluster-id, cluster-core-id) of each cpu
+        # node. pmgr names a core's power state ECPU0_n (cluster 0), PCPU0_n
+        # (cluster 1) or PCPU1_n (cluster 2); one with no cpu node is fused off.
+        self.cores = set()
+        for n in find(root, lambda n: n.strings("device_type") == ["cpu"]):
+            cid, core = n.data("cluster-id"), n.data("cluster-core-id")
+            if cid and core:
+                self.cores.add((struct.unpack("<I", cid)[0], struct.unpack("<I", core)[0]))
+        for d in self.devs:
+            m = re.fullmatch(r"(ECPU0|PCPU0|PCPU1)_(\d+)", d["name"])
+            if m and self.cores:
+                cluster = {"ECPU0": 0, "PCPU0": 1, "PCPU1": 2}[m.group(1)]
+                d["fused_off"] = (cluster, int(m.group(2))) not in self.cores
+
+    def translate(self, addr):
+        for child, parent, size in self.ranges:
+            if child <= addr < child + size:
+                return addr - child + parent
+        return None
+
+    def _devices(self, b):
+        devs = []
+        for i in range(0, len(b), 48):
+            d = b[i:i + 48]
+            devs.append(dict(
+                flags=d[0], id1=d[3], p8=(d[4], d[5]), p16=struct.unpack_from("<HH", d, 4),
+                psidx=d[10], psreg=d[11], pd=d[14], id2=struct.unpack_from("<H", d, 26)[0],
+                name=d[32:48].split(b"\0")[0].decode()))
+        u8id = devs[0]["id1"] != devs[1]["id1"]
+        for d in devs:
+            d["id"] = d["id1"] if u8id else d["id2"]
+            d["parents"] = [p for p in (d["p8"] if u8id else d["p16"]) if p]
+            # m1n1's PMGRDeviceFlags, from bit 0 up.
+            d["flagnames"] = [n for bit, n in enumerate(
+                ("on", "notify_pmp", "b2", "critical", "no_ps", "perf", "b6", "b7"))
+                if d["flags"] & (1 << bit)]
+            if "no_ps" in d["flagnames"]:
+                d["addr"] = None
+            else:
+                reg, off, _ = self.psregs[d["psreg"]]
+                d["addr"] = self.reg[reg][0] + off + d["psidx"] * 8
+        return devs
+
+    def by_id(self):
+        return {d["id"]: d for d in self.devs}
+
+
+def linux_domains():
+    """Power-controller nodes in the live device tree: address -> info."""
+    def rd(p):
+        try:
+            with open(p, "rb") as f:
+                return f.read()
+        except OSError:
+            return None
+    out = {}
+    for pm in sorted(glob.glob(DT_SOC + "/power-management@*")):
+        compat = (rd(pm + "/compatible") or b"").split(b"\0")
+        if b"apple,t6000-pmgr" not in compat:
+            continue
+        base = struct.unpack(">Q", rd(pm + "/reg")[:8])[0]
+        for pc in sorted(glob.glob(pm + "/power-controller@*")):
+            off = struct.unpack(">I", rd(pc + "/reg")[:4])[0]
+            out[base + off] = dict(
+                label=(rd(pc + "/label") or b"").rstrip(b"\0").decode(),
+                always_on=os.path.exists(pc + "/apple,always-on"))
+    return out
+
+
+def registers(pm, linux):
+    """Every power-state register: (addr, label, adt device or None, linux or None)."""
+    regs = {}
+    for d in pm.devs:
+        if d["addr"] is not None:
+            regs[d["addr"]] = [d["name"], d, None]
+    for addr, l in linux.items():
+        if addr in regs:
+            regs[addr][2] = l
+        else:
+            regs[addr] = [l["label"], None, l]
+    return sorted((a, *v) for a, v in regs.items())
+
+
+PS_BITS = ((31, "reset"), (28, "auto"), (12, "ps_reset"), (11, "busy"), (10, "dev_disable"),
+           (9, "was_clkgated"), (8, "was_pwrgated"))
+
+
+def decode(v):
+    out = [f"tgt={v & 0xf:x}", f"act={(v >> 4) & 0xf:x}"]
+    if (v >> 16) & 0xf:
+        out.append(f"min={(v >> 16) & 0xf:x}")
+    if (v >> 24) & 0xf:
+        out.append(f"auto_ps={(v >> 24) & 0xf:x}")
+    out += [n for bit, n in PS_BITS if v & (1 << bit)]
+    return " ".join(out)
+
+
+def read_peek(path):
+    vals = {}
+    with open(path) as f:
+        for line in f:
+            parts = line.split(None, 2)
+            if len(parts) >= 2 and parts[0].startswith("0x"):
+                vals[int(parts[0], 16)] = int(parts[1], 16)
+    return vals
+
+
+def cmd_list(pm, linux, args):
+    for addr, label, d, l in registers(pm, linux):
+        print(f"{addr:#x} {label}")
+
+
+def cmd_show(pm, linux, args):
+    a = read_peek(args.a)
+    b = read_peek(args.b) if args.b else None
+    byid = pm.by_id()
+    for addr, label, d, l in registers(pm, linux):
+        if addr not in a:
+            continue
+        where = []
+        if l:
+            where.append("linux:" + l["label"] + (" always-on" if l["always_on"] else ""))
+        else:
+            where.append("adt-only")
+        if d and d.get("fused_off"):
+            where.append("no-core(fused-off)")
+        if d and d["parents"]:
+            where.append("parents:" + ",".join(byid[p]["name"] if p in byid else str(p)
+                                               for p in d["parents"]))
+        if b is None:
+            print(f"{label:16} {addr:#x} {a[addr]:08x} {decode(a[addr]):40} {' '.join(where)}")
+        else:
+            va, vb = a[addr], b.get(addr)
+            mark = "  " if vb == va else "**"
+            vbs = f"{vb:08x}" if vb is not None else "--------"
+            print(f"{mark} {label:16} {addr:#x} {va:08x} {vbs}  {decode(va):34} -> "
+                  f"{decode(vb) if vb is not None else '-':34} {' '.join(where)}")
+    # The opt-in words, if pmgr-peek --cpu-start or --sleep-regs read them.
+    for path, vals in ((args.a, a), (args.b, b or {})):
+        for addr in sorted(v for v in vals if 0x28e0d4000 <= v < 0x28e0d4020):
+            print(f"cpu-start+{addr - 0x28e0d4000:#x} {addr:#x} {vals[addr]:08x}  ({path})")
+        extra = [(0x292004008 + 4 * i, f"ap-wake-mask{i}") for i in range(7)]
+        extra += [(0x28e224000, "pmgr46+0x0"), (0x2925c4000, "s2r-timer?")]
+        for addr, name in extra:
+            if addr in vals:
+                print(f"{name} {addr:#x} {vals[addr]:08x}  ({path})")
+
+
+def cmd_adt(pm, linux, args):
+    print("power-state banks (ps-regs): reg index, base + offset, populated-slot mask")
+    for i, (reg, off, mask) in enumerate(pm.psregs):
+        print(f"  {i:2}: reg[{reg}] {pm.reg[reg][0]:#x} + {off:#x} = {pm.reg[reg][0] + off:#x}"
+              f"  mask {mask:#010x}")
+    adt_addrs = {d["addr"] for d in pm.devs if d["addr"] is not None}
+    print(f"\n{len(pm.devs)} devices; {len(adt_addrs)} have a power-state register;"
+          f" Linux describes {len(linux)} power states, {len(adt_addrs & set(linux))} at the"
+          " same address")
+    print("\npower states only the ADT describes:")
+    for d in pm.devs:
+        if d["addr"] is not None and d["addr"] not in linux:
+            note = "  no cpu node: a fused-off core" if d.get("fused_off") else ""
+            print(f"  {d['addr']:#x} {d['name']:12} id {d['id']} flags"
+                  f" {','.join(d['flagnames']) or '-'}{note}")
+    print("\npower states only Linux describes (ADT: by name):")
+    byname = {d["name"].lower(): d for d in pm.devs}
+    for addr, l in sorted(linux.items()):
+        if addr not in adt_addrs:
+            d = byname.get(l["label"])
+            note = f"ADT {d['name']} flags {','.join(d['flagnames'])}" if d else "not in the ADT's pmgr"
+            print(f"  {addr:#x} {l['label']:12} {note}")
+    p = pm.node
+    clusters = struct.unpack("<%dI" % (len(p.data("clusters")) // 4), p.data("clusters"))
+    print(f"\nclusters (core slots each): {list(clusters)}; cores present (cpu nodes):"
+          f" {[sum(1 for c, _ in pm.cores if c == i) for i in range(len(clusters))]}")
+    sc = p.data("soc-clusters")
+    print("soc-clusters:", ", ".join(sc[i + 12:i + 28].split(b"\0")[0].decode()
+                                     for i in range(0, len(sc), 28)))
+    for k in ("soc-cluster-power-gating", "cpu-power-gate-latency-us", "wake-time-events"):
+        v = p.data(k)
+        print(f"{k}: {struct.unpack('<I', v)[0]:#x}" if v and len(v) == 4 else f"{k}: {v}")
+    w = p.data("ap-wake-sources")
+    print("\nap-wake-sources (id, name):")
+    for i in range(0, len(w), 36):
+        wid = struct.unpack_from("<I", w, i)[0]
+        name = w[i + 4:i + 36].split(b"\0")[0].decode()
+        print(f"  {wid:#04x} {name}")
+    # function-*: phandle, then the function's FourCC, then its arguments.
+    for k in ("function-pmp_control", "function-mcc_ctrl"):
+        v = p.data(k)
+        if v and len(v) >= 8:
+            print(f"{k}: phandle {struct.unpack_from('<I', v)[0]:#x} {fourcc(v[4:8])}"
+                  + (f" args {v[8:].hex()}" if len(v) > 8 else ""))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="T6000 PMGR power states from macOS's device tree")
+    ap.add_argument("--adt", default=ADT, help=f"ioreg -l -p IODeviceTree output (default {ADT})")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list")
+    s = sub.add_parser("show")
+    s.add_argument("a")
+    s.add_argument("b", nargs="?")
+    sub.add_parser("adt")
+    args = ap.parse_args()
+    pm = PMGR(args.adt)
+    linux = linux_domains()
+    {"list": cmd_list, "show": cmd_show, "adt": cmd_adt}[args.cmd](pm, linux, args)
+
+
+if __name__ == "__main__":
+    main()
