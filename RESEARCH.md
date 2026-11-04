@@ -614,10 +614,11 @@ our own reading.
   the name drew objections on the list.
 - DeepIdle ported it to their kernel and U-Boot. A SYSTEM_SUSPEND stub there
   ran 20 of 20 cycles, but with the SoC still on and one CPU running.
-- **Powering a core off and restarting it at RVBAR fails**, on the M2 Pro
-  ([worklog](https://github.com/JJRPF/Aurora-DeepIdle/blob/main/docs/worklog.md))
-  and in an earlier J314s attempt
-  ([linux-aurora#170](https://github.com/omacom/linux-aurora/pull/170)).
+- **Powering a core off and restarting it at RVBAR fails** on the M2 Pro
+  ([worklog](https://github.com/JJRPF/Aurora-DeepIdle/blob/main/docs/worklog.md)).
+  An earlier J314s attempt
+  ([linux-aurora#170](https://github.com/omacom/linux-aurora/pull/170)) never
+  got as far: CPU1 never reached the stopped state (corrected in A2 below).
   On the M2 Pro:
   - the PMGR start strobes never restart a stopped core;
   - a core in deep WFI without retention resumes after the WFI, not at RVBAR;
@@ -636,7 +637,8 @@ our own reading.
   over (inferred).
 - The CPU-start block is at PMGR + 0x54000 on T6000 and + 0x28000 on T6020
   ([smp.md](https://github.com/AsahiLinux/docs/blob/main/docs/hw/cpu/smp.md)).
-- T6000's S2R timer address and its `MBSE` values are unknown.
+- T6000's S2R timer address and its `MBSE` values were unknown. A2 below has
+  candidates for both, from a J314s trace.
 - The PMU is the same Maverick part (above).
 
 **The hypervisor only sees the way in.**
@@ -653,5 +655,312 @@ our own reading.
 **Others on this.**
 - maralcbr/omarchy-mx-mac#281 is an M1 Pro sleep effort. It recovers hung
   sleeps by hard-resetting through the DFU port with macvdmtool, from a
-  second Apple Silicon Mac.
+  second Apple Silicon Mac. It traced macOS going to sleep on a J314s; see
+  A2 below.
 - PLAN.md has what we do with all this.
+
+## Deep sleep: T6000's keys and registers (A2, 2026-11-04)
+
+The read-only groundwork for the trace (PLAN.md, A2). It draws on three
+sources:
+- the reads below, taken on this Mac with `sleep-peek`
+  (`results/sleep-peek-20261104T120619/`);
+- macOS's device tree, saved on this Mac;
+- the two outside efforts, read in full and fact-checked against their
+  sources: maralcbr/omarchy-mx-mac#281 with its kernel fork, and DeepIdle.
+
+The biggest find is that maralcbr has already traced macOS going to sleep on
+a J314s.
+
+### maralcbr's J314s trace (#281)
+
+[#281](https://github.com/maralcbr/omarchy-mx-mac/issues/281) is an issue,
+opened 2026-10-09, with no update after 2026-10-10. The work went on in the
+lab branches of maralcbr/linux, a fork of omacom/linux-aurora, until
+2026-10-14. maralcbr traced macOS 15.6.1 going to sleep on a J314s under the
+m1n1 hypervisor, then replayed the sequence from s2idle, one way, to measure
+the floor
+([macsmc-reboot.c L208](https://github.com/maralcbr/linux/blob/37be2668e36f5e95bfb7132231b7700e3c0fa568/drivers/power/reset/macsmc-reboot.c#L208)).
+The trace itself isn't published, and neither are the replay's results. What
+survives is the replay's tables, which is most of what A4 was meant to find:
+- **SMC keys, in order:** `MBSE`=`slpw`, `pmVC`=0x100, `WKTP`=2, then
+  `MBSE`=`slpa`
+  ([L844-876](https://github.com/maralcbr/linux/blob/37be2668e36f5e95bfb7132231b7700e3c0fa568/drivers/power/reset/macsmc-reboot.c#L844-L876)).
+  This Mac's ADT ties `pmVC` to pmgr's `toggle_vdd_cio` function, an SMC
+  write (the CIO rail is the USB4/Thunderbolt one, inferred).
+- **The PMP region:** 0x28e3d8328 (pmgr reg[41] + 0x18328) gets 4 before
+  `slpw` and 1 after `WKTP`. Between them, 0x28e3d0860 gets 1 << 61
+  ([L231-232](https://github.com/maralcbr/linux/blob/37be2668e36f5e95bfb7132231b7700e3c0fa568/drivers/power/reset/macsmc-reboot.c#L231-L232)).
+- **Between `slpw` and `slpa`, the internal PCIe ports go down:** PERST, then
+  refclk and appclk off
+  ([4ede5eba](https://github.com/maralcbr/linux/commit/4ede5ebaa8296934587945dfbc9f74343881ac0e)).
+- **The coprocessors:**
+  - before `slpa`, the AOP gets 0x00a4000000000000 on endpoints 0x2b, 0x29,
+    0x2a and 0x23, then SetAPPower 0x201
+    ([rtkit.c L1173-1203](https://github.com/maralcbr/linux/blob/37be2668e36f5e95bfb7132231b7700e3c0fa568/drivers/soc/apple/rtkit.c#L1173-L1203));
+  - after `slpw`, the SEP gets control endpoint 0, type 0x0c, param 2
+    ([fb148251](https://github.com/maralcbr/linux/commit/fb148251cfa156b62c54e44f929ba35623996b02));
+  - the replay also shuts the ANS (NVMe) down, but putting it before `slpw`
+    was maralcbr's choice, not something traced.
+- **After `slpa`, 74 MMIO writes in a fixed order**
+  ([L235-311](https://github.com/maralcbr/linux/blob/37be2668e36f5e95bfb7132231b7700e3c0fa568/drivers/power/reset/macsmc-reboot.c#L235-L311)):
+  - the PCIe root complex;
+  - watchdog WD0's control register, to 0;
+  - error-handler blocks;
+  - each CPU cluster's DVFS and PMGR blocks;
+  - pmgr-misc's dcs-ps (0x557, then 0x775);
+  - AFR's power state, to 0;
+  - 0x28e224000 (pmgr reg[46]): 0x219, 0x21b, 0x8000021a, then 0x21a
+    three times;
+  - last of all, **0x2925c4000 (pmgr reg[36] + 0x4000) = 1**. T6020's S2R
+    timer is MPMGR_AON + 0x4000, started with a 1 (DeepIdle's static
+    analysis), and reg[36] is T6000's twin of that block. So this is
+    T6000's S2R timer (inferred).
+- **The AP wake masks:** 0x292004008-0x292004020, seven words in pmgr reg[7],
+  where a set bit masks the source. macOS's values are 0xf3ffafff 0xffa1f6ff
+  0xfbdfffff 0x3fffffff 0xffffffc0 0xffffffff 0x00001fff
+  ([L699-702](https://github.com/maralcbr/linux/blob/37be2668e36f5e95bfb7132231b7700e3c0fa568/drivers/power/reset/macsmc-reboot.c#L699-L702)).
+  Below source 0xcd, the bits they leave clear are exactly the 21
+  `ap-wake-sources` of this Mac's ADT (bit = source id). Word 6 also leaves
+  0xcd-0xdf clear, ids the ADT names no source for.
+- **The power states macOS has off at sleep entry:** 31 of them that Linux
+  leaves on, with macOS's values
+  ([L567-600](https://github.com/maralcbr/linux/blob/37be2668e36f5e95bfb7132231b7700e3c0fa568/drivers/power/reset/macsmc-reboot.c#L567-L600)).
+  They are compared with this Mac's below.
+- **The last CPU** writes CYC_OVRD = 0x3000001: WFI mode 3, retention off.
+
+More from maralcbr's sources:
+- **Power was measured at the USB-C input.** A second Mac (an M4 Pro)
+  powered the J314s over the DFU-port cable and read what it delivered,
+  because the gauge is useless across a hard reset. With that cable's
+  Thunderbolt link torn down, s2idle drew about 2.7 W at 5 V. The live link
+  cost another 1.35 W.
+- **Recovery:**
+  - `macvdmtool reboot` from the second Mac hard-resets a suspended J314s,
+    back in 36-37 s
+    ([maclab](https://github.com/chriskearney/maclab));
+  - but one CPU power-down trial left it unreachable after a cabled reset,
+    and it needed physical recovery
+    ([linux-aurora#170](https://github.com/omacom/linux-aurora/pull/170)).
+- **#281's own PMU alarm** fired but never reached Linux in s2idle, and was
+  parked. `rtc-alarm-test` here has that working, which is worth offering in
+  A6.
+- **The guest was macOS 15.6.1.** Asahi's hypervisor guide lists only 13.5
+  and 14.8.3 for M1. If 15.6.1 works on T6000, A3 doesn't depend on finding
+  a 14.8.x installer.
+
+### What macOS's device tree says
+
+`pmgr-map adt` decodes the pmgr node of the IODeviceTree saved from macOS
+26.6.2 (`/boot/macos-session/iodevicetree.txt`), with the struct layouts of
+m1n1's `proxyclient/m1n1/adt.py`, and checks it against the live device tree.
+
+**Power states.** The pmgr node lists 355 devices, and 187 have a
+power-state register. Linux's device tree describes 193 power states, and
+174 of them sit at the same address under the same name, which shows the
+decode is right.
+- **13 are only in the ADT:** the cores (ECPU0_0-1, PCPU0_0-3, PCPU1_0-3)
+  and the three cluster power managers (ECPM, PCPM0, PCPM1), at PMGR + 0x0 to
+  0x70. This 8-core part has PCPU0_3 and PCPU1_3 fused off. `cpus` lists 2
+  E-cores and 6 P-cores out of `max_cpus` 10, yet the fused-off cores'
+  registers are still listed.
+- **19 are only in Linux's tree:**
+  - the ANE and ISP sub-domains, which their own ADT nodes describe instead;
+  - afnc3_ioa/ls/lw0 and gp_usb_aon. This ADT marks those `no_ps`, with no
+    power-state register on this chip, yet Linux binds and reads all four.
+- **The PMGR's sleep states:** pmgr's `events` name the reconfig engine's
+  system states: SLP_DDR, AWAKE, SLP_S2R, DEEP_WAIT, SYS_AWAKE, SYS_S2R_AOP,
+  SYS_SLP_DDR, DDR_WK_TIME and S2R_WK_TIME, as on T6020.
+- **Other pmgr properties:**
+  - `soc-clusters`: EACC, PACC0, PACC1, ANE0, AFR, AVEMSR, DISPLAY;
+  - `soc-cluster-power-gating` 0x2e0, `cpu-power-gate-latency-us` 50000,
+    `wake-time-events` 1;
+  - `pwrgate-regs`: five entries whose offsets lie outside their register
+    windows. Their meaning is unknown and they weren't read.
+
+**The CPUs.** Each core's node has `function-enable_core`: pmgr's `Core`
+function with the core's bit (cpu0 0x1 to cpu8 0x100; 0x20 and 0x200, the
+fused-off cores, are absent). It also has `function-cpu_idle`, pmgr's
+`cpuI`. Each core's `cpu-impl-reg` (0x210050000, 0x210150000, 0x211050000,
+and so on) holds RVBAR at + 0x0. Each cluster has a `cpm-impl-reg`
+(0x210e40000, 0x211e40000, 0x212e40000) and an `acc-impl-reg` (0x210f00000,
+...).
+
+**What can wake the AP.** pmgr's `ap-wake-sources` lists 21:
+- the AOP: AOP.GPIO.IRQ4 (0x0c), AOP.GPIO.IRQ6 (0x0e), AOP.OutboxNotEmpty
+  (0x1a), AOP.CPUWakeupAP (0x1b);
+- the NUB: NUB.WakeupAP (0x28), NUB.GPIO.IRQ2 (0x2b), NUB.APWatchdog (0x31),
+  NUB.APWakeupTime (0x32), NUB.SPMISw0IRQ (0x33), NUB.SPMISw1IRQ (0x34),
+  NUB.SPMISw3IRQ (0x36);
+- the SMC: SMC.CPUWakeupAP (0x55), SMC.OutboxNotEmpty (0x5a);
+- the four USB-C ports: ATC0-3.CIOWakeup (0x7e-0x81), ATC0-3.USBWakeup
+  (0x82-0x85).
+
+None is a keyboard or SPI source, which bears on Track C. macOS's own wake
+reasons on this Mac use these names (pmset log, 2026-10-30):
+- RTC wakes come in as `NUB.SPMISw3IRQ nub-spmi0.0x02 rtc`;
+- lid and Wi-Fi wakes come in as `smc.sysState.Wake(0x70070000) lid` (or
+  `wifibt`) `SMC.OutboxNotEmpty`.
+
+macOS calls the state Deep Idle ("DarkWake from Deep Idle [CDNP]").
+
+**The SMC and the PMU.** The PMU's node (`spmi-mpmu@F`) has
+`function-external_standby` = smc-pmu's `keyW` on `MBSE`: the PMU's external
+standby is a write of the SMC key `MBSE`. It also has `info-has_slpsmc` 1 and
+`function-rtc_read_helper` = `keyR` on `CLKM`. Unlike T6020's, it has no
+`function-suspend_helper` (PMGR `S2RT`, the S2R timer start). The SMC's
+`smc-pmu` node names its event bits: pwrbtn 0, lid 8, charger 9, codec 10,
+wifibt 11, trackpadkeyboard 12, sdconn 14, acattach 40, acdetach 41,
+USB-C_plug 42, USB2_plug 43, USB2_wake 44, aupo 45, rtc 48.
+
+**What keeps state through sleep.**
+- `retention`: dart-aop, dart-sep, dart-dcp, dart-dcpext0 and dart-dcpext1.
+- `losesPowerInSleep`: clvr-spmi0-2.
+- `shutdown-sleep`: the NVMe (iop-ans-nub) and GPU (iop-gfx-nub0)
+  coprocessors.
+- `no-hibernate-sleep`: the SMC's and the NVMe's nubs.
+- `reconfig-wdog-support` on the watchdog, and `reconfig-firmware` on the
+  three ACIO coprocessors (the reconfig engine, inferred).
+
+### The SMC on this Mac
+
+`smc-peek` walked the SMC's 2052 keys three times: awake, again 60 s later,
+and right after a 90 s s2idle sleep on the alarm. Each walk read 1634 values
+with no errors. 389 keys are function-flagged (0x10). Those weren't read,
+except the three named:
+
+| key | type, size | flags | value, all three times |
+|---|---|---|---|
+| `MBSE` | hex_, 4 | 0xd4 | `30000000` (read with `read_funcs`) |
+| `MBSW` | hex_, 8 | 0xd4 | 0 (read with `read_funcs`) |
+| `WKTP` | ui8, 1 | 0xd0 | 0 (read with `read_funcs`) |
+| `MBSe`, `MBSw` | hex_, 8 | 0xd4 | never read: `MBSe` is the power button's read-to-clear flag ([smc.md](https://github.com/AsahiLinux/docs/blob/main/docs/hw/soc/smc.md)) |
+| `pmVC` | ui32, 4 | 0xf0 | not read (the key macOS writes 0x100 to) |
+| `PMVC` | flt, 4 | 0x85 | a power reading (3.5-4.0) |
+| `CLSP` | ui64, 8 | 0x84 | 0 |
+| `CLWK` | ui64, 8 | 0x84 | 8892425 |
+| `NTAP` | flag, 1 | 0xc0 | 1 |
+
+- **The keys and their flags match T6020's.** `MBSE`, `MBSW`, `MBSe`,
+  `MBSw` and `WKTP` have the same types, sizes and flags as in DeepIdle's
+  T6020 key list. Awake, macOS on T6020 read `MBSE` as ff000000; under Linux
+  here it reads `30000000`. `pmVC` and `PMVC` are different keys. Only
+  `PMVC` is in DeepIdle's T6020 list, and the trace's key is `pmVC`.
+- **s2idle changes nothing in the SMC but sensors.** Across the sleep, only
+  temperatures, currents and rail powers moved beyond the keys that also
+  change between two awake reads. `MBSE`, `MBSW` and `WKTP` didn't move, and
+  `MBSW` holds no wake reason after the alarm wake. `CLSP` (possibly "the
+  time the SMC last went to sleep") is 0, and `CLWK` didn't move either. By
+  the SMC's own clock, it has never slept. That fits Linux: neither macsmc
+  nor its sub-drivers have suspend callbacks, so nothing tells the SMC about
+  s2idle.
+- **The SMC keeps sampling power through s2idle.** `zSPa` (accumulated
+  system power) and `zSPc` (its sample count) exist here too, and `zSPc`
+  went up 90 over the 90 s sleep, as DeepIdle found on T6020. That makes them
+  a charger-side counter for s2idle power, if a sleep is ever measured with
+  the battery held.
+
+### PMGR power states on this Mac
+
+`pmgr-peek` read all 206 power-state registers awake twice and after the
+sleep (`pmgr-map show` decodes them).
+- **The cores' power states have target 0.** Their actual state flips
+  between on (f) and off (0) from one read to the next. PCPM1, the second
+  P-cluster's manager, read off once. So under Linux too, the PMGR gates idle
+  cores and whole clusters (the `CPU PD` idle state).
+- **After the sleep**, the sticky `was_clkgated` and `was_pwrgated` bits are
+  newly set on the domains genpd switched off for it. The domains that
+  switched off match Finding 3.
+- **macOS at sleep entry against Linux.** Of the 31 states macOS has off at
+  sleep entry (maralcbr's table), 19 are `apple,always-on` in Linux's tree:
+  - 16 of those sit at target f and are on: the ATC ports' `*_common`,
+    `*_pcie` and `*_usb_aon` blocks, PMP, PMS_SRAM, MSG, `apcie_gp_sys`,
+    AFNC1_LW2 and AFNC2_LW1;
+  - the other three already match macOS's state, through hardware auto-PM:
+    SEP (auto, actual 0), NUB_SPMI1 (clock-gated) and AFNC3_LW0.
+
+  Of the other 12:
+  - dispext1's FE and CPU go off in s2idle (Finding 3);
+  - disp0, dispext0 and `pcie0_ref` are held on by their drivers;
+  - UART2-7 sit clock-gated (target 4), where macOS has them off.
+
+  ATC0's blocks aren't in macOS's list, probably because the hypervisor
+  keeps the USB port it talks over powered (inferred). Neither are the DRAM
+  controllers (dcs_*, amcc*).
+  - macOS has PMP and PMS_SRAM at target 0, actual 0; Linux keeps PMP at f,
+    with PS_MIN f as on T6020. DeepIdle crashed a T6020 by resetting
+    `ps_pmp`, so never touch 0x28e0802d8.
+
+### The CPU-start block and macOS's sleep registers, read under Linux
+
+All of these were read last, after everything else was saved, and none
+faulted.
+- **CPU-start + 0x4 reads 0x880**, and + 0x8, + 0xc and + 0x10 read 0.
+  Bits 7 and 11 are 4·cluster+core for core 3 of each P-cluster: the two
+  fused-off cores. m1n1 only ever writes this block, and nobody has
+  published a read of it. It looks like a per-core flag that is set for
+  missing cores (inferred).
+- **The AP wake masks** read 0 in every word except word 1, 0x40 (source
+  38). So nearly every wake source is unmasked under Linux, where macOS
+  masks all but its 21. It doesn't matter in s2idle, where the AIC wakes
+  the cores and the SoC never sleeps (inferred).
+- **0x28e224000 reads 0x239.** macOS steps it through 0x219, 0x21b,
+  0x8000021a and 0x21a just before its last write.
+- **0x2925c4000 already reads 1**, the value macOS writes there last.
+  DeepIdle says the same of T6020's S2R-timer word under Linux (unsourced).
+  So the 1 that macOS writes is probably a start or a re-arm, not a state
+  change visible on read (inferred).
+
+### Corrections to what this file said
+
+- **linux-aurora#170 (J314s) never got CPU1 to stop.** One run aborted with
+  -EBUSY, one reset after the stop write, and the others hit the 50 ms OFF
+  timeout, with the core's first WFI returning while an interrupt was
+  pending. No run reached a restart, so whether a PMGR-stopped core can be
+  restarted on T6000 is untested.
+- **`MBSE` and `MBSe` are different keys.** `MBSE` is the sleep-state key.
+  `MBSe` is the power button's read-to-clear flag. Never read it.
+- **The cpuidle states do have s2idle hooks.** Both of `cpuidle-apple`'s
+  states set `.enter_s2idle`. Their `s2idle_usage` read 0 only because no
+  s2idle had happened on that boot yet.
+
+### What the trace has to answer
+
+A4's job changes: maralcbr's trace exists, so first ask for it (A6), then
+fill the gaps on 14.8.x. In order:
+1. **Order on T6000 (trace_smc and trace_pmp).** Does maralcbr's order
+   (`slpw`, `pmVC`, `WKTP`, `slpa`) hold on 14.8.x? Where do SetAPPower 0x201
+   to the SMC and the PMP, and PMP SetIOPPower, fall relative to `slpa`?
+   DeepIdle's three T6020 sources disagree on this. Record the raw bytes of
+   each `MBSE` write, which settles the byte order.
+2. **The PMP (trace_pmp).** What is the TGT_WR sequence at 0x28e3d07c0,
+   decoded with T6000's bits (ECPM 0x40, PCPM0 0x80, PCPM1 0x100, GFX 0x200,
+   DISP0_FE 0x1000, DISPEXT0_FE 0x2000, DISPEXT1_FE 0x4000)? What do
+   0x28e3d8328 (4, then 1) and 0x28e3d0860 (1 << 61) mean? Linux on J314s
+   requests only 0x7000; macOS keeps the CPU complexes requested while awake.
+3. **The power states (trace_pmgr).** Which states does macOS turn off, in
+   what order, and through which register? For the always-on ones in
+   particular: the ATC blocks, PMP, the fabric and `apcie_gp_sys`. trace_pmgr
+   is T8103-centric and needs T6000's banks first.
+4. **The wake setup (trace_pmgr).** When are the AP wake masks written? Is
+   anything armed on NUB.APWakeupTime, or written to `S2R_WK_TIME` or
+   `DDR_WK_TIME`?
+5. **The S2R timer (trace_pmgr).** Is 0x2925c4000 read or polled before
+   macOS writes 1? What do 0x28e224000's values (0x219 / 0x21b / 0x8000021a /
+   0x21a) mean, and is there a poll between them? maralcbr's replay has
+   none.
+6. **The PMU (trace_spmi).** What does macOS send the PMU over nub-spmi0 on
+   the way in: `pm_setting` (0x1405), the alarm, any SPMI sleep command?
+   trace_spmi as written fails on T6000 (it looks up `/arm-io/nub-spmi-a0`
+   first) and needs a fix.
+7. **The coprocessors.** What are the NVMe shutdown, the DCPs' power-off and
+   the AOP and SEP messages, relative to `slpw` and `slpa`? The ANS shuts
+   down before `slpa` in macOS; `slpa` from s2idle lost the NVMe on T6020.
+8. **The CPUs.** What do CYC_OVRD and ACC_OVRD get on each core? Which core
+   goes last? Does the CPU-start block's +0x0 (stop) get written? Can the
+   hypervisor keep the boot CPU alive past SetAPPower, long enough to see
+   PMGR's quiesce and the S2R-timer write in order? The hypervisor skips
+   DISABLE_WFI_RET writes and exits the CPU.
+9. **The wake (not traceable under the hypervisor).** After a macOS sleep,
+   what do `MBSE` and `MBSW` read? These are boot-time reads in the guest's
+   own trace.
