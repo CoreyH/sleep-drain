@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""rtc-phase (J314s): when the PMU's counter seconds and rtc0's seconds tick.
+
+The PMU's alarm compares against its own counter seconds (0x1406, the upper four
+bytes; a read that starts at 0x1406 latches them). The RTC core judges the alarm
+by rtc0's time: the SMC's CLKM plus the tick offset at 0x1411, in 1/32768 s,
+shifted by 15. This times both ticks over a few seconds and prints the offset's
+fraction. If rtc0 ticks later than the offset's fraction alone explains, CLKM
+lags the PMU's counter, and an alarm can fire while rtc0 still reads the second
+before (RESEARCH.md, B1).
+
+  rtc-alarm-test/rtc-phase [TICKS]      read-only; no root needed
+"""
+import glob
+import os
+import struct
+import sys
+import time
+
+NODE = "/soc/spmi@2920a1300/pmic@f"
+
+
+def nvmem():
+    found = [d for d in sorted(glob.glob("/sys/bus/nvmem/devices/spmi_nvmem*"))
+             if os.path.realpath(f"{d}/of_node").endswith(NODE)]
+    if len(found) != 1:
+        sys.exit(f"rtc-phase: want one nvmem device for {NODE}, found {len(found)}")
+    return found[0]
+
+
+def main():
+    ticks = int(sys.argv[1]) if len(sys.argv) > 1 else 4
+    dev = nvmem()
+    fd = os.open(f"{dev}/nvmem", os.O_RDONLY)
+
+    def pmu():
+        return struct.unpack_from("<I", os.pread(fd, 6, 0x1406), 2)[0]
+
+    def rtc():
+        with open("/sys/class/rtc/rtc0/since_epoch") as f:
+            return int(f.read())
+
+    off = int.from_bytes(os.pread(fd, 6, 0x1411), "little")
+    if off & (1 << 47):
+        off -= 1 << 48
+    frac = (off & 0x7fff) / 32768
+    print(f"{dev}: tick offset {off} = {off >> 15} s + {frac:.4f} s")
+
+    def edge(read, deadline):
+        v0, t0 = read(), time.monotonic()
+        while time.monotonic() < deadline:
+            v, t = read(), time.monotonic()
+            if v != v0:
+                return v, (t0 + t) / 2, (t - t0) / 2
+            t0 = t
+        return None, None, None
+
+    lags = []
+    for _ in range(ticks):
+        pv, pt, pe = edge(pmu, time.monotonic() + 2.5)
+        if pv is None:
+            sys.exit("rtc-phase: the PMU's counter didn't tick")
+        rv, rt, re = edge(rtc, pt + 1.2)
+        if rv is None:
+            sys.exit("rtc-phase: rtc0 didn't tick")
+        # rtc0 should tick (1 - frac) s after the PMU; the rest, within a
+        # second either way, is how far CLKM lags the PMU's counter.
+        lag = ((rt - pt) - (1 - frac) + 0.5) % 1 - 0.5
+        lags.append(lag)
+        print(f"PMU {pv} at 0 (±{pe * 1e3:.2f} ms), rtc0 {rv} at {(rt - pt) * 1e3:+.1f} ms "
+              f"(±{re * 1e3:.2f} ms): rtc0 - offset = {rv - (off >> 15)}; "
+              f"CLKM lags the PMU by {lag * 1e3:+.1f} ms")
+    print(f"CLKM lags the PMU's counter by {min(lags) * 1e3:.1f}-{max(lags) * 1e3:.1f} ms; "
+          f"an alarm fires before rtc0 reaches its second when the offset's fraction "
+          f"is under that.")
+
+
+if __name__ == "__main__":
+    main()

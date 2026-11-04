@@ -454,8 +454,8 @@ unreachable.
 
 ### The alarm wakes J314s from s2idle (2026-11-02)
 
-With #9's controller, `rtc-alarm-test/load` came up clean: SPMI reads take
-about 20 ms with no timeouts, and `rtc0` has `wakealarm` with wakeup enabled
+With #9's controller, `rtc-alarm-test/load` came up clean: SPMI reads work
+with no timeouts, and `rtc0` has `wakealarm` with wakeup enabled
 (`results/rtc-alarm-20261102.txt`; aurora9, on the charger).
 - Awake, three times: each alarm fired on its second, and afterwards the PMU
   read control 0x01 with 0x14c0 clear, disarmed and cleared by the driver's
@@ -470,7 +470,8 @@ about 20 ms with no timeouts, and `rtc0` has `wakealarm` with wakeup enabled
   watching: it would cut short timed sleep tests and nights alike.
 - An awake alarm raised the IRQ 5-6 times, a sleep's only once. Possibly the
   PMU repeats the message until 0x14c0 is cleared; the extra ones find the
-  event already clear. Harmless, but look into it before upstream.
+  event already clear. Harmless, but look into it before upstream. (Answered
+  by B1, below: an RTC-core re-arm loop, not repeated messages.)
 
 This was the missing piece for short timed sleeps: on battery, a sleep ended
 by the alarm can stand in for a whole night when comparing one variable.
@@ -508,13 +509,69 @@ PMU alarm 8879, in the counter's seconds. It fired awake, and a 30 s sleep
 ended on it.
 
 The awake IRQ count isn't steady: 5-6 per alarm on aurora9, 7 on aurora14's
-first, 1 on the next (with the real offset). Sleeps always raised 1. Still to
-look into before upstream.
+first, 1 on the next (with the real offset). Sleeps always raised 1. B1, below,
+explains it: the offset's fraction is what matters.
 
 `pmu-alarm` now finds the PMU's nvmem device by its node. The number isn't
 fixed: each bind of the SPMI controller registers a new one (`spmi_nvmem2`
 after this load), and the hardcoded `spmi_nvmem0` made `check`'s status lines
 refuse.
+
+### Why an awake alarm raised its IRQ several times (B1, 2026-11-04)
+
+The extra interrupts were a re-arm loop between the PMU and the RTC core, not
+the PMU repeating its message.
+- **The handler is fast.** `rtc-alarm-test/trace-irq` traces awake alarms with
+  kprobes on the SPMI controller and the alarm's handler. One SPMI
+  transaction takes 40-60 µs, and the handler has cleared the event within
+  0.4 ms of the interrupt. (The "about 20 ms" noted above was a whole
+  `pmu-alarm status` run from userspace, not one read.) With this boot's RTC
+  offset, three alarms raised one IRQ each
+  (`results/trace-irq-20261104T132635.txt`).
+- **Two clocks.** The alarm compares against the PMU's counter seconds, while
+  rtc0's time is the SMC's `CLKM` plus the tick offset at 0x1411.
+  `rtc-alarm-test/rtc-phase` times both: `CLKM` lags the PMU's counter by
+  5.5-5.8 ms.
+- **The loop.** When the offset's fraction (its sub-second part) is under that
+  lag, the alarm fires while rtc0 still reads the second before. The RTC core
+  finds its timer not yet expired and sets the same second again. The PMU,
+  already there, fires again at once, and so on until rtc0 catches up. In the
+  trace, each IRQ is followed by the core's kworker writing the alarm value
+  (0x140c) again, about 1.2 ms a round.
+- **It's what happened from 2026-10-30 to 11-02.** The PMU had lost power and
+  the offset was 0, so its fraction was 0. Since `hwclock --systohc` set it
+  (fraction 0.458 s), an awake alarm raises one IRQ.
+- **Reproduced.** `trace-irq --zero-fraction` clears the fraction for the run
+  and restores it afterwards. Its three alarms raised 6, 5 and 5 IRQs, against
+  1, 1 and 1 with the offset as it is
+  (`results/trace-irq-20261104T133147.txt`).
+- **A sleep always raised one** because its IRQ is handled only at resume,
+  long after rtc0 has caught up.
+
+The fix, in `rtc-alarm-test/rtc-macsmc-alarm.c`, for B2's patch: when the tick
+offset's fraction is under 1/32 s (31 ms), the alarm is armed one counter
+second later. It then fires within the set second, and
+`read_alarm` still reports the time that was set. The cost: with a fraction
+between the lag and 1/32 s, about 3% of offsets, the alarm comes up to a
+second late, which the driver already allows ("the set second or up to one
+second after it"). The seconds-offset path (T6030) is unchanged. If T6030's
+`CLKM` lags its PMU too, it would loop on every awake alarm (untested).
+
+Trying the fix took a restart. The kernel's alarmtimer holds a reference on
+the first wake-capable RTC's module (`alarmtimer.3.auto` is a child of rtc0),
+so `rtc_macsmc_alarm` can't be unloaded. That's also why `rtc-alarm-test` is
+undone only by a restart.
+
+**Verified after the restart.** With the fraction cleared, the three alarms
+raised one IRQ each, where the old driver raised 6, 5 and 5
+(`results/trace-irq-20261104T134316.txt`). With the offset as it is, also
+one each (`results/trace-irq-20261104T134347.txt`). In both, the alarm value
+is written once, when it's set; after the IRQ the RTC core disarms instead of
+re-arming. With the fraction cleared, a "+4 s" alarm fired 5 s later: the
+extra counter second, still within the set second by rtc0. The margin should
+stay well above `CLKM`'s lag. Five of six readings put it at 5.5-6.3 ms, but
+the first, right after boot, read 14-24 ms. If B2 sees more than that, raise
+the margin to 1/16 s.
 
 ### The first timed drain sleep: the aurora14 baseline (2026-11-02)
 

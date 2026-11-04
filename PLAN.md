@@ -95,10 +95,11 @@ steps, and restarting the DCP and the PMP afterwards.
   - Corey's go-ahead for each experiment.
 - [ ] **A6. Talk to the others before duplicating work.** Every post needs
   Corey's OK.
-  - **maralcbr first** (#281, or maralcbr/linux): ask for the 15.6.1 trace
-    logs and what the replay did (it stopped on 2026-10-14 with no result
-    posted). Offer the PMU alarm wake on J314s (`rtc-alarm-test`, with the
-    SPMI 192 fix), which #281 parked.
+  - **maralcbr first:** asked on 2026-11-04
+    ([#281](https://github.com/maralcbr/omarchy-mx-mac/issues/281#issuecomment-6630474430)).
+    The request is for the 15.6.1 trace and the replay's results. It offers
+    the PMU alarm fix (SPMI 192 and the event clears), and shares this Mac's
+    reads. Waiting for a reply; check it before starting A3 or A4.
   - DeepIdle: #9 has no reply yet.
   - Asahi: Sven Peter's PSCI-via-EFI RFC covers T8103 only.
 
@@ -143,8 +144,13 @@ hypervisor guide links an archived installer.
 
 ## Track B: upstream the RTC alarm (in parallel, small)
 
-- [ ] **B1.** Find out why an awake alarm raises its IRQ 1 to 7 times while a
-  sleep raises it once. This needs awake alarms only.
+- [x] **B1.** Why an awake alarm raised its IRQ 1 to 7 times while a sleep
+  raised it once (#15). The cause is an RTC-core re-arm loop: `CLKM` lags the
+  PMU's counter by about 6 ms, and the loop shows when the tick offset's
+  fraction is under that. RESEARCH.md has the details. The fix in
+  `rtc-alarm-test/rtc-macsmc-alarm.c` (arm a second later below 1/32 s of
+  fraction) is verified on device: one IRQ per alarm. It goes into B2's
+  rtc-macsmc patch.
 - [ ] **B2.** Turn `rtc-alarm-test/` into patches against linux-aurora, in
   this order:
   1. the SPMI T6000 notify fix (192);
