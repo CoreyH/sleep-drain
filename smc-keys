@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""smc-keys: decode and compare smc-peek's dumps of the SMC's key table.
+
+  smc-keys show DUMP [REGEX]   every key (or those whose name matches REGEX):
+                               type, flags, size, the value decoded by type
+  smc-keys diff A B [REGEX]    keys whose value differs between two dumps,
+                               and keys only one of them has
+
+DUMP is the text of /sys/kernel/debug/smc-peek/values (or keys), one line per
+key: "<index> <key> <type> <size> <flags> <value>" (see smc-peek/smc_peek.c).
+A value that wasn't read is a word: - (not asked for), func, deny, noread,
+empty or errN.
+Flags: r readable, w writable, f function (bits 7, 6 and 4); any other bit is
+shown in hex. Multi-byte numbers are decoded little-endian, as macsmc reads
+most of them; a few keys are big-endian (#KEY, the key count, always; macsmc
+reads B0RM big-endian on some firmware), so every decoded number is followed
+by its raw bytes in [brackets], in the order the SMC sent them.
+"""
+import re
+import struct
+import sys
+
+
+# Key and type are four characters each and may hold spaces ("flt ", "ui8 ").
+LINE_RE = re.compile(r"^(\d+) (.{4}) (.{4}) (\d+) ([0-9a-f]{2}) (\S*)$")
+ERR_RE = re.compile(r"^(\d+) ! (err\d+)$")
+
+
+def load(path):
+    keys, meta = {}, []
+    with open(path) as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line.startswith("#"):
+                meta.append(line)
+                continue
+            m = LINE_RE.match(line)
+            if m:
+                idx, key, typ, size, flags, value = m.groups()
+                value = value or "empty"
+                keys[key] = dict(idx=int(idx), type=typ, size=int(size), flags=int(flags, 16),
+                                 value=value)
+                continue
+            m = ERR_RE.match(line)
+            if m:
+                meta.append(f"# index {m.group(1)}: {m.group(2)}")
+            elif line:
+                meta.append(f"# unparsed: {line}")
+    return keys, meta
+
+
+def flagstr(f):
+    s = ("r" if f & 0x80 else "-") + ("w" if f & 0x40 else "-") + ("f" if f & 0x10 else "-")
+    rest = f & ~0xd0
+    return s + (f"+{rest:02x}" if rest else "")
+
+
+def fourcc_of(b):
+    """A little-endian u32 holding a FourCC (as MBSE's values do), if printable."""
+    s = b[::-1]
+    return s.decode() if all(0x20 <= c < 0x7f for c in s) else None
+
+
+# Keys the SMC keeps big-endian whatever their type says.
+BIG_ENDIAN = {"#KEY"}
+
+
+def decode(typ, value, key=None):
+    if not re.fullmatch(r"(?:[0-9a-f]{2})+", value):
+        return value
+    b = bytes.fromhex(value)
+    t = typ.strip()
+    order = "big" if key in BIG_ENDIAN else "little"
+    raw = f" [{value}]" if len(b) > 1 else ""
+    try:
+        if t == "flag" and len(b) == 1:
+            return str(b[0])
+        if t in ("ui8", "ui16", "ui32", "ui64") and len(b) in (1, 2, 4, 8):
+            n = int.from_bytes(b, order)
+            out = f"{n} ({n:#x})"
+            if len(b) == 4 and order == "little" and fourcc_of(b):
+                out += f" '{fourcc_of(b)}'"
+            return out + raw
+        if t in ("si8", "si16", "si32", "si64") and len(b) in (1, 2, 4, 8):
+            return str(int.from_bytes(b, order, signed=True)) + raw
+        if t == "flt" and len(b) == 4:
+            return f"{struct.unpack('<f', b)[0]:.6g}" + raw
+        if t == "ioft" and len(b) == 8:
+            return f"{int.from_bytes(b, 'little') / 65536:.6g}" + raw
+        if t.startswith("ch8") or t == "char":
+            s = b.split(b"\0")[0]
+            if all(0x20 <= c < 0x7f for c in s):
+                return repr(s.decode())
+    except (ValueError, struct.error):
+        pass
+    if len(b) == 4 and fourcc_of(b):
+        return f"{value} '{fourcc_of(b)}'"
+    return value
+
+
+def row(key, k):
+    return f"{key} {k['type']:4} {flagstr(k['flags']):5} {k['size']:3}  {decode(k['type'], k['value'], key)}"
+
+
+def show(path, pattern):
+    keys, meta = load(path)
+    for m in meta:
+        print(m)
+    for key in sorted(keys, key=lambda x: keys[x]["idx"]):
+        if pattern and not re.search(pattern, key):
+            continue
+        print(row(key, keys[key]))
+
+
+def diff(a, b, pattern):
+    ka, ma = load(a)
+    kb, mb = load(b)
+    for m in ma:
+        print(f"{a}: {m}")
+    for m in mb:
+        print(f"{b}: {m}")
+    names = sorted(set(ka) | set(kb), key=lambda x: (ka.get(x) or kb.get(x))["idx"])
+    for key in names:
+        if pattern and not re.search(pattern, key):
+            continue
+        x, y = ka.get(key), kb.get(key)
+        if x is None:
+            print(f"+ {row(key, y)}")
+        elif y is None:
+            print(f"- {row(key, x)}")
+        elif x["value"] != y["value"] or x["flags"] != y["flags"] or x["type"] != y["type"]:
+            print(f"  {key} {x['type']:4} {flagstr(x['flags']):5} {x['size']:3}  "
+                  f"{decode(x['type'], x['value'], key)}  ->  {decode(y['type'], y['value'], key)}")
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) in (2, 3) and args[0] == "show":
+        show(args[1], args[2] if len(args) == 3 else None)
+    elif len(args) in (3, 4) and args[0] == "diff":
+        diff(args[1], args[2], args[3] if len(args) == 4 else None)
+    else:
+        sys.exit(__doc__.strip())
+
+
+if __name__ == "__main__":
+    main()
