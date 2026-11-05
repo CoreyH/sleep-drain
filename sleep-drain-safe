@@ -137,7 +137,10 @@ cmd_status() {
   local next dev
   if is_safe; then
     dev=$(< "$RUN/active")
-    echo "this boot is a safe boot: $dev read-only $(blockdev --getro "$dev" 2> /dev/null || echo '?')," \
+    # sysfs, not blockdev, so it reads without root
+    local ro
+    ro=$(cat "/sys/class/block/$(basename "$(realpath "$dev")")/ro" 2> /dev/null || echo '?')
+    echo "this boot is a safe boot: $dev read-only $([[ $ro == 1 ]] && echo yes || echo "NO ($ro)")," \
       "/ on $(findmnt -no FSTYPE /)"
     df -h --output=used,size "$RUN/rw" | tail -1 | awk '{ print "RAM used by changes: " $1 " of " $2 }'
   else

@@ -101,22 +101,22 @@ steps, and restarting the DCP and the PMP afterwards.
   - a read-only or throwaway root;
   - Corey's go-ahead for each experiment.
 
-  The throwaway root is drafted (2026-11-05): `sleep-drain-safe` and
+  The throwaway root works (2026-11-05): `sleep-drain-safe` and
   `safe-boot/` (CLAUDE.md has how it works; `tests/safe_boot_hook_test.py`
-  and `tests/safe_boot_save_test.py` pass). Still open:
-  - the device test. The first safe boot (2026-11-05, 12:06) came up with
-    the desktop. A file written to /home in it was gone after the next
-    restart, and `save`, then `collect` in the regular boot, brought it and
-    the boot's journal back (`/var/log/sleep-drain/safe-*20261105T121352*`).
-    But Wi-Fi didn't start. Asahi's late hook mounts the vendor firmware
-    (a tmpfs) at `/sysroot/usr/lib/firmware/vendor` before ours, and it moved
-    under the overlay with root. The session that found this bind-mounted it
-    back by hand, and Wi-Fi came up (in the journal); the hook now moves such
-    mounts back itself. That session's other checks were lost with it, so
-    the next safe boot repeats them and keeps the output with `save`:
-    `blockdev --getro /dev/mapper/root` (1), `findmnt` for /, /home and
-    /var/log (overlays) and /boot (not mounted), and Wi-Fi up;
-  - the recovery setup (someone at the power key, or macvdmtool).
+  and `tests/safe_boot_save_test.py` pass).
+  - **Device-tested** in two safe boots. The first (12:06) had no Wi-Fi:
+    Asahi's late hook mounts the vendor firmware tmpfs at
+    `/sysroot/usr/lib/firmware/vendor` before ours, and it moved under the
+    overlay with root (fixed in #19). The second (12:30), recorded in
+    `/var/log/sleep-drain/safe-saved-20261105T123137/`: dm-0 read-only
+    (`ro` 1, `blockdev --getro` 1); /, /home and /var/log overlays on
+    read-only btrfs mounts; /boot not mounted; the firmware back on top and
+    Wi-Fi connected. In both, a file written to /home was gone after the
+    restart, and `save`, then `collect`, brought it and the journal back.
+  - A Claude session in a safe boot loses its own transcript at the
+    restart, so anything it finds goes into a file it `save`s.
+  - Still open: the recovery setup (someone at the power key, or
+    macvdmtool).
 - [ ] **A6. Talk to the others before duplicating work.** Every post needs
   Corey's OK.
   - **maralcbr first:** asked on 2026-11-04
