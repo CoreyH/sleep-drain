@@ -1143,3 +1143,32 @@ Still unknown after A2, and not answerable by this trace:
 - **Restarting a PMGR-stopped core on T6000.** It's untested here, and T6000
   lacks XNU's Rhodes cluster workaround, so T6020's failure may not carry
   over.
+
+## DeepIdle's T6020 results, to 2026-11-05
+
+JJRPF answered DeepIdle#9 on 2026-11-05
+([comment](https://github.com/JJRPF/Aurora-DeepIdle/issues/9)), and the
+repo's [`docs/status.md`](https://github.com/JJRPF/Aurora-DeepIdle/blob/main/docs/status.md)
+was updated the same day. All of this is on T6020 (M2 Pro, J414s), not
+checked here.
+- **License.** The patches are GPL-2.0 and the DTS changes `GPL-2.0+ OR MIT`,
+  per their SPDX lines; the README's License section says so.
+- **`slpa` doesn't power the SoC down.** In their first `slpa` inside a real
+  suspend (2026-11-04, all CPUs parked), the kernel ran on, and every NVMe
+  read and write failed (btrfs `-5`, root read-only). `waka` doesn't bring
+  the storage back (`IOP power acknowledgment failed: -62`, `ANS did not
+  boot`); only a full power-off does. No watchdog fired, and the owner
+  reset by hand after about 15 minutes. `WKTP` and `slpw` are harmless.
+- **Parked CPUs save almost nothing.** Suspend with every CPU in deep WFI,
+  through PSCI SYSTEM_SUSPEND in their own firmware: 1.365 W over 30
+  minutes, against 1.390 and 1.413 W for s2idle in the same boot. macOS
+  sleeps the same machine at 0.24 W. So the gap is the SoC staying up.
+- **Their state.** SYSTEM_SUSPEND works, 20 of 20 cycles with all 10 CPUs
+  (CPU_OFF into a retention park, CPU_ON back). Their next step is what
+  macOS does between `slpa` and the power-down. For J314s, maralcbr's
+  post-`slpa` table above has that. Still open for them: PMGR's last steps,
+  the boot CPU's wake hand-back, and DCP resume.
+
+What this changes here: A5's ladder skips `slpa` alone, and its first real
+rung is `slpa` with maralcbr's post-`slpa` writes and the CPUs left running
+(PLAN.md, A5).

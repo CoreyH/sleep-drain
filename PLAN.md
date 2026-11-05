@@ -33,8 +33,10 @@ the PR with that session's work.
 - Every change goes branch → PR → Pullfrog → merge commit. Merging, and
   anything posted outside this repo (issues, comments, upstream PRs), needs
   Corey's explicit OK each time.
-- JJRPF/Aurora-DeepIdle: use its findings, not its code. It has no LICENSE
-  file (the README says GPL-2.0); DeepIdle#9 asks.
+- JJRPF/Aurora-DeepIdle: its patches are GPL-2.0 and its DTS changes
+  `GPL-2.0+ OR MIT`, per their SPDX lines (JJRPF on DeepIdle#9,
+  2026-11-05). Its code may be used under those terms, credited with a
+  credit line or a `Co-developed-by:`/`Signed-off-by:` pair.
 - Never boot a saved device tree on this Mac (RESEARCH.md, "Testing the
   driver without a new device tree").
 - Root goes through pkexec, which needs a healthy Omarchy shell.
@@ -117,6 +119,56 @@ steps, and restarting the DCP and the PMP afterwards.
     restart, so anything it finds goes into a file it `save`s.
   - Still open: the recovery setup (someone at the power key, or
     macvdmtool).
+
+  **The experiment ladder** (drafted 2026-11-05, not started). The route is
+  maralcbr's published replay, not a trace of our own (Corey's call,
+  2026-11-05; m1n1 code is off limits to Claude). Each rung runs in a safe
+  boot, with Corey at the power key, and only with his go-ahead for that rung.
+
+  What DeepIdle has already settled on T6020 (DeepIdle#9 reply and
+  `docs/status.md`, 2026-11-05), so the ladder skips it:
+  - `WKTP` and `slpw` are harmless. `slpa` alone doesn't power the SoC down,
+    but the SMC takes the storage away: every NVMe read and write fails,
+    `waka` doesn't bring it back, and only a full power-off does (their run
+    of 2026-11-04, root read-only after btrfs errors). So `slpa` goes last,
+    and a run that sends it ends in a hard reset.
+  - Parking every CPU in deep WFI (suspend through their own firmware's
+    PSCI) draws 1.365 W against 1.39-1.41 W for s2idle. The gap to macOS
+    (0.24 W there) is the SoC staying up, not the cores.
+  - Their next step is what macOS does between `slpa` and the power-down.
+    For J314s, maralcbr's tables have it: 74 writes after `slpa`, ending
+    with the S2R timer (RESEARCH.md, "maralcbr's J314s trace").
+
+  The rungs:
+  - **E0, no risk: the safe boot as a baseline.** A 900 s alarm sleep in a
+    safe boot (`rtc-alarm-test/load`, `rtcwake -m no`, `systemctl suspend`),
+    saved and collected. It should match aurora14's 1.97 W by `avg_mw_cc`,
+    and it checks that the alarm and the hook work in a safe boot.
+  - **E1: the SoC side of macOS's sequence, without the CPUs.** maralcbr's
+    keys and PMP request words (their bits 0 and 2), then the 74 post-`slpa`
+    writes (bit 3), with the CPUs left running: no CPU power-down. This is
+    what's never been measured. Does the SoC power down, and what does it
+    draw? No resume, so the drain comes from the gauge across the reset.
+    Before the sleep, `save` a reading (time, `charge_now`, `energy_now`) to
+    the boot partition (after `slpa` the NVMe is gone, and the ESP is on it
+    too). The first reading in the next boot then gives the average. The
+    reboot's own cost (minutes at a few W) swamps a floor near 0.1 W, so run
+    it for hours, or measure the boot's cost once first. maralcbr's
+    `lab_delay_stage` idea (10 s pauses between stages) helps see where it
+    hangs.
+  - **E2 onwards, from E1's result.** The domains macOS has off (bits 8-10),
+    the SEP sleep message (bit 11), the AOP's notices (bit 6), the internal
+    PCIe ports (bit 13), and last the CPU power-down (bit 1).
+  - **The code.** An out-of-tree module: our own, written from these
+    findings and maralcbr's tables (maralcbr/linux is GPL-2.0, as part of
+    the kernel). maralcbr ran the replay at s2idle's `prepare_late` from
+    inside macsmc-reboot. A module would hook a device's `suspend_noirq`,
+    or `suspend_late` if the SMC's mailbox needs its interrupt. Find out
+    which works, awake, before E1.
+  - **What this can't answer: waking.** A floor near 0.1 W would show that
+    the sequence is right. The fix itself also needs the CPUs restarted and
+    the devices resumed after the SoC loses power. DeepIdle does that through
+    its own firmware (PSCI in m1n1), which is off limits to Claude here.
 - [ ] **A6. Talk to the others before duplicating work.** Every post needs
   Corey's OK.
   - **maralcbr first:** asked on 2026-11-04
@@ -125,7 +177,10 @@ steps, and restarting the DCP and the PMP afterwards.
     the PMU alarm fix (SPMI 192 and the event clears), and shares this Mac's
     reads. Waiting for a reply (none as of 2026-11-05); check it before
     starting A3 or A4.
-  - DeepIdle: #9 has no reply yet (2026-11-05).
+  - DeepIdle: JJRPF answered #9 on 2026-11-05: the license (above), a go
+    for upstreaming the alarm, and their `slpa` and CPU-park results (A5's
+    ladder). A reply pointing them at maralcbr's post-`slpa` table waits for
+    Corey's OK.
   - Asahi: Sven Peter's PSCI-via-EFI RFC covers T8103 only.
 
 ## The second computer
