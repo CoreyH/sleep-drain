@@ -234,7 +234,7 @@ cmd_save() {
      mv "$tar.part" "$tar" && sync -f "$mnt"; then
     umount "$mnt" || die "saved, but /boot is still mounted at $mnt: restart now"
     rm -f "$stage.tar"
-    echo "saved to the boot partition (sleep-drain-safe/saved/$now.tar)." \
+    echo "saved to the boot partition (sleep-drain-safe/saved/${tar##*/})." \
       "After the next regular boot: pkexec sleep-drain-safe collect"
   else
     rm -f "$tar.part"

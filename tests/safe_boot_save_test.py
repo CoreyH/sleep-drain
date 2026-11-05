@@ -175,6 +175,9 @@ def main():
         tars = sorted(os.listdir(os.path.join(tmp, "bootpart/sleep-drain-safe/saved")))
         check(rc1 == 0 and rc2 == 0 and len(tars) == 2,
               f"two tars, even within one second: {tars}", out1 + out2)
+        named = [l.split("sleep-drain-safe/saved/")[1].split(")")[0]
+                 for l in (out1 + out2).splitlines() if "sleep-drain-safe/saved/" in l]
+        check(sorted(named) == tars, f"each save names its own tar: {named}", out1 + out2)
         rc, out = run_collect(tmp, OLD_LOG)
         disk = os.path.join(tmp, "disklog")
         log = open(os.path.join(disk, "sleep-drain.log")).read()
