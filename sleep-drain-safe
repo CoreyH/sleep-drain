@@ -250,7 +250,14 @@ cmd_collect() {
     tar -C "$tmp" -xf "$tar" || { rm -rf -- "${tmp:?}"; die "couldn't read $tar"; }
     if [[ -s $tmp/log/sleep-drain.log.new ]]; then
       touch /var/log/sleep-drain.log
-      grep -vxF -f /var/log/sleep-drain.log "$tmp/log/sleep-drain.log.new" >> /var/log/sleep-drain.log || true
+      # grep exits 1 when every line is there already; anything else above 0
+      # is an error, and the tar stays.
+      local rc=0
+      grep -vxF -f /var/log/sleep-drain.log "$tmp/log/sleep-drain.log.new" >> /var/log/sleep-drain.log || rc=$?
+      if (( rc > 1 )); then
+        rm -rf -- "${tmp:?}"
+        die "couldn't add $t's log lines (grep exit $rc); $tar kept"
+      fi
     fi
     mkdir -p /var/log/sleep-drain
     for d in "$tmp"/log/sleep-drain/*; do

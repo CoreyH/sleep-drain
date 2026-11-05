@@ -51,6 +51,7 @@ def stubs(tmp):
         "mount": 'echo "mount $*" >> /calls/log; [ ! -e /calls/fail-mount ]',
         "umount": 'echo "umount $*" >> /calls/log',
         "journalctl": 'echo "journal line"',
+        "grep": 'if [ -e /calls/fail-grep ]; then exit 2; fi; exec /usr/bin/grep "$@"',
     }.items():
         write(os.path.join(d, name), "#!/bin/sh\n" + body + "\n")
         os.chmod(os.path.join(d, name), 0o755)
@@ -94,7 +95,9 @@ def run_save(tmp, args, fail_mount=False):
     return sandbox(tmp, binds, ["save"] + args)
 
 
-def run_collect(tmp, disk_log):
+def run_collect(tmp, disk_log, fail_grep=False):
+    if fail_grep:
+        write(os.path.join(tmp, "calls/fail-grep"), "")
     disk = os.path.join(tmp, "disklog")
     write(os.path.join(disk, "sleep-drain.log"), disk_log)
     write(os.path.join(disk, "sleep-drain/1/pre/x"), "old\n")
@@ -152,6 +155,16 @@ def main():
         check(len(t) == 1 and os.path.exists(os.path.join(disk, "sleep-drain", t[0], "home/corey/results/r.txt")),
               "the given path is under safe-saved-<time>/, not over the original", d)
         check(os.listdir(os.path.join(tmp, "boot/sleep-drain-safe/saved")) == [], "the tar is deleted", d)
+    finally:
+        shutil.rmtree(tmp)
+
+    print("== collect when adding the log lines fails")
+    tmp = tempfile.mkdtemp()
+    try:
+        run_save(tmp, [])
+        rc, out = run_collect(tmp, OLD_LOG, fail_grep=True)
+        left = os.listdir(os.path.join(tmp, "boot/sleep-drain-safe/saved"))
+        check(rc != 0 and "kept" in out and len(left) == 1, "fails and keeps the tar", f"exit {rc}\n{out}")
     finally:
         shutil.rmtree(tmp)
 
