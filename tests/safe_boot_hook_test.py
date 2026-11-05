@@ -65,6 +65,9 @@ def run(tmp, cmdline, getro="1", root_mount="ro", fstab=FSTAB, mount_fails=None)
         f.write(getro + "\n")
     with open(os.path.join(tmp, "fake/mounts"), "w") as f:
         f.write(f"/dev/mapper/root /sysroot btrfs {root_mount},relatime,subvol=/@ 0 0\n")
+        # Asahi's late hook's vendor firmware tmpfs, as /proc/mounts lists it
+        # once root has moved under the overlay
+        f.write("vendorfw /run/sleep-drain-safe/lower/root/usr/lib/firmware/vendor tmpfs rw,relatime,mode=755 0 0\n")
     if mount_fails:
         with open(os.path.join(tmp, "fake/mount-fails"), "w") as f:
             f.write(mount_fails + "\n")
@@ -133,6 +136,7 @@ def main():
         "mount --move /sysroot /run/sleep-drain-safe/lower/root",
         "mount -t overlay sds-root -o lowerdir=/run/sleep-drain-safe/lower/root,"
         "upperdir=/run/sleep-drain-safe/rw/root/upper,workdir=/run/sleep-drain-safe/rw/root/work /sysroot",
+        "mount --move /run/sleep-drain-safe/lower/root/usr/lib/firmware/vendor /sysroot/usr/lib/firmware/vendor",
         "mount -t btrfs -o ro,subvol=@home /dev/mapper/root /run/sleep-drain-safe/lower/_home",
         "mount -t overlay sds-_home -o lowerdir=/run/sleep-drain-safe/lower/_home,"
         "upperdir=/run/sleep-drain-safe/rw/_home/upper,workdir=/run/sleep-drain-safe/rw/_home/work /sysroot/home",
@@ -141,7 +145,8 @@ def main():
         "upperdir=/run/sleep-drain-safe/rw/_var_log/upper,workdir=/run/sleep-drain-safe/rw/_var_log/work "
         "/sysroot/var/log",
     ]
-    check(calls[2:] == want, "the overlays, in order: /, /home, /var/log; /boot not mounted", d)
+    check(calls[2:] == want,
+          "the overlays, in order: /, the vendor firmware moved back on top, /home, /var/log; /boot not mounted", d)
     lines = fstab.splitlines()
     commented = [l for l in lines if l.startswith("# sleep-drain-safe: ")]
     check([l.split()[3] for l in commented] == ["/", "/home", "/boot", "/var/log"],

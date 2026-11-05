@@ -104,11 +104,18 @@ steps, and restarting the DCP and the PMP afterwards.
   The throwaway root is drafted (2026-11-05): `sleep-drain-safe` and
   `safe-boot/` (CLAUDE.md has how it works; `tests/safe_boot_hook_test.py`
   and `tests/safe_boot_save_test.py` pass). Still open:
-  - the device test: `pkexec bash install.sh`, `pkexec sleep-drain-safe boot`,
-    one restart. Then check `sleep-drain-safe status` (the device reads
-    read-only), that a file written in the session is gone after another
-    restart, and that `save`, then `collect` after a regular restart, put
-    the sleep log's new lines on the disk;
+  - the device test. The first safe boot (2026-11-05, 12:06) came up with
+    the desktop. A file written to /home in it was gone after the next
+    restart, and `save`, then `collect` in the regular boot, brought it and
+    the boot's journal back (`/var/log/sleep-drain/safe-*20261105T121352*`).
+    But Wi-Fi didn't start. Asahi's late hook mounts the vendor firmware
+    (a tmpfs) at `/sysroot/usr/lib/firmware/vendor` before ours, and it moved
+    under the overlay with root. The session that found this bind-mounted it
+    back by hand, and Wi-Fi came up (in the journal); the hook now moves such
+    mounts back itself. That session's other checks were lost with it, so
+    the next safe boot repeats them and keeps the output with `save`:
+    `blockdev --getro /dev/mapper/root` (1), `findmnt` for /, /home and
+    /var/log (overlays) and /boot (not mounted), and Wi-Fi up;
   - the recovery setup (someone at the power key, or macvdmtool).
 - [ ] **A6. Talk to the others before duplicating work.** Every post needs
   Corey's OK.
