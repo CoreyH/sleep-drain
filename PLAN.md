@@ -120,18 +120,23 @@ steps, and restarting the DCP and the PMP afterwards.
   - Still open: the recovery setup (someone at the power key, or
     macvdmtool).
 
-  **The experiment ladder** (drafted 2026-11-05, not started). The route is
+  **The experiment ladder** (drafted 2026-11-05; E0 done). The route is
   maralcbr's published replay, not a trace of our own (Corey's call,
   2026-11-05; m1n1 code is off limits to Claude). Each rung runs in a safe
   boot, with Corey at the power key, and only with his go-ahead for that rung.
 
   What DeepIdle has already settled on T6020 (DeepIdle#9 reply and
   `docs/status.md`, 2026-11-05), so the ladder skips it:
-  - `WKTP` and `slpw` are harmless. `slpa` alone doesn't power the SoC down,
+  - `WKTP` and `slpw` did no harm. `slpa` alone doesn't power the SoC down,
     but the SMC takes the storage away: every NVMe read and write fails,
     `waka` doesn't bring it back, and only a full power-off does (their run
     of 2026-11-04, root read-only after btrfs errors). So `slpa` goes last,
     and a run that sends it ends in a hard reset.
+  - Since then (their worklog, 2026-11-05): a second `slpa` run never
+    resumed, and the Mac cold-booted about 100 s after entry. Either the SoC
+    really went down, or the SMC resets the Mac when the CPUs don't go down
+    after `slpa`. In the second case, E1, which keeps the CPUs up, would end
+    the same way.
   - Parking every CPU in deep WFI (suspend through their own firmware's
     PSCI) draws 1.365 W against 1.39-1.41 W for s2idle. The gap to macOS
     (0.24 W there) is the SoC staying up, not the cores.
@@ -140,31 +145,69 @@ steps, and restarting the DCP and the PMP afterwards.
     with the S2R timer (RESEARCH.md, "maralcbr's J314s trace").
 
   The rungs:
-  - **E0, no risk: the safe boot as a baseline.** A 900 s alarm sleep in a
-    safe boot (`rtc-alarm-test/load`, `rtcwake -m no`, `systemctl suspend`),
-    saved and collected. It should match aurora14's 1.97 W by `avg_mw_cc`,
-    and it checks that the alarm and the hook work in a safe boot.
+  - [x] **E0, no risk: the safe boot as a baseline.** Done 2026-11-05
+    (RESEARCH.md, "E0"): 1978 mW by `avg_mw_cc` in a safe boot with nothing
+    attached, against aurora14's 1974 mW; the alarm, the hook, `save` and
+    `collect` all worked. A first run with a USB-C dock attached drew
+    3233 mW: unplug everything before a run.
   - **E1: the SoC side of macOS's sequence, without the CPUs.** maralcbr's
     keys and PMP request words (their bits 0 and 2), then the 74 post-`slpa`
     writes (bit 3), with the CPUs left running: no CPU power-down. This is
     what's never been measured. Does the SoC power down, and what does it
-    draw? No resume, so the drain comes from the gauge across the reset.
-    Before the sleep, `save` a reading (time, `charge_now`, `energy_now`) to
-    the boot partition (after `slpa` the NVMe is gone, and the ESP is on it
-    too). The first reading in the next boot then gives the average. The
-    reboot's own cost (minutes at a few W) swamps a floor near 0.1 W, so run
-    it for hours, or measure the boot's cost once first. maralcbr's
-    `lab_delay_stage` idea (10 s pauses between stages) helps see where it
-    hangs.
+    draw? It runs where maralcbr's did, at s2idle's `prepare_late`. With no
+    resume, the drain comes from the gauge across the reset. Two harmless
+    checks come first, each in a safe boot (RESEARCH.md, "Before E1"):
+    - [ ] **The hook point.** `prepare_late` comes after the whole noirq
+      pass: every device's callbacks, and genpd switching domains off. A
+      device callback can't stand in for it. A module's own device runs
+      first in each pass, so from its `suspend_noirq`, `slpa` and the PMGR
+      writes would come before the other devices' noirq callbacks. Nothing
+      here registers s2idle ops, but `s2idle_set_ops` isn't exported, so the
+      module finds it by address through a kprobe (lab only, never for
+      upstream). Check it with the module built without the replay: at
+      `prepare_late` it only logs and reads one SMC key. Run that first with
+      `pm_test=platform`, which stops right after `prepare_late` and resumes
+      without sleeping, then in an alarm sleep. ftrace's `suspend_resume`
+      and `device_pm_callback_end` events show whether it ran after the last
+      noirq callback.
+    - [ ] **The measurement across the reset.** `charge_counter` restarts at
+      every boot, so it can't span the reset. In the next boot it measures
+      that boot's own drain, which gets subtracted. `charge_now`, the gauge's
+      estimate, is what spans the reset. It re-estimates after one (±25 mAh,
+      maralcbr), and here it reads 50-108 mAh off when one end is taken under
+      load. So both ends are read the same way, at idle. Validate the method
+      in safe boots, with Corey at the power key:
+      - V0: three power-key resets and three reboots, from awake. This
+        measures the reset's own step.
+      - V1: two s2idle sleeps of 4 h, each ended by the alarm, then saved
+        and reset at once. That boot's `charge_counter` gives the truth.
+      - V2: two s2idle sleeps of 4 h, cut by the power key. This is E1's
+        exact procedure, and nights work for it. V2 is also E1's control.
+
+      Each run should land within 0.2 W of its truth (for V2, s2idle's
+      157 mA, about 2 W). If they do, E1's coarse answer holds even at 2 h: a floor
+      near 0.2 W, or s2idle's 2 W. A finer floor needs 8 h runs. If they
+      don't, an input-side USB-C meter is the fallback, good for A/B only.
+
+    E1 itself: right before the sleep, `save` the idle reading to the boot
+    partition. After `slpa` the NVMe is gone, and the ESP is on it too.
+    Then let it run for hours. If the Mac resets on its own about 100 s in,
+    as in DeepIdle's second `slpa` run, that's the result; the next boot's
+    power-on time shows it.
   - **E2 onwards, from E1's result.** The domains macOS has off (bits 8-10),
     the SEP sleep message (bit 11), the AOP's notices (bit 6), the internal
     PCIe ports (bit 13), and last the CPU power-down (bit 1).
   - **The code.** An out-of-tree module: our own, written from these
     findings and maralcbr's tables (maralcbr/linux is GPL-2.0, as part of
-    the kernel). maralcbr ran the replay at s2idle's `prepare_late` from
-    inside macsmc-reboot. A module would hook a device's `suspend_noirq`,
-    or `suspend_late` if the SMC's mailbox needs its interrupt. Find out
-    which works, awake, before E1.
+    the kernel). maralcbr ran the replay from macsmc-reboot at s2idle's
+    `prepare_late`, a call that only links with the driver built into the
+    kernel. The module registers its own s2idle ops for the same point (E1's
+    first check). It sends the keys with
+    the ordinary SMC write. By the code that still works there: both mailbox
+    interrupts are `IRQF_NO_SUSPEND`, and neither the SMC nor its mailbox
+    has a power domain. The SMC's atomic mode is one-way, so it's out. The
+    alternative to the kprobe lookup is a kernel that exports
+    `s2idle_set_ops`, but the safe boot only boots the regular kernel today.
   - **What this can't answer: waking.** A floor near 0.1 W would show that
     the sequence is right. The fix itself also needs the CPUs restarted and
     the devices resumed after the SoC loses power. DeepIdle does that through

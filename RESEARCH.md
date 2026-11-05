@@ -343,7 +343,10 @@ Two method notes from these runs:
   pre snapshot before capturing and suspending, and its post snapshot after
   restoring), roughly +100 mW at this length. That cancels in an A/B of
   similar lengths, but these numbers sit above the overnight averages for that
-  reason.
+  reason. (Corrected 2026-11-05: the journals show only about 1.5-2.5 s
+  outside s2idle per sleep, worth 10-40 mW at these lengths, so that isn't
+  most of the gap. For E0b, the gap is a full battery's higher voltage; see
+  "Before E1" below.)
 
 `charge_counter` counts mA·s on this machine, not µAh: over 61 s awake it gave
 12.3 W against `energy_now`'s 12.1 W. The hook now logs it (`cc=`, with
@@ -1158,7 +1161,14 @@ checked here.
   read and write failed (btrfs `-5`, root read-only). `waka` doesn't bring
   the storage back (`IOP power acknowledgment failed: -62`, `ANS did not
   boot`); only a full power-off does. No watchdog fired, and the owner
-  reset by hand after about 15 minutes. `WKTP` and `slpw` are harmless.
+  reset by hand after about 15 minutes. That run was a suspend to RAM through
+  their firmware's PSCI, not s2idle. `WKTP` and `slpw` did no harm over three
+  s2idle cycles each (power not measured).
+- **The closest precedent for E1's keys** is their s2idle run of 2026-10-22:
+  `WKTP`, `slpw` and `slpa` from the macsmc-reboot device's own PM callbacks,
+  `slpa` in `suspend_late`. The Mac resumed, then NVMe I/O failed and btrfs
+  went read-only. `pmVC`, which maralcbr also writes, is in none of their
+  runs.
 - **Parked CPUs save almost nothing.** Suspend with every CPU in deep WFI,
   through PSCI SYSTEM_SUSPEND in their own firmware: 1.365 W over 30
   minutes, against 1.390 and 1.413 W for s2idle in the same boot. macOS
@@ -1168,7 +1178,200 @@ checked here.
   macOS does between `slpa` and the power-down. For J314s, maralcbr's
   post-`slpa` table above has that. Still open for them: PMGR's last steps,
   the boot CPU's wake hand-back, and DCP resume.
+- **Since then, in their worklog**
+  ([`docs/worklog.md`](https://github.com/JJRPF/Aurora-DeepIdle/blob/797c0a36544a745276017e2d530a8308c3050993/docs/worklog.md)
+  at 797c0a3, 2026-11-05):
+  - They now blame the dead ANS on its SART. By their static reading of
+    macOS 13.5, macOS writes the SART back every time it starts the ANS, and
+    Linux didn't. Their test kernel now saves and restores it.
+  - A second `slpa` run with that kernel (07:01; suspend to RAM, `slpw` and
+    `slpa`, 60 s alarm) never resumed. The Mac cold-booted about 100 s after
+    entry, before any of their 120 s watchdogs, and the PMU logged a boot
+    error. Either the SoC really went down and the alarm brought a cold boot
+    (their H1), or the SMC resets the Mac about 100 s after `slpa` when the
+    AP doesn't go down (H2). A run with a 30 s alarm is next.
+  - Also from macOS 13.5, statically: macOS sets the PMU's boot stage to
+    0x50 for sleep, and at quiesce arms a 10 s deadline that Apple's names
+    say the SMC enforces. Linux leaves the boot stage at 0x30.
+  - The `(8)` after their `MBSW` read is the 8 bytes `apple_smc_read()`
+    returned, not an SMC error.
 
 What this changes here: A5's ladder skips `slpa` alone, and its first real
 rung is `slpa` with maralcbr's post-`slpa` writes and the CPUs left running
 (PLAN.md, A5).
+
+## A5's experiments
+
+### E0: a timed sleep in the safe boot (2026-11-05)
+
+The ladder's baseline rung (PLAN.md, A5): the 2026-11-02 aurora14 timed sleep,
+repeated in a safe boot (`sleep-drain-safe`, up since 12:54). Same kernel
+(7.2.11-14-1-ARCH), the `radios-off` flag, `rtc-alarm-test` loaded (alarm
+RTC rtc0), `rtcwake -m no -s 900`, then `systemctl suspend`, on battery at
+100% (the baseline was at 98%). Since the baseline, Omarchy went from
+4.5.0rc3 to 4.5.0, the kernel unchanged.
+
+| Run | Snapshot | Attached | Slept | `avg_mw_cc` | Valid |
+|---|---|---|---|---|---|
+| E0 | 20261105T125757 | a USB-C dock (`typec=port3:not_ufp`; USB 05e3:0751 hub, 0bda:8153 Realtek Ethernet, 2109:8888 VIA billboard) | 903 s | 3233 mW | yes |
+| E0b | 20261105T131638 | nothing (`typec=-`, `usb=-`) | 900 s | **1978 mW** | yes |
+
+- **E0b matches the baseline:** 1978 mW against 1974 mW (20261102T150637),
+  inside the 1945-2012 mW spread of the earlier short sleeps. So neither the
+  safe boot (RAM overlays, read-only disk) nor Omarchy 4.5.0's userspace
+  costs anything visible. E0b is the baseline for the ladder's later rungs.
+- **Both woke on the alarm:** `pm_wakeup_irq` 145, macsmc-rtc's count 0 to
+  1, then 1 to 2.
+- **The dock costs about 1.25 W asleep** (3233 against 1978 mW, consecutive
+  sleeps in the same boot). The Mac was the source on port 3
+  (`not_ufp`), so it powered the dock all through the sleep. The first run
+  isn't a baseline for that reason; the session that ran it found the dock
+  in the hook's `pre` line and reran with nothing attached.
+- **The gauge's energy rose** again at 100% (`avg_mw` -682 and -2599 mW), as
+  on 2026-11-02, so only the coulomb counter means anything here.
+- **The run itself** was one `pkexec` command in the safe boot: load the
+  alarm drivers, arm it, suspend, wait for the hook's `post` line, then
+  `sleep-drain-safe save`. That session's notes and both journals were
+  collected after the restart (`/var/log/sleep-drain/safe-saved-20261105T1313*/`
+  and `safe-journal-20261105T13*.txt`); its own transcript was lost with the
+  boot, as expected.
+
+### Before E1: the hook point and the measurement (desk research, 2026-11-05)
+
+Pullfrog's review of #21 found two problems in E1's plan: a device callback
+runs the replay at a different point than maralcbr did, and the gauge's
+reading after a hard reset isn't trustworthy as it stood. A research pass
+answered both from the sources, each claim checked by two skeptics. Nothing
+here has run on the Mac yet.
+
+**Where the replay runs.** In
+[`suspend_enter()`](https://github.com/omacom/linux-aurora/blob/4fdd0fc5c931ef9f14474942b37c3d451e97fc04/kernel/power/suspend.c#L419-L498)
+at omacom/linux-aurora 4fdd0fc5, the commit aurora14's package builds,
+s2idle goes:
+1. `dpm_suspend_late`: every device's `suspend_late`;
+2. `s2idle_ops->prepare`;
+3. `dpm_suspend_noirq`: `suspend_device_irqs()`, then every device's
+   `suspend_noirq`, async ones included, with genpd switching each domain off
+   once its last device has suspended;
+4. `s2idle_ops->prepare_late`;
+5. `s2idle_loop()`.
+
+maralcbr's replay runs at step 4 (`lab_s2r_prepare_late`), or at step 2 with
+their floor's bit 4.
+- **A device callback can't stand in for step 4.** Each phase walks the
+  device list from its tail, and a device a module registers is added at the
+  tail. So a module's `suspend_noirq` is the first synchronous callback of
+  step 3, before the other devices' noirq callbacks and genpd's power-offs;
+  async devices (PCI, USB, i2c, HID) may run before it or alongside it.
+  `suspend_late` is earlier still. From there, `slpa` and the PMGR writes
+  would come before the rest of the noirq pass. The same goes for
+  `pmp-sleep-release`'s device: its noirq callback runs first in the pass,
+  not last.
+- **`s2idle_set_ops()` isn't exported**: it's missing from the running
+  kernel's `Module.symvers`. Nothing in this kernel registers s2idle ops: the
+  only callers are ACPI's, and `CONFIG_ACPI` is off. maralcbr's call links
+  only with macsmc-reboot built into the kernel; here it's a module.
+- **A module can still reach step 4** by looking up `s2idle_set_ops`'s
+  address with `register_kprobe()` and calling it. KASLR, module signing,
+  lockdown and CFI are all off here. It replaces nothing. It takes
+  `system_transition_mutex`, which a suspend holds throughout, so it can't
+  race one. On unload, the module sets the ops back to NULL. This sidesteps
+  the export rules, so it's for this lab only. The other way is a kernel that
+  exports the function (`test-kernel`), but the safe boot only boots the
+  regular kernel today.
+- **Ruled out:**
+  - syscore ops: never called on the s2idle path;
+  - `device_pm_move_to_tail`: not exported;
+  - a kprobe on the s2idle path: those functions are inlined, and a kprobe
+    handler can't sleep, while an SMC write does;
+  - the `suspend_resume` tracepoint at the end of `dpm_suspend_noirq`: the
+    right moment, but a probe shouldn't sleep;
+  - CPU PM notifiers: atomic, and called on every idle entry;
+  - PM notifiers: they run before tasks freeze;
+  - `suspend_set_ops()`: that's deep sleep. It would make `mem` mean deep,
+    and by the source, taking the CPUs offline fails here.
+
+  `device_move()` under an early device, or device links, can push a
+  callback toward the end of step 3, but not past the async devices, and
+  links reorder other devices too.
+- **The SMC at step 4.** The replay sends its keys with the ordinary
+  `apple_smc_write()`, which takes a mutex and waits up to 500 ms for the
+  reply. Nothing in step 3 should stop it:
+  - both SMC mailbox interrupts are requested `IRQF_NO_SUSPEND`, so
+    `suspend_device_irqs()` leaves them on;
+  - the reply completes from the hard interrupt;
+  - neither the SMC nor its mailbox has PM callbacks or a power domain.
+
+  So by the code, SMC writes work at step 4, and in noirq too. DeepIdle kept
+  `slpa` out of noirq because they expected the mailbox interrupt to be off
+  there; with aurora's mailbox driver it isn't. The SMC's atomic mode is no
+  way around this anyway: once it's entered (`NTAP`=0), every ordinary SMC
+  command fails until a reboot.
+- **A harmless check.** `/sys/power/pm_test` offers `platform`, which runs
+  steps 1-4, waits, and resumes without sleeping. Build the module without
+  the replay, so that at step 4 it only logs and reads one SMC key. ftrace's
+  `power:suspend_resume` and `power:device_pm_callback_end` events then show
+  whether it ran after the last noirq callback. Then repeat it in a real
+  alarm sleep.
+
+**Measuring a sleep that ends in a hard reset.**
+- **`charge_counter` can't span the reset.** It's the SMC's `BAAC`, the
+  battery current summed in mA·s, and it restarts at every boot. It starts
+  near zero in every boot logged here: ordinary reboots and cold boots; a
+  power-key reset isn't tested. In the next boot, then, it's that boot's own
+  drain since power-on, if the boot is on battery: −280856 mA·s (78 mAh) at
+  395 s of uptime in one boot today.
+- **`charge_now` spans it.** It's `B0RM`, the battery gauge's estimate of
+  the remaining charge. (`energy_now` is the same times 11.4 V, not a
+  measured energy.) Whether that estimate comes through a reset intact isn't
+  known. maralcbr saw it stale for about 25 s after one, then re-estimated by
+  ±25 mAh
+  ([#281](https://github.com/maralcbr/omarchy-mx-mac/issues/281#issuecomment-6093626202)).
+- **A bigger error here.** Nine battery sleeps of 8.5-18 minutes had their
+  pre reading taken under awake load. In those, `charge_now` showed 50-108
+  mAh less drain than `charge_counter` (mean 87, sd 21). The one sleep whose
+  pre reading came about a second after unplugging agreed within 1.4 mAh. So
+  both ends have to be read the same way, at idle.
+- **What it can resolve.** If matched idle readings remove the offset's
+  mean, and the boot's drain is subtracted, the ±25 mAh step and the
+  offset's spread leave about 33-46 mAh (1σ). That's ±0.1-0.15 W over 4 h
+  and ±0.05-0.07 W over 8 h. A floor near 0.2 W and s2idle's 2.0 W are then
+  more than 6σ apart at 2 h. Telling 0.1 W from 0.3 W takes about 8 h, about
+  3σ in one run.
+- **The method.**
+  - Unplug at least 30 minutes before, and attach nothing.
+  - A logger records `charge_now`, `voltage_now` and `charge_counter` every
+    10 s, plus `BACC` and `BQCC` through smc-peek.
+  - The reading is the median of the last minute of 10 idle minutes. Take it
+    right before the suspend, and save it to the boot partition. Take it
+    again after 10 idle minutes in the next boot, with the Mac powered on
+    straight after the reset.
+  - The average is [(Q_pre − Q_post) − Q_boot − Q_tail] × mean V /
+    (t_end − t_suspend):
+    - Q_boot is −`charge_counter`/3600 at the post reading;
+    - Q_tail is the seconds awake between the saved reading and the suspend;
+    - t_end is the next boot's power-on. `BACC` counts seconds since then.
+- **The controls** (PLAN.md, E1):
+  - V0 measures the reset's step from awake, and whether `BAAC`, `BACC` and
+    `BQCC` restart;
+  - V1 checks the method against the same boot's `charge_counter` after an
+    alarm-ended sleep;
+  - V2 is E1's own procedure on plain s2idle.
+- **Compare by current as well.**
+
+  | Run | Current | Power | Voltage |
+  |---|---|---|---|
+  | E0b | 156.8 mA | 1978 mW | 12.62 V |
+  | aurora14's baseline | 156.6 mA | 1974 mW | 12.60 V |
+  | the 16.4 h night | 157.0 mA | 1909 mW | 12.16 V |
+
+  The night's last reading was on the charger. The 65-70 mW by which the
+  short runs sit above the night is a full battery's voltage, not the awake
+  seconds. Each window has only about 1.5-2.5 s outside s2idle, worth
+  10-30 mW at 900 s.
+- **An input-side meter is the fallback** (maralcbr's method; untested here).
+  `charge_behaviour` offers `inhibit-charge` on this Mac. With the battery
+  idling, an inline logging USB-C meter between a plain PD adapter and a
+  USB-C-to-MagSafe cable could supply the Mac. A reset can't spoil its trace.
+  But it measures input power, losses included, so it suits A/B
+  comparisons, not the battery-side floor.
