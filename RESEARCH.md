@@ -1346,10 +1346,15 @@ their floor's bit 4.
     right before the suspend, and save it to the boot partition. Take it
     again after 10 idle minutes in the next boot, with the Mac powered on
     straight after the reset.
-  - The average is [(Q_pre − Q_post) − Q_boot − Q_tail] × mean V /
-    (t_end − t_suspend):
-    - Q_boot is −`charge_counter`/3600 at the post reading;
-    - Q_tail is the seconds awake between the saved reading and the suspend;
+  - The average, in mW, is [(Q_pre − Q_post) − Q_boot − Q_tail] × mean V /
+    (t_end − t_suspend), with every Q in mAh, V in volts and t in hours:
+    - Q_pre and Q_post are the two readings of `charge_now`;
+    - Q_boot is the next boot's drain up to the post reading,
+      −`charge_counter`/3600;
+    - Q_tail is the charge used between the saved reading and the suspend:
+      the `charge_counter` change over that gap, /3600. A reset loses it,
+      so V2 and E1 take it from V1, whose hook lines survive. A few seconds
+      awake is about 1-2 mAh, but a minute at 800 mA is 13 mAh;
     - t_end is the next boot's power-on. `BACC` counts seconds since then.
 - **The controls** (PLAN.md, E1):
   - V0 measures the reset's step from awake, and whether `BAAC`, `BACC` and
