@@ -1,0 +1,102 @@
+#!/usr/bin/ash
+# sleep-drain's safe boot (PLAN.md, A5): a boot in which nothing can write the
+# disk, for experiments that may hang or crash the Mac. Only with
+# "sleepdrain.safe" on the kernel command line; otherwise it does nothing.
+#
+# run_hook (after encrypt): the root's block device (the opened LUKS mapping)
+# is made read-only, and root is mounted read-only.
+# run_latehook: / and every btrfs subvolume in the fstab get a RAM overlay, so
+# the session works as usual and everything it writes is lost at restart.
+# Other disk filesystems in the fstab (/boot) aren't mounted at all. The
+# overlays' lower and upper layers stay reachable under /run/sleep-drain-safe;
+# "sleep-drain-safe save" copies results to the disk afterwards.
+#
+# If a step fails, the Mac restarts, and the next boot is the regular one
+# (GRUB's next_entry is one-shot). It never carries on with the disk writable.
+
+SDS_RUN=/run/sleep-drain-safe
+
+sds_enabled() {
+    case " $(cat /proc/cmdline) " in
+        *" sleepdrain.safe "*) return 0 ;;
+    esac
+    return 1
+}
+
+sds_fail() {
+    err "sleep-drain safe boot: $*"
+    err "sleep-drain safe boot: not booting with the disk unprotected; restarting in 15 s"
+    sleep 15
+    reboot -f
+}
+
+run_hook() {
+    sds_enabled || return 0
+    msg ":: sleep-drain safe boot: the disk will be read-only"
+    sds_dev=$(resolve_device "$root") || sds_fail "can't find the root device $root"
+    blockdev --setro "$sds_dev" || sds_fail "blockdev --setro $sds_dev failed"
+    [ "$(blockdev --getro "$sds_dev")" = 1 ] || sds_fail "$sds_dev is still writable"
+    # init mounts root with "${rwopt}"; the command line's "rw" stays for
+    # systemd, which then finds the overlay already writable.
+    rwopt=ro
+}
+
+# The overlay of lower directory $1 (already mounted) on $2, with its upper
+# and work directories in the tmpfs, under the name $3
+sds_overlay() {
+    mkdir -p "$SDS_RUN/rw/$3/upper" "$SDS_RUN/rw/$3/work" || return 1
+    mount -t overlay "sds-$3" \
+        -o "lowerdir=$1,upperdir=$SDS_RUN/rw/$3/upper,workdir=$SDS_RUN/rw/$3/work" "$2"
+}
+
+run_latehook() {
+    sds_enabled || return 0
+    [ -n "$sds_dev" ] || sds_fail "the hook didn't run before root was mounted"
+    grep -q " /sysroot [^ ]* ro[, ]" /proc/mounts || sds_fail "root isn't mounted read-only"
+
+    modprobe overlay || sds_fail "no overlay module"
+    mkdir -p "$SDS_RUN/lower/root" "$SDS_RUN/rw" || sds_fail "mkdir $SDS_RUN"
+    mount -t tmpfs -o mode=0755 sleep-drain-safe "$SDS_RUN/rw" || sds_fail "the tmpfs"
+    mount --move /sysroot "$SDS_RUN/lower/root" || sds_fail "moving root"
+    sds_overlay "$SDS_RUN/lower/root" /sysroot root || sds_fail "the overlay on /"
+
+    # The fstab, as the overlay's copy: btrfs subvolumes get their own
+    # read-only mount and overlay here, and their lines, root's and every
+    # other disk filesystem's are commented out, so systemd mounts none of
+    # them. Swap, tmpfs and the like stay.
+    sds_fstab=/sysroot/etc/fstab
+    : > /tmp/sds-fstab || sds_fail "/tmp"
+    while IFS= read -r sds_line || [ -n "$sds_line" ]; do
+        set -- $sds_line
+        case "$1" in
+            '' | '#'*)
+                echo "$sds_line" >> /tmp/sds-fstab
+                continue
+                ;;
+        esac
+        sds_mp=$2 sds_type=$3 sds_opts=$4
+        case "$sds_type" in
+            swap | tmpfs | proc | sysfs | devpts | devtmpfs | efivarfs | overlay)
+                echo "$sds_line" >> /tmp/sds-fstab
+                continue
+                ;;
+        esac
+        if [ "$sds_type" = btrfs ] && [ "$sds_mp" != / ]; then
+            sds_sub=$(echo ",$sds_opts," | sed -n 's/.*,subvol=\([^,]*\),.*/\1/p')
+            [ -n "$sds_sub" ] || sds_fail "no subvol= for $sds_mp in the fstab"
+            sds_name=$(echo "$sds_mp" | sed "s|/|_|g")
+            mkdir -p "$SDS_RUN/lower/$sds_name" || sds_fail "mkdir for $sds_mp"
+            mount -t btrfs -o "ro,subvol=$sds_sub" "$sds_dev" "$SDS_RUN/lower/$sds_name" ||
+                sds_fail "mounting $sds_sub read-only"
+            sds_overlay "$SDS_RUN/lower/$sds_name" "/sysroot$sds_mp" "$sds_name" ||
+                sds_fail "the overlay on $sds_mp"
+        fi
+        echo "# sleep-drain-safe: $sds_line" >> /tmp/sds-fstab
+    done < "$sds_fstab"
+    cat /tmp/sds-fstab > "$sds_fstab" || sds_fail "rewriting the fstab"
+
+    # /run moves into the system at switch_root, with these mounts; this file
+    # tells sleep-drain-safe and the sleep hook that the boot is safe.
+    echo "$sds_dev" > "$SDS_RUN/active" || sds_fail "$SDS_RUN/active"
+    msg ":: sleep-drain safe boot: the disk is read-only; changes last until restart"
+}

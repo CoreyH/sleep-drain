@@ -29,6 +29,16 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
 - `test-kernel`: installs an aurora kernel package (such as an upstream PR's
   CI build) beside the regular linux-aurora, boots it once via grub-reboot,
   and removes it again, without touching anything pacman owns.
+- `sleep-drain-safe` and `safe-boot/`: the safe boot for risky experiments
+  (A5). `pkexec sleep-drain-safe boot` makes the next restart, once, the
+  regular kernel with its own initramfs, whose `sleepdrain-safe` hook makes
+  the opened LUKS device read-only and puts RAM overlays on /, /home and
+  /var/log. Nothing the session writes reaches the disk, so a hang or hard
+  reset can't damage the filesystem; `/boot` isn't mounted. `pkexec
+  sleep-drain-safe save [PATH...]` then copies the sleep log, the snapshots,
+  the boot's journal and PATHs to the disk, and makes it read-only again. The
+  regular initramfs never gets the hook. The sleep log's `pre` line says
+  `safe=yes` for a sleep in a safe boot.
 - `pmu-alarm`: reads the PMU's RTC wake alarm on J314s through its nvmem
   interface, and test-fires it awake (`test`, as root) to check the register map
   before the driver port.
@@ -68,7 +78,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `tests/sleep_drain_valid_test.py` runs `sleep-drain-log`'s resume summary
   (drain and validity) on recorded snapshots; `tests/peek_decoders_test.py`
   checks `pmgr-map` and `smc-keys` on synthetic input, and `pmgr-map` on this
-  Mac's ADT dump when it's there.
+  Mac's ADT dump when it's there; `tests/safe_boot_hook_test.py` runs the
+  safe boot's initramfs hook in mkinitcpio's busybox ash, in a bubblewrap
+  sandbox with stub mount and blockdev, one failure per case.
 - `patches/`: patch series for upstream, kept here for review before they're
   posted. `patches/pmu-alarm-t600x/` is the PMU RTC alarm for omacom/linux-aurora
   (B2); its README says what's in it and how it was checked.
@@ -84,6 +96,12 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   only while the Omarchy shell is healthy, or the polkit prompt never shows).
 - Experiment flags are machine state, not code. Say in the PR or in
   RESEARCH.md which flags a night ran with.
+- **m1n1 is off limits to Claude.** Asahi's m1n1 repo asks AI tools not to
+  work on it (its AGENTS.md; asahilinux.org/llm-policy). Claude doesn't write,
+  change or draft m1n1 code, not even for Corey to type in. Corey decided on
+  2026-11-05 that using m1n1 as a tool is fine here, since nothing goes to
+  Asahi. Whether Claude may interpret an m1n1 trace is still open: Asahi's
+  policy names that case.
 
 ## Experiments
 

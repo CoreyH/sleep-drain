@@ -12,6 +12,11 @@ install -m 755 sleep-drain-wake /usr/local/bin/sleep-drain-wake
 install -m 755 sleep-drain-pcie /usr/local/bin/sleep-drain-pcie
 install -m 755 sleep-drain-pmp /usr/local/bin/sleep-drain-pmp
 install -m 755 test-kernel /usr/local/bin/test-kernel
+install -m 755 sleep-drain-safe /usr/local/bin/sleep-drain-safe
+# The safe boot's initramfs hook. Only sleep-drain-safe's own image has it
+# (mkinitcpio -A); the regular initramfs doesn't.
+install -D -m 644 safe-boot/sleepdrain-safe.hook /etc/initcpio/hooks/sleepdrain-safe
+install -D -m 644 safe-boot/sleepdrain-safe.install /etc/initcpio/install/sleepdrain-safe
 install -m 755 pmu-alarm /usr/local/bin/pmu-alarm
 cc -O2 -Wall -o /usr/local/bin/pmp-request pmp-request.c
 # The pmp_sleep_release experiment module, built for the running kernel in a

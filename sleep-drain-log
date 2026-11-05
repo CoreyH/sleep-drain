@@ -305,7 +305,10 @@ case "$1" in
     pmp=-
     [ -r "$PMP_MODULE/ids" ] && pmp=$(cat "$PMP_MODULE/ids")
     echo "$now id=$id" > "$STATE"
-    echo "$(date -Is) pre  $now $att radios=$radios wake=$wake pcie=$pcie pmp_release=$pmp snap=$id" >> "$LOG"
+    # safe=yes: a sleep-drain-safe boot (disk read-only, this log in RAM until saved)
+    safe=no
+    [[ -f /run/sleep-drain-safe/active ]] && safe=yes
+    echo "$(date -Is) pre  $now $att radios=$radios wake=$wake pcie=$pcie pmp_release=$pmp safe=$safe snap=$id" >> "$LOG"
     ;;
   post)
     pcie_back=$(pcie_restore)

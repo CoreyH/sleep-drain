@@ -1,6 +1,6 @@
 # Plan
 
-Last updated 2026-11-04. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-05. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
@@ -40,8 +40,10 @@ the PR with that session's work.
 - Root goes through pkexec, which needs a healthy Omarchy shell.
 
 State that lives on the MacBook, not in git:
-- linux-aurora 7.2.11.aurora14 (Omarchy 4.5.0rc3). m1n1-aurora, uboot-asahi
-  and GRUB are held back in pacman.conf (IgnorePkg).
+- linux-aurora 7.2.11.aurora14, on Omarchy 4.5.0 (updated 2026-11-05; the
+  kernel didn't change). m1n1-aurora and uboot-asahi are held back in
+  pacman.conf (IgnorePkg). GRUB isn't, but the installed 2:2.16-3 is newer than
+  the repo's 2:2.16-1, so pacman leaves it alone.
 - `/etc/sleep-drain/radios-off` is set. `install.sh` last ran at 3b79df2.
 - The alarm needs the test drivers after every boot:
   `make -C rtc-alarm-test && pkexec rtc-alarm-test/load`.
@@ -78,10 +80,15 @@ steps, and restarting the DCP and the PMP afterwards.
   `trace_smc`, `trace_pmp`, `trace_pmgr` and `trace_spmi`. Expect the Mac to
   hang once the cores power off, as on the M2 Pro. The trace covers the way
   into sleep, not the wake.
-  - Before it, two tracers need fixing: `trace_spmi` stops on T6000 (it
-    looks up `/arm-io/nub-spmi-a0` first), and `trace_pmgr` has T8103's
-    addresses. Point `trace_pmgr` at 0x2925c0000, 0x28e224000 and
-    0x292004000 (the AP wake masks) too.
+  - Before it, two m1n1 tracers need fixing, and Claude won't do that
+    (CLAUDE.md: m1n1 is off limits). What's wrong, found 2026-11-05:
+    `trace_spmi` doesn't import on any Mac since m1n1 5d6df45b renamed
+    `SPMIRegs`, and it looks up `/arm-io/nub-spmi-a0` first. This Mac has
+    seven `aapl,spmi` gen-1 controllers: nub-spmi0 and 1, clvr-spmi0-2 and
+    aop-spmi0 and 1. `trace_pmgr` has T8103's addresses, including eight
+    hooked lanes at 0x200200000, and traces only reg[0] and reg[1] in full.
+    T6000 needs reg[2] (power states), reg[7] (wake masks), reg[36] (S2R
+    timer) and reg[46]. If A4 happens, Corey fixes them by hand.
   - The guest: maralcbr ran 15.6.1 on M1, which Asahi's guide doesn't list.
     If that holds, it saves hunting for a 14.8.x installer.
   - Exit: T6000's sequence, with the answers to RESEARCH.md's questions,
@@ -93,14 +100,24 @@ steps, and restarting the DCP and the PMP afterwards.
   - a recovery setup: someone at the power key, or a remote hard reset;
   - a read-only or throwaway root;
   - Corey's go-ahead for each experiment.
+
+  The throwaway root is drafted (2026-11-05): `sleep-drain-safe` and
+  `safe-boot/` (CLAUDE.md has how it works; `tests/safe_boot_hook_test.py`
+  passes). Still open:
+  - the device test: `pkexec bash install.sh`, `pkexec sleep-drain-safe boot`,
+    one restart. Then check `sleep-drain-safe status` (the device reads
+    read-only), that a file written in the session is gone after another
+    restart, and that `save` puts the sleep log on the disk;
+  - the recovery setup (someone at the power key, or macvdmtool).
 - [ ] **A6. Talk to the others before duplicating work.** Every post needs
   Corey's OK.
   - **maralcbr first:** asked on 2026-11-04
     ([#281](https://github.com/maralcbr/omarchy-mx-mac/issues/281#issuecomment-6630474430)).
     The request is for the 15.6.1 trace and the replay's results. It offers
     the PMU alarm fix (SPMI 192 and the event clears), and shares this Mac's
-    reads. Waiting for a reply; check it before starting A3 or A4.
-  - DeepIdle: #9 has no reply yet.
+    reads. Waiting for a reply (none as of 2026-11-05); check it before
+    starting A3 or A4.
+  - DeepIdle: #9 has no reply yet (2026-11-05).
   - Asahi: Sven Peter's PSCI-via-EFI RFC covers T8103 only.
 
 ## The second computer
@@ -197,6 +214,14 @@ omacom/linux-aurora#274 (issuecomment-6520008651).
   touching it (two on 2026-11-02).
 
 ## Loose ends (Corey's call)
+
+- The Omarchy 4.5.0 update left `/etc/mkinitcpio.conf.d/omarchy_hooks.conf.pacnew`:
+  the local `omarchy_hooks.conf` was changed, so pacman didn't replace it.
+  The pacnew has no HOOKS line, and the new `00-omarchy-hooks.conf` leaves
+  this Mac's hooks alone (they have `asahi` and `encrypt`). So taking the
+  pacnew as it is would fall back to `/etc/mkinitcpio.conf`'s HOOKS, which
+  lack `plymouth`. The initramfs builds and boots as it is; leave it until
+  someone checks what Omarchy intends.
 
 - `/etc/systemd/system/omarchy-wifi-resume-fix.service` fails on every
   resume, because its script is gone. Remove it?

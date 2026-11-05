@@ -1,0 +1,231 @@
+#!/bin/bash
+# sleep-drain's safe boot (PLAN.md, A5): one boot in which nothing can write
+# the disk, for experiments that may hang or crash the Mac.
+#
+#   sleep-drain-safe boot           the next restart only is a safe boot (root)
+#   sleep-drain-safe status         is this boot safe, and is the next one?
+#   sleep-drain-safe save [PATH..]  in a safe boot: copy results to the disk (root)
+#   sleep-drain-safe remove         remove the image and the GRUB entry (root)
+#
+# A safe boot is the regular kernel with its own initramfs, which has the
+# sleepdrain-safe hook (safe-boot/): the opened LUKS device is read-only at the
+# block layer, and /, /home and /var/log are RAM overlays on read-only mounts.
+# The session works as usual; whatever it writes is gone at restart, and a
+# crash or hard reset can't damage the filesystem. /boot isn't mounted.
+#
+# "save" makes the disk writable for a moment: it copies the sleep log, the
+# sleep-drain snapshots, this boot's journal and any PATH given (under /, /home
+# or /var/log) to the disk, then puts the disk back to read-only. Run it once
+# the experiment is over, and restart soon after.
+#
+# The regular initramfs and boot entry stay as they are. The GRUB entry is
+# never the default: "boot" selects it for one restart with grub-reboot.
+set -euo pipefail
+
+GRUB_CFG=/boot/grub/grub.cfg
+SCRIPT=/etc/grub.d/44_sleep_drain_safe
+IMAGE_DIR=/boot/sleep-drain-safe
+IMAGE=$IMAGE_DIR/initramfs.img
+ENTRY=sleep-drain-safe
+RUN=/run/sleep-drain-safe
+
+die() { echo "sleep-drain-safe: $*" >&2; exit 1; }
+need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }
+is_safe() { [[ -f $RUN/active ]]; }
+
+# The release of the regular linux-aurora: the module tree whose pkgbase file
+# says so (test-kernel's trees have none).
+regular_release() {
+  local d found=
+  for d in /usr/lib/modules/*/; do
+    [[ -f $d/pkgbase && $(< "$d/pkgbase") == linux-aurora ]] || continue
+    [[ -z $found ]] || die "more than one linux-aurora module tree"
+    found=$(basename "$d")
+  done
+  [[ -n $found ]] || die "no linux-aurora module tree"
+  echo "$found"
+}
+
+# As in test-kernel: grub.cfg without one /etc/grub.d script's section, and a
+# regenerated grub.cfg taken only when it differs from the current one in that
+# section alone.
+without_section() {
+  awk -v begin="### BEGIN $2 ###" -v end="### END $2 ###" '
+    skip { if ($0 == end) skip = 0; next }
+    $0 == begin { skip = 1; if (held && prev == "") held = 0; next }
+    { if (held) print prev; prev = $0; held = 1 }
+    END { if (held) print prev }' "$1"
+}
+
+regen_grub() {
+  local new=$GRUB_CFG.sleep-drain-safe.new
+  rm -f "$new"
+  if ! grub-mkconfig -o "$new" > /dev/null 2>&1; then
+    rm -f "$new"
+    echo "sleep-drain-safe: grub-mkconfig failed; grub.cfg left as it is" >&2
+    return 1
+  fi
+  if ! cmp -s <(without_section "$new" "$SCRIPT") <(without_section "$GRUB_CFG" "$SCRIPT"); then
+    echo "sleep-drain-safe: grub-mkconfig would change more than the safe entry; grub.cfg left as it is:" >&2
+    diff <(without_section "$GRUB_CFG" "$SCRIPT") <(without_section "$new" "$SCRIPT") >&2 || true
+    rm -f "$new"
+    return 1
+  fi
+  if ! cp "$GRUB_CFG" "$GRUB_CFG.sleep-drain-safe.bak"; then
+    rm -f "$new"
+    echo "sleep-drain-safe: couldn't back up grub.cfg; left as it is" >&2
+    return 1
+  fi
+  if ! sync "$new" || ! mv -f "$new" "$GRUB_CFG"; then
+    rm -f "$new"
+    echo "sleep-drain-safe: couldn't put the new grub.cfg in place; the old one stays" >&2
+    return 1
+  fi
+}
+
+cmd_boot() {
+  need_root
+  ! is_safe || die "this is a safe boot already; restart first"
+  local release cmdline boot_uuid want
+  release=$(regular_release)
+  [[ -f /etc/initcpio/hooks/sleepdrain-safe && -f /etc/initcpio/install/sleepdrain-safe ]] ||
+    die "the sleepdrain-safe hook isn't installed: run install.sh"
+
+  # Built fresh every time, so it always matches the installed kernel.
+  mkdir -p "$IMAGE_DIR"
+  mkinitcpio -k "$release" -A sleepdrain-safe -g "$IMAGE.new" > "$IMAGE_DIR/mkinitcpio.log" 2>&1 ||
+    { rm -f "$IMAGE.new"; die "mkinitcpio failed; see $IMAGE_DIR/mkinitcpio.log"; }
+  lsinitcpio -a "$IMAGE.new" 2> /dev/null | grep -q 'sleepdrain-safe' ||
+    { rm -f "$IMAGE.new"; die "the new image has no sleepdrain-safe hook"; }
+  mv -f "$IMAGE.new" "$IMAGE"
+
+  # The regular entry's command line, so the safe boot opens the same root
+  # the same way, plus the flag the hook looks for.
+  cmdline=$(awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }' "$GRUB_CFG")
+  [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"
+  cmdline=${cmdline% sleepdrain.safe}
+  boot_uuid=$(grub-probe --target=fs_uuid /boot)
+
+  want=$(cat <<EOF
+#!/bin/sh
+# Written by sleep-drain-safe for linux-aurora; remove with: sleep-drain-safe remove
+cat <<'MENU'
+menuentry 'Safe boot for sleep experiments (disk read-only)' --class omarchy --class gnu-linux --id $ENTRY {
+    load_video
+    set gfxpayload=keep
+    insmod part_gpt
+    insmod fat
+    search --no-floppy --fs-uuid --set=root $boot_uuid
+    linux /vmlinuz-linux-aurora $cmdline sleepdrain.safe
+    initrd /sleep-drain-safe/initramfs.img
+}
+MENU
+EOF
+)
+  if [[ ! -f $SCRIPT || $(< "$SCRIPT") != "$want" ]] || ! grep -q -- "--id $ENTRY " "$GRUB_CFG"; then
+    printf '%s\n' "$want" > "$SCRIPT"
+    chmod 755 "$SCRIPT"
+    regen_grub || die "the safe entry isn't in grub.cfg (see above); nothing selected"
+  fi
+  grep -q -- "--id $ENTRY " "$GRUB_CFG" || die "no $ENTRY entry in $GRUB_CFG"
+  grub-reboot "$ENTRY"
+  echo "the next restart is a safe boot ($release, disk read-only); every restart after that is the regular one"
+}
+
+cmd_status() {
+  local next dev
+  if is_safe; then
+    dev=$(< "$RUN/active")
+    echo "this boot is a safe boot: $dev read-only $(blockdev --getro "$dev" 2> /dev/null || echo '?')," \
+      "/ on $(findmnt -no FSTYPE /)"
+    df -h --output=used,size "$RUN/rw" | tail -1 | awk '{ print "RAM used by changes: " $1 " of " $2 }'
+  else
+    echo "this boot is a regular boot"
+  fi
+  next=$(grub-editenv - list 2> /dev/null | sed -n 's/^next_entry=//p')
+  if [[ $next == "$ENTRY" ]]; then
+    echo "the next restart is a safe boot"
+  else
+    echo "the next restart is a regular boot"
+  fi
+}
+
+# The disk path of PATH: the fstab (the disk's own, below the overlay) says
+# which subvolume holds it, by the longest mount point that contains it.
+disk_path() {
+  local path=$1 best= best_sub= mp sub
+  while read -r _ mp type opts _; do
+    [[ $type == btrfs ]] || continue
+    sub=$(sed -n 's/.*\(^\|,\)subvol=\([^,]*\).*/\2/p' <<< "$opts")
+    [[ -n $sub ]] || continue
+    if [[ $path == "$mp" || $path == "${mp%/}/"* ]] && (( ${#mp} > ${#best} )); then
+      best=$mp best_sub=${sub#/}
+    fi
+  done < <(grep -v '^[[:space:]]*#' "$RUN/lower/root/etc/fstab")
+  [[ -n $best ]] || return 1
+  echo "$RUN/disk/$best_sub${path#"${best%/}"}"
+}
+
+cmd_save() {
+  need_root
+  is_safe || die "this isn't a safe boot; nothing to save"
+  local dev now p dst saved=0
+  dev=$(< "$RUN/active")
+  now=$(date +%Y%m%dT%H%M%S)
+  mkdir -p /var/log/sleep-drain
+  journalctl -b -o short-precise > "/var/log/sleep-drain/safe-journal-$now.txt" 2>&1 || true
+  local paths=(/var/log/sleep-drain.log /var/log/sleep-drain "$@")
+  for p in "${paths[@]}"; do
+    [[ -e $p ]] || die "no $p"
+    [[ $p == /* ]] || die "$p: give absolute paths"
+    disk_path "$(realpath -s "$p")" > /dev/null || die "$p isn't on the disk's btrfs subvolumes"
+  done
+
+  blockdev --setrw "$dev"
+  mkdir -p "$RUN/disk"
+  if ! mount -t btrfs -o subvolid=5 "$dev" "$RUN/disk"; then
+    blockdev --setro "$dev"
+    die "couldn't mount the disk writable; nothing saved"
+  fi
+  for p in "${paths[@]}"; do
+    p=$(realpath -s "$p")
+    dst=$(disk_path "$p")
+    mkdir -p "$(dirname "$dst")"
+    if [[ -d $p ]]; then
+      mkdir -p "$dst"
+      cp -a "$p/." "$dst/"
+    else
+      cp -a "$p" "$dst"
+    fi
+    echo "saved $p"
+    saved=$((saved + 1))
+  done
+  sync -f "$RUN/disk"
+  umount "$RUN/disk"
+  # Back to read-only: the filesystem, then the device.
+  if mount -o remount,ro "$RUN/lower/root" && blockdev --setro "$dev"; then
+    echo "saved $saved path(s); the disk is read-only again. Restart when done."
+  else
+    echo "saved $saved path(s), but the disk is still WRITABLE: restart now" >&2
+    exit 1
+  fi
+}
+
+cmd_remove() {
+  need_root
+  rm -f "$SCRIPT"
+  regen_grub || die "grub.cfg not regenerated; the image is still in place"
+  if grub-editenv - list | grep -qx "next_entry=$ENTRY"; then
+    grub-editenv - unset next_entry
+  fi
+  rm -rf -- "${IMAGE_DIR:?}"
+  echo "removed the safe boot"
+}
+
+case "${1:-}" in
+  boot) cmd_boot ;;
+  status) cmd_status ;;
+  save) shift; cmd_save "$@" ;;
+  remove) cmd_remove ;;
+  *) echo "usage: sleep-drain-safe boot | status | save [PATH...] | remove" >&2; exit 2 ;;
+esac
