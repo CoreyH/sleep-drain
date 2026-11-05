@@ -60,6 +60,19 @@ run_latehook() {
     mount --move /sysroot "$SDS_RUN/lower/root" || sds_fail "moving root"
     sds_overlay "$SDS_RUN/lower/root" /sysroot root || sds_fail "the overlay on /"
 
+    # Mounts that earlier late hooks made on the real root moved with it, and
+    # an overlay doesn't show its lower layer's mounts. Asahi's puts the vendor
+    # firmware (Wi-Fi, Bluetooth, sensor calibration) in a tmpfs at
+    # /sysroot/usr/lib/firmware/vendor (/new_root is /sysroot). Move each back
+    # on top, outermost first; a child moves with its parent. A failure costs
+    # that mount's contents, not the disk's safety, so it's reported only.
+    grep " $SDS_RUN/lower/root/" /proc/mounts > /tmp/sds-submounts
+    while read -r _ sds_mp _; do
+        grep -q " $sds_mp " /proc/mounts || continue
+        mount --move "$sds_mp" "/sysroot${sds_mp#"$SDS_RUN/lower/root"}" ||
+            err "sleep-drain safe boot: couldn't move $sds_mp onto the overlay"
+    done < /tmp/sds-submounts
+
     # The fstab, as the overlay's copy: btrfs subvolumes get their own
     # read-only mount and overlay here, and their lines, root's and every
     # other disk filesystem's are commented out, so systemd mounts none of
