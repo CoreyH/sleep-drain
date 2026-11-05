@@ -34,11 +34,13 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   regular kernel with its own initramfs, whose `sleepdrain-safe` hook makes
   the opened LUKS device read-only and puts RAM overlays on /, /home and
   /var/log. Nothing the session writes reaches the disk, so a hang or hard
-  reset can't damage the filesystem; `/boot` isn't mounted. `pkexec
-  sleep-drain-safe save [PATH...]` then copies the sleep log, the snapshots,
-  the boot's journal and PATHs to the disk, and makes it read-only again. The
-  regular initramfs never gets the hook. The sleep log's `pre` line says
-  `safe=yes` for a sleep in a safe boot.
+  reset can't damage the filesystem; `/boot` isn't mounted. The disk stays
+  read-only all session: `pkexec sleep-drain-safe save [PATH...]` writes what
+  the boot added (new log lines, new snapshots, the journal, PATHs) as one tar
+  to the boot partition, mounted just for that, and `pkexec sleep-drain-safe
+  collect` puts it in place after the next regular boot. The regular
+  initramfs never gets the hook. The sleep log's `pre` line says `safe=yes`
+  for a sleep in a safe boot.
 - `pmu-alarm`: reads the PMU's RTC wake alarm on J314s through its nvmem
   interface, and test-fires it awake (`test`, as root) to check the register map
   before the driver port.
@@ -80,7 +82,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   checks `pmgr-map` and `smc-keys` on synthetic input, and `pmgr-map` on this
   Mac's ADT dump when it's there; `tests/safe_boot_hook_test.py` runs the
   safe boot's initramfs hook in mkinitcpio's busybox ash, in a bubblewrap
-  sandbox with stub mount and blockdev, one failure per case.
+  sandbox with stub mount and blockdev, one failure per case;
+  `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe
+  boot and `collect` in a fake next boot.
 - `patches/`: patch series for upstream, kept here for review before they're
   posted. `patches/pmu-alarm-t600x/` is the PMU RTC alarm for omacom/linux-aurora
   (B2); its README says what's in it and how it was checked.

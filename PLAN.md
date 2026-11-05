@@ -103,11 +103,12 @@ steps, and restarting the DCP and the PMP afterwards.
 
   The throwaway root is drafted (2026-11-05): `sleep-drain-safe` and
   `safe-boot/` (CLAUDE.md has how it works; `tests/safe_boot_hook_test.py`
-  passes). Still open:
+  and `tests/safe_boot_save_test.py` pass). Still open:
   - the device test: `pkexec bash install.sh`, `pkexec sleep-drain-safe boot`,
     one restart. Then check `sleep-drain-safe status` (the device reads
     read-only), that a file written in the session is gone after another
-    restart, and that `save` puts the sleep log on the disk;
+    restart, and that `save`, then `collect` after a regular restart, put
+    the sleep log's new lines on the disk;
   - the recovery setup (someone at the power key, or macvdmtool).
 - [ ] **A6. Talk to the others before duplicating work.** Every post needs
   Corey's OK.
