@@ -1,0 +1,406 @@
+#!/bin/bash
+# E1's first check, the hook point (PLAN.md, A5), in a safe boot: does
+# e1_hook's prepare_late run at s2idle's step 4, after the whole noirq pass,
+# and does an SMC read work there? e1_hook.c says what the module does: in
+# this dry build it only logs each op and reads one key, B0AV.
+#
+#   make -C e1-hook && make -C rtc-alarm-test
+#   pkexec e1-hook/check
+#
+# Two runs, each a suspend and resume with e1_hook's ops in place:
+#   1. pm_test=platform: echo freeze > /sys/power/state runs s2idle's steps 1-4,
+#      waits pm_test_delay (5 s) instead of sleeping, and resumes. The
+#      sleep-drain-log hook doesn't run.
+#   2. An alarm sleep: the PMU alarm 60 s ahead (rtcwake -m no), then
+#      systemctl suspend, so the hook runs with the experiment flags; it waits
+#      for the hook's post line. rtc-alarm-test/load runs first if it hasn't on
+#      this boot.
+# For both, pm_debug_messages and pm_print_times are on, and ftrace records
+# power:suspend_resume, power:device_pm_callback_start and _end, and
+# printk:console, on the local clock, which is the module's. printk:console
+# keeps a copy of the kernel log in the trace's bigger buffer: pm_print_times
+# logs two lines per device callback, which can overrun the kernel's 256 KB
+# log within one suspend and resume. The trace is an ftrace instance of its own,
+# instances/sleep-drain-e1-hook, with its own clock, buffer and events: the
+# main buffer, its settings and whatever it holds are left as they are. If the
+# instance can't be made, or is there already, it refuses. After each run,
+# e1-hook/verdict answers: did prepare_late run; did it run after the last
+# noirq device callback, by the trace's clock and by the kernel log's order;
+# did it come before suspend_test or s2idle_loop; did the SMC read there work.
+#
+# It writes /var/log/sleep-drain/e1-hook-<time>/: log.txt (what ran),
+# summary.txt (the answers), params-load.txt, and run1/ and run2/, each with
+# dmesg.txt (from the run's marker on), trace.txt (the instance's), the
+# module's parameters and suspend_stats before and after, and verdict.txt.
+# Then, passed or not, it runs sleep-drain-safe save, which keeps that, the
+# hook's snapshot and the journal. Restart, then pkexec sleep-drain-safe
+# collect.
+#
+# The results gather in /var/log/e1-hook-<time>/ and move into place at the
+# end, so that the final save takes them whole. Between the runs, a save of that
+# directory alone (a PATH, which collect puts under safe-saved-<time>/) keeps
+# run 1's results in case run 2's sleep never comes back. If that save fails,
+# run 2 doesn't start: its sleep would risk results that are only in RAM, and a
+# failed save can leave /boot mounted.
+#
+# On any exit it puts back pm_test (none), pm_debug_messages and
+# pm_print_times, removes its trace instance, disarms the alarm and unloads
+# e1_hook. The alarm drivers stay (a restart undoes them). It takes about two
+# minutes: keep hands off the keyboard, lid and Touch ID key. If run 2 hasn't
+# woken after two minutes, a short press of the Touch ID key wakes it. Exits
+# non-zero if an answer isn't yes or a run didn't happen. Once it's putting
+# things back, Ctrl-C, a closed terminal or a closed stdout doesn't stop it
+# before the save.
+set -euo pipefail
+
+DIR=$(cd "$(dirname "$0")" && pwd)
+REPO=$(dirname "$DIR")
+KO=$DIR/e1_hook.ko
+PARAMS=/sys/module/e1_hook/parameters
+PWR=/sys/power
+STATS=$PWR/suspend_stats
+T=/sys/kernel/tracing
+# The trace's own instance: nothing here touches the main buffer in $T.
+I=$T/instances/sleep-drain-e1-hook
+LOG=/var/log/sleep-drain.log
+HOOK=/usr/lib/systemd/system-sleep/sleep-drain-log
+SAFE=/usr/local/bin/sleep-drain-safe
+# The first three are required; printk/console is the kernel log's copy.
+EVENTS=(power/suspend_resume power/device_pm_callback_start power/device_pm_callback_end printk/console)
+BUF_KB=8192  # per CPU
+ALARM_S=60
+WAIT_S=300   # for the hook's post line, in seconds awake: the sleep doesn't count
+
+# tee -p, here and in log: a closed stdout or stderr mustn't stop the run.
+die() { echo "check: $*" | tee -p >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || die "run as root (pkexec)"
+[[ -f /run/sleep-drain-safe/active ]] || die "this isn't a safe boot: pkexec sleep-drain-safe boot, then restart"
+tr '\0' '\n' < /proc/device-tree/compatible | grep -qx 'apple,j314s' || die "this isn't a J314s"
+[[ -f $KO ]] || die "no $KO: run make -C $DIR first"
+[[ $(modinfo -F vermagic "$KO" | cut -d' ' -f1) == "$(uname -r)" ]] ||
+  die "e1_hook.ko isn't built for $(uname -r): run make -C $DIR again"
+[[ ! -d /sys/module/e1_hook ]] || die "e1_hook is loaded already: rmmod e1_hook first"
+mem_sleep=$(< $PWR/mem_sleep)
+grep -qw s2idle <<< "$mem_sleep" || die "/sys/power/mem_sleep doesn't offer s2idle ($mem_sleep)"
+[[ $mem_sleep == *"[s2idle]"* ]] ||
+  die "s2idle isn't the selected sleep in /sys/power/mem_sleep ($mem_sleep), so systemctl suspend wouldn't use it"
+[[ -f $PWR/pm_test ]] && grep -qw platform $PWR/pm_test || die "this kernel has no pm_test=platform (CONFIG_PM_DEBUG)"
+[[ $(< $PWR/pm_test) == *"[none]"* ]] || die "pm_test is set already ($(< $PWR/pm_test)): echo none > $PWR/pm_test first"
+for e in "${EVENTS[@]:0:3}"; do
+  [[ -f $T/events/$e/enable ]] || die "no $e trace event in $T"
+done
+[[ -d $T/instances ]] || die "no $T/instances, so no trace instance of its own"
+[[ ! -e $I ]] || die "$I exists: is another e1-hook check running? rmdir it if not"
+[[ -x $HOOK ]] || die "the sleep-drain-log hook isn't installed: pkexec bash install.sh"
+[[ -x $SAFE ]] || die "no $SAFE: pkexec bash install.sh"
+command -v rtcwake > /dev/null || die "no rtcwake"
+command -v python3 > /dev/null || die "no python3"
+# Run 2's alarm drivers, checked now rather than after run 1.
+if [[ ! -d /sys/module/rtc_macsmc_alarm ]]; then
+  for ko in pmu-alarm-dt spmi-apple-wake rtc-macsmc-alarm; do
+    f=$REPO/rtc-alarm-test/$ko.ko
+    [[ -f $f && $(modinfo -F vermagic "$f" | cut -d' ' -f1) == "$(uname -r)" ]] ||
+      die "run 2 needs the alarm drivers, and $ko.ko isn't built for $(uname -r): run make -C $REPO/rtc-alarm-test"
+  done
+fi
+
+# Removes the trace's instance, and its buffer with it, on any exit once it's
+# been made.
+untrace() {
+  local e
+  [[ -d $I ]] || return 0
+  echo 0 > "$I/tracing_on"
+  for e in "${EVENTS[@]}"; do
+    if [[ -f $I/events/$e/enable ]]; then echo 0 > "$I/events/$e/enable"; fi
+  done
+  rmdir "$I" || echo "check: couldn't remove the trace instance: rmdir $I" | tee -p >&2
+}
+# Making the instance is the last check and the first change: a refusal up to
+# here leaves nothing behind. Until finish takes over, this trap removes it.
+mkdir "$I" || die "couldn't create the trace instance $I"
+trap 'set +e; untrace' EXIT
+
+stamp=$(date +%Y%m%dT%H%M%S)
+out=/var/log/sleep-drain/e1-hook-$stamp
+# The results, until finish moves them to $out.
+res=/var/log/e1-hook-$stamp
+mkdir -p "$res"
+# tee -p: a closed stdout mustn't stop the run.
+log() { echo "$*" | tee -p -a "$res/log.txt"; }
+
+# What finish puts back, each set once it has been changed; trace_set once the
+# instance is tracing.
+pm_set=0 trace_set=0 loaded=0 armed=0 runs_done=0 failed=0 rtc=
+prev_debug='' prev_times=''
+
+disarm() {
+  if ((armed)) && [[ -n $rtc ]]; then echo 0 > "/sys/class/rtc/$rtc/wakealarm" || true; fi
+  armed=0
+}
+params() { local f; for f in "$PARAMS"/*; do echo "${f##*/}=$(< "$f")"; done; }
+stats() { local f; for f in "$STATS"/*; do echo "${f##*/}=$(cat "$f" 2> /dev/null)"; done; }
+trace_stats() { local c; for c in "$I"/per_cpu/cpu*; do echo "${c##*/}: $(tr '\n' ' ' < "$c/stats")"; done; }
+events() {  # events <wakeup source name>: its event count
+  local w
+  for w in /sys/class/wakeup/*; do
+    if [[ $(cat "$w/name") == "$1" ]]; then cat "$w/event_count"; return; fi
+  done
+  echo 0
+}
+
+# A line in the kernel log and in the trace, where a run's captures start.
+mark() {
+  echo "e1-hook check $stamp: $1" > /dev/kmsg
+  echo "e1-hook check $stamp: $1" > "$I/trace_marker"
+}
+
+# The kernel log from the last mark "$1" on; all of it, flagged, if that line
+# has gone (the log wrapped: the trace's printk:console copy has the rest).
+dmesg_since() {
+  local m="e1-hook check $stamp: $1" all n
+  all=$(dmesg)
+  n=$(grep -nF -- "$m" <<< "$all" | tail -n 1 | cut -d: -f1) || true
+  if [[ -n $n ]]; then
+    tail -n "+$n" <<< "$all"
+  else
+    echo "# e1-hook check: \"$m\" isn't in the kernel log any more (it wrapped); all of it follows"
+    echo "$all"
+  fi
+}
+
+capture() {  # capture <run dir> <mark>
+  dmesg_since "$2" > "$1/dmesg.txt"
+  cat "$I/trace" > "$1/trace.txt"
+  trace_stats > "$1/trace-stats.txt"
+  params > "$1/params-after.txt"
+  stats > "$1/suspend_stats-after.txt"
+}
+
+verdict() {  # verdict <run dir>: the answers into summary.txt
+  local rc=0
+  python3 -I "$DIR/verdict" "$1" > "$1/verdict.txt" 2>&1 || rc=$?
+  tee -p -a "$res/summary.txt" < "$1/verdict.txt"
+  ((rc == 0)) || failed=1
+}
+
+finish() {
+  local rc=$? saved
+  local extra=()
+  # Nothing stops it now, not a Ctrl-C, a hangup or a closed stdout: what it
+  # puts back and saves matters more. The save inherits this; SIGKILL still
+  # ends a finish that's stuck.
+  trap '' HUP INT TERM PIPE
+  trap - EXIT
+  set +e
+  disarm
+  ((pm_set)) && echo none > $PWR/pm_test
+  if ((!runs_done && trace_set)); then
+    # Stopped part-way: what the kernel and the trace saw up to here.
+    dmesg > "$res/dmesg-at-exit.txt"
+    cat "$I/trace" > "$res/trace-at-exit.txt"
+  fi
+  if ((pm_set)); then
+    echo "$prev_debug" > $PWR/pm_debug_messages
+    echo "$prev_times" > $PWR/pm_print_times
+  fi
+  untrace
+  if ((loaded)) && [[ -d /sys/module/e1_hook ]]; then
+    params > "$res/params-unload.txt"
+    rmmod e1_hook || echo "check: e1_hook didn't unload: rmmod e1_hook" >&2
+  fi
+  log "$(date -Is) put back: pm_test $(< $PWR/pm_test), pm_debug_messages $(< $PWR/pm_debug_messages)," \
+    "pm_print_times $(< $PWR/pm_print_times), trace instance $([[ -e $I ]] && echo 'STILL THERE' || echo removed)," \
+    "e1_hook $([[ -d /sys/module/e1_hook ]] && echo 'STILL LOADED' || echo 'not loaded')"
+  ((runs_done)) || echo "check: stopped before the runs were done (exit $rc)" >> "$res/log.txt"
+  log "check: saving with sleep-drain-safe save"
+  # Into place, where save takes it as a new snapshot directory; if that
+  # fails, save takes it as a PATH.
+  if mv "$res" "$out"; then res=$out; else extra=("$res"); fi
+  chmod -R a+rX "$res"
+  sync
+  # Its output is printed once it's done, so that a closed stdout can't fail it.
+  if saved=$("$SAFE" save "${extra[@]}" 2>&1); then
+    echo "$saved"
+    echo
+    if ((!runs_done)); then
+      echo "check: stopped before both runs were done (exit $rc). What it has: $res"
+    elif ((rc)); then
+      echo "check: not every answer is yes. Results: $res/summary.txt"
+    else
+      echo "check: every answer is yes. Results: $res/summary.txt"
+    fi
+    echo "Next: restart (the regular boot comes back), then: pkexec sleep-drain-safe collect"
+  else
+    echo "$saved" >&2
+    echo "check: sleep-drain-safe save failed, so the results are only in RAM ($res)." \
+      "Don't restart before they're saved: pkexec sleep-drain-safe save" >&2
+    ((rc)) || rc=1
+  fi
+  exit "$rc"
+}
+trap finish EXIT
+# With these, bash waits for the command in progress before running finish.
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+flags=$(shopt -s nullglob; f=(/etc/sleep-drain/*); f=("${f[@]##*/}"); echo "${f[*]:-none}")
+bat=/sys/class/power_supply/macsmc-battery
+log "e1-hook check $stamp: $(uname -r), safe boot, flags: $flags," \
+  "battery $(cat $bat/capacity)% $(cat $bat/status), e1_hook.ko sha256 $(sha256sum "$KO" | cut -c1-16)"
+{
+  echo "e1-hook check $stamp: E1's hook point (PLAN.md, A5), the dry build"
+  echo "$(uname -r), safe boot, flags: $flags, e1_hook.ko sha256 $(sha256sum "$KO" | cut -c1-16)"
+  echo
+} > "$res/summary.txt"
+
+if [[ ! -d /sys/module/rtc_macsmc_alarm ]]; then
+  log "loading the alarm drivers: rtc-alarm-test/load"
+  "$REPO/rtc-alarm-test/load" 2>&1 | tee -p -a "$res/log.txt"
+fi
+for r in /sys/class/rtc/rtc*; do
+  if [[ -e $r/wakealarm && $(readlink -f "$r/device") == "$(readlink -f /sys/bus/platform/devices/macsmc-rtc)" ]]; then
+    rtc=${r##*/}
+  fi
+done
+[[ -n $rtc ]] || die "no PMU alarm RTC: rtc-alarm-test/load didn't work"
+[[ $(< "/sys/class/rtc/$rtc/device/power/wakeup") == enabled ]] || die "$rtc can't wake the system"
+rtc_irq=$(awk -F: '/macsmc-rtc/ { gsub(/ /, "", $1); print $1 }' /proc/interrupts)
+log "alarm RTC $rtc, IRQ ${rtc_irq:-?}"
+
+prev_debug=$(< $PWR/pm_debug_messages) prev_times=$(< $PWR/pm_print_times)
+pm_set=1
+echo 1 > $PWR/pm_debug_messages
+echo 1 > $PWR/pm_print_times
+# The instance's settings only: it goes as a whole at the end, so none of
+# them needs putting back.
+echo local > "$I/trace_clock"
+echo $BUF_KB > "$I/buffer_size_kb"
+on=()
+for e in "${EVENTS[@]}"; do
+  if [[ -f $I/events/$e/enable ]]; then echo 1 > "$I/events/$e/enable"; on+=("$e"); fi
+done
+trace_set=1
+echo 1 > "$I/tracing_on"
+echo > "$I/trace"
+log "pm_debug_messages 1, pm_print_times 1; trace instance ${I##*/}: clock local, $BUF_KB KB per CPU," \
+  "events: ${on[*]}"
+
+mark load
+# Set first: a signal during insmod must still unload what its init loaded.
+loaded=1
+insmod "$KO"
+params > "$res/params-load.txt"
+log "e1_hook loaded: $(dmesg | grep -F 'e1_hook: ' | tail -n 2 | sed 's/^\[[^]]*\] //' | paste -sd ';' || true)"
+
+# Run 1: pm_test=platform. The write returns once the system has resumed.
+d=$res/run1
+mkdir -p "$d"
+delay=$(cat /sys/module/suspend/parameters/pm_test_delay 2> /dev/null || echo 5)
+printf 'kind=platform\nlabel=run 1: pm_test=platform (steps 1-4, then a %s s wait instead of the sleep)\n' \
+  "$delay" > "$d/info.txt"
+params > "$d/params-before.txt"
+stats > "$d/suspend_stats-before.txt"
+log "== run 1 at $(date -Is): pm_test=platform, echo freeze > $PWR/state (back in about $((delay + 5)) s)"
+echo platform > $PWR/pm_test
+rc1=0
+err=$(echo freeze 2>&1 > $PWR/state) || rc1=$?
+echo none > $PWR/pm_test
+log "run 1: the write returned $rc1${err:+ ($err)}; suspend_stats success $(< $STATS/success), fail $(< $STATS/fail)"
+echo "write_status=$rc1" >> "$d/info.txt"
+sleep 3
+capture "$d" load
+verdict "$d"
+if ((rc1)); then
+  echo "  (the write to $PWR/state failed: $rc1${err:+, $err})" | tee -p -a "$res/summary.txt"
+  failed=1
+fi
+echo | tee -p -a "$res/summary.txt"
+
+# Run 1's results to the boot partition now, in case run 2's sleep never comes
+# back. Its output is logged once it's done: save copies log.txt meanwhile, and
+# a closed stdout mustn't fail it.
+log "== saving run 1's results before run 2 (collect puts this copy under safe-saved-<time>/)"
+chmod -R a+rX "$res"
+sync
+save1=0
+saved=$("$SAFE" save "$res" 2>&1) || save1=$?
+log "$saved"
+if ((save1)); then
+  # No sleep then: if it never came back, what's only in RAM would be lost,
+  # and a failed save can leave /boot mounted read-write. finish still puts
+  # everything back and tries the final save.
+  log "check: the save after run 1 failed (exit $save1), so run 2 doesn't start"
+  echo "Run 2 didn't start: the save of run 1's results failed (exit $save1)." | tee -p -a "$res/summary.txt"
+  exit 1
+fi
+log "saved; on to run 2"
+
+# Run 2: an alarm sleep through systemd, so the hook runs.
+echo > "$I/trace"
+d=$res/run2
+mkdir -p "$d"
+printf 'kind=alarm\nlabel=run 2: an alarm sleep (%s s, systemctl suspend)\nrtc=%s\n' "$ALARM_S" "$rtc" > "$d/info.txt"
+params > "$d/params-before.txt"
+stats > "$d/suspend_stats-before.txt"
+n0=0
+if [[ -f $LOG ]]; then n0=$(wc -l < "$LOG"); fi
+ok0=$(< $STATS/success) fail0=$(< $STATS/fail) key0=$(events macsmc-input)
+mark "run 2"
+log "== run 2 at $(date -Is): the alarm in $ALARM_S s, then systemctl suspend"
+# Armed first: a signal during rtcwake must still disarm.
+armed=1
+rtcwake -d "$rtc" -m no -s "$ALARM_S" 2>&1 | tee -p -a "$res/log.txt"
+t0=$(date +%s)
+rc2=0
+systemctl suspend || rc2=$?
+post=
+if ((rc2 == 0)); then
+  # Counted in sleep 1s, which don't count the suspend: however long the sleep,
+  # the hook has the time it needs after the resume to write its post line.
+  for ((i = 0; i < WAIT_S; i++)); do
+    post=$(tail -n "+$((n0 + 1))" "$LOG" 2> /dev/null | grep ' post ' | tail -n 1) || true
+    [[ -n $post ]] && break
+    sleep 1
+  done
+fi
+# Empty: the alarm fired. Anything else: something else ended the sleep.
+left=$(< "/sys/class/rtc/$rtc/wakealarm")
+disarm
+sleep 3
+ok1=$(< $STATS/success) fail1=$(< $STATS/fail)
+wirq=$(cat $PWR/pm_wakeup_irq 2> /dev/null || echo none)
+if ((rc2)); then
+  by="no sleep: systemctl suspend failed ($rc2)"
+elif ((ok1 == ok0)); then
+  by="no sleep: suspend_stats success $ok0 -> $ok1, fail $fail0 -> $fail1"
+elif [[ -z $left && $wirq == "$rtc_irq" ]]; then
+  by="the alarm"
+elif (($(events macsmc-input) > key0)); then
+  by="the Touch ID/power key or the lid (macsmc-input events), alarm ${left:-fired}"
+else
+  by="something else: wakeup IRQ $wirq, alarm ${left:-fired}"
+fi
+log "run 2: woken by $by, $(($(date +%s) - t0)) s after systemctl suspend;" \
+  "hook: ${post:-no post line after $WAIT_S s awake}"
+{
+  echo "systemctl_status=$rc2"
+  echo "woken_by=$by"
+  echo "hook_post=$post"
+} >> "$d/info.txt"
+tail -n "+$((n0 + 1))" "$LOG" > "$d/hook.txt" 2> /dev/null || true
+capture "$d" "run 2"
+verdict "$d"
+echo "  (woken by $by; the hook's post line: ${post:-none after $WAIT_S s awake})" | tee -p -a "$res/summary.txt"
+if [[ -z $post || $by == "no sleep"* ]]; then failed=1; fi
+
+runs_done=1
+echo | tee -p -a "$res/summary.txt"
+if ((failed)); then
+  echo "Not every answer is yes: each run's dmesg.txt and trace.txt have the detail." | tee -p -a "$res/summary.txt"
+else
+  echo "Every answer is yes: prepare_late ran after the whole noirq pass, before suspend_test and" \
+    "s2idle_loop, and the SMC answered there." | tee -p -a "$res/summary.txt"
+fi
+exit $((failed ? 1 : 0))

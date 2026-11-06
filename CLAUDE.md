@@ -83,11 +83,27 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
 - `sleep-peek`: both of the above as root (`pkexec`), awake and around one
   timed s2idle sleep that goes through the hook; writes
   `results/sleep-peek-<time>/`. Not installed by `install.sh`.
+- `e1-hook/`: E1's first check, the hook point (PLAN.md, A5). `e1_hook.c` is
+  an out-of-tree module (`make -C e1-hook`, against the running kernel's
+  headers) that registers its own s2idle ops, so that its `prepare_late`
+  runs after the whole noirq pass. `s2idle_set_ops` isn't exported, so it
+  finds it through a kprobe that's registered disabled and never armed: lab
+  only, never for upstream. This dry build only logs each op and reads one
+  SMC key, `B0AV`, at `prepare` and `prepare_late`; read-only parameters
+  count the ops and keep the reads. `pkexec e1-hook/check`, in a safe boot
+  only, runs it under `pm_test=platform` and in a 60 s alarm sleep, with
+  ftrace's power events on the module's clock; `e1-hook/verdict` says
+  whether `prepare_late` ran after the last noirq callback and whether the
+  SMC answered there. It saves `/var/log/sleep-drain/e1-hook-<time>/` with
+  `sleep-drain-safe save`. Not installed by `install.sh`.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake
   /sys, with one failure injected per case; `tests/rtc_alarm_check_test.py`
   runs `rtc-alarm-test/check` the same way against a stub rtcwake;
+  `tests/e1_hook_check_test.py` runs `e1-hook/check` the same way against a
+  fake kernel that plays both runs, and `tests/e1_hook_verdict_test.py` runs
+  `e1-hook/verdict` on made-up captures, one fault per case;
   `tests/sleep_drain_valid_test.py` runs `sleep-drain-log`'s resume summary
   (drain and validity) on recorded snapshots; `tests/peek_decoders_test.py`
   checks `pmgr-map` and `smc-keys` on synthetic input, and `pmgr-map` on this
