@@ -1,0 +1,303 @@
+#!/bin/bash
+# sleep-drain-reading: idle battery readings that can span a reset (PLAN.md,
+# E1's measurement check; RESEARCH.md, "Measuring a sleep that ends in a hard
+# reset").
+#
+#   sleep-drain-reading take [--minutes N] [--label L] [--then ACTION]   (root)
+#   sleep-drain-reading v0                                               (root)
+#   sleep-drain-reading list
+#
+# take: the Mac is left alone for N minutes (default 10) while the battery is
+# logged every 10 s. The reading is the median of the last minute's
+# charge_now, voltage_now and current_now. It also keeps charge_counter (the
+# SMC's BAAC) and, through smc-peek, the raw BAAC, BACC and BQCC at the start
+# and the end: BACC counts seconds since power-on, so it dates the boot.
+# Each reading is a new directory, /var/log/sleep-drain/reading-<time>/, so a
+# safe boot's save picks it up. Then ACTION:
+#   none         stop (the default)
+#   reboot       restart (saving first in a safe boot); in a regular boot the
+#                log runs on until the restart stops it
+#   safe-reboot  make the next restart a safe boot, then restart. The safe
+#                boot is set up before the minutes start, so mkinitcpio's
+#                load is over by the reading.
+#   reset        in a safe boot: save, then light the keyboard: the signal
+#                for a power-key reset. Never before the save is done: it
+#                writes to the boot partition.
+#   suspend      save if this is a safe boot, then suspend through systemd
+#
+# The reading needs the Mac on battery, with nothing attached, left alone:
+# under load, charge_now reads 50-108 mAh off. The keyboard backlight is off
+# during every reading, for the same load each time. Unplug the charger at
+# least 20 minutes before the first one.
+#
+# v0: one step of V0 (three power-key resets and three reboots, from awake)
+# per boot. In a regular boot, it collects what the last safe boot saved,
+# takes a reading and restarts into a safe boot; once readings from three
+# different safe boots are in, it takes the last reading and stops. In a safe
+# boot, it takes a reading, saves it and asks for the reset.
+set -euo pipefail
+
+BAT=${SDR_BAT:-/sys/class/power_supply/macsmc-battery}
+AC=${SDR_AC:-/sys/class/power_supply/macsmc-ac}
+UPTIME=${SDR_UPTIME:-/proc/uptime}
+USB=${SDR_USB:-/sys/bus/usb/devices}
+TYPEC=${SDR_TYPEC:-/sys/class/typec}
+LOGDIR=${SDR_LOGDIR:-/var/log/sleep-drain}
+PEEK=${SDR_PEEK:-/sys/kernel/debug/smc-peek/values}
+PEEK_KO=${SDR_PEEK_KO:-/usr/local/lib/sleep-drain/smc_peek.ko}
+SAFE=${SDR_SAFE:-/usr/local/bin/sleep-drain-safe}
+SAFE_FLAG=${SDR_SAFE_FLAG:-/run/sleep-drain-safe/active}
+KBD=${SDR_KBD:-/sys/class/leds/kbd_backlight}
+INTERVAL=${SDR_INTERVAL:-10}
+REBOOT_WAIT=${SDR_REBOOT_WAIT:-120}
+V0_MINUTES=${SDR_V0_MINUTES:-10}
+
+die() { echo "sleep-drain-reading: $*" >&2; exit 1; }
+need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }
+is_safe() { [[ -f $SAFE_FLAG ]]; }
+hhmmss() { date -d "@$1" +%H:%M:%S; }
+# The keyboard backlight's brightness, and setting it ("max" for full).
+kbd_get() { cat "$KBD/brightness" 2> /dev/null || true; }
+kbd_set() {
+  local v=$1
+  [[ $v == max ]] && v=$(cat "$KBD/max_brightness" 2> /dev/null || echo 255)
+  [[ -n $v && -w $KBD/brightness ]] && echo "$v" > "$KBD/brightness" 2> /dev/null || true
+}
+
+# What's attached: USB devices other than the root hubs, and USB-C partners.
+attached() {
+  local d out=()
+  for d in "$USB"/*; do
+    [[ -f $d/idVendor && $(< "$d/idVendor") != 1d6b ]] || continue
+    out+=("${d##*/}=$(< "$d/idVendor"):$(< "$d/idProduct")")
+  done
+  for d in "$TYPEC"/port*-partner; do
+    [[ -e $d ]] && out+=("${d##*/}")
+  done
+  echo "${out[*]}"
+}
+
+# One sample, tab-separated: epoch, uptime, charge_now (uAh), voltage_now (uV),
+# current_now (uA), charge_counter, capacity, status, AC online. A read that
+# fails leaves its field empty.
+sample() {
+  local up f vals=()
+  read -r up _ < "$UPTIME" || up=
+  for f in "$BAT"/charge_now "$BAT"/voltage_now "$BAT"/current_now "$BAT"/charge_counter \
+           "$BAT"/capacity "$BAT"/status "$AC"/online; do
+    vals+=("$(cat "$f" 2> /dev/null || true)")
+  done
+  local IFS=$'\t'
+  echo "$(date +%s.%N)"$'\t'"$up"$'\t'"${vals[*]}"
+}
+
+# smc-peek's raw lines for BAAC, BACC and BQCC, after a line with the walk's
+# start and end times. Loads smc-peek if it isn't loaded.
+peek() {
+  local t0 t1
+  if [[ ! -e $PEEK ]]; then
+    if [[ ! -f $PEEK_KO ]]; then
+      echo "# no smc-peek: $PEEK_KO is missing (install.sh builds it)"
+      return 0
+    fi
+    insmod "$PEEK_KO" 2>&1 | sed 's/^/# insmod: /' || true
+  fi
+  t0=$(date +%s.%N)
+  local lines
+  lines=$(awk '$2 == "BAAC" || $2 == "BACC" || $2 == "BQCC"' "$PEEK" 2>&1) || true
+  t1=$(date +%s.%N)
+  printf '# walk %s %s\n%s\n' "$t0" "$t1" "$lines"
+}
+
+# The median of one samples.tsv column over the samples from epoch $3 on.
+median() {
+  awk -F'\t' -v col="$2" -v from="$3" 'NR > 1 && $1 >= from && $col ~ /^-?[0-9]+$/ { print $col }' "$1" |
+    sort -n |
+    awk '{ v[NR] = $1 } END { if (!NR) { print "?"; exit } if (NR % 2) print v[(NR + 1) / 2]; else printf "%d\n", (v[NR / 2] + v[NR / 2 + 1]) / 2 }'
+}
+
+# The last field $2 of samples.tsv $1.
+last() {
+  tail -n 1 "$1" | awk -F'\t' -v col="$2" '{ print $col }'
+}
+
+save_or_die() {
+  "$SAFE" save ||
+    die "NOT SAVED. Don't reset or restart: this boot's reading would be lost. Tell Claude."
+}
+
+take() {
+  local minutes=$1 label=$2 then=$3 boot=regular stuff start total end_at from dir t left n=0 kbd_before
+  need_root
+  is_safe && boot=safe
+  case $then in
+    reset) [[ $boot == safe ]] || die "a power-key reset only from a safe boot: it would risk the disk here" ;;
+    safe-reboot) [[ $boot == regular ]] || die "this is a safe boot already" ;;
+  esac
+  [[ $(cat "$AC/online") == 0 ]] ||
+    die "the charger is in: unplug it (at least 20 minutes before a reading), then run this again"
+  stuff=$(attached)
+  [[ -z $stuff ]] || die "unplug everything first (attached: $stuff)"
+
+  # Before the minutes start, so its load is over by the reading.
+  if [[ $then == safe-reboot ]]; then
+    "$SAFE" boot || die "couldn't set up the safe boot; nothing taken"
+  fi
+
+  dir=$LOGDIR/reading-$(date +%Y%m%dT%H%M%S)
+  mkdir -p "$dir"
+  kbd_before=$(kbd_get)
+  kbd_set 0
+  start=$(date +%s)
+  total=$(awk -v m="$minutes" 'BEGIN { printf "%d", m * 60 + 0.5 }')
+  end_at=$((start + total))
+  from=$((end_at - (total < 60 ? total : 60)))
+  echo "Reading until $(hhmmss "$end_at"). Leave the Mac alone till then: no keys, no trackpad, lid open."
+  case $then in
+    reset)
+      echo "Then it saves the reading to the boot partition and lights the keyboard, about a minute later."
+      echo "When the keyboard lights up, hold the power key until the screen goes dark (about 10 s), then"
+      echo "press it once more to start the Mac. No need to unlock it. Not before the light: until then the"
+      echo "save may still be writing. If the keys aren't lit by $(hhmmss $((end_at + 300))), unlock the"
+      echo "screen and read this window instead, and don't reset."
+      ;;
+    reboot | safe-reboot)
+      if [[ $boot == safe ]]; then echo "Then it saves and restarts by itself."; else echo "Then it restarts by itself."; fi
+      ;;
+    suspend)
+      if [[ $boot == safe ]]; then echo "Then it saves and suspends."; else echo "Then it suspends."; fi
+      ;;
+  esac
+
+  peek > "$dir/smc-start.txt"
+  printf 'epoch\tuptime\tcharge_now\tvoltage_now\tcurrent_now\tcharge_counter\tcapacity\tstatus\tac\n' > "$dir/samples.tsv"
+  while :; do
+    sample >> "$dir/samples.tsv"
+    n=$((n + 1))
+    t=$(date +%s)
+    ((t >= end_at)) && break
+    left=$((end_at - t))
+    sleep $((left < INTERVAL ? left : INTERVAL))
+  done
+  peek > "$dir/smc-end.txt"
+
+  {
+    printf 'time=%s ts=%s label=%s boot=%s then=%s' "$(date -d "@$end_at" -Iseconds)" "$end_at" "${label:--}" "$boot" "$then"
+    printf ' boot_id=%s minutes=%s samples=%s window=%s-%s' "$(cat /proc/sys/kernel/random/boot_id 2> /dev/null || echo -)" \
+      "$minutes" "$n" "$from" "$end_at"
+    printf ' charge_now_uah=%s voltage_uv=%s current_ua=%s' "$(median "$dir/samples.tsv" 3 "$from")" \
+      "$(median "$dir/samples.tsv" 4 "$from")" "$(median "$dir/samples.tsv" 5 "$from")"
+    printf ' charge_counter=%s capacity=%s uptime_s=%s ac=%s\n' "$(last "$dir/samples.tsv" 6)" \
+      "$(last "$dir/samples.tsv" 7)" "$(last "$dir/samples.tsv" 2)" "$(last "$dir/samples.tsv" 9)"
+  } > "$dir/summary"
+  cat "$dir/summary"
+
+  case $then in
+    none)
+      kbd_set "$kbd_before"
+      ;;
+    reboot | safe-reboot)
+      local logger=
+      if [[ $boot == safe ]]; then
+        # A safe boot's /var/log is RAM: the restart would lose the reading.
+        save_or_die
+      else
+        # The tail, from the reading to the restart, logged until the
+        # restart stops it.
+        (while :; do sample >> "$dir/tail.tsv"; sleep 1; done) &
+        logger=$!
+      fi
+      systemctl reboot || { [[ -z $logger ]] || kill "$logger"; die "couldn't restart; restart by hand"; }
+      sleep "$REBOOT_WAIT"
+      [[ -z $logger ]] || kill "$logger" 2> /dev/null || true
+      die "still running $REBOOT_WAIT s after asking for the restart"
+      ;;
+    reset)
+      save_or_die
+      kbd_set max
+      echo
+      echo ">>> Saved, and the keyboard is lit. Hold the power key now until the screen goes dark, then press it once more. <<<"
+      ;;
+    suspend)
+      if [[ $boot == safe ]]; then save_or_die; fi
+      systemctl suspend
+      ;;
+  esac
+}
+
+cmd_take() {
+  local minutes=10 label='' then=none
+  while (($#)); do
+    case $1 in
+      --minutes) minutes=${2:-}; shift 2 || die "--minutes needs a value" ;;
+      --label) label=${2:-}; shift 2 || die "--label needs a value" ;;
+      --then) then=${2:-}; shift 2 || die "--then needs a value" ;;
+      *) die "take: unknown option $1" ;;
+    esac
+  done
+  [[ $minutes =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "--minutes takes a number"
+  [[ $label =~ ^[a-z0-9_-]*$ ]] || die "--label takes letters, digits, - and _"
+  case $then in
+    none | reboot | safe-reboot | reset | suspend) ;;
+    *) die "--then takes none, reboot, safe-reboot, reset or suspend" ;;
+  esac
+  take "$minutes" "$label" "$then"
+}
+
+# V0's readings so far, oldest first: one summary line each.
+v0_readings() {
+  local f
+  for f in "$LOGDIR"/reading-*/summary; do
+    [[ -f $f ]] || continue
+    case " $(< "$f") " in *" label=v0 "*) cat "$f" ;; esac
+  done
+}
+
+cmd_v0() {
+  need_root
+  if is_safe; then
+    take "$V0_MINUTES" v0 reset
+    return
+  fi
+  # A regular boot: first put the last safe boot's reading in place.
+  "$SAFE" collect
+  local readings resets
+  readings=$(v0_readings)
+  # Safe boots, not readings: a retry in the same safe boot (after a failed
+  # save, say) isn't another reset.
+  resets=$(grep ' boot=safe ' <<< "$readings" | grep -o ' boot_id=[^ ]*' | sort -u | wc -l || true)
+  if ((resets >= 3)); then
+    if [[ $(tail -n 1 <<< "$readings") == *" boot=regular then=none "* ]]; then
+      echo "V0 is done already: $resets resets, and the last reading after them."
+      return 0
+    fi
+    take "$V0_MINUTES" v0 none
+    echo
+    echo "V0 is done. Plug the charger back in, then open Claude Code and say so."
+  else
+    echo "V0: this reading, then a restart into a safe boot, where reset $((resets + 1)) of 3 comes."
+    take "$V0_MINUTES" v0 safe-reboot
+  fi
+}
+
+cmd_list() {
+  local f
+  for f in "$LOGDIR"/reading-*/summary; do
+    [[ -f $f ]] && cat "$f"
+  done
+  return 0
+}
+
+main() {
+  case ${1:-} in
+    take) shift; cmd_take "$@" ;;
+    v0) cmd_v0 ;;
+    list) cmd_list ;;
+    *) echo "usage: sleep-drain-reading take [--minutes N] [--label L] [--then none|reboot|safe-reboot|reset|suspend] | v0 | list" >&2; exit 2 ;;
+  esac
+}
+
+# Sourced by tests/sleep_drain_reading_test.py for median().
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

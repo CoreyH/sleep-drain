@@ -15,6 +15,7 @@ install -m 755 sleep-drain-pcie /usr/local/bin/sleep-drain-pcie
 install -m 755 sleep-drain-pmp /usr/local/bin/sleep-drain-pmp
 install -m 755 test-kernel /usr/local/bin/test-kernel
 install -m 755 sleep-drain-safe /usr/local/bin/sleep-drain-safe
+install -m 755 sleep-drain-reading /usr/local/bin/sleep-drain-reading
 # The safe boot's initramfs hook. Only sleep-drain-safe's own image has it
 # (mkinitcpio -A); the regular initramfs doesn't.
 install -D -m 644 safe-boot/sleepdrain-safe.hook /etc/initcpio/hooks/sleepdrain-safe
@@ -31,6 +32,16 @@ if make -s -C "$build" > /dev/null; then
   install -D -m 644 "$build/pmp_sleep_release.ko" /usr/local/lib/sleep-drain/pmp_sleep_release.ko
 else
   echo "pmp_sleep_release not built for $(uname -r); the pmp experiment is unavailable" >&2
+fi
+rm -rf -- "${build:?}"
+# smc-peek, built the same way, for sleep-drain-reading's BAAC, BACC and BQCC.
+# Only sleep-drain-reading loads it.
+build=$(mktemp -d)
+cp smc-peek/smc_peek.c smc-peek/Makefile "$build"/
+if make -s -C "$build" > /dev/null; then
+  install -D -m 644 "$build/smc_peek.ko" /usr/local/lib/sleep-drain/smc_peek.ko
+else
+  echo "smc_peek not built for $(uname -r); readings go without BACC and BQCC" >&2
 fi
 rm -rf -- "${build:?}"
 install -d -m 755 /etc/sleep-drain /var/log/sleep-drain
