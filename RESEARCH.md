@@ -1391,3 +1391,63 @@ their floor's bit 4.
   USB-C-to-MagSafe cable could supply the Mac. A reset can't spoil its trace.
   But it measures input power, losses included, so it suits A/B
   comparisons, not the battery-side floor.
+
+### E1's checks and E1a (2026-11-06)
+
+All of these ran on battery with nothing attached, from `sleep-drain-reading`'s
+idle readings (10 minutes alone, the median of the last minute) in
+`/var/log/sleep-drain/reading-20261106T*`.
+
+**V0, the reset's own step.** Three reboots (regular → safe boot) and three
+power-key resets (safe → regular), alternating, 12:27-14:08.
+- `charge_now` across each, after the next boot's own drain
+  (−`charge_counter`/3600) and the tail before the reset: reboots −6.4,
+  +3.4, +0.8 mAh; power-key resets +0.7, −4.3, −1.7 mAh. Read at idle at
+  both ends, the gauge's estimate spans a reset to about ±6 mAh, far better
+  than the ±25 mAh the plan allowed, and the two kinds of reset don't differ.
+- **`BQCC` is a charge counter in mAh that doesn't restart.** Over each
+  10-minute window it rose 67-79 while `BAAC` counted 67.9-78.6 mAh, within
+  1 mAh every time; it rises on discharge (si16, so it wraps after 65.5 Ah).
+  Across each restart it rose by the charge used in between (the next
+  boot's own `BAAC` since power-on, plus the tail before the reset):
+  leftovers +0.4-0.6 mAh for reboots and +1.4-2.9 mAh for resets, where the
+  tail is estimated from the idle current. It's probably the battery gauge's
+  own counter (the SMC restarts with every boot; `BQCC` doesn't).
+- `BAAC` and `BACC` restart at every boot, reboot or reset. `BACC` dates
+  the power-on: the kernel starts 21-23 s after it, every time.
+
+**V2, E1's procedure on plain s2idle.** A safe-boot sleep from 15:14, lid
+closed in a bag, cut by the power key at about 19:55 (4.69 h). `BQCC` rose
+779 mAh; less the next boot's 25 mAh and a 2 mAh tail, the sleep used 752 mAh:
+**160 mA, about 1.94 W**, against the 157 mA of the earlier sleeps (+2%).
+`charge_now` gives 776 mAh, 165 mA (+5%). So a sleep that ends in a hard
+reset is measured to a few percent with nothing but the Mac, and `BQCC` is
+the measure from now on. V1 isn't needed.
+
+**The hook point** (`e1-hook/check`, safe boot, 20:18): both runs passed.
+Under `pm_test=platform` and in a 60 s alarm sleep, the module's
+`prepare_late` ran 133-135 µs after the last of the 115 noirq device
+callbacks (`simple-pm-bus soc`) and 1 µs after `dpm_suspend_noirq` ended,
+right before "suspend debug: Waiting" and "PM: suspend-to-idle"
+respectively. Its `B0AV` read there took 241-262 µs (11.8 V), the same as at
+`prepare`. The SMC answers at step 4, as the code reading said.
+
+**E1a: maralcbr's keys and PMP words, with the CPUs up** (`e1-hook/run-e1a`,
+`replay=5`, PR #27; safe boot, lid open). At the first `prepare_late`: 4 to
+0x28e3d8328, `MBSE`=`slpw`, `pmVC`=0x100, `WKTP`=2, 1 << 61 to 0x28e3d0860, 1
+to 0x28e3d8328, `MBSE`=`slpa` (the pages mapped non-posted, as maralcbr's
+are; the replay stops at the first failed key write). Asleep from about
+21:14:30; Corey held the power key at 22:00, with the Mac dark, and the next
+power-on was 22:00:48 by `BACC`.
+- No self-reset in 46 minutes, unlike DeepIdle's second `slpa` run.
+- `BQCC` rose 149 mAh; less the next boot's 22 mAh and a 2 mAh tail, the
+  sleep used 125 mAh in 0.772 h: **about 162 mA**, the same as plain s2idle.
+  `charge_now` agrees (about 170 mA).
+- Not known yet: whether the SMC accepted the keys. The replay's log and
+  `replay_ret` were in the safe boot's RAM, which the reset cleared, and a
+  refused `slpw` would stop the replay and look the same. A short run woken
+  by the alarm will read them (PLAN.md, E1).
+
+If the keys were accepted, `slpa` alone powers nothing down that matters
+while the CPUs run, and the saving has to come from the steps after it:
+maralcbr's 74 post-`slpa` writes and the CPU power-down.

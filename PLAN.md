@@ -159,7 +159,8 @@ steps, and restarting the DCP and the PMP afterwards.
     draw? It runs where maralcbr's did, at s2idle's `prepare_late`. With no
     resume, the drain comes from the gauge across the reset. Two harmless
     checks come first, each in a safe boot (RESEARCH.md, "Before E1"):
-    - [ ] **The hook point.** `prepare_late` comes after the whole noirq
+    - [x] **The hook point.** Done 2026-11-06 (RESEARCH.md, "E1's checks and
+      E1a"): both runs passed. `prepare_late` comes after the whole noirq
       pass: every device's callbacks, and genpd switching domains off. A
       device callback can't stand in for it. A module's own device runs
       first in each pass, so from its `suspend_noirq`, `slpa` and the PMGR
@@ -172,7 +173,10 @@ steps, and restarting the DCP and the PMP afterwards.
       without sleeping, then in an alarm sleep. ftrace's `suspend_resume`
       and `device_pm_callback_end` events show whether it ran after the last
       noirq callback.
-    - [ ] **The measurement across the reset.** `charge_counter` restarts at
+    - [x] **The measurement across the reset.** Done 2026-11-06 with V0 and
+      V2 (RESEARCH.md, "E1's checks and E1a"): `BQCC` is a charge counter in
+      mAh that spans resets, so it replaces `charge_now`; V1 isn't needed.
+      The plan as it stood: `charge_counter` restarts at
       every boot, so it can't span the reset. In the next boot it measures
       that boot's own drain, which gets subtracted. `charge_now`, the gauge's
       estimate, is what spans the reset. It re-estimates after one (±25 mAh,
@@ -197,6 +201,18 @@ steps, and restarting the DCP and the PMP afterwards.
     Then let it run for hours. If the Mac resets on its own about 100 s in,
     as in DeepIdle's second `slpa` run, that's the result; the next boot's
     power-on time shows it.
+    - [x] **E1a: the keys and PMP words only** (bits 0 and 2, no post-`slpa`
+      writes). Ran 2026-11-06, 46 min: about 162 mA, the same as plain
+      s2idle, and no self-reset. Its log was lost with the reset, so whether
+      the SMC accepted the keys isn't known yet.
+    - [ ] **E1a again, woken by the alarm after 2-3 minutes**, to read each
+      key's result (`replay_ret`) and the log, and see whether the Mac still
+      resumes after `slpa`. Needs `run-e1a` to arm the alarm, or a manual
+      `rtcwake -m no` after `rtc-alarm-test/load`.
+    - [ ] **E1b: the 74 post-`slpa` writes** (bit 3), only once E1a's keys
+      are known to be accepted. They touch the watchdog, the error
+      handlers and the CPU clusters' DVFS and CPM, so they get a full review
+      first, and their addresses are checked against the never-write list.
   - **E2 onwards, from E1's result.** The domains macOS has off (bits 8-10),
     the SEP sleep message (bit 11), the AOP's notices (bit 6), the internal
     PCIe ports (bit 13), and last the CPU power-down (bit 1).
