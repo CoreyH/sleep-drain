@@ -30,9 +30,11 @@ the PR with that session's work.
   do the next open step". On the other computer, clone CoreyH/sleep-drain:
   CLAUDE.md, this file and RESEARCH.md hold everything. Claude's own notes
   on the MacBook don't travel.
-- Every change goes branch → PR → Pullfrog → merge commit. Merging, and
-  anything posted outside this repo (issues, comments, upstream PRs), needs
-  Corey's explicit OK each time.
+- Every change goes branch → PR → Pullfrog → merge commit. Corey's standing
+  OK (2026-11-06): a PR can be merged once the review bots have finished on
+  its head commit and nothing they raised is left open. Anything posted
+  outside this repo (issues, comments, upstream PRs) still needs Corey's
+  explicit OK each time.
 - JJRPF/Aurora-DeepIdle: its patches are GPL-2.0 and its DTS changes
   `GPL-2.0+ OR MIT`, per their SPDX lines (JJRPF on DeepIdle#9,
   2026-11-05). Its code may be used under those terms, credited with a
