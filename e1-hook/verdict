@@ -1,0 +1,391 @@
+#!/usr/bin/env python3
+"""verdict: the answers for one run of e1-hook/check, E1's first check (the
+hook point, PLAN.md A5). check runs it on each run's directory, and
+tests/e1_hook_verdict_test.py on made-up ones.
+
+  e1-hook/verdict RUN_DIR
+
+RUN_DIR holds what check captured for one run:
+  info.txt            key=value lines: kind=platform (pm_test=platform) or
+                      kind=alarm (an alarm sleep), and label=, the run's name
+  params-before.txt   e1_hook's parameters, name=value lines, before the run
+  params-after.txt    and after it
+  dmesg.txt           the kernel log from the run's marker on
+  trace.txt           /sys/kernel/tracing/trace, on the local clock, with
+                      power:suspend_resume, power:device_pm_callback_start and
+                      _end, and printk:console
+
+Each answer is yes, no, or unknown (what was captured can't tell):
+  1. Did prepare_late run? prepare_late_calls went up by one.
+  2. Did it run after the last noirq device callback?
+     a. By the trace's clock: prepare_late's time (late_t_ns, the module's
+        trace_clock_local(), which is the trace's local clock) is at or after
+        the end of every device callback between dpm_suspend_noirq's begin and
+        end events, and after the end event itself.
+     b. By the kernel log's order: "noirq suspend of devices complete" and
+        every pm_print_times line of the noirq pass come before prepare_late's
+        line, with no device callback in between. The log is dmesg.txt, or the
+        trace's printk:console copy when pm_print_times overran the kernel's
+        256 KB log.
+  3. Did it come before suspend_test(TEST_PLATFORM) (kind=platform: "suspend
+     debug: Waiting") or s2idle_loop() (kind=alarm: "PM: suspend-to-idle")?
+  4. Did the SMC read at prepare_late work: ret 0 and a battery voltage
+     (8-14 V)? The read at prepare, before the noirq pass, is the control.
+
+Answers 2-4 are only looked for if prepare_late ran in this run. Times are in
+seconds, to the microsecond, as the trace and dmesg print them.
+
+Exit status: 0 if every answer is yes, 1 if not, 2 for bad usage.
+"""
+import errno
+import os
+import re
+import sys
+from collections import namedtuple
+
+Line = namedtuple("Line", "us text")  # a kernel log line; us is None without a timestamp
+Event = namedtuple("Event", "us event msg")  # a trace event
+Answer = namedtuple("Answer", "question outcome detail")
+
+OPS = ("begin", "prepare", "prepare_late", "restore_early", "restore", "end")
+
+DMESG_RE = re.compile(r"^\[\s*(\d+)\.(\d{6})\] ?(.*)$")
+# "  kworker/u16:7-123     [002] d..1.   171.214560: suspend_resume: dpm_suspend_noirq[2] begin"
+TRACE_RE = re.compile(r"^\s*.+?-\d+\s+(?:\(\s*[\d-]+\)\s+)?\[\d+\]\s+(?:\S+\s+)?"
+                      r"(\d+)\.(\d{6}): (\w+): ?(.*)$")
+LOST_RE = re.compile(r"\[LOST (\d+) EVENTS\]")
+ENTRIES_RE = re.compile(r"entries-in-buffer/entries-written: (\d+)/(\d+)")
+OP_RE = re.compile(r"e1_hook: op=(\w+)((?: \w+=\S*)*)\s*$")
+# pm_print_times (drivers/base/power/main.c), after "<driver> <device>: "
+TIMES_RE = re.compile(r"PM: (calling .+ @ \d+, parent: |.+ returned -?\d+ after \d+ usecs$)")
+CALLING_RE = re.compile(r"PM: calling .+ @ \d+, parent: ")
+NOIRQ_DONE = "PM: noirq suspend of devices complete after"
+NOIRQ_BEGIN = "dpm_suspend_noirq[2] begin"
+NOIRQ_END = "dpm_suspend_noirq[2] end"
+RESUME_NOIRQ = "dpm_resume_noirq[16] begin"
+S2IDLE_ENTER = "machine_suspend[1] begin"
+WRAPPED = "# e1-hook check:"
+
+
+def fmt(us):
+    return "?" if us is None else f"{us // 1_000_000}.{us % 1_000_000:06d}"
+
+
+def to_us(ns):
+    """ns as ftrace prints it: microseconds, rounded (ns2usecs)."""
+    return (ns + 500) // 1000
+
+
+def read(path):
+    try:
+        with open(path, errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def parse_kv(text):
+    kv = {}
+    for line in text.splitlines():
+        if "=" in line and not line.startswith("#"):
+            k, v = line.split("=", 1)
+            kv[k.strip()] = v.strip()
+    return kv
+
+
+def parse_dmesg(text):
+    """[(us, text)] in log order, and whether check flagged the log as wrapped."""
+    lines, wrapped = [], False
+    for raw in text.splitlines():
+        if raw.startswith(WRAPPED):
+            wrapped = True
+            continue
+        m = DMESG_RE.match(raw)
+        if m:
+            lines.append(Line(int(m.group(1)) * 1_000_000 + int(m.group(2)), m.group(3)))
+        elif raw.strip():
+            lines.append(Line(None, raw))
+    return lines, wrapped
+
+
+def parse_trace(text):
+    """[(us, event, msg)] in the trace's order (by time), and how many events it lost."""
+    events, lost_lines, lost_entries = [], 0, 0
+    for raw in text.splitlines():
+        if raw.startswith("#"):
+            m = ENTRIES_RE.search(raw)
+            if m:
+                lost_entries = max(0, int(m.group(2)) - int(m.group(1)))
+            continue
+        m = LOST_RE.search(raw)
+        if m:
+            lost_lines += int(m.group(1))
+            continue
+        m = TRACE_RE.match(raw)
+        if m:
+            events.append(Event(int(m.group(1)) * 1_000_000 + int(m.group(2)), m.group(3), m.group(4)))
+    return events, max(lost_lines, lost_entries)
+
+
+def console_lines(events):
+    """The trace's printk:console copy of the kernel log."""
+    return [Line(e.us, e.msg) for e in events if e.event == "console"]
+
+
+def op_of(text):
+    """e1_hook's own line as a dict (op, n, t_ns, ...), or None."""
+    m = OP_RE.search(text)
+    if not m:
+        return None
+    kv = dict(p.split("=", 1) for p in m.group(2).split())
+    kv["op"] = m.group(1)
+    return kv
+
+
+def find_op(lines, op, n, start=0, stop=None):
+    for i in range(start, len(lines) if stop is None else stop):
+        kv = op_of(lines[i].text)
+        if kv and kv["op"] == op and kv.get("n") == str(n):
+            return i
+    return None
+
+
+def num(kv, key):
+    try:
+        return int(kv[key])
+    except (KeyError, ValueError):
+        return None
+
+
+def pick_log(dmesg, console, n_prep, n_late):
+    """The log to judge the order by: the first that has both of the run's
+    prepare and prepare_late lines, else the first with prepare_late's."""
+    sources = (("dmesg.txt", dmesg), ("the trace's printk:console copy", console))
+    for name, lines in sources:
+        late = find_op(lines, "prepare_late", n_late)
+        if late is not None and find_op(lines, "prepare", n_prep, 0, late) is not None:
+            return name, lines
+    for name, lines in sources:
+        if find_op(lines, "prepare_late", n_late) is not None:
+            return name, lines
+    return None, []
+
+
+def ran(before, after):
+    q = "1. prepare_late ran"
+    deltas = {}
+    for op in OPS:
+        b, a = num(before, f"{op}_calls"), num(after, f"{op}_calls")
+        if a is None or b is None:
+            return Answer(q, "unknown", f"no {op}_calls in the parameters captured")
+        deltas[op] = a - b
+    d = deltas["prepare_late"]
+    others = ", ".join(f"{op} {deltas[op]:+d}" for op in OPS if op != "prepare_late")
+    where = f"prepare_late_calls {num(before, 'prepare_late_calls')} -> {num(after, 'prepare_late_calls')}"
+    if d == 1:
+        return Answer(q, "yes", f"{where} (the other ops: {others})")
+    if d == 0:
+        return Answer(q, "no", f"{where}: it didn't run (the other ops: {others})")
+    return Answer(q, "no", f"{where}: it ran {d} times in one run (the other ops: {others})")
+
+
+def trace_order(events, lost, t_ns):
+    q = "2a. after the last noirq callback, by the trace's clock"
+    if t_ns is None:
+        return Answer(q, "unknown", "no late_t_ns in the parameters captured")
+    if not events:
+        return Answer(q, "unknown", "the trace has no events")
+    if lost:
+        return Answer(q, "unknown", f"the trace lost {lost} events, so its noirq pass may be incomplete")
+    t = to_us(t_ns)
+
+    def is_sr(e, what):
+        return e.event == "suspend_resume" and e.msg.strip() == what
+
+    begins = [i for i, e in enumerate(events) if is_sr(e, NOIRQ_BEGIN) and e.us <= t]
+    if not begins:
+        later = [e for e in events if is_sr(e, NOIRQ_BEGIN)]
+        if later:
+            return Answer(q, "no", f"prepare_late at {fmt(t)} came before dpm_suspend_noirq began ({fmt(later[0].us)})")
+        return Answer(q, "unknown", "no dpm_suspend_noirq in the trace")
+    b = begins[-1]
+    end = next((i for i in range(b + 1, len(events)) if is_sr(events[i], NOIRQ_END)), None)
+    if end is None:
+        return Answer(q, "unknown", f"dpm_suspend_noirq began at {fmt(events[b].us)} but the trace has no end for it")
+    ends = [i for i in range(b + 1, end) if events[i].event == "device_pm_callback_end"]
+    starts = [i for i in range(b + 1, end) if events[i].event == "device_pm_callback_start"]
+    if not ends:
+        return Answer(q, "unknown", "the trace has no device callback inside dpm_suspend_noirq")
+    last = max(ends, key=lambda i: events[i].us)
+    who = events[last].msg.rsplit(", err=", 1)[0]
+    stray = [i for i in range(end + 1, len(events))
+             if events[i].us < t and events[i].event.startswith("device_pm_callback")]
+    resume = next((i for i in range(end + 1, len(events)) if is_sr(events[i], RESUME_NOIRQ)), None)
+    problems = []
+    if events[last].us > t:
+        problems.append(f"the last noirq callback ({who}) ended at {fmt(events[last].us)}, "
+                        f"{events[last].us - t} us after prepare_late at {fmt(t)}")
+    if events[end].us > t:
+        problems.append(f"dpm_suspend_noirq ended at {fmt(events[end].us)}, after prepare_late at {fmt(t)}")
+    if stray:
+        problems.append(f"{len(stray)} device callback events between the end of dpm_suspend_noirq "
+                        f"and prepare_late, the first: {events[stray[0]].msg}")
+    if resume is not None and events[resume].us < t:
+        problems.append(f"dpm_resume_noirq began at {fmt(events[resume].us)}, before prepare_late at {fmt(t)}")
+    if problems:
+        return Answer(q, "no", "; ".join(problems))
+    return Answer(q, "yes", f"prepare_late at {fmt(t)}; dpm_suspend_noirq ran {fmt(events[b].us)}-"
+                            f"{fmt(events[end].us)} with {len(starts)} device callbacks, the last of which "
+                            f"({who}) ended {t - events[last].us} us before prepare_late, and the pass "
+                            f"{t - events[end].us} us before it")
+
+
+def log_order(lines, source, wrapped, n_prep, n_late):
+    q = "2b. after the last noirq callback, by the kernel log's order"
+    note = " (dmesg.txt had wrapped)" if wrapped and source != "dmesg.txt" else ""
+    if source is None:
+        return Answer(q, "unknown", "prepare_late's line is in neither dmesg.txt nor the trace's printk:console copy")
+    late = find_op(lines, "prepare_late", n_late)
+    prep = find_op(lines, "prepare", n_prep, 0, late)
+    start = 0 if prep is None else prep + 1
+    dones = [i for i in range(start, late) if NOIRQ_DONE in lines[i].text]
+    if not dones:
+        later = next((i for i in range(late + 1, len(lines)) if NOIRQ_DONE in lines[i].text), None)
+        if later is not None:
+            return Answer(q, "no", f'{source}: "noirq suspend of devices complete" ({fmt(lines[later].us)}) '
+                                   f"comes after prepare_late's line ({fmt(lines[late].us)}){note}")
+        return Answer(q, "unknown", f'{source} has no "noirq suspend of devices complete" before prepare_late{note}')
+    done = dones[-1]
+    times = [i for i in range(start, done) if TIMES_RE.search(lines[i].text)]
+    between = [i for i in range(done + 1, late) if TIMES_RE.search(lines[i].text)]
+    if between:
+        return Answer(q, "no", f"{source}: {len(between)} pm_print_times lines between the end of the noirq "
+                               f"pass and prepare_late, the first: {lines[between[0]].text}{note}")
+    if lines[done].us is not None and lines[late].us is not None and lines[late].us < lines[done].us:
+        return Answer(q, "no", f"{source}: prepare_late's line ({fmt(lines[late].us)}) is stamped before "
+                               f'"noirq suspend of devices complete" ({fmt(lines[done].us)}){note}')
+    if not times:
+        return Answer(q, "unknown", f"{source}: no pm_print_times lines in the noirq pass, so it can't show "
+                                    f"the callbacks (was pm_print_times on?){note}")
+    calls = sum(1 for i in times if CALLING_RE.search(lines[i].text))
+    last = lines[times[-1]]
+    pre = "" if prep is not None else ", from the start of the log (prepare's line isn't in it)"
+    return Answer(q, "yes", f'{source}: the noirq pass{pre} logged {calls} callbacks, the last line '
+                            f'"{last.text}" ({fmt(last.us)}), then "noirq suspend of devices complete" '
+                            f"({fmt(lines[done].us)}), then prepare_late ({fmt(lines[late].us)}){note}")
+
+
+def before_next(kind, lines, source, n_late, events, t_ns):
+    if kind == "platform":
+        q = "3. before suspend_test(TEST_PLATFORM)"
+
+        def match(text):
+            return text.startswith("PM: suspend debug: Waiting for")
+        want = "suspend debug: Waiting"
+    else:
+        q = "3. before s2idle_loop()"
+
+        def match(text):
+            return text.strip() == "PM: suspend-to-idle"
+        want = "PM: suspend-to-idle"
+    late = None if source is None else find_op(lines, "prepare_late", n_late)
+    if late is None:
+        return Answer(q, "unknown", "prepare_late's line isn't in the log")
+    nxt = next((i for i in range(late + 1, len(lines)) if match(lines[i].text)), None)
+    restore = find_op(lines, "restore_early", n_late, late + 1)
+    extra = ""
+    if kind != "platform" and t_ns is not None:
+        entries = [e for e in events if e.event == "suspend_resume" and e.msg.strip() == S2IDLE_ENTER]
+        early = [e for e in entries if e.us < to_us(t_ns)]
+        if early:
+            return Answer(q, "no", f"the trace has s2idle entering (machine_suspend) at {fmt(early[0].us)}, "
+                                   f"before prepare_late at {fmt(to_us(t_ns))}")
+        if entries:
+            times = f"{len(entries)} time{'' if len(entries) == 1 else 's'}"
+            extra = (f"; by the trace, s2idle was entered {times}, first "
+                     f"{entries[0].us - to_us(t_ns)} us after prepare_late")
+    if nxt is None:
+        prev = next((i for i in range(late - 1, -1, -1) if match(lines[i].text)), None)
+        if prev is not None:
+            return Answer(q, "no", f'{source}: "{lines[prev].text}" ({fmt(lines[prev].us)}) comes before '
+                                   f"prepare_late's line{extra}")
+        return Answer(q, "unknown", f'{source} has no "{want}" line after prepare_late{extra}')
+    if restore is not None and restore < nxt:
+        return Answer(q, "no", f'{source}: "{want}" comes only after restore_early{extra}')
+    return Answer(q, "yes", f'{source}: "{lines[nxt].text}" ({fmt(lines[nxt].us)}) follows prepare_late\'s '
+                            f"line ({fmt(lines[late].us)}){extra}")
+
+
+def describe_read(kv, prefix):
+    ret, mv, ns = num(kv, f"{prefix}_ret"), num(kv, f"{prefix}_mv"), num(kv, f"{prefix}_read_ns")
+    if ret is None or mv is None or ns is None:
+        return "not captured"
+    if ret == 1:
+        return "not run"
+    if ret:
+        name = errno.errorcode.get(-ret, "?")
+        return f"ret {ret} ({name}) after {ns / 1000:.0f} us"
+    return f"{mv} mV in {ns / 1000:.0f} us"
+
+
+def smc_read(after):
+    q = "4. SMC read at prepare_late"
+    ret, mv = num(after, "late_ret"), num(after, "late_mv")
+    if ret is None or mv is None:
+        return Answer(q, "unknown", "no late_ret or late_mv in the parameters captured")
+    detail = f"B0AV: {describe_read(after, 'late')}; at prepare: {describe_read(after, 'prepare')}"
+    if ret != 0:
+        return Answer(q, "no", detail)
+    if not 8000 <= mv <= 14000:
+        return Answer(q, "no", f"{detail}, which isn't a battery voltage")
+    return Answer(q, "yes", detail)
+
+
+def judge(run_dir):
+    """(info, [Answer]) for one run's directory."""
+    info = parse_kv(read(os.path.join(run_dir, "info.txt")))
+    before = parse_kv(read(os.path.join(run_dir, "params-before.txt")))
+    after = parse_kv(read(os.path.join(run_dir, "params-after.txt")))
+    dmesg, wrapped = parse_dmesg(read(os.path.join(run_dir, "dmesg.txt")))
+    events, lost = parse_trace(read(os.path.join(run_dir, "trace.txt")))
+    kind = info.get("kind", "platform")
+
+    first = ran(before, after)
+    answers = [first]
+    if first.outcome == "unknown" or num(after, "prepare_late_calls") == num(before, "prepare_late_calls"):
+        for q in ("2a. after the last noirq callback, by the trace's clock",
+                  "2b. after the last noirq callback, by the kernel log's order",
+                  "3. before " + ("suspend_test(TEST_PLATFORM)" if kind == "platform" else "s2idle_loop()"),
+                  "4. SMC read at prepare_late"):
+            answers.append(Answer(q, "unknown", "prepare_late didn't run in this run"))
+        return info, answers
+
+    n_prep, n_late = num(after, "prepare_calls"), num(after, "prepare_late_calls")
+    t_ns = num(after, "late_t_ns")
+    source, lines = pick_log(dmesg, console_lines(events), n_prep, n_late)
+    answers.append(trace_order(events, lost, t_ns))
+    answers.append(log_order(lines, source, wrapped, n_prep, n_late))
+    answers.append(before_next(kind, lines, source, n_late, events, t_ns))
+    answers.append(smc_read(after))
+    return info, answers
+
+
+def report(info, answers):
+    passed = all(a.outcome == "yes" for a in answers)
+    out = [info.get("label") or f"kind={info.get('kind', '?')}"]
+    out += [f"  {a.question}: {a.outcome}: {a.detail}" for a in answers]
+    out.append(f"  => {'PASS' if passed else 'FAIL'}")
+    return "\n".join(out) + "\n", passed
+
+
+def main(argv):
+    if len(argv) != 2 or not os.path.isdir(argv[1]):
+        print("usage: verdict RUN_DIR", file=sys.stderr)
+        return 2
+    text, passed = report(*judge(argv[1]))
+    sys.stdout.write(text)
+    return 0 if passed else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
