@@ -511,6 +511,17 @@ first test with a real offset (about 1.79e9 s): `wakealarm` 1793627079 became
 PMU alarm 8879, in the counter's seconds. It fired awake, and a 30 s sleep
 ended on it.
 
+It happened again on 2026-11-05. The laptop stayed awake on battery until 2%,
+when UPower's critical action suspended it (22:41, 103 mAh left; the stock
+`CriticalPowerAction=Auto` asked logind for a suspend). It never resumed, and
+by morning the PMU had lost power: the next boot set the clock to 1970 again
+(`hwclock --systohc` fixes it, as before). `install.sh` now makes UPower's
+critical action a power-off (`upower-critical.conf`). The kernel has a guard
+of its own: macsmc-power answers the SMC's critical-battery event
+(0x71020000) with a shutdown once the SMC flags the battery empty (`BCF0`) or
+its voltage drops below the design minimum (`BITV`). Whether that event came
+during the sleep is unknown: nothing after the suspend was logged.
+
 The awake IRQ count isn't steady: 5-6 per alarm on aurora9, 7 on aurora14's
 first, 1 on the next (with the real offset). Sleeps always raised 1. B1, below,
 explains it: the offset's fraction is what matters.
