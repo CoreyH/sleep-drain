@@ -180,7 +180,8 @@ steps, and restarting the DCP and the PMP afterwards.
       load. So both ends are read the same way, at idle. Validate the method
       in safe boots, with Corey at the power key:
       - V0: three power-key resets and three reboots, from awake. This
-        measures the reset's own step.
+        measures the reset's own step. `pkexec sleep-drain-reading v0`
+        after each boot runs it, alternating regular and safe boots.
       - V1: two s2idle sleeps of 4 h, each ended by the alarm, then saved
         and reset at once. That boot's `charge_counter` gives the truth.
       - V2: two s2idle sleeps of 4 h, cut by the power key. This is E1's

@@ -44,6 +44,14 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   collect` puts it in place after the next regular boot. The regular
   initramfs never gets the hook. The sleep log's `pre` line says `safe=yes`
   for a sleep in a safe boot.
+- `sleep-drain-reading`: idle battery readings that can span a reset (E1's
+  measurement check). `take` (root) leaves the Mac alone for 10 minutes,
+  logging the battery every 10 s, and records the median of the last
+  minute, plus smc-peek's raw `BAAC`, `BACC` and `BQCC`, in
+  `/var/log/sleep-drain/reading-<time>/`. Then it stops, restarts (into a
+  safe boot, if asked), saves and asks for a power-key reset, or suspends.
+  `v0` runs V0, one step per boot. It refuses on the charger or with
+  anything attached. `install.sh` builds smc-peek for it.
 - `pmu-alarm`: reads the PMU's RTC wake alarm on J314s through its nvmem
   interface, and test-fires it awake (`test`, as root) to check the register map
   before the driver port.
@@ -87,7 +95,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   safe boot's initramfs hook in mkinitcpio's busybox ash, in a bubblewrap
   sandbox with stub mount and blockdev, one failure per case;
   `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe
-  boot and `collect` in a fake next boot.
+  boot and `collect` in a fake next boot; `tests/sleep_drain_reading_test.py`
+  runs `sleep-drain-reading` as uid 0 in a bubblewrap user namespace against
+  a fake battery, with stub `sleep-drain-safe` and `systemctl`.
 - `patches/`: patch series for upstream, kept here for review before they're
   posted. `patches/pmu-alarm-t600x/` is the PMU RTC alarm for omacom/linux-aurora
   (B2); its README says what's in it and how it was checked.
