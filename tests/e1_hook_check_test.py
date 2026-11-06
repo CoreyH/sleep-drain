@@ -8,19 +8,28 @@ This file is also the fake kernel (--sim). /sys/power/state and /dev/kmsg
 are FIFOs it serves: a write of "freeze" plays one pm_test=platform suspend,
 and the stub systemctl plays one alarm sleep, each with e1_hook's ops logging
 in the kernel's order (prepare, the noirq pass, prepare_late), into the fake
-kernel log and trace, with the module's parameters counting. Stubs stand in
-for insmod, rmmod, rtcwake, dmesg, sleep and sleep-drain-safe. /run is a fake
-too, so nothing in the sandbox can reach the real D-Bus (logind would suspend
-for the real systemctl).
+kernel log and into each trace buffer that's on and has the event enabled,
+with the module's parameters counting. Stubs stand in for insmod, rmmod,
+rtcwake, dmesg, sleep and sleep-drain-safe, and for mkdir and rmdir in
+/sys/kernel/tracing/instances/, where tracefs makes and removes an instance's
+files. /run is a fake too, so nothing in the sandbox can reach the real D-Bus
+(logind would suspend for the real systemctl).
 
-Each case checks the exit status, the answers, that everything check changed
-is put back (pm_test, pm_debug_messages, pm_print_times, the trace clock,
-buffer and events, e1_hook unloaded) and the saves: one after run 1 with the
-results as a PATH, one at the end with them in /var/log/sleep-drain/. Some
-cases play a fault: insmod failing, or a Ctrl-C during it once the module has
-loaded; systemctl suspend failing; a long sleep, with the hook's post line
-coming seconds after the resume; a Ctrl-C during the final save; and stdout
-closed, as when the terminal's reader has gone.
+The main trace buffer holds an earlier capture, and the session that made it
+is still on (suspend_resume enabled). Each case checks the exit status, the
+answers, that everything check changed is put back (pm_test,
+pm_debug_messages, pm_print_times, e1_hook unloaded, its trace instance
+removed), that the main buffer is as it was (its settings, and its capture
+with only its own session's records after it), and the saves: one after run 1
+with the results as a PATH, one at the end with them in /var/log/sleep-drain/.
+Some cases play a fault: insmod failing, or a Ctrl-C during it once the module
+has loaded; systemctl suspend failing; a long sleep, with the hook's post line
+coming seconds after the resume; a Ctrl-C during the final save; stdout
+closed, as when the terminal's reader has gone; the save after run 1 failing,
+which must keep run 2's sleep from starting; the kernel log wrapping, when the
+printk:console copy in the instance's trace stands in; the trace instance
+failing to be made, or being there already; and the results directory failing
+to be made once the instance has been.
 """
 import os
 import shutil
@@ -35,8 +44,12 @@ SELF = os.path.abspath(__file__)
 # --- the fake kernel, run inside the sandbox -------------------------------
 
 T = "/sys/kernel/tracing"
+INSTANCE = "sleep-drain-e1-hook"  # check's own trace instance, in T/instances/
 P = "/sys/module/e1_hook/parameters"
 OPS = ("begin", "prepare", "prepare_late", "restore_early", "restore", "end")
+EVENTS = ("power/suspend_resume", "power/device_pm_callback_start",
+          "power/device_pm_callback_end", "printk/console")
+PM_TEST = "[none] core processors platform devices freezer\n"
 TRACE_HEAD = """# tracer: nop
 #
 # entries-in-buffer/entries-written: 0/0   #P:8
@@ -44,9 +57,25 @@ TRACE_HEAD = """# tracer: nop
 #           TASK-PID     CPU#  |||||  TIMESTAMP  FUNCTION
 #              | |         |   |||||     |         |
 """
+# What the main buffer holds before check runs: someone's earlier capture.
+MAIN_CAPTURE = TRACE_HEAD + (
+    "            bash-1802    [004] .....    42.000100: tracing_mark_write: an earlier session\n"
+    "   kworker/u16:2-88      [000] .....    42.000200: suspend_resume: dpm_suspend[2] begin\n")
 # The hook's lines for run 2's sleep.
 PRE = "2026-11-06T11:30:00+01:00 pre  ts=1 safe=yes snap=20261106T113000\n"
 POST = "2026-11-06T11:31:05+01:00 post ts=66 snap=20261106T113000 slept_s=65 valid=no-short\n"
+
+
+def main_tracing():
+    """The main buffer's files, relative to T, as check finds them and must
+    leave them: its session is on, recording suspend_resume, on the global
+    clock."""
+    files = {"trace_clock": "local [global] counter uptime perf mono mono_raw boot tai\n",
+             "buffer_size_kb": "1408\n", "tracing_on": "1\n", "trace": MAIN_CAPTURE,
+             "trace_marker": "", "per_cpu/cpu0/stats": "entries: 2\noverrun: 0\n"}
+    for e in EVENTS:
+        files[f"events/{e}/enable"] = "1\n" if e == "power/suspend_resume" else "0\n"
+    return files
 
 
 def ts(us):
@@ -60,28 +89,79 @@ def sim_clock(advance):
     return now + advance
 
 
-def sim_on(event):
-    def read(p):
-        return open(p).read().strip()
-    return read(f"{T}/tracing_on") == "1" and read(f"{T}/events/{event}/enable") == "1"
+def sim_call(line):
+    with open(os.path.join(os.environ["FAKE"], "calls"), "a") as f:
+        f.write(line + "\n")
+
+
+def sim_read(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def sim_buffers():
+    """The trace buffers: the main one, then each instance."""
+    inst = f"{T}/instances"
+    names = sorted(os.listdir(inst)) if os.path.isdir(inst) else []
+    return [T] + [f"{inst}/{n}" for n in names]
+
+
+def sim_on(buf, event):
+    return sim_read(f"{buf}/tracing_on") == "1" and sim_read(f"{buf}/events/{event}/enable") == "1"
 
 
 def sim_emit(items):
-    """items: (us, "log", text) or (us, "trace", event, msg), into dmesg and the trace."""
+    """items: (us, "log", text) or (us, "trace", event, msg), into dmesg and
+    into each trace buffer that's on and has the event enabled."""
     items.sort(key=lambda i: i[0])
     with open(os.path.join(os.environ["FAKE"], "kmsg.log"), "a") as k:
         for it in items:
             if it[1] == "log":
                 k.write(f"[{ts(it[0])}] {it[2]}\n")
-    old = open(f"{T}/trace").read()
-    with open(f"{T}/trace", "a") as t:
-        if "# tracer" not in old:
-            t.write(TRACE_HEAD)
+    for buf in sim_buffers():
+        rows = []
         for it in items:
-            if it[1] == "log" and sim_on("printk/console"):
-                t.write(f"              sh-2063    [003] ..... {ts(it[0])}: console: {it[2]}\n")
-            elif it[1] == "trace" and sim_on("power/" + it[2]):
-                t.write(f"   kworker/u16:7-123     [001] ..... {ts(it[0])}: {it[2]}: {it[3]}\n")
+            if it[1] == "log" and sim_on(buf, "printk/console"):
+                rows.append(f"              sh-2063    [003] ..... {ts(it[0])}: console: {it[2]}\n")
+            elif it[1] == "trace" and sim_on(buf, "power/" + it[2]):
+                rows.append(f"   kworker/u16:7-123     [001] ..... {ts(it[0])}: {it[2]}: {it[3]}\n")
+        if rows:
+            old = open(f"{buf}/trace").read()
+            with open(f"{buf}/trace", "a") as t:
+                t.write(("" if "# tracer" in old else TRACE_HEAD) + "".join(rows))
+
+
+def sim_mkdir_instance(path):
+    """mkdir in tracefs's instances/: a new buffer, with its own files as the
+    kernel makes them (tracing on, the local clock, no events)."""
+    if os.path.exists(os.path.join(os.environ["FAKE"], "instance-fails")):
+        sys.exit(f"mkdir: cannot create directory '{path}': Cannot allocate memory")
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        sys.exit(f"mkdir: cannot create directory '{path}': File exists")
+    files = {"trace_clock": "[local] global counter uptime perf mono mono_raw boot tai\n",
+             "buffer_size_kb": "1408\n", "tracing_on": "1\n", "trace": "", "trace_marker": "",
+             "per_cpu/cpu0/stats": "entries: 0\noverrun: 0\n"}
+    files.update({f"events/{e}/enable": "0\n" for e in EVENTS})
+    for rel, text in files.items():
+        write(os.path.join(path, rel), text)
+    sim_call(f"mkdir-instance {os.path.basename(path)}")
+
+
+def sim_rmdir_instance(path):
+    """rmdir in instances/: the instance goes, all its files with it. A copy
+    of them as they were is kept in $FAKE/removed-instance for the checks."""
+    if not os.path.isdir(path):
+        sys.exit(f"rmdir: failed to remove '{path}': No such file or directory")
+    keep = os.path.join(os.environ["FAKE"], "removed-instance")
+    shutil.rmtree(keep, ignore_errors=True)
+    shutil.copytree(path, keep)
+    shutil.rmtree(path)
+    sim_call(f"rmdir-instance {os.path.basename(path)}")
 
 
 def sim_suspend(kind, post_later=False):
@@ -167,6 +247,10 @@ def sim(argv):
         sim_emit([(sim_clock(10), "log", "e1_hook: unloaded")])
     elif what == "suspend":
         sim_suspend(argv[1], argv[2:3] == ["late"])
+    elif what == "mkdir-instance":
+        sim_mkdir_instance(argv[1])
+    elif what == "rmdir-instance":
+        sim_rmdir_instance(argv[1])
 
 
 # --- the sandbox ----------------------------------------------------------
@@ -183,17 +267,11 @@ def make_world(tmp, case):
     s = os.path.join(tmp, "sys")
     files = {
         "power/mem_sleep": "[s2idle]\n",
-        "power/pm_test": "[none] core processors platform devices freezer\n",
+        "power/pm_test": PM_TEST,
         "power/pm_debug_messages": "0\n",
         "power/pm_print_times": "0\n",
         "power/suspend_stats/success": "5\n",
         "power/suspend_stats/fail": "0\n",
-        "kernel/tracing/trace_clock": "local [global] counter uptime perf mono mono_raw boot tai\n",
-        "kernel/tracing/buffer_size_kb": "7 (expanded: 1408)\n",
-        "kernel/tracing/tracing_on": "1\n",
-        "kernel/tracing/trace": "",
-        "kernel/tracing/trace_marker": "",
-        "kernel/tracing/per_cpu/cpu0/stats": "entries: 0\noverrun: 0\n",
         "module/suspend/parameters/pm_test_delay": "5\n",
         "module/rtc_macsmc_alarm/refcnt": "1\n",
         "class/rtc/rtc0/wakealarm": "",
@@ -203,11 +281,13 @@ def make_world(tmp, case):
         "class/power_supply/macsmc-battery/capacity": "88\n",
         "class/power_supply/macsmc-battery/status": "Discharging\n",
     }
-    for e in ("power/suspend_resume", "power/device_pm_callback_start",
-              "power/device_pm_callback_end", "printk/console"):
-        files[f"kernel/tracing/events/{e}/enable"] = "0\n"
+    files.update({f"kernel/tracing/{rel}": text for rel, text in main_tracing().items()})
     for rel, text in files.items():
         write(os.path.join(s, rel), text)
+    os.makedirs(os.path.join(s, "kernel/tracing/instances"))
+    if case == "instance-exists":
+        # Another check's, or one a SIGKILL left behind: not this check's to remove.
+        write(os.path.join(s, "kernel/tracing/instances", INSTANCE, "trace"), "someone else's\n")
     os.symlink("/sys/bus/platform/devices/macsmc-rtc", os.path.join(s, "class/rtc/rtc0/device"))
     os.mkfifo(os.path.join(s, "power/state"))
     os.mkfifo(os.path.join(tmp, "kmsg"))
@@ -218,8 +298,8 @@ def make_world(tmp, case):
     write(os.path.join(tmp, "varlog/sleep-drain.log"), "2026-11-05T13:31:38+01:00 post ts=0 an older line\n")
     os.makedirs(os.path.join(tmp, "varlog/sleep-drain/20261105T131638"))
     write(os.path.join(tmp, "kmsg.log"), "[   99.000000] an older line\n")
-    if case == "insmod-fails":
-        write(os.path.join(tmp, "insmod-fails"), "")
+    if case in ("insmod-fails", "instance-fails"):
+        write(os.path.join(tmp, case), "")
 
     me = f'python3 -I "{SELF}" --sim'
     calls = os.path.join(tmp, "calls")
@@ -232,7 +312,7 @@ def make_world(tmp, case):
         suspend = (f'/usr/bin/sleep 0.3\n{me} suspend alarm late\n: > "{tmp}/slept"\n'
                    f"( /usr/bin/sleep 1.5; echo '{POST.strip()}' >> /var/log/sleep-drain.log ) > /dev/null 2>&1 &\n")
     # check's pid, for the Ctrl-Cs played below: insmod is its child.
-    insmod = f'#!/bin/bash\necho $PPID > "{tmp}/check-pid"\n/usr/bin/sleep 0.3\n'
+    insmod = f'#!/bin/bash\necho "insmod $*" >> "{calls}"\necho $PPID > "{tmp}/check-pid"\n/usr/bin/sleep 0.3\n'
     if case == "insmod-interrupted":
         # The module loads, then a Ctrl-C reaches check and insmod.
         insmod += f"{me} insmod\nkill -INT $PPID\nexit 130\n"
@@ -243,16 +323,39 @@ def make_world(tmp, case):
         # A Ctrl-C during the final save (no PATH) reaches check and the save.
         save += f'[[ $# -gt 1 ]] || {{ kill -INT "$(< "{tmp}/check-pid")" $$; /usr/bin/sleep 0.3; }}\n'
     save += (f'echo "$* | module $([[ -d /sys/module/e1_hook ]] && echo loaded || echo gone)'
-             f' | $(ls /var/log/sleep-drain | tr "\\n" " ")" >> "{calls}"\n'
-             'echo "saved to the boot partition (stub)"\n')
+             f' | instance $([[ -e {T}/instances/{INSTANCE} ]] && echo there || echo gone)'
+             f' | $(ls /var/log/sleep-drain | tr "\\n" " ")" >> "{calls}"\n')
+    if case == "save1-fails":
+        # The save after run 1 (the one with a PATH) writes its tar, then
+        # can't unmount /boot.
+        save += ('if [[ $# -gt 1 ]]; then\n'
+                 '  echo "sleep-drain-safe: saved, but /boot is still mounted at'
+                 ' /run/sleep-drain-safe/boot: restart now" >&2\n  exit 1\nfi\n')
+    save += 'echo "saved to the boot partition (stub)"\n'
+    dmesg = f'#!/bin/bash\ncat "{tmp}/kmsg.log"\n'
+    if case == "dmesg-wraps":
+        # pm_print_times has overrun the kernel's log: only its last lines are
+        # left, and never a run's mark.
+        dmesg = f'#!/bin/bash\ntail -n 4 "{tmp}/kmsg.log"\n'
+    # tracefs: a mkdir or rmdir in instances/ makes or removes a whole instance.
+    tracefs = '#!/bin/bash\nif [[ ${{@: -1}} == {T}/instances/* ]]; then exec {me} {op}-instance "${{@: -1}}"; fi\n'
+    mkdir = tracefs.format(T=T, me=me, op="mkdir")
+    if case == "results-dir-fails":
+        # Once the instance is made, the results directory can't be.
+        mkdir += ("if [[ ${@: -1} == /var/log/e1-hook-* ]]; then\n"
+                  "  echo \"mkdir: cannot create directory '${@: -1}': No space left on device\" >&2\n"
+                  "  exit 1\nfi\n")
     stubs = {
         "insmod": insmod,
         "rmmod": f"#!/bin/bash\nexec {me} rmmod\n",
-        "dmesg": f'#!/bin/bash\ncat "{tmp}/kmsg.log"\n',
-        "rtcwake": '#!/bin/bash\necho "rtcwake (stub): $*"\necho 1793960000 > /sys/class/rtc/rtc0/wakealarm\n',
+        "dmesg": dmesg,
+        "rtcwake": (f'#!/bin/bash\necho "rtcwake $*" >> "{calls}"\necho "rtcwake (stub): $*"\n'
+                    'echo 1793960000 > /sys/class/rtc/rtc0/wakealarm\n'),
         "systemctl": f'#!/bin/bash\necho "systemctl $*" >> "{calls}"\n[[ $1 == suspend ]] || exit 0\n{suspend}',
         "sleep": "#!/bin/bash\nexec /usr/bin/sleep 0.6\n",
         "sleep-drain-safe": save,
+        "mkdir": mkdir + 'exec /usr/bin/mkdir "$@"\n',
+        "rmdir": tracefs.format(T=T, me=me, op="rmdir") + 'exec /usr/bin/rmdir "$@"\n',
     }
     if case == "late-post":
         stubs["date"] = (f'#!/bin/bash\nif [[ $* == "+%s" && -e "{tmp}/slept" ]]; then\n'
@@ -302,17 +405,41 @@ def read(path):
         return ""
 
 
-def restored(tmp):
-    """What check left changed: [] if everything is back."""
+def main_changes(s):
+    """What check changed in the main trace buffer: [] if its settings are as
+    they were, and its trace still holds the earlier capture, followed only by
+    what its own session records (suspend_resume)."""
+    t = os.path.join(s, "kernel/tracing")
+    got = {}
+    for d, dirs, names in os.walk(t):
+        if d == t and "instances" in dirs:
+            dirs.remove("instances")
+        got.update({os.path.relpath(os.path.join(d, n), t): read(os.path.join(d, n)) for n in names})
+    want = main_tracing()
+    bad = [f"main buffer: {k} is new" for k in sorted(set(got) - set(want))]
+    bad += [f"main buffer: {k} has gone" for k in sorted(set(want) - set(got))]
+    bad += [f"main buffer: {k} is {got[k]!r}, not {want[k]!r}" for k in sorted(set(want) & set(got))
+            if k != "trace" and got[k] != want[k]]
+    trace = got.get("trace", "")
+    if not trace.startswith(MAIN_CAPTURE):
+        bad.append(f"main buffer: its earlier capture has gone: {trace[:200]!r}")
+    elif any(": suspend_resume: " not in l for l in trace[len(MAIN_CAPTURE):].splitlines()):
+        bad.append("main buffer: its trace has records its own session didn't make")
+    return bad
+
+
+def restored(tmp, leftover=()):
+    """What check left changed: [] if everything is back. leftover: the trace
+    instances that were there before check ran, and must still be."""
     s = os.path.join(tmp, "sys")
-    want = {"power/pm_test": "none", "power/pm_debug_messages": "0", "power/pm_print_times": "0",
-            "kernel/tracing/trace_clock": "global", "kernel/tracing/buffer_size_kb": "1408",
-            "kernel/tracing/tracing_on": "1"}
-    for e in ("power/suspend_resume", "power/device_pm_callback_start",
-              "power/device_pm_callback_end", "printk/console"):
-        want[f"kernel/tracing/events/{e}/enable"] = "0"
-    bad = [f"{k} is {read(os.path.join(s, k)).strip()!r}" for k, v in want.items()
-           if read(os.path.join(s, k)).strip() != v]
+    want = {"power/pm_test": ("none", PM_TEST.strip()), "power/pm_debug_messages": ("0",),
+            "power/pm_print_times": ("0",)}
+    bad = [f"{k} is {read(os.path.join(s, k)).strip()!r}" for k, ok in want.items()
+           if read(os.path.join(s, k)).strip() not in ok]
+    bad += main_changes(s)
+    left = sorted(os.listdir(os.path.join(s, "kernel/tracing/instances")))
+    if left != sorted(leftover):
+        bad.append(f"trace instances afterwards: {left}, not {sorted(leftover)}")
     if os.path.exists(os.path.join(s, "module/e1_hook")):
         bad.append("e1_hook is still loaded")
     if read(os.path.join(s, "class/rtc/rtc0/wakealarm")).strip() not in ("", "0"):
@@ -326,8 +453,31 @@ def results(tmp):
     return os.path.join(d, found[0]) if len(found) == 1 else None
 
 
+def calls_of(tmp):
+    return read(os.path.join(tmp, "calls")).splitlines()
+
+
+def instance_used(tmp, res, runs):
+    """Whether check traced into its instance, set up as it should be: the
+    instance as it was when removed, and each run's trace.txt."""
+    gone = os.path.join(tmp, "removed-instance")
+    problems = []
+    if read(os.path.join(gone, "trace_clock")).strip() != "local":
+        problems.append("the instance's clock wasn't set to local")
+    if read(os.path.join(gone, "buffer_size_kb")).strip() != "8192":
+        problems.append("the instance's buffer wasn't set to 8192 KB")
+    if "e1-hook check" not in read(os.path.join(gone, "trace_marker")):
+        problems.append("the marks didn't go to the instance's trace_marker")
+    for run in runs:
+        trace = read(os.path.join(res, run, "trace.txt")) if res else ""
+        if "an earlier session" in trace or ": console: " not in trace or ": device_pm_callback_end: " not in trace:
+            problems.append(f"{run}/trace.txt isn't the instance's trace")
+    return problems
+
+
 def check_pass(tmp, rc, out):
-    res, saves = results(tmp), [l for l in read(os.path.join(tmp, "calls")).splitlines() if l.startswith("save")]
+    calls = calls_of(tmp)
+    res, saves = results(tmp), [l for l in calls if l.startswith("save")]
     summary = read(os.path.join(res, "summary.txt")) if res else ""
     problems = restored(tmp)
     if rc != 0:
@@ -341,10 +491,14 @@ def check_pass(tmp, rc, out):
     first = (read(os.path.join(res, "run1/dmesg.txt")).splitlines() or [""])[0] if res else ""
     if not first.endswith(": load"):
         problems.append(f"run 1's dmesg doesn't start at the load mark: {first}")
+    problems += instance_used(tmp, res, ("run1", "run2"))
+    if calls[:1] != [f"mkdir-instance {INSTANCE}"] or calls.count(f"rmdir-instance {INSTANCE}") != 1:
+        problems.append(f"the instance wasn't made first and removed once: {calls}")
     if len(saves) != 2 or not saves[0].startswith("save /var/log/e1-hook-") or "module loaded" not in saves[0]:
         problems.append(f"the first save isn't run 1's PATH save: {saves[:1]}")
-    elif not (saves[1].startswith("save |") and "module gone" in saves[1] and "e1-hook-" in saves[1]):
-        problems.append(f"the last save isn't the whole directory, after the unload: {saves[1]}")
+    elif not (saves[1].startswith("save |") and "module gone" in saves[1] and "instance gone" in saves[1]
+              and "e1-hook-" in saves[1]):
+        problems.append(f"the last save isn't the whole directory, after the unload and the instance: {saves[1]}")
     if not os.path.exists(os.path.join(tmp, "varlog/sleep-drain/20261106T113000")):
         problems.append("the hook's snapshot isn't there")
     if "pkexec sleep-drain-safe collect" not in out:
@@ -353,7 +507,8 @@ def check_pass(tmp, rc, out):
 
 
 def check_insmod_fails(tmp, rc, out):
-    res, saves = results(tmp), [l for l in read(os.path.join(tmp, "calls")).splitlines() if l.startswith("save")]
+    calls = calls_of(tmp)
+    res, saves = results(tmp), [l for l in calls if l.startswith("save")]
     problems = restored(tmp)
     if rc == 0:
         problems.append("exit 0")
@@ -361,10 +516,13 @@ def check_insmod_fails(tmp, rc, out):
         problems.append("it doesn't say it stopped early")
     if not res or not os.path.exists(os.path.join(res, "dmesg-at-exit.txt")):
         problems.append("no dmesg-at-exit.txt")
-    if "systemctl suspend" in read(os.path.join(tmp, "calls")):
+    if not res or not os.path.exists(os.path.join(res, "trace-at-exit.txt")) or \
+            "an earlier session" in read(os.path.join(res, "trace-at-exit.txt")):
+        problems.append("no trace-at-exit.txt from the instance")
+    if "systemctl suspend" in calls:
         problems.append("it suspended anyway")
-    if len(saves) != 1 or "e1-hook-" not in saves[0]:
-        problems.append(f"not one save of what it has: {saves}")
+    if len(saves) != 1 or "e1-hook-" not in saves[0] or "instance gone" not in saves[0]:
+        problems.append(f"not one save of what it has, once the instance had gone: {saves}")
     return problems
 
 
@@ -373,6 +531,9 @@ def check_insmod_interrupted(tmp, rc, out):
     problems = check_insmod_fails(tmp, rc, out)
     if rc != 130:
         problems.append(f"exit {rc}, not 130")
+    res = results(tmp)
+    if "console: e1_hook: loaded" not in (read(os.path.join(res, "trace-at-exit.txt")) if res else ""):
+        problems.append("trace-at-exit.txt doesn't have the instance's console copy of the load")
     return problems
 
 
@@ -398,6 +559,72 @@ def check_suspend_fails(tmp, rc, out):
     return problems
 
 
+def check_save1_fails(tmp, rc, out):
+    calls = calls_of(tmp)
+    res, saves = results(tmp), [l for l in calls if l.startswith("save")]
+    summary = read(os.path.join(res, "summary.txt")) if res else ""
+    problems = restored(tmp)
+    if rc != 1:
+        problems.append(f"exit {rc}, not 1")
+    run2 = [l for l in calls if l.startswith(("rtcwake", "systemctl"))]
+    if run2:
+        problems.append(f"run 2 started all the same: {run2}")
+    if summary.count("=> PASS") != 1 or "Run 2 didn't start" not in summary or "Every answer is yes" in summary:
+        problems.append("the summary doesn't show run 1 passing and run 2 not starting")
+    if len(saves) != 2 or not saves[0].startswith("save /var/log/e1-hook-") or not (
+            saves[1].startswith("save |") and "module gone" in saves[1] and "instance gone" in saves[1]):
+        problems.append(f"not the failed save, then the final one once everything was put back: {saves}")
+    if "stopped before both runs were done" not in out:
+        problems.append("it doesn't say it stopped early")
+    return problems
+
+
+def check_dmesg_wraps(tmp, rc, out):
+    # Each run's dmesg.txt is flagged as wrapped, so it doesn't start at the mark.
+    problems = [p for p in check_pass(tmp, rc, out) if not p.startswith("run 1's dmesg doesn't start")]
+    res = results(tmp)
+    summary = read(os.path.join(res, "summary.txt")) if res else ""
+    if summary.count("by the kernel log's order: yes: the trace's printk:console copy") != 2:
+        problems.append("the trace's printk:console copy didn't stand in for the wrapped log in both runs")
+    return problems
+
+
+def refused(tmp, rc, out, why, leftover=()):
+    """check said no before it changed anything: nothing loaded, run or saved."""
+    problems = restored(tmp, leftover)
+    if rc != 1:
+        problems.append(f"exit {rc}, not 1")
+    if why not in out:
+        problems.append(f"it doesn't say {why!r}")
+    if calls_of(tmp):
+        problems.append(f"it went on: {calls_of(tmp)}")
+    varlog = os.path.join(tmp, "varlog")
+    if any(n.startswith("e1-hook-") for d in (varlog, os.path.join(varlog, "sleep-drain")) for n in os.listdir(d)):
+        problems.append("it started a results directory")
+    return problems
+
+
+def check_instance_fails(tmp, rc, out):
+    return refused(tmp, rc, out, "couldn't create the trace instance")
+
+
+def check_instance_exists(tmp, rc, out):
+    problems = refused(tmp, rc, out, f"{INSTANCE} exists", leftover=(INSTANCE,))
+    if read(os.path.join(tmp, "sys/kernel/tracing/instances", INSTANCE, "trace")) != "someone else's\n":
+        problems.append("the instance that was there has changed")
+    return problems
+
+
+def check_results_dir_fails(tmp, rc, out):
+    # Before finish is in place: the instance is all there is to undo.
+    problems = restored(tmp)
+    if rc == 0:
+        problems.append("exit 0")
+    if calls_of(tmp) != [f"mkdir-instance {INSTANCE}", f"rmdir-instance {INSTANCE}"]:
+        problems.append(f"not just the instance made and removed again: {calls_of(tmp)}")
+    return problems
+
+
 CASES = [
     ("both runs, every answer yes", None, check_pass),
     ("insmod fails: stops, puts back, saves what it has", "insmod-fails", check_insmod_fails),
@@ -406,6 +633,11 @@ CASES = [
     ("a long sleep: waits for the post line after the resume", "late-post", check_pass),
     ("Ctrl-C during the final save: it finishes and says so", "save-interrupted", check_pass),
     ("stdout closed: both saves happen all the same", "closed-stdout", check_closed_stdout),
+    ("the save after run 1 fails: no run 2, puts back, saves at the end", "save1-fails", check_save1_fails),
+    ("the kernel log wraps: the instance's console copy stands in", "dmesg-wraps", check_dmesg_wraps),
+    ("no trace instance: refuses before loading anything", "instance-fails", check_instance_fails),
+    ("its trace instance is there already: refuses, leaves it", "instance-exists", check_instance_exists),
+    ("no results directory: removes the instance it made", "results-dir-fails", check_results_dir_fails),
 ]
 
 if __name__ == "__main__":

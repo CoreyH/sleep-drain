@@ -11,9 +11,11 @@ RUN_DIR holds what check captured for one run:
   params-before.txt   e1_hook's parameters, name=value lines, before the run
   params-after.txt    and after it
   dmesg.txt           the kernel log from the run's marker on
-  trace.txt           /sys/kernel/tracing/trace, on the local clock, with
-                      power:suspend_resume, power:device_pm_callback_start and
-                      _end, and printk:console
+  trace.txt           the trace of check's own ftrace instance
+                      (/sys/kernel/tracing/instances/sleep-drain-e1-hook/trace),
+                      on the local clock, with power:suspend_resume,
+                      power:device_pm_callback_start and _end, and
+                      printk:console
 
 Each answer is yes, no, or unknown (what was captured can't tell):
   1. Did prepare_late run? prepare_late_calls went up by one.
