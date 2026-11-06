@@ -39,8 +39,9 @@
  *                                 the last read at prepare and at prepare_late,
  *                                 as logged; ret is 1 until the op has run
  *
- * It never writes an SMC key, touches no MMIO, and can't fail or abort a
- * suspend: every op returns 0. .check and .wake stay NULL: s2idle_loop() calls
+ * With replay=0 (the default, and what e1-hook/check loads) it never writes an
+ * SMC key and touches no MMIO; replay is E1a's, below. Either way it can't fail
+ * or abort a suspend: every op returns 0. .check and .wake stay NULL: s2idle_loop() calls
  * .wake instead of pm_wakeup_pending() when it's set.
  *
  * Lab only, never for upstream: s2idle_set_ops() is declared in
@@ -115,6 +116,31 @@ module_param(prepare_ret, int, 0444);
 module_param(prepare_mv, uint, 0444);
 module_param(prepare_read_ns, ullong, 0444);
 MODULE_PARM_DESC(prepare_ret, "The last B0AV read at prepare: 0, -errno, or 1 before the first");
+
+/*
+ * E1a (PLAN.md, A5): replay=5 adds, at the first prepare_late only, maralcbr's
+ * sleep-entry keys and PMP request words for J314s, in their order
+ * (maralcbr/linux 37be2668, drivers/power/reset/macsmc-reboot.c L839-876):
+ *   bit 2: 4 to 0x28e3d8328 (pmgr reg[41] + 0x18328)
+ *   bit 0: MBSE = slpw, pmVC = 0x100, WKTP = 2
+ *   bit 2: 1 << 61 to 0x28e3d0860 (SOC-DEV-DVFS + 4), then 1 to 0x28e3d8328
+ *   bit 0: MBSE = slpa
+ * Nothing else: not the 74 post-slpa writes (bit 3), and the CPUs stay up.
+ * One way: there's no undo, and a resume may not come. Safe boot only.
+ */
+static unsigned int replay;
+module_param(replay, uint, 0444);
+MODULE_PARM_DESC(replay, "LAB ONLY, safe boot only: at the first prepare_late, 1 = maralcbr's SMC sleep keys, 4 = their PMP request words, 5 = both (E1a)");
+static unsigned int replay_done;
+module_param(replay_done, uint, 0444);
+static int replay_ret[4] = { 1, 1, 1, 1 };
+static int replay_nret = 4;
+module_param_array(replay_ret, int, &replay_nret, 0444);
+MODULE_PARM_DESC(replay_ret, "MBSE=slpw, pmVC, WKTP, MBSE=slpa: 0, -errno, or 1 if not sent");
+
+#define E1_PMGR_SLEEP_REQ	0x28e3d8328ULL
+#define E1_PMP_DVFS4		0x28e3d0860ULL
+static void __iomem *sleep_req_page, *pmp_dvfs_page;
 
 static unsigned long long late_t_ns, late_read_ns;
 static int late_ret = 1;
@@ -226,7 +252,65 @@ static int e1_prepare(void)
 	return 0;
 }
 
-/* Step 4, after the noirq pass: where E1's replay would run. */
+/*
+ * One of the replay's key writes: logged, and on a failure the drain after a
+ * timeout (as for the reads above) and false, so that nothing more is sent.
+ */
+static bool replay_write(int i, const char *what, int ret)
+{
+	replay_ret[i] = ret;
+	pr_emerg("replay: %s %d\n", what, ret);
+	if (!ret)
+		return true;
+	if (ret == -ETIMEDOUT)
+		drain_after_timeout();
+	pr_emerg("replay: %s failed; nothing more sent\n", what);
+	return false;
+}
+
+/*
+ * E1a's replay, in maralcbr's order. Under the SMC device's lock, tried only:
+ * if it's busy, nothing is sent. It stops at the first key write that fails,
+ * so that a broken sequence never reaches the PMP words' second half or
+ * MBSE=slpa: the sleep stays an ordinary s2idle that the power key wakes, and
+ * the log says what failed. Nothing here can fail the suspend.
+ */
+static void e1_replay(void)
+{
+	struct device *dev = &smc_pdev->dev;
+	void __iomem *req = sleep_req_page ? sleep_req_page + (E1_PMGR_SLEEP_REQ & ~PAGE_MASK) : NULL;
+	void __iomem *dvfs = pmp_dvfs_page ? pmp_dvfs_page + (E1_PMP_DVFS4 & ~PAGE_MASK) : NULL;
+
+	replay_done = 1;
+	if (!device_trylock(dev)) {
+		pr_emerg("replay: the SMC's device lock is busy; nothing sent\n");
+		return;
+	}
+	if (!dev->driver || strcmp(dev->driver->name, SMC_DRIVER) || dev_get_drvdata(dev) != smc) {
+		pr_emerg("replay: macsmc isn't bound; nothing sent\n");
+		goto unlock;
+	}
+	if ((replay & 4) && req) {
+		writel(4, req);
+		pr_emerg("replay: 4 -> 0x%llx\n", E1_PMGR_SLEEP_REQ);
+	}
+	if ((replay & 1) &&
+	    (!replay_write(0, "MBSE=slpw", apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpw))) ||
+	     !replay_write(1, "pmVC=0x100", apple_smc_write_u32(smc, SMC_KEY(pmVC), 0x100)) ||
+	     !replay_write(2, "WKTP=2", apple_smc_write_u8(smc, SMC_KEY(WKTP), 2))))
+		goto unlock;
+	if ((replay & 4) && req && dvfs) {
+		writeq(1ULL << 61, dvfs);
+		writel(1, req);
+		pr_emerg("replay: 1<<61 -> 0x%llx, 1 -> 0x%llx\n", E1_PMP_DVFS4, E1_PMGR_SLEEP_REQ);
+	}
+	if (replay & 1)
+		replay_write(3, "MBSE=slpa", apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpa)));
+unlock:
+	device_unlock(dev);
+}
+
+/* Step 4, after the noirq pass: where E1's replay runs. */
 static int e1_prepare_late(void)
 {
 	u64 t = trace_clock_local();
@@ -235,6 +319,8 @@ static int e1_prepare_late(void)
 	late_t_ns = t;
 	late_ret = read_b0av(&late_mv, &late_read_ns);
 	log_read("prepare_late", n, t, late_ret, late_mv, late_read_ns);
+	if (replay && !replay_done)
+		e1_replay();
 	return 0;
 }
 
@@ -320,11 +406,35 @@ unlock:
 	if (ret)
 		goto put_dev;
 
+	if (replay & ~5U) {
+		pr_err("replay=%u: only bit 0 (keys) and bit 2 (PMP words) exist\n", replay);
+		ret = -EINVAL;
+		goto put_mod;
+	}
+	if (replay && !of_machine_is_compatible("apple,j314s")) {
+		pr_err("replay is maralcbr's J314s sequence, and this isn't a J314s\n");
+		ret = -ENODEV;
+		goto put_mod;
+	}
+	if (replay & 4) {
+		/*
+		 * Non-posted, as maralcbr maps them (L808-809) and as Apple SoCs
+		 * need for on-chip registers: a posted write there can be lost
+		 * or raise an SError.
+		 */
+		sleep_req_page = ioremap_np(E1_PMGR_SLEEP_REQ & PAGE_MASK, PAGE_SIZE);
+		pmp_dvfs_page = ioremap_np(E1_PMP_DVFS4 & PAGE_MASK, PAGE_SIZE);
+		if (!sleep_req_page || !pmp_dvfs_page) {
+			ret = -ENOMEM;
+			goto unmap;
+		}
+	}
+
 	/* s2idle_set_ops()'s address, from a kprobe that is never armed. */
 	ret = register_kprobe(&kp);
 	if (ret) {
 		pr_err("can't find s2idle_set_ops: register_kprobe %d\n", ret);
-		goto put_mod;
+		goto unmap;
 	}
 	set_ops = (s2idle_set_ops_t)(unsigned long)kp.addr;
 	unregister_kprobe(&kp);
@@ -332,13 +442,19 @@ unlock:
 	if (!str_has_prefix(sym, "s2idle_set_ops+0x0/")) {
 		pr_err("s2idle_set_ops resolved to %s, not its entry; refusing\n", sym);
 		ret = -EINVAL;
-		goto put_mod;
+		goto unmap;
 	}
 
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local()\n", sym);
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u\n",
+		sym, replay);
 	return 0;
 
+unmap:
+	if (sleep_req_page)
+		iounmap(sleep_req_page);
+	if (pmp_dvfs_page)
+		iounmap(pmp_dvfs_page);
 put_mod:
 	module_put(smc_owner);
 put_dev:
@@ -353,6 +469,10 @@ static void __exit e1_hook_exit(void)
 	 * once it returns no op can run.
 	 */
 	set_ops(NULL);
+	if (sleep_req_page)
+		iounmap(sleep_req_page);
+	if (pmp_dvfs_page)
+		iounmap(pmp_dvfs_page);
 	module_put(smc_owner);
 	put_device(&smc_pdev->dev);
 	pr_info("unloaded: calls begin=%u prepare=%u prepare_late=%u restore_early=%u restore=%u end=%u\n",
