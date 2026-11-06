@@ -95,6 +95,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
 - **Branch → PR → merge**, on CoreyH/sleep-drain. No direct pushes to `main`.
   Pullfrog reviews every PR. Merge with a merge commit, not a squash: commit
   SHAs are cited in RESEARCH.md and in the code.
+- Merge without asking once the review bots (Pullfrog) have finished on the
+  PR's head commit and nothing they raised is left open: Corey's standing OK
+  since 2026-11-06. Pass the full head SHA to `--match-head-commit`. Anything
+  posted outside this repo still needs Corey's OK each time.
 - Nothing is live until it's installed: after merging, run
   `pkexec bash install.sh` (root only through pkexec; from an agent session,
   only while the Omarchy shell is healthy, or the polkit prompt never shows).
