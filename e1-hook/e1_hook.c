@@ -253,9 +253,27 @@ static int e1_prepare(void)
 }
 
 /*
+ * One of the replay's key writes: logged, and on a failure the drain after a
+ * timeout (as for the reads above) and false, so that nothing more is sent.
+ */
+static bool replay_write(int i, const char *what, int ret)
+{
+	replay_ret[i] = ret;
+	pr_emerg("replay: %s %d\n", what, ret);
+	if (!ret)
+		return true;
+	if (ret == -ETIMEDOUT)
+		drain_after_timeout();
+	pr_emerg("replay: %s failed; nothing more sent\n", what);
+	return false;
+}
+
+/*
  * E1a's replay, in maralcbr's order. Under the SMC device's lock, tried only:
- * if it's busy, nothing is sent. Every write is logged; none can fail the
- * suspend.
+ * if it's busy, nothing is sent. It stops at the first key write that fails,
+ * so that a broken sequence never reaches the PMP words' second half or
+ * MBSE=slpa: the sleep stays an ordinary s2idle that the power key wakes, and
+ * the log says what failed. Nothing here can fail the suspend.
  */
 static void e1_replay(void)
 {
@@ -276,23 +294,18 @@ static void e1_replay(void)
 		writel(4, req);
 		pr_emerg("replay: 4 -> 0x%llx\n", E1_PMGR_SLEEP_REQ);
 	}
-	if (replay & 1) {
-		replay_ret[0] = apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpw));
-		pr_emerg("replay: MBSE=slpw %d\n", replay_ret[0]);
-		replay_ret[1] = apple_smc_write_u32(smc, SMC_KEY(pmVC), 0x100);
-		pr_emerg("replay: pmVC=0x100 %d\n", replay_ret[1]);
-		replay_ret[2] = apple_smc_write_u8(smc, SMC_KEY(WKTP), 2);
-		pr_emerg("replay: WKTP=2 %d\n", replay_ret[2]);
-	}
+	if ((replay & 1) &&
+	    (!replay_write(0, "MBSE=slpw", apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpw))) ||
+	     !replay_write(1, "pmVC=0x100", apple_smc_write_u32(smc, SMC_KEY(pmVC), 0x100)) ||
+	     !replay_write(2, "WKTP=2", apple_smc_write_u8(smc, SMC_KEY(WKTP), 2))))
+		goto unlock;
 	if ((replay & 4) && req && dvfs) {
 		writeq(1ULL << 61, dvfs);
 		writel(1, req);
 		pr_emerg("replay: 1<<61 -> 0x%llx, 1 -> 0x%llx\n", E1_PMP_DVFS4, E1_PMGR_SLEEP_REQ);
 	}
-	if (replay & 1) {
-		replay_ret[3] = apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpa));
-		pr_emerg("replay: MBSE=slpa %d\n", replay_ret[3]);
-	}
+	if (replay & 1)
+		replay_write(3, "MBSE=slpa", apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpa)));
 unlock:
 	device_unlock(dev);
 }

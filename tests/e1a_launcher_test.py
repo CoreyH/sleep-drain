@@ -59,7 +59,9 @@ def setup(tmp, reading="ok", safe=True, ac="0", loaded=False):
     body = {
         "ok": "exit 0",
         "fail": "exit 1",
-        "wait": f'echo "$PPID $$" > {tmp}/pids; sleep 30',
+        # Like the real reading: a long child, then the request for the suspend
+        # as its last step. The child's output doesn't hold the test's pipes.
+        "wait": f'echo "$PPID $$" > {tmp}/pids; sleep 30 > /dev/null 2>&1; echo "suspend" >> {calls}',
     }[reading]
     write(os.path.join(stubs, "reading"), f'#!/bin/bash\necho "reading $*" >> {calls}\n{body}\n', 0o755)
     return d
@@ -112,23 +114,29 @@ def test_failed_reading():
 
 def test_signals():
     for sig, code in ((signal.SIGHUP, 129), (signal.SIGTERM, 143), (signal.SIGINT, 130)):
-        with tempfile.TemporaryDirectory() as tmp:
-            d = setup(tmp, reading="wait")
-            p = subprocess.Popen(cmd(d), env=env(tmp), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            pids = os.path.join(tmp, "pids")
-            for _ in range(200):
-                if os.path.exists(pids) and os.path.getsize(pids):
-                    break
-                time.sleep(0.05)
-            launcher, reading = (int(x) for x in open(pids).read().split())
-            # A hangup or ^C reaches the whole foreground job: the reading and the launcher.
-            os.kill(reading, sig)
-            os.kill(launcher, sig)
-            out, err = p.communicate(timeout=30)
-            c = calls(tmp)
-            check(p.returncode == code and c[-1:] == ["rmmod e1_hook"],
-                  f"{signal.Signals(sig).name} during the reading unloads the module, exit {code}",
-                  f"exit {p.returncode}\n" + out + err + "\n".join(c))
+        # A hangup or ^C reaches the whole job, reading and launcher; a kill
+        # may reach the launcher only. Either way: no suspend, then the unload.
+        for both in (True, False):
+            with tempfile.TemporaryDirectory() as tmp:
+                d = setup(tmp, reading="wait")
+                p = subprocess.Popen(cmd(d), env=env(tmp), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                pids = os.path.join(tmp, "pids")
+                for _ in range(200):
+                    if os.path.exists(pids) and os.path.getsize(pids):
+                        break
+                    time.sleep(0.05)
+                launcher, reading = (int(x) for x in open(pids).read().split())
+                if both:
+                    os.kill(reading, sig)
+                os.kill(launcher, sig)
+                t0 = time.monotonic()
+                out, err = p.communicate(timeout=30)
+                c = calls(tmp)
+                who = "the reading and the launcher" if both else "the launcher only"
+                check(p.returncode == code and c[-1:] == ["rmmod e1_hook"] and "suspend" not in c
+                      and time.monotonic() - t0 < 10,
+                      f"{signal.Signals(sig).name} to {who}: no suspend, the module unloaded, exit {code}",
+                      f"exit {p.returncode}\n" + out + err + "\n".join(c))
 
 
 def test_broken_stdout():

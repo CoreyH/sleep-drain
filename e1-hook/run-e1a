@@ -33,10 +33,16 @@ ko=$here/e1_hook.ko
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 
-# Disarm on every exit but the hand-off. A signal exits with 128 + its number,
-# which runs the EXIT trap; SIGPIPE is ignored so a broken stdout fails the
-# write (and set -e exits) instead of killing the script outright.
+# Disarm on every exit but the hand-off. The reading runs in the background
+# and the launcher waits for it, because bash holds a trapped signal until a
+# foreground command ends: a signal now interrupts the wait at once. Its
+# handler stops the reading's own process (a save under way still finishes;
+# only the request for the suspend, its last step, can't come any more), waits
+# for it to end, and exits with 128 + the signal, which runs the EXIT trap.
+# SIGPIPE is ignored, so a broken stdout fails the write (and set -e exits)
+# instead of killing the launcher outright.
 armed=0
+reader=
 disarm() {
   if ((armed)); then
     armed=0
@@ -45,15 +51,26 @@ disarm() {
     fi
   fi
 }
+cancel() {
+  if [[ -n $reader ]]; then
+    kill -TERM "$reader" 2> /dev/null || true
+    wait "$reader" 2> /dev/null || true
+    reader=
+  fi
+  exit "$1"
+}
 trap 'disarm' EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'cancel 129' HUP
+trap 'cancel 130' INT
+trap 'cancel 143' TERM
 trap '' PIPE
 
 armed=1
 insmod "$ko" replay=5
 echo "e1_hook loaded with replay=5: the next suspend replays E1a"
-"$READING" take --label e1a --then suspend
+"$READING" take --label e1a --then suspend &
+reader=$!
+wait "$reader"
+reader=
 # The reading saved and asked for the suspend: leave the replay armed for it.
 armed=0
