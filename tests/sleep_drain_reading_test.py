@@ -60,6 +60,8 @@ def setup(tmp, ac="0", safe=False, usb=None, partner=False, save_fails=False):
     if partner:
         os.makedirs(os.path.join(tmp, "typec", "port1-partner"), exist_ok=True)
     os.makedirs(os.path.join(tmp, "log"), exist_ok=True)
+    write(os.path.join(tmp, "kbd", "brightness"), "40\n")
+    write(os.path.join(tmp, "kbd", "max_brightness"), "255\n")
     write(os.path.join(tmp, "peek"), PEEK)
     if safe:
         write(os.path.join(tmp, "run", "active"), "")
@@ -78,7 +80,7 @@ def env(tmp):
         "SDR_TYPEC": os.path.join(tmp, "typec"), "SDR_LOGDIR": os.path.join(tmp, "log"),
         "SDR_PEEK": os.path.join(tmp, "peek"), "SDR_PEEK_KO": os.path.join(tmp, "none.ko"),
         "SDR_SAFE": os.path.join(tmp, "stubs", "sleep-drain-safe"),
-        "SDR_SAFE_FLAG": os.path.join(tmp, "run", "active"),
+        "SDR_SAFE_FLAG": os.path.join(tmp, "run", "active"), "SDR_KBD": os.path.join(tmp, "kbd"),
         "SDR_INTERVAL": "1", "SDR_REBOOT_WAIT": "0", "SDR_V0_MINUTES": "0.05", "TZ": "UTC",
     }
 
@@ -141,6 +143,27 @@ def test_take():
         check(start.startswith("# walk ") and " BACC " in start and " BQCC " in start and " BAAC " in start
               and "key_count" not in start, "take: smc-peek's BAAC, BACC and BQCC lines only", start)
         check(calls(tmp) == [], "take --then none: no restart, no save", "\n".join(calls(tmp)))
+        check(kbd(tmp) == "40", "take --then none: the keyboard backlight back as it was", kbd(tmp))
+
+
+def kbd(tmp):
+    with open(os.path.join(tmp, "kbd", "brightness")) as f:
+        return f.read().strip()
+
+
+def test_safe_reboot_saves_first():
+    with tempfile.TemporaryDirectory() as tmp:
+        setup(tmp, safe=True)
+        r = run(tmp, "take", "--minutes", "0.05", "--then", "reboot")
+        ds = readings(tmp)
+        check(calls(tmp) == ["safe save", "systemctl reboot"] and ds and not os.path.exists(os.path.join(ds[0], "tail.tsv")),
+              "take --then reboot, safe boot: saves, then restarts (no tail: it would be lost)",
+              r.stdout + r.stderr + "\n".join(calls(tmp)))
+    with tempfile.TemporaryDirectory() as tmp:
+        setup(tmp, safe=True, save_fails=True)
+        r = run(tmp, "take", "--minutes", "0.05", "--then", "reboot")
+        check(r.returncode != 0 and calls(tmp) == ["safe save"] and "NOT SAVED" in r.stderr,
+              "take --then reboot, safe boot: a failed save doesn't restart", r.stdout + r.stderr + "\n".join(calls(tmp)))
 
 
 def test_refusals():
@@ -180,15 +203,35 @@ def test_v0_safe():
         setup(tmp, safe=True)
         r = run(tmp, "v0")
         ds = readings(tmp)
-        check(r.returncode == 0 and calls(tmp) == ["safe save"] and "hold the power key" in r.stdout,
+        check(r.returncode == 0 and calls(tmp) == ["safe save"] and ">>> Saved" in r.stdout,
               "v0, safe boot: save after the reading, then ask for the reset", r.stdout + r.stderr + "\n".join(calls(tmp)))
+        before = r.stdout.split(">>> Saved")[0]
+        check("Hold the power key now" not in before and "At " not in before
+              and "When the keyboard lights up, hold the power key" in before,
+              "v0, safe boot: no reset time before the save, only the light", before)
+        check(kbd(tmp) == "255", "v0, safe boot: the keyboard lights up once saved", kbd(tmp))
         check(len(ds) == 1 and summary(ds[0]).get("boot") == "safe" and summary(ds[0]).get("then") == "reset",
               "v0, safe boot: the reading says safe and reset")
     with tempfile.TemporaryDirectory() as tmp:
         setup(tmp, safe=True, save_fails=True)
         r = run(tmp, "v0")
-        check(r.returncode != 0 and "NOT SAVED" in r.stderr and "hold the power key now" not in r.stdout.lower().replace(">>> saved. now ", ""),
-              "v0, safe boot: a failed save says don't reset", r.stdout + r.stderr)
+        check(r.returncode != 0 and "NOT SAVED" in r.stderr and ">>> Saved" not in r.stdout and kbd(tmp) == "0",
+              "v0, safe boot: a failed save says don't reset, and the keyboard stays dark", r.stdout + r.stderr + kbd(tmp))
+
+
+def test_v0_same_boot_retries():
+    with tempfile.TemporaryDirectory() as tmp:
+        setup(tmp)
+        # One safe boot with three readings (retries after failed saves, say):
+        # one reset, not three.
+        for i, (boot, then, bid) in enumerate([("regular", "safe-reboot", "r0"), ("safe", "reset", "s1"),
+                                               ("safe", "reset", "s1"), ("safe", "reset", "s1")]):
+            write(os.path.join(tmp, "log", f"reading-20261105T10{i:02d}00", "summary"),
+                  f"time=x ts=1 label=v0 boot={boot} then={then} boot_id={bid}\n")
+        r = run(tmp, "v0")
+        c = calls(tmp)
+        check(c == ["safe collect", "safe boot", "systemctl reboot"] and "reset 2 of 3" in r.stdout,
+              "v0: retries in one safe boot count as one reset", r.stdout + r.stderr + "\n".join(c))
 
 
 def test_v0_done():
@@ -215,8 +258,10 @@ def main():
     test_median()
     test_take()
     test_refusals()
+    test_safe_reboot_saves_first()
     test_v0_regular()
     test_v0_safe()
+    test_v0_same_boot_retries()
     test_v0_done()
     print(f"{failed} failed" if failed else "all ok")
     return 1 if failed else 0

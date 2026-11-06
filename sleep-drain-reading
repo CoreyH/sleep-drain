@@ -15,22 +15,26 @@
 # Each reading is a new directory, /var/log/sleep-drain/reading-<time>/, so a
 # safe boot's save picks it up. Then ACTION:
 #   none         stop (the default)
-#   reboot       restart; the log runs on until the restart stops it
+#   reboot       restart (saving first in a safe boot); in a regular boot the
+#                log runs on until the restart stops it
 #   safe-reboot  make the next restart a safe boot, then restart. The safe
 #                boot is set up before the minutes start, so mkinitcpio's
 #                load is over by the reading.
-#   reset        in a safe boot: save, then ask for a power-key reset
+#   reset        in a safe boot: save, then light the keyboard: the signal
+#                for a power-key reset. Never before the save is done: it
+#                writes to the boot partition.
 #   suspend      save if this is a safe boot, then suspend through systemd
 #
 # The reading needs the Mac on battery, with nothing attached, left alone:
-# under load, charge_now reads 50-108 mAh off. Unplug the charger at least
-# 20 minutes before the first one.
+# under load, charge_now reads 50-108 mAh off. The keyboard backlight is off
+# during every reading, for the same load each time. Unplug the charger at
+# least 20 minutes before the first one.
 #
 # v0: one step of V0 (three power-key resets and three reboots, from awake)
 # per boot. In a regular boot, it collects what the last safe boot saved,
-# takes a reading and restarts into a safe boot; once three safe-boot
-# readings are in, it takes the last reading and stops. In a safe boot, it
-# takes a reading, saves it and asks for the reset.
+# takes a reading and restarts into a safe boot; once readings from three
+# different safe boots are in, it takes the last reading and stops. In a safe
+# boot, it takes a reading, saves it and asks for the reset.
 set -euo pipefail
 
 BAT=${SDR_BAT:-/sys/class/power_supply/macsmc-battery}
@@ -43,6 +47,7 @@ PEEK=${SDR_PEEK:-/sys/kernel/debug/smc-peek/values}
 PEEK_KO=${SDR_PEEK_KO:-/usr/local/lib/sleep-drain/smc_peek.ko}
 SAFE=${SDR_SAFE:-/usr/local/bin/sleep-drain-safe}
 SAFE_FLAG=${SDR_SAFE_FLAG:-/run/sleep-drain-safe/active}
+KBD=${SDR_KBD:-/sys/class/leds/kbd_backlight}
 INTERVAL=${SDR_INTERVAL:-10}
 REBOOT_WAIT=${SDR_REBOOT_WAIT:-120}
 V0_MINUTES=${SDR_V0_MINUTES:-10}
@@ -51,6 +56,13 @@ die() { echo "sleep-drain-reading: $*" >&2; exit 1; }
 need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }
 is_safe() { [[ -f $SAFE_FLAG ]]; }
 hhmmss() { date -d "@$1" +%H:%M:%S; }
+# The keyboard backlight's brightness, and setting it ("max" for full).
+kbd_get() { cat "$KBD/brightness" 2> /dev/null || true; }
+kbd_set() {
+  local v=$1
+  [[ $v == max ]] && v=$(cat "$KBD/max_brightness" 2> /dev/null || echo 255)
+  [[ -n $v && -w $KBD/brightness ]] && echo "$v" > "$KBD/brightness" 2> /dev/null || true
+}
 
 # What's attached: USB devices other than the root hubs, and USB-C partners.
 attached() {
@@ -115,7 +127,7 @@ save_or_die() {
 }
 
 take() {
-  local minutes=$1 label=$2 then=$3 boot=regular stuff start total end_at from dir t left n=0
+  local minutes=$1 label=$2 then=$3 boot=regular stuff start total end_at from dir t left n=0 kbd_before
   need_root
   is_safe && boot=safe
   case $then in
@@ -134,6 +146,8 @@ take() {
 
   dir=$LOGDIR/reading-$(date +%Y%m%dT%H%M%S)
   mkdir -p "$dir"
+  kbd_before=$(kbd_get)
+  kbd_set 0
   start=$(date +%s)
   total=$(awk -v m="$minutes" 'BEGIN { printf "%d", m * 60 + 0.5 }')
   end_at=$((start + total))
@@ -141,10 +155,18 @@ take() {
   echo "Reading until $(hhmmss "$end_at"). Leave the Mac alone till then: no keys, no trackpad, lid open."
   case $then in
     reset)
-      echo "At $(hhmmss $((end_at + 60))), hold the power key until the screen goes dark (about 10 s)," \
-           "then press it once more to start the Mac. No need to unlock it first." ;;
-    reboot|safe-reboot)
-      echo "Then it restarts by itself." ;;
+      echo "Then it saves the reading to the boot partition and lights the keyboard, about a minute later."
+      echo "When the keyboard lights up, hold the power key until the screen goes dark (about 10 s), then"
+      echo "press it once more to start the Mac. No need to unlock it. Not before the light: until then the"
+      echo "save may still be writing. If the keys aren't lit by $(hhmmss $((end_at + 300))), unlock the"
+      echo "screen and read this window instead, and don't reset."
+      ;;
+    reboot | safe-reboot)
+      if [[ $boot == safe ]]; then echo "Then it saves and restarts by itself."; else echo "Then it restarts by itself."; fi
+      ;;
+    suspend)
+      if [[ $boot == safe ]]; then echo "Then it saves and suspends."; else echo "Then it suspends."; fi
+      ;;
   esac
 
   peek > "$dir/smc-start.txt"
@@ -171,21 +193,30 @@ take() {
   cat "$dir/summary"
 
   case $then in
-    none) ;;
-    reboot|safe-reboot)
-      # The tail, from the reading to the restart, logged until the restart
-      # stops it.
-      (while :; do sample >> "$dir/tail.tsv"; sleep 1; done) &
-      local logger=$!
-      systemctl reboot || { kill "$logger"; die "couldn't restart; restart by hand"; }
+    none)
+      kbd_set "$kbd_before"
+      ;;
+    reboot | safe-reboot)
+      local logger=
+      if [[ $boot == safe ]]; then
+        # A safe boot's /var/log is RAM: the restart would lose the reading.
+        save_or_die
+      else
+        # The tail, from the reading to the restart, logged until the
+        # restart stops it.
+        (while :; do sample >> "$dir/tail.tsv"; sleep 1; done) &
+        logger=$!
+      fi
+      systemctl reboot || { [[ -z $logger ]] || kill "$logger"; die "couldn't restart; restart by hand"; }
       sleep "$REBOOT_WAIT"
-      kill "$logger" 2> /dev/null || true
+      [[ -z $logger ]] || kill "$logger" 2> /dev/null || true
       die "still running $REBOOT_WAIT s after asking for the restart"
       ;;
     reset)
       save_or_die
+      kbd_set max
       echo
-      echo ">>> Saved. Now hold the power key until the screen goes dark, then press it once more. <<<"
+      echo ">>> Saved, and the keyboard is lit. Hold the power key now until the screen goes dark, then press it once more. <<<"
       ;;
     suspend)
       if [[ $boot == safe ]]; then save_or_die; fi
@@ -195,7 +226,7 @@ take() {
 }
 
 cmd_take() {
-  local minutes=10 label= then=none
+  local minutes=10 label='' then=none
   while (($#)); do
     case $1 in
       --minutes) minutes=${2:-}; shift 2 || die "--minutes needs a value" ;;
@@ -232,7 +263,9 @@ cmd_v0() {
   "$SAFE" collect
   local readings resets
   readings=$(v0_readings)
-  resets=$(grep -c ' boot=safe ' <<< "$readings" || true)
+  # Safe boots, not readings: a retry in the same safe boot (after a failed
+  # save, say) isn't another reset.
+  resets=$(grep ' boot=safe ' <<< "$readings" | grep -o ' boot_id=[^ ]*' | sort -u | wc -l || true)
   if ((resets >= 3)); then
     if [[ $(tail -n 1 <<< "$readings") == *" boot=regular then=none "* ]]; then
       echo "V0 is done already: $resets resets, and the last reading after them."
