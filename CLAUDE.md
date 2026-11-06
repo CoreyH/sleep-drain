@@ -93,6 +93,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake
   /sys, with one failure injected per case; `tests/rtc_alarm_check_test.py`
   runs `rtc-alarm-test/check` the same way against a stub rtcwake;
+  `tests/e1_hook_check_test.py` runs `e1-hook/check` the same way against a
+  fake kernel that plays both runs, and `tests/e1_hook_verdict_test.py` runs
+  `e1-hook/verdict` on made-up captures, one fault per case;
   `tests/sleep_drain_valid_test.py` runs `sleep-drain-log`'s resume summary
   (drain and validity) on recorded snapshots; `tests/peek_decoders_test.py`
   checks `pmgr-map` and `smc-keys` on synthetic input, and `pmgr-map` on this
@@ -100,10 +103,7 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   safe boot's initramfs hook in mkinitcpio's busybox ash, in a bubblewrap
   sandbox with stub mount and blockdev, one failure per case;
   `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe
-  boot and `collect` in a fake next boot; `tests/e1_hook_verdict_test.py`
-  runs `e1-hook/verdict` on made-up captures, one fault per case, and
-  `tests/e1_hook_check_test.py` runs `e1-hook/check` as root in a bubblewrap
-  sandbox against a fake /sys and a fake kernel that plays both runs.
+  boot and `collect` in a fake next boot.
 - `patches/`: patch series for upstream, kept here for review before they're
   posted. `patches/pmu-alarm-t600x/` is the PMU RTC alarm for omacom/linux-aurora
   (B2); its README says what's in it and how it was checked.

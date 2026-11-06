@@ -16,7 +16,11 @@ for the real systemctl).
 Each case checks the exit status, the answers, that everything check changed
 is put back (pm_test, pm_debug_messages, pm_print_times, the trace clock,
 buffer and events, e1_hook unloaded) and the saves: one after run 1 with the
-results as a PATH, one at the end with them in /var/log/sleep-drain/.
+results as a PATH, one at the end with them in /var/log/sleep-drain/. Some
+cases play a fault: insmod failing, or a Ctrl-C during it once the module has
+loaded; systemctl suspend failing; a long sleep, with the hook's post line
+coming seconds after the resume; a Ctrl-C during the final save; and stdout
+closed, as when the terminal's reader has gone.
 """
 import os
 import shutil
@@ -40,6 +44,9 @@ TRACE_HEAD = """# tracer: nop
 #           TASK-PID     CPU#  |||||  TIMESTAMP  FUNCTION
 #              | |         |   |||||     |         |
 """
+# The hook's lines for run 2's sleep.
+PRE = "2026-11-06T11:30:00+01:00 pre  ts=1 safe=yes snap=20261106T113000\n"
+POST = "2026-11-06T11:31:05+01:00 post ts=66 snap=20261106T113000 slept_s=65 valid=no-short\n"
 
 
 def ts(us):
@@ -77,7 +84,8 @@ def sim_emit(items):
                 t.write(f"   kworker/u16:7-123     [001] ..... {ts(it[0])}: {it[2]}: {it[3]}\n")
 
 
-def sim_suspend(kind):
+def sim_suspend(kind, post_later=False):
+    """post_later: the hook's post line is left to the caller, to come later."""
     kv = {f: open(f"{P}/{f}").read().strip() for f in os.listdir(P)}
     n = {op: int(kv[f"{op}_calls"]) + 1 for op in OPS}
     t = sim_clock(1000)
@@ -133,8 +141,7 @@ def sim_suspend(kind):
         open("/sys/class/rtc/rtc0/wakealarm", "w").write("")
         open("/sys/power/pm_wakeup_irq", "w").write("145\n")
         with open("/var/log/sleep-drain.log", "a") as f:
-            f.write("2026-11-06T11:30:00+01:00 pre  ts=1 safe=yes snap=20261106T113000\n"
-                    "2026-11-06T11:31:05+01:00 post ts=66 snap=20261106T113000 slept_s=65 valid=no-short\n")
+            f.write(PRE + ("" if post_later else POST))
         os.makedirs("/var/log/sleep-drain/20261106T113000/pre", exist_ok=True)
 
 
@@ -159,7 +166,7 @@ def sim(argv):
         shutil.rmtree(os.path.dirname(P))
         sim_emit([(sim_clock(10), "log", "e1_hook: unloaded")])
     elif what == "suspend":
-        sim_suspend(argv[1])
+        sim_suspend(argv[1], argv[2:3] == ["late"])
 
 
 # --- the sandbox ----------------------------------------------------------
@@ -216,18 +223,40 @@ def make_world(tmp, case):
 
     me = f'python3 -I "{SELF}" --sim'
     calls = os.path.join(tmp, "calls")
-    suspend = f"/usr/bin/sleep 0.3\n{me} suspend alarm\n" if case != "suspend-fails" else \
-        'echo "Call to Suspend failed: Access denied" >&2\nexit 1\n'
+    suspend = f"/usr/bin/sleep 0.3\n{me} suspend alarm\n"
+    if case == "suspend-fails":
+        suspend = 'echo "Call to Suspend failed: Access denied" >&2\nexit 1\n'
+    elif case == "late-post":
+        # A long sleep: date +%s is 400 s on once it's over, and the hook
+        # writes its post line 1.5 s after the thaw.
+        suspend = (f'/usr/bin/sleep 0.3\n{me} suspend alarm late\n: > "{tmp}/slept"\n'
+                   f"( /usr/bin/sleep 1.5; echo '{POST.strip()}' >> /var/log/sleep-drain.log ) > /dev/null 2>&1 &\n")
+    # check's pid, for the Ctrl-Cs played below: insmod is its child.
+    insmod = f'#!/bin/bash\necho $PPID > "{tmp}/check-pid"\n/usr/bin/sleep 0.3\n'
+    if case == "insmod-interrupted":
+        # The module loads, then a Ctrl-C reaches check and insmod.
+        insmod += f"{me} insmod\nkill -INT $PPID\nexit 130\n"
+    else:
+        insmod += f"exec {me} insmod\n"
+    save = "#!/bin/bash\n"
+    if case == "save-interrupted":
+        # A Ctrl-C during the final save (no PATH) reaches check and the save.
+        save += f'[[ $# -gt 1 ]] || {{ kill -INT "$(< "{tmp}/check-pid")" $$; /usr/bin/sleep 0.3; }}\n'
+    save += (f'echo "$* | module $([[ -d /sys/module/e1_hook ]] && echo loaded || echo gone)'
+             f' | $(ls /var/log/sleep-drain | tr "\\n" " ")" >> "{calls}"\n'
+             'echo "saved to the boot partition (stub)"\n')
     stubs = {
-        "insmod": f"#!/bin/bash\n/usr/bin/sleep 0.3\nexec {me} insmod\n",
+        "insmod": insmod,
         "rmmod": f"#!/bin/bash\nexec {me} rmmod\n",
         "dmesg": f'#!/bin/bash\ncat "{tmp}/kmsg.log"\n',
         "rtcwake": '#!/bin/bash\necho "rtcwake (stub): $*"\necho 1793960000 > /sys/class/rtc/rtc0/wakealarm\n',
         "systemctl": f'#!/bin/bash\necho "systemctl $*" >> "{calls}"\n[[ $1 == suspend ]] || exit 0\n{suspend}',
         "sleep": "#!/bin/bash\nexec /usr/bin/sleep 0.6\n",
-        "sleep-drain-safe": f'#!/bin/bash\necho "$* | module $([[ -d /sys/module/e1_hook ]] && echo loaded'
-                            f' || echo gone) | $(ls /var/log/sleep-drain | tr "\\n" " ")" >> "{calls}"\n',
+        "sleep-drain-safe": save,
     }
+    if case == "late-post":
+        stubs["date"] = (f'#!/bin/bash\nif [[ $* == "+%s" && -e "{tmp}/slept" ]]; then\n'
+                         '  echo $(($(/usr/bin/date +%s) + 400))\nelse\n  exec /usr/bin/date "$@"\nfi\n')
     for name, text in stubs.items():
         write(os.path.join(tmp, "stubs", name), text, 0o755)
 
@@ -252,6 +281,15 @@ def run(case):
            "--setenv", "PATH", os.path.join(tmp, "stubs") + ":/usr/bin",
            "--setenv", "FAKE", tmp, "--setenv", "HOME", tmp,
            "/bin/bash", "-c", script]
+    if case == "closed-stdout":
+        # A pipe whose reader has gone: every write to it is a SIGPIPE.
+        r, w = os.pipe()
+        os.close(r)
+        try:
+            p = subprocess.run(cmd, stdout=w, stderr=w, timeout=120)
+        finally:
+            os.close(w)
+        return tmp, p.returncode, ""
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
     return tmp, p.returncode, p.stdout
 
@@ -330,6 +368,23 @@ def check_insmod_fails(tmp, rc, out):
     return problems
 
 
+def check_insmod_interrupted(tmp, rc, out):
+    # restored() has it that e1_hook, loaded before the Ctrl-C, is gone.
+    problems = check_insmod_fails(tmp, rc, out)
+    if rc != 130:
+        problems.append(f"exit {rc}, not 130")
+    return problems
+
+
+def check_closed_stdout(tmp, rc, out):
+    # Nothing to read on stdout: the same as a pass, by the files.
+    problems = [p for p in check_pass(tmp, rc, out) if p != "it doesn't say to collect"]
+    res = results(tmp)
+    if "save after run 1 failed" in (read(os.path.join(res, "log.txt")) if res else ""):
+        problems.append("log.txt has the save after run 1 failing")
+    return problems
+
+
 def check_suspend_fails(tmp, rc, out):
     res = results(tmp)
     summary = read(os.path.join(res, "summary.txt")) if res else ""
@@ -346,7 +401,11 @@ def check_suspend_fails(tmp, rc, out):
 CASES = [
     ("both runs, every answer yes", None, check_pass),
     ("insmod fails: stops, puts back, saves what it has", "insmod-fails", check_insmod_fails),
+    ("Ctrl-C during insmod: unloads what loaded, saves", "insmod-interrupted", check_insmod_interrupted),
     ("systemctl suspend fails: run 2 doesn't count", "suspend-fails", check_suspend_fails),
+    ("a long sleep: waits for the post line after the resume", "late-post", check_pass),
+    ("Ctrl-C during the final save: it finishes and says so", "save-interrupted", check_pass),
+    ("stdout closed: both saves happen all the same", "closed-stdout", check_closed_stdout),
 ]
 
 if __name__ == "__main__":

@@ -57,13 +57,17 @@
  *
  * The SMC is found and pinned as smc_peek does: macsmc stays loaded while this
  * module is, and each read holds the SMC device's lock and checks that macsmc
- * is still bound to it. From an op the lock is only tried (-EBUSY if it's
- * held): a suspend never waits on it.
+ * is still bound to it. From an op that lock is only tried (-EBUSY if it's
+ * held), but the read itself still waits for macsmc's mutex and up to 500 ms
+ * for the SMC's reply, and after a timeout holds that mutex for DRAIN_MS more,
+ * as smc_peek does (drain_after_timeout()). So an op can hold a suspend up for
+ * about 1.5 s, though it never fails it.
  *
  *   make -C e1-hook && pkexec e1-hook/check       (in a safe boot)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/kallsyms.h>
 #include <linux/kprobes.h>
@@ -83,6 +87,8 @@
 
 #define SMC_COMPATIBLE "apple,smc"
 #define SMC_DRIVER "macsmc"
+/* After a timeout, how long the SMC's mutex is held for its late reply. */
+#define DRAIN_MS 1000
 
 typedef void (*s2idle_set_ops_t)(const struct platform_s2idle_ops *ops);
 
@@ -123,8 +129,25 @@ MODULE_PARM_DESC(late_mv, "The value it read: the battery voltage in mV");
 MODULE_PARM_DESC(late_read_ns, "How long that read took, in ns");
 
 /*
+ * macsmc has one reply slot and no way to resynchronise: a reply that comes
+ * after its command timed out completes whichever command is sent next, which
+ * then fails with -EIO ("Command sequence mismatch"). So, as smc_peek does,
+ * this takes the SMC's mutex at once after a timeout and holds it for a while,
+ * so that the late reply most likely finds no command waiting: not another
+ * driver's (macsmc-power, macsmc-hwmon), nor the next read here. Only most
+ * likely: a command already queued on the mutex can still go first.
+ */
+static void drain_after_timeout(void)
+{
+	mutex_lock(&smc->mutex);
+	msleep(DRAIN_MS);
+	mutex_unlock(&smc->mutex);
+}
+
+/*
  * One B0AV read through macsmc's ordinary read. The caller holds the SMC
- * device's lock, so macsmc stays bound for it.
+ * device's lock, so macsmc stays bound for it. ns is the read's time alone,
+ * without the drain after a timeout.
  */
 static int read_b0av_locked(struct device *dev, unsigned int *mv, unsigned long long *ns)
 {
@@ -139,12 +162,17 @@ static int read_b0av_locked(struct device *dev, unsigned int *mv, unsigned long 
 	t0 = trace_clock_local();
 	ret = apple_smc_read_u16(smc, SMC_KEY(B0AV), &val);
 	*ns = trace_clock_local() - t0;
+	if (ret == -ETIMEDOUT)
+		drain_after_timeout();
 	if (!ret)
 		*mv = val;
 	return ret;
 }
 
-/* The same from an op, which only tries the lock: a suspend never waits on it. */
+/*
+ * The same from an op, which only tries the device lock; the read still waits
+ * for macsmc's mutex and the SMC's reply (see the top).
+ */
 static int read_b0av(unsigned int *mv, unsigned long long *ns)
 {
 	struct device *dev = &smc_pdev->dev;
