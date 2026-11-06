@@ -225,11 +225,16 @@ cmd_save() {
   mkdir -p "$mnt"
   mount -t vfat -o rw,flush "$src" "$mnt" || die "couldn't mount $src; the tar is at $stage.tar (RAM)"
   tar=$mnt/sleep-drain-safe/saved/$now.tar
+  local n=1
+  while [[ -e $tar ]]; do
+    n=$((n + 1))
+    tar=$mnt/sleep-drain-safe/saved/$now-$n.tar
+  done
   if mkdir -p "${tar%/*}" && cp "$stage.tar" "$tar.part" && sync -f "$tar.part" &&
      mv "$tar.part" "$tar" && sync -f "$mnt"; then
     umount "$mnt" || die "saved, but /boot is still mounted at $mnt: restart now"
     rm -f "$stage.tar"
-    echo "saved to the boot partition (sleep-drain-safe/saved/$now.tar)." \
+    echo "saved to the boot partition (sleep-drain-safe/saved/${tar##*/})." \
       "After the next regular boot: pkexec sleep-drain-safe collect"
   else
     rm -f "$tar.part"
@@ -263,13 +268,18 @@ cmd_collect() {
       fi
     fi
     mkdir -p /var/log/sleep-drain
+    # A later save in the same safe boot repeats what an earlier one saved, so
+    # an existing snapshot or journal that's identical is collected already.
+    # One that differs stays, and so does the tar.
+    local keep=0 dst
     for d in "$tmp"/log/sleep-drain/*; do
       [[ -e $d ]] || continue
-      if [[ -e /var/log/sleep-drain/${d##*/} ]]; then
-        echo "kept the existing /var/log/sleep-drain/${d##*/}; the saved one stays in $tar" >&2
-        tar=
-      else
+      dst=/var/log/sleep-drain/${d##*/}
+      if [[ ! -e $dst ]]; then
         cp -a "$d" /var/log/sleep-drain/
+      elif ! diff -rq "$d" "$dst" > /dev/null 2>&1; then
+        echo "kept the existing $dst, which differs from $t's copy; $tar stays" >&2
+        keep=1
       fi
     done
     if [[ -n $(ls -A "$tmp/paths" 2> /dev/null) ]]; then
@@ -278,7 +288,9 @@ cmd_collect() {
       echo "saved paths from $t are in /var/log/sleep-drain/safe-saved-$t/"
     fi
     rm -rf -- "${tmp:?}"
-    if [[ -n $tar ]]; then
+    if (( keep )); then
+      echo "collected $t, except what differs; $tar kept" >&2
+    else
       rm -f "$tar"
       echo "collected $t"
     fi

@@ -71,15 +71,21 @@ def sandbox(tmp, binds, args):
     return p.returncode, p.stdout
 
 
-def run_save(tmp, args, fail_mount=False):
+def run_save(tmp, args, fail_mount=False, setup=True):
     run = os.path.join(tmp, "run")
+    merged = os.path.join(tmp, "varlog")
+    binds = [(run, "/run"), (merged, "/var/log"), (os.path.join(tmp, "home"), "/home"),
+             (os.path.join(tmp, "proc"), "/proc"),
+             (os.path.join(tmp, "bootpart"), "/run/sleep-drain-safe/boot")]
+    if not setup:
+        # The same safe boot, later: whatever the caller changed since.
+        return sandbox(tmp, binds, ["save"] + args)
     write(os.path.join(run, "sleep-drain-safe/active"), "/dev/mapper/root\n")
     write(os.path.join(run, "sleep-drain-safe/lower/root/etc/fstab"), FSTAB)
     lower = os.path.join(run, "sleep-drain-safe/lower/_var_log")
     write(os.path.join(lower, "sleep-drain.log"), OLD_LOG)
     write(os.path.join(lower, "sleep-drain/1/pre/x"), "old\n")
     os.makedirs(os.path.join(run, "sleep-drain-safe/rw"), exist_ok=True)
-    merged = os.path.join(tmp, "varlog")
     write(os.path.join(merged, "sleep-drain.log"), OLD_LOG + NEW_LINES)
     write(os.path.join(merged, "sleep-drain/1/pre/x"), "old\n")
     write(os.path.join(merged, "sleep-drain/2/pre/x"), "new\n")
@@ -89,18 +95,17 @@ def run_save(tmp, args, fail_mount=False):
     os.makedirs(os.path.join(tmp, "calls"), exist_ok=True)
     if fail_mount:
         write(os.path.join(tmp, "calls/fail-mount"), "")
-    binds = [(run, "/run"), (merged, "/var/log"), (os.path.join(tmp, "home"), "/home"),
-             (os.path.join(tmp, "proc"), "/proc"),
-             (os.path.join(tmp, "bootpart"), "/run/sleep-drain-safe/boot")]
     return sandbox(tmp, binds, ["save"] + args)
 
 
-def run_collect(tmp, disk_log, fail_grep=False):
+def run_collect(tmp, disk_log, fail_grep=False, disk_files=None):
     if fail_grep:
         write(os.path.join(tmp, "calls/fail-grep"), "")
     disk = os.path.join(tmp, "disklog")
     write(os.path.join(disk, "sleep-drain.log"), disk_log)
     write(os.path.join(disk, "sleep-drain/1/pre/x"), "old\n")
+    for rel, text in (disk_files or {}).items():
+        write(os.path.join(disk, rel), text)
     os.makedirs(os.path.join(tmp, "run2"), exist_ok=True)
     os.makedirs(os.path.join(tmp, "boot"), exist_ok=True)
     shutil.copytree(os.path.join(tmp, "bootpart/sleep-drain-safe"),
@@ -155,6 +160,48 @@ def main():
         check(len(t) == 1 and os.path.exists(os.path.join(disk, "sleep-drain", t[0], "home/corey/results/r.txt")),
               "the given path is under safe-saved-<time>/, not over the original", d)
         check(os.listdir(os.path.join(tmp, "boot/sleep-drain-safe/saved")) == [], "the tar is deleted", d)
+    finally:
+        shutil.rmtree(tmp)
+
+    print("== two saves in one safe boot, then collect")
+    tmp = tempfile.mkdtemp()
+    try:
+        more = "2026-11-05T12:30:00+01:00 pre  f safe=yes snap=4\n2026-11-05T12:45:00+01:00 post g snap=4\n"
+        rc1, out1 = run_save(tmp, [])
+        # The safe boot goes on: one more sleep, then a second save.
+        write(os.path.join(tmp, "varlog/sleep-drain.log"), OLD_LOG + NEW_LINES + more)
+        write(os.path.join(tmp, "varlog/sleep-drain/4/pre/x"), "newer\n")
+        rc2, out2 = run_save(tmp, [], setup=False)
+        tars = sorted(os.listdir(os.path.join(tmp, "bootpart/sleep-drain-safe/saved")))
+        check(rc1 == 0 and rc2 == 0 and len(tars) == 2,
+              f"two tars, even within one second: {tars}", out1 + out2)
+        named = [l.split("sleep-drain-safe/saved/")[1].split(")")[0]
+                 for l in (out1 + out2).splitlines() if "sleep-drain-safe/saved/" in l]
+        check(sorted(named) == tars, f"each save names its own tar: {named}", out1 + out2)
+        rc, out = run_collect(tmp, OLD_LOG)
+        disk = os.path.join(tmp, "disklog")
+        log = open(os.path.join(disk, "sleep-drain.log")).read()
+        left = os.listdir(os.path.join(tmp, "boot/sleep-drain-safe/saved"))
+        d = f"exit {rc}\n{out}\nlog:\n{log}\nleft: {left}"
+        check(rc == 0 and left == [] and "kept" not in out,
+              "the second tar repeats the first, and both are collected and deleted", d)
+        check(log == OLD_LOG + NEW_LINES + more, "every new line once, in order", d)
+        check(open(os.path.join(disk, "sleep-drain/2/pre/x")).read() == "new\n"
+              and open(os.path.join(disk, "sleep-drain/4/pre/x")).read() == "newer\n",
+              "both sleeps' snapshots in place", d)
+    finally:
+        shutil.rmtree(tmp)
+
+    print("== collect over a snapshot that differs")
+    tmp = tempfile.mkdtemp()
+    try:
+        run_save(tmp, [])
+        rc, out = run_collect(tmp, OLD_LOG, disk_files={"sleep-drain/2/pre/x": "something else\n"})
+        left = os.listdir(os.path.join(tmp, "boot/sleep-drain-safe/saved"))
+        d = f"exit {rc}\n{out}\nleft: {left}"
+        check(rc == 0 and len(left) == 1 and f"/boot/sleep-drain-safe/saved/{left[0]} stays" in out
+              and open(os.path.join(tmp, "disklog/sleep-drain/2/pre/x")).read() == "something else\n",
+              "keeps the disk's copy and the tar, and names the tar", d)
     finally:
         shutil.rmtree(tmp)
 
