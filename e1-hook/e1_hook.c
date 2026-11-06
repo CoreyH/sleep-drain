@@ -404,8 +404,13 @@ unlock:
 		goto put_mod;
 	}
 	if (replay & 4) {
-		sleep_req_page = ioremap(E1_PMGR_SLEEP_REQ & PAGE_MASK, PAGE_SIZE);
-		pmp_dvfs_page = ioremap(E1_PMP_DVFS4 & PAGE_MASK, PAGE_SIZE);
+		/*
+		 * Non-posted, as maralcbr maps them (L808-809) and as Apple SoCs
+		 * need for on-chip registers: a posted write there can be lost
+		 * or raise an SError.
+		 */
+		sleep_req_page = ioremap_np(E1_PMGR_SLEEP_REQ & PAGE_MASK, PAGE_SIZE);
+		pmp_dvfs_page = ioremap_np(E1_PMP_DVFS4 & PAGE_MASK, PAGE_SIZE);
 		if (!sleep_req_page || !pmp_dvfs_page) {
 			ret = -ENOMEM;
 			goto unmap;
