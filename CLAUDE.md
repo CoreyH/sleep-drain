@@ -25,7 +25,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
 - `power-budget`, `wifi-link-budget`: awake A/B tests on the SMC's Total System
   Power. They run as root and restore everything, including the network, before
   exiting.
-- `sleep-guard`: powers off instead of sleeping when the battery is too low.
+- `sleep-guard`: powers off instead of suspending when the lid closes on
+  battery below a threshold. `upower-critical.conf`, a UPower drop-in, does
+  the same for UPower's critical-battery action at 2%, which by default
+  suspends here.
 - `test-kernel`: installs an aurora kernel package (such as an upstream PR's
   CI build) beside the regular linux-aurora, boots it once via grub-reboot,
   and removes it again, without touching anything pacman owns.

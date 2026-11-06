@@ -6,6 +6,8 @@ cd "$(dirname "$0")"
 install -m 755 sleep-drain-log /usr/lib/systemd/system-sleep/sleep-drain-log
 install -m 755 sleep-guard /usr/local/bin/sleep-guard
 install -m 644 sleep-guard.service /etc/systemd/system/sleep-guard.service
+# UPower's critical-battery action: power off, not suspend.
+install -D -m 644 upower-critical.conf /etc/UPower/UPower.conf.d/90-sleep-drain.conf
 install -m 755 sleep-drain-radios /usr/local/bin/sleep-drain-radios
 install -m 755 sleep-drain-diff /usr/local/bin/sleep-drain-diff
 install -m 755 sleep-drain-wake /usr/local/bin/sleep-drain-wake
@@ -38,4 +40,6 @@ chmod 644 /var/log/sleep-drain.log
 systemctl daemon-reload
 systemctl enable sleep-guard.service
 systemctl restart sleep-guard.service
+# UPower reads its configuration only when it starts.
+systemctl try-restart upower.service
 echo "installed"
