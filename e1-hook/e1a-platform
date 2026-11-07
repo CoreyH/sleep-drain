@@ -1,0 +1,91 @@
+#!/bin/bash
+# e1-hook/e1a-platform: E1a's replay under pm_test=platform, in a safe boot only,
+# as root:
+#
+#   pkexec /home/corey/src/sleep-drain/e1-hook/e1a-platform
+#
+# Loads e1_hook with replay=5 and suspends with pm_test=platform: steps 1-4 of
+# s2idle run, so prepare_late sends E1a's keys and PMP words, then
+# suspend_test() waits 5 s and the Mac resumes without sleeping. It prints what
+# each key write returned (replay_ret: MBSE=slpw, pmVC, WKTP, MBSE=slpa; 0 =
+# accepted), the NVMe's state and an SMC read before and after, and the
+# module's log, then tries to save them with sleep-drain-safe save.
+#
+# After slpa the NVMe may be gone (DeepIdle lost it; this Mac's first try, on
+# 2026-11-07, ended in an "Input/output error"). Then nothing can be read from
+# the disk any more: not a program that isn't in memory yet, and not the boot
+# partition the save writes to. So after the test suspend this uses only bash
+# builtins, files in RAM (sysfs, the safe boot's /var/log) and two programs it
+# runs once beforehand (dmesg, grep), and prints everything for a photo before
+# it tries the save.
+set -u
+die() { echo "e1a-platform: $*" >&2; exit 1; }
+
+ko=/home/corey/src/sleep-drain/e1-hook/e1_hook.ko
+[[ $EUID -eq 0 ]] || die "run with pkexec"
+[[ -f /run/sleep-drain-safe/active ]] || die "safe boot only: pkexec sleep-drain-safe boot, then restart"
+[[ ! -d /sys/module/e1_hook ]] || die "e1_hook is loaded already: restart into a fresh safe boot"
+[[ $(modinfo -F vermagic "$ko" | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r)"
+[[ $(< /sys/power/pm_test) == *"[none]"* ]] || die "pm_test isn't none"
+[[ $(< /sys/power/mem_sleep) == *"[s2idle]"* ]] || die "s2idle isn't the sleep mode"
+
+out=/var/log/e1a-platform-$(date +%Y%m%dT%H%M%S).txt
+: > "$out"
+# Builtins only from here on: printf, read, $(< file), [[ ]].
+log() { printf '%s\n' "$*"; printf '%s\n' "$*" >> "$out"; }
+now() { printf '%(%F %T)T' -1; }
+# One sysfs read, or what went wrong. A checked read: $(< file) returns an
+# empty string, and success, when the read itself fails (an EIO from the SMC,
+# say). A value read without its newline still counts.
+get() {
+  local v=
+  if IFS= read -r v 2> /dev/null < "$1" || [[ -n $v ]]; then
+    printf '%s' "$v"
+  else
+    printf 'READ FAILED'
+  fi
+}
+nvme() { local s; for s in /sys/class/nvme/nvme*/state; do [[ -e $s ]] && printf '%s=%s ' "${s%/state}" "$(get "$s")"; done; }
+smc() { printf 'B0AV-backed voltage_now=%s' "$(get /sys/class/power_supply/macsmc-battery/voltage_now)"; }
+# The kernel log's lines that contain $1. dmesg and grep are programs on the
+# disk: both run once before the test suspend, so they're in memory after it.
+# (bash's read can't read /dev/kmsg: it reads a byte at a time, and the kernel
+# refuses any read shorter than a record.)
+klog() {
+  local lines
+  if lines=$(dmesg 2>&1 | grep -F -- "$1"); then
+    while IFS= read -r line; do log "  $line"; done <<< "$lines"
+  else
+    log "  (dmesg | grep failed: $lines)"
+  fi
+}
+
+# pm_test back to none on every way out; and unless the replay has run, the
+# module must not stay armed for a later suspend.
+replayed=0
+trap 'echo none > /sys/power/pm_test; ((replayed)) || rmmod e1_hook 2> /dev/null' EXIT
+
+# Into memory now, for after the test suspend.
+dmesg > /dev/null; grep -F x /dev/null
+log "$(now) before: NVMe $(nvme); $(smc)"
+log "$(now) loading e1_hook replay=5"
+insmod "$ko" replay=5 || die "insmod failed"
+echo platform > /sys/power/pm_test || die "couldn't set pm_test"
+log "$(now) test suspend (pm_test=platform): the screen goes dark for about 10 s"
+echo freeze > /sys/power/state
+rc=$?
+[[ $(get /sys/module/e1_hook/parameters/replay_done) == 1 ]] && replayed=1
+echo none > /sys/power/pm_test
+log ""
+log "==================== TAKE A PHOTO OF THIS SCREEN ===================="
+log "$(now) back; the state write returned $rc (0 = the test suspend ran)"
+log "replay_done=$(get /sys/module/e1_hook/parameters/replay_done)" \
+    "replay_ret=$(get /sys/module/e1_hook/parameters/replay_ret)"
+log "  (replay_ret is MBSE=slpw, pmVC, WKTP, MBSE=slpa: 0 = accepted, 1 = not sent)"
+log "after: NVMe $(nvme); $(smc)"
+log "kernel log, e1_hook:"
+klog e1_hook
+log "====================================================================="
+log ""
+log "Saving to the boot partition (this fails if the NVMe is gone)..."
+/usr/local/bin/sleep-drain-safe save "$out" || log "NOT SAVED: the photo is the result"

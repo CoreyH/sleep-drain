@@ -3,7 +3,9 @@
 ## The problem
 
 Asleep, the MacBook draws about 2.2 W (about 3.5 %/h). A night in the cabinet costs
-about half the battery. macOS sleeps far deeper on this hardware (not measured here yet).
+about half the battery. macOS sleeps about twenty times deeper on this hardware: 7-10 mA,
+about 0.1 W, in a 185-minute clamshell sleep on battery under macOS 26.6.2 on 2026-10-30
+(measured on this Mac and posted to [omacom/linux-aurora#290](https://github.com/omacom/linux-aurora/issues/290)).
 Linux on Apple Silicon only has s2idle (`/sys/power/mem_sleep` = `[s2idle]`):
 the kernel freezes tasks, suspends devices and parks the CPUs in their deepest
 idle state. Nothing tells the SoC to enter the system-level sleep that macOS uses.
@@ -682,7 +684,7 @@ our own reading.
   On an M4 Max, `susp` powered the machine off, and the "wake" was a cold
   boot ([aurora-silicon#791](https://github.com/aurora-silicon/linux/discussions/791)).
 - macOS sleeps at 0.24 W on the M2 Pro (DeepIdle#3), against about 0.1 W on
-  this J314s (#290).
+  this J314s (measured here; #290).
 
 **Where Linux is.** Nobody has powered the SoC down yet.
 - Sven Peter's PSCI-via-EFI RFC
@@ -1391,3 +1393,89 @@ their floor's bit 4.
   USB-C-to-MagSafe cable could supply the Mac. A reset can't spoil its trace.
   But it measures input power, losses included, so it suits A/B
   comparisons, not the battery-side floor.
+
+### E1's checks and E1a (2026-11-06)
+
+All of these ran on battery with nothing attached, from `sleep-drain-reading`'s
+idle readings (10 minutes alone, the median of the last minute) in
+`/var/log/sleep-drain/reading-20261106T*`.
+
+**V0, the reset's own step.** Three reboots (regular → safe boot) and three
+power-key resets (safe → regular), alternating, 12:27-14:08.
+- `charge_now` across each, after the next boot's own drain
+  (−`charge_counter`/3600) and the tail before the reset: reboots −6.4,
+  +3.4, +0.8 mAh; power-key resets +0.7, −4.3, −1.7 mAh. Read at idle at
+  both ends, the gauge's estimate spans a reset to about ±6 mAh, far better
+  than the ±25 mAh the plan allowed, and the two kinds of reset don't differ.
+- **`BQCC` is a charge counter in mAh that doesn't restart.** Over each
+  10-minute window it rose 67-79 while `BAAC` counted 67.9-78.6 mAh, within
+  1 mAh every time; it rises on discharge (si16, so it wraps after 65.5 Ah).
+  Across each restart it rose by the charge used in between (the next
+  boot's own `BAAC` since power-on, plus the tail before the reset):
+  leftovers +0.4-0.6 mAh for reboots and +1.4-2.9 mAh for resets, where the
+  tail is estimated from the idle current. It's probably the battery gauge's
+  own counter (the SMC restarts with every boot; `BQCC` doesn't).
+- `BAAC` and `BACC` restart at every boot, reboot or reset. `BACC` dates
+  the power-on: the kernel starts 21-23 s after it, every time.
+
+**V2, E1's procedure on plain s2idle.** A safe-boot sleep from 15:14, lid
+closed in a bag, cut by the power key at about 19:55 (4.69 h). `BQCC` rose
+779 mAh; less the next boot's 25 mAh and a 2 mAh tail, the sleep used 752 mAh:
+**160 mA, about 1.94 W**, against the 157 mA of the earlier sleeps (+2%).
+`charge_now` gives 776 mAh, 165 mA (+5%). So a sleep that ends in a hard
+reset is measured to a few percent with nothing but the Mac, and `BQCC` is
+the measure from now on. V1 isn't needed.
+
+**The hook point** (`e1-hook/check`, safe boot, 20:18): both runs passed.
+Under `pm_test=platform` and in a 60 s alarm sleep, the module's
+`prepare_late` ran 133-135 µs after the last of the 115 noirq device
+callbacks (`simple-pm-bus soc`) and 1 µs after `dpm_suspend_noirq` ended,
+right before "suspend debug: Waiting" and "PM: suspend-to-idle"
+respectively. Its `B0AV` read there took 241-262 µs (11.8 V), the same as at
+`prepare`. The SMC answers at step 4, as the code reading said.
+
+**E1a: maralcbr's keys and PMP words, with the CPUs up** (`e1-hook/run-e1a`,
+`replay=5`, PR #27; safe boot, lid open). At the first `prepare_late`: 4 to
+0x28e3d8328, `MBSE`=`slpw`, `pmVC`=0x100, `WKTP`=2, 1 << 61 to 0x28e3d0860, 1
+to 0x28e3d8328, `MBSE`=`slpa` (the pages mapped non-posted, as maralcbr's
+are; the replay stops at the first failed key write). Asleep from about
+21:14:30; Corey held the power key at 22:00, with the Mac dark, and the next
+power-on was 22:00:48 by `BACC`.
+- No self-reset in 46 minutes, unlike DeepIdle's second `slpa` run.
+- `BQCC` rose 149 mAh; less the next boot's 22 mAh and a 2 mAh tail, the
+  sleep used 125 mAh in 0.772 h: **about 162 mA**, the same as plain s2idle.
+  `charge_now` agrees (about 170 mA).
+- Whether the SMC accepted the keys wasn't known that night: the replay's
+  log was in the safe boot's RAM, which the reset cleared. The next morning
+  answered it.
+
+**E1a under `pm_test=platform`** (`e1-hook/e1a-platform`, 2026-11-07 10:46,
+safe boot). The same replay at `prepare_late`, but `suspend_test()` then
+resumes after 5 s instead of sleeping, so the results can be read. From a
+photo of the screen (the save to the boot partition failed, see below):
+- **The SMC accepted every key:** `replay_ret=0,0,0,0`, with "MBSE=slpw 0",
+  "pmVC=0x100 0", "WKTP=2 0", "MBSE=slpa 0" in the log. The whole sequence
+  took 1.6 ms (135.159666-135.161280 s), right after `prepare_late`'s `B0AV`
+  read (238 µs). So the night's E1a sent all of it too.
+- **The SMC still answers after `slpa`:** the battery's `voltage_now`, read
+  through it after the resume, came back (12.356 V).
+- **The NVMe was lost:** `nvme0` went from `live` before to `resetting`
+  after, and every read from the disk failed with "Input/output error" from
+  then on: `sleep-drain-safe save` and `rtc-alarm-test/load` couldn't even
+  start. A restart (through the launcher; its programs were in memory)
+  brought it back. An earlier attempt that morning ended in the same
+  "Input/output error", unsaved. DeepIdle lost the NVMe the same way on
+  T6020; here it happens without a real sleep. macOS, and maralcbr's
+  replay, shut the ANS down before `slpw`.
+- Everything else resumed: the display, the terminal, the SMC. The Mac sat
+  normally for 5 minutes afterwards, with no reset and no freeze.
+- (An accidental run of `run-e1a` that morning, 09:51, put the Mac to sleep
+  with the same replay for about 3 minutes; it ended in a restart with no
+  reading after it, so it has no drain figure.)
+
+So the keys work, and the SMC acts on them (the NVMe goes), but with the
+CPUs running the rest of the SoC doesn't sleep and nothing is saved. The
+saving has to come from the steps after `slpa`: maralcbr's 74 post-`slpa`
+writes and the CPU power-down. That's the next run, the floor: the whole
+one-way replay, measured with `BQCC` across the power-key reset, against
+macOS's 0.1 W.
