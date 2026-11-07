@@ -210,7 +210,9 @@ steps, and restarting the DCP and the PMP afterwards.
       four keys; it still answers after `slpa`; the NVMe is lost until a
       restart; no reset, no freeze. The alarm sleep couldn't run: its
       programs are on the lost disk.
-    - [ ] **The floor: the whole one-way replay** (`pkexec
+    - [x] **The floor: the whole one-way replay** (ran 2026-11-07: the Mac
+      reset itself about 30 s in, the S2R entry's watchdog; RESEARCH.md, "The
+      floor"). (`pkexec
       e1-hook/run-floor`: `replay=15 oneway=1`, maralcbr's bits 0-3 in their
       default order: the 31 watchdog and error-handler writes, the keys and
       PMP words, the other 43 post-`slpa` writes, their 500 ms, then every
@@ -235,10 +237,15 @@ steps, and restarting the DCP and the PMP afterwards.
         photograph it, then restart.
       - Back in the regular boot instead of dark: a fault, restarted by
         run-floor's `kernel.panic=10`. `BACC` dates it.
-  - **E2 onwards, from the floor's result.** If it stays high, one at a time
-    on top of it: the domains macOS has off (bits 8-10), the SEP sleep
-    message (bit 11), the AOP's notices (bit 6), the internal PCIe ports
-    (bit 13).
+  - **E2 onwards: make the S2R entry complete.** The floor's reset about
+    30 s in is the entry watchdog's (DeepIdle: the 0x2925c4000 write is the
+    commit and arms it). Each attempt is quick: a short safe-boot run with
+    no reading needed, since a reset about 30 s in means "not yet". On top of
+    the floor, one at a time: maralcbr's other bits (the domains macOS has
+    off, 8-10; the AOP's notices, 6; the internal PCIe ports, 13), and the
+    PMU boot stage 0x50. The SEP's SLEEP message (bit 11) touches state the
+    SEP shares with macOS: only with Corey's OK. Only an attempt that
+    doesn't reset gets the full BQCC reading.
   - **The code.** An out-of-tree module: our own, written from these
     findings and maralcbr's tables (maralcbr/linux is GPL-2.0, as part of
     the kernel). maralcbr ran the replay from macsmc-reboot at s2idle's
