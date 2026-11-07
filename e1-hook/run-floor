@@ -8,24 +8,25 @@
 # replay (e1_hook.c says what: the keys, the PMP words, the 74 post-slpa
 # writes, then every CPU powered down for good), then takes the 10-minute
 # reading, saves it and suspends, as V2 and E1a did
-# (sleep-drain-reading take --label floor --then suspend). Nothing wakes the
-# Mac from the floor. When the planned time is up:
-#   1. Press the power key once, briefly, and wait 30 s. If the session comes
-#      back (the lock screen or the desktop, not a boot), the floor didn't
-#      happen: a replay that stops short fails its suspend, so that the Mac
-#      wakes with e1_hook's log. Don't reset. Photograph the output of
-#        dmesg | grep e1_hook
-#        for f in /sys/module/e1_hook/parameters/*; do echo "$f=$(< $f)"; done
-#      (the second is bash builtins only, for when the disk is gone), then
-#      try pkexec /usr/local/bin/sleep-drain-safe save.
-#   2. If it stays dark, hold the key until the Mac is off (about 10 s; the
-#      screen gives no cue), let go, and press it once more straight away,
-#      so that BACC dates the end. Then, in the next boot:
-#        pkexec bash -c '/usr/local/bin/sleep-drain-safe collect &&
-#                        /usr/local/bin/sleep-drain-reading take --label floor'
-# A Mac found awake at any time after the hand-off didn't reach the floor
-# either: a suspend that ends before prepare_late calls the replay off. Read
-# it as in step 1, and restart before anything else suspends it.
+# (sleep-drain-reading take --label floor --then suspend), and waits for that
+# suspend. It ends one of two ways:
+#   - The floor: the screen goes dark, if it isn't already, and stays dark.
+#     Nothing wakes the Mac from it. When the planned time is up:
+#       1. Press the power key once, briefly, and wait 30 s. If the screen
+#          comes back, it's the other ending, below.
+#       2. If it stays dark, hold the key until the Mac is off (about 10 s;
+#          the screen gives no cue), let go, and press it once more straight
+#          away, so that BACC dates the end. Then, in the next boot:
+#            pkexec bash -c '/usr/local/bin/sleep-drain-safe collect &&
+#                            /usr/local/bin/sleep-drain-reading take --label floor'
+#   - No floor: the screen comes back, or never goes dark, and this prints
+#     "NO FLOOR" with what happened (unlock the screen to see it), and tries
+#     to save it. Photograph it, then restart. That happens when the suspend
+#     fails, when the replay stops short (e1_hook then fails the suspend, so
+#     that the Mac wakes with its log), or when no suspend begins within
+#     120 s. With e1_hook loaded, nothing else can put the Mac to sleep: only
+#     the first suspend after its load can replay, and any suspend that
+#     doesn't replay fails. So dark always means the floor.
 #
 # A fault in the replay (an oops, or the SError a bad write raises) would
 # leave the Mac hung and dark, as if it were in the floor. So this sets
@@ -33,18 +34,25 @@
 # fault then restarts the Mac 10 s later (into the regular boot), which BACC
 # dates. They stay set until the restart.
 #
-# The module stays loaded only once the reading has saved and asked for the
-# suspend. Any other way out (a failed reading or save, a closed terminal, a
-# signal, a broken stdout) unloads it again, so nothing stays armed for a later
-# lid close without its saved reading.
+# Until the reading has asked for the suspend, any other way out (a failed
+# reading or save, a closed terminal, a signal, a broken stdout) unloads the
+# module again, so nothing stays armed without its saved reading. After that,
+# a way out calls the replay off instead: an unload then would let the
+# suspend already asked for sleep as a plain s2idle, dark like the floor.
 set -euo pipefail
 
 SAFE_FLAG=${FLOOR_SAFE_FLAG:-/run/sleep-drain-safe/active}
 AC=${FLOOR_AC:-/sys/class/power_supply/macsmc-ac}
 MODDIR=${FLOOR_MODDIR:-/sys/module/e1_hook}
 READING=${FLOOR_READING:-/usr/local/bin/sleep-drain-reading}
+SAVE=${FLOOR_SAVE:-/usr/local/bin/sleep-drain-safe}
 PM_TEST=${FLOOR_PM_TEST:-/sys/power/pm_test}
+STATS=${FLOOR_STATS:-/sys/power/suspend_stats}
 SYSCTL=${FLOOR_SYSCTL:-/proc/sys/kernel}
+LOGDIR=${FLOOR_LOGDIR:-/var/log}
+RUNDIR=${FLOOR_RUNDIR:-/run}
+# How long, awake, the suspend may take to begin after the reading asks.
+WATCH_S=${FLOOR_WATCH_S:-120}
 
 die() { echo "run-floor: $*" >&2; exit 1; }
 
@@ -54,30 +62,39 @@ ko=$here/e1_hook.ko
 [[ -f $SAFE_FLAG ]] || die "the floor runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
 [[ -f $ko ]] || die "no $ko: make -C $here"
 [[ $(modinfo -F vermagic "$ko" | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r): make -C $here"
-# E1a's build has no oneway, and its insmod would fail with a bare "Invalid
-# parameters".
-[[ $'\n'$(modinfo -F parm "$ko") == *$'\n'oneway:* ]] || die "$ko is an older build, without the floor: make -C $here"
+# Builds before this one have no cancel (E1a's has no oneway either), and
+# their insmod would fail with a bare "Invalid parameters", or load without
+# the one-shot rule.
+[[ $'\n'$(modinfo -F parm "$ko") == *$'\n'cancel:* ]] || die "$ko is an older build, without the floor: make -C $here"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 [[ $(cat "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none, so the suspend wouldn't be a real one: echo none > $PM_TEST"
 
-# Disarm on every exit but the hand-off. The reading runs in the background
-# and the launcher waits for it, because bash holds a trapped signal until a
+# Disarm on every way out but the floor itself. Before the hand-off
+# (armed=1), that's an unload. The reading runs in the background and the
+# launcher waits for it, because bash holds a trapped signal until a
 # foreground command ends: a signal now interrupts the wait at once. Its
 # handler stops the reading's own process (a save under way still finishes;
 # only the request for the suspend, its last step, can't come any more), waits
 # for it to end, and exits with 128 + the signal, which runs the EXIT trap.
-# SIGPIPE is ignored, so a broken stdout fails the write (and set -e exits)
-# instead of killing the launcher outright.
+# After the hand-off (armed=2), it's calling the replay off: the suspend may be
+# on its way, and e1_hook has to stay loaded for it, so that it fails. SIGPIPE
+# is ignored, so a broken stdout fails the write (and set -e exits) instead of
+# killing the launcher outright.
 armed=0
 reader=
 disarm() {
-  if ((armed)); then
-    armed=0
+  case $armed in
+  1)
     if rmmod e1_hook 2> /dev/null; then
       echo "run-floor: nothing replayed; e1_hook unloaded" >&2 2> /dev/null || true
     fi
-  fi
+    ;;
+  2)
+    printf '1\n' 2> /dev/null > "$MODDIR/parameters/cancel" || true
+    ;;
+  esac
+  armed=0
 }
 cancel() {
   if [[ -n $reader ]]; then
@@ -95,15 +112,86 @@ trap '' PIPE
 
 echo 10 > "$SYSCTL/panic"
 echo 1 > "$SYSCTL/panic_on_oops"
+
+# Ready for the watch now, while the disk is certainly there: its log file, a
+# FIFO for read -t to wait on (a sleep without a program), and dmesg and grep,
+# run once so that they're in memory. After a replay the NVMe may be gone, and
+# then a program that isn't in memory can't start (e1a-platform, #28).
+out=$LOGDIR/run-floor-$(date +%Y%m%dT%H%M%S).txt
+: > "$out"
+fifo=$(mktemp -u "$RUNDIR/run-floor.XXXXXX")
+mkfifo -m 600 "$fifo"
+exec {tick}<> "$fifo"
+rm -f "$fifo"
+dmesg > /dev/null 2>&1 || true
+grep -F x /dev/null || true
+
 armed=1
 insmod "$ko" replay=15 oneway=1
 # A build that doesn't know them would load with both ignored, and only warn.
 [[ $(cat "$MODDIR/parameters/replay") == 15 && $(cat "$MODDIR/parameters/oneway") == Y ]] ||
   die "e1_hook didn't take replay=15 oneway=1: make -C $here"
-echo "e1_hook loaded with replay=15 oneway=1: the next suspend is the floor, one way. At the planned time, press the power key briefly and wait 30 s first; hold it only if the Mac stays dark (this script's header says why)"
+echo "e1_hook loaded with replay=15 oneway=1. Leave the Mac alone: in about 10 minutes the reading ends and the Mac suspends into the floor, one way (this script's header says how to end it)"
 "$READING" take --label floor --then suspend &
 reader=$!
 wait "$reader"
 reader=
-# The reading saved and asked for the suspend: leave the replay armed for it.
-armed=0
+
+# The reading saved and asked for the suspend, but systemctl only queues it.
+# So this stays, and watches for the kernel's try: every suspend adds one to
+# suspend_stats' success or fail, whether it fails or not. If the floor runs,
+# nothing here runs again. If the suspend comes back, or none has begun within
+# WATCH_S s awake, the floor didn't happen: the replay is called off, and what
+# happened is printed, for a photo, and saved if the disk still answers. From
+# here on: bash builtins, and the two programs run above.
+armed=2
+log() {
+  printf '%s\n' "$*" 2> /dev/null || true
+  printf '%s\n' "$*" 2> /dev/null >> "$out" || true
+}
+now() { printf '%(%F %T)T' -1; }
+# One sysfs read, or what went wrong: a checked read, as in e1a-platform.
+get() {
+  local v=
+  if IFS= read -r v 2> /dev/null < "$1" || [[ -n $v ]]; then
+    printf '%s' "$v"
+  else
+    printf 'READ FAILED'
+  fi
+}
+tries() { printf 'success=%s fail=%s' "$(get "$STATS/success")" "$(get "$STATS/fail")"; }
+klog() {
+  local lines line
+  if lines=$(dmesg 2>&1 | grep -F -- "$1"); then
+    while IFS= read -r line; do log "  $line"; done <<< "$lines"
+  else
+    log "  (dmesg | grep found nothing, or failed: $lines)"
+  fi
+}
+
+base=$(tries)
+for ((i = 0; i < WATCH_S; i++)); do
+  read -r -t 1 -u "$tick" || true
+  [[ $(tries) == "$base" ]] || break
+done
+if ((i < WATCH_S)); then
+  what="the suspend failed or came back"
+else
+  what="no suspend began within $WATCH_S s"
+fi
+printf '1\n' 2> /dev/null > "$MODDIR/parameters/cancel" || true
+p=$MODDIR/parameters
+log ""
+log "===================== NO FLOOR: TAKE A PHOTO OF THIS SCREEN ====================="
+log "$(now) $what: the floor didn't happen, and the replay is called off"
+log "suspend_stats: before $base, now $(tries); last failed step $(get "$STATS/last_failed_step"), errno $(get "$STATS/last_failed_errno")"
+log "e1_hook: attempts=$(get "$p/attempts") prepare_late_calls=$(get "$p/prepare_late_calls") replay_done=$(get "$p/replay_done")"
+log "         replay_ret=$(get "$p/replay_ret") eh_writes=$(get "$p/eh_writes") post_writes=$(get "$p/post_writes") late_ret=$(get "$p/late_ret")"
+log "  (replay_done: 1 = ran and stopped short, 2 = called off; replay_ret: MBSE=slpw, pmVC, WKTP, MBSE=slpa, 0 = accepted, 1 = not sent)"
+log "kernel log, e1_hook:"
+klog e1_hook
+log "================================================================================="
+log "Saving to the boot partition (this fails if the NVMe is gone)..."
+"$SAVE" save "$out" || log "NOT SAVED: the photo is the result"
+log "Then restart the Mac. With e1_hook loaded it can't sleep, so don't close the lid first."
+exit 2

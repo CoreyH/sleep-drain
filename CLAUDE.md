@@ -102,12 +102,19 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   (`e1-hook/run-floor`: the Mac never wakes from it; its header says how to
   end it with the power key). `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
-  on the command line); if their replay stops short, the suspend fails and
-  the Mac wakes with the log, and a suspend that ends before `prepare_late`
-  calls them off. The module won't build or load if any of its writes would
+  on the command line). Only the first suspend after their load can replay
+  (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s
+  first line), and any suspend that doesn't replay to its end fails with
+  `-EIO`, so with them loaded the Mac is in the floor or awake, never in a
+  plain s2idle; writing 1 to `cancel` calls the replay off. run-floor waits
+  for its suspend (`/sys/power/suspend_stats`) and, if it fails, comes back
+  or never begins, calls the replay off and prints "NO FLOOR" with what
+  happened. The module won't build or load if any of its writes would
   touch the never-write list (0x28e0802d8, `ps_pmp`; 0x28e700000). Both
   launchers run in a safe boot only, take the reading and suspend, and
-  unload the module on any other way out (`tests/e1a_launcher_test.py`).
+  unload the module on any other way out before the suspend is asked for;
+  after that, run-floor calls the replay off instead
+  (`tests/e1a_launcher_test.py`).
   `e1-hook/e1a-platform` runs E1a's replay under `pm_test=platform` instead
   and prints what each key write returned, for a photo, since the NVMe is
   gone after `slpa`. Not installed by `install.sh`.

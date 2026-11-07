@@ -43,8 +43,9 @@
  * the hook point, RESEARCH.md "Before E1") it never writes an SMC key and
  * touches no MMIO. The replays, E1a's and the floor's, are below. Every op
  * returns 0, so it never fails or aborts a suspend, but for one case: with
- * replay 13 or 15, a prepare_late whose replay stops short fails the suspend
- * with -EIO (below). The floor's prepare_late never returns at all. .check and
+ * replay 13 or 15, a prepare_late that doesn't run the replay to its end fails
+ * the suspend with -EIO (below). The floor's prepare_late never returns at
+ * all. .check and
  * .wake stay NULL: s2idle_loop() calls .wake instead of pm_wakeup_pending()
  * when it's set.
  *
@@ -73,6 +74,7 @@
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/atomic.h>
 #include <linux/bits.h>
 #include <linux/build_bug.h>
 #include <linux/delay.h>
@@ -82,7 +84,6 @@
 #include <linux/kprobes.h>
 #include <linux/mfd/macsmc.h>
 #include <linux/module.h>
-#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -94,6 +95,7 @@
 #include <linux/trace_clock.h>
 #include <asm/barrier.h>
 #include <asm/daifflags.h>
+#include <trace/events/power.h>
 
 #if IS_ENABLED(CONFIG_ACPI)
 #error "ACPI registers s2idle ops of its own, and this module would replace them"
@@ -173,12 +175,20 @@ MODULE_PARM_DESC(prepare_ret, "The last B0AV read at prepare: 0, -errno, or 1 be
  * those writes, is untried. With bit 3, nothing is printed from MBSE=slpa on,
  * unless slpa fails, as in their fast mode (L822, L877-878).
  *
- * 13 and 15 are armed for one suspend: one that ends without reaching
- * prepare_late (tasks that won't freeze, a device's suspend error, an early
- * wakeup, pm_test=freezer or devices) calls them off (replay_done=2), so that
- * they can't run at a later suspend, away from their reading. They load only
- * in a safe boot, with sleepdrain.safe on the kernel command line, since the
- * reset that ends them could damage a writable disk.
+ * 13 and 15 belong to the first suspend after load, and only to it. A probe
+ * on the suspend_resume tracepoint counts every suspend at enter_state()'s
+ * first line (suspend.c L580), before its mutex, its filesystem sync and
+ * PM_SUSPEND_PREPARE. So a suspend that ends anywhere short of prepare_late
+ * (a sync cut short by a wakeup, tasks that won't freeze, a device's suspend
+ * error, pm_test=freezer or devices) uses the replay up: the next suspend
+ * calls it off (replay_done=2) as it begins, and it can't run away from its
+ * reading. Writing 1 to cancel calls it off at once; run-floor does, when its
+ * suspend doesn't come or comes back. And while 13 or 15 is loaded, a suspend
+ * that doesn't run the replay fails with -EIO at prepare_late, so the Mac
+ * never sleeps a plain s2idle that would look like the floor: it's in the
+ * floor or awake. They load only in a safe boot, with sleepdrain.safe on the
+ * kernel command line, since the reset that ends them could damage a
+ * writable disk.
  *
  * Their 500 ms is kept, with its two reads: their fast mode always makes it
  * (it maps the AFNC page whenever it maps the table, L816), so it's part of
@@ -200,7 +210,31 @@ module_param(oneway, bool, 0444);
 MODULE_PARM_DESC(oneway, "Must be 1 for replay=13 or 15, which can't be undone (15 never resumes); ignored for 0 and 5");
 static unsigned int replay_done;
 module_param(replay_done, uint, 0444);
-MODULE_PARM_DESC(replay_done, "0 not yet, 1 the replay has run at a prepare_late, 2 called off (13 and 15: a suspend ended before prepare_late)");
+MODULE_PARM_DESC(replay_done, "0 not yet, 1 the replay has run at a prepare_late, 2 called off (13 and 15: a suspend began after the first, which never reached prepare_late; or cancel)");
+static atomic_t attempt_count = ATOMIC_INIT(0);
+static unsigned int attempts;
+module_param(attempts, uint, 0444);
+MODULE_PARM_DESC(attempts, "13 and 15: how many suspends have begun since load; only the first can replay");
+
+/* Writing 1 calls the replay off, if it hasn't run. */
+static int e1_cancel_set(const char *val, const struct kernel_param *kp)
+{
+	bool v;
+
+	if (kstrtobool(val, &v) || !v)
+		return -EINVAL;
+	if (!READ_ONCE(replay_done)) {
+		WRITE_ONCE(replay_done, 2);
+		pr_emerg("replay: called off by a write to cancel; nothing sent\n");
+	}
+	return 0;
+}
+
+static const struct kernel_param_ops e1_cancel_ops = {
+	.set = e1_cancel_set,
+};
+module_param_cb(cancel, &e1_cancel_ops, NULL, 0200);
+MODULE_PARM_DESC(cancel, "Write 1 to call the replay off, if it hasn't run (13 and 15: every suspend then fails)");
 static int replay_ret[4] = { 1, 1, 1, 1 };
 static int replay_nret = 4;
 module_param_array(replay_ret, int, &replay_nret, 0444);
@@ -638,18 +672,31 @@ unlock:
 }
 
 /*
- * Step 4, after the noirq pass: where E1's replay runs. With 13 or 15, a
- * replay that stopped short fails the suspend (see the replays, above).
+ * Step 4, after the noirq pass: where E1's replay runs. With 13 or 15, this
+ * suspend replays or fails (see the replays, above): it fails with -EIO if the
+ * replay has run already, was called off, or stops short.
  */
 static int e1_prepare_late(void)
 {
 	u64 t = trace_clock_local();
 	unsigned int n = ++prepare_late_calls;
+	unsigned int done;
 
 	late_t_ns = t;
 	late_ret = read_b0av(&late_mv, &late_read_ns);
 	log_read("prepare_late", n, t, late_ret, late_mv, late_read_ns);
-	if (replay && !replay_done && !e1_replay() && (replay & 8)) {
+	if (!(replay & 8)) {
+		if (replay && !replay_done)
+			e1_replay();
+		return 0;
+	}
+	done = READ_ONCE(replay_done);
+	if (done) {
+		pr_emerg("replay: %s; this suspend fails with -EIO: with replay=%u loaded, nothing sleeps but the replay\n",
+			 done == 1 ? "run already" : "called off", replay);
+		return -EIO;
+	}
+	if (!e1_replay()) {
 		pr_emerg("replay: stopped short; this suspend fails with -EIO, so that the Mac wakes with this log\n");
 		return -EIO;
 	}
@@ -657,25 +704,26 @@ static int e1_prepare_late(void)
 }
 
 /*
- * Registered for 13 and 15 only. PM_POST_SUSPEND ends every suspend that got
- * as far as PM_SUSPEND_PREPARE, whether it reached prepare_late or not, and
- * this notifier has the highest priority, so that another's refusal of
- * PM_SUSPEND_PREPARE still sends it PM_POST_SUSPEND. A suspend that ended
- * without running the replay calls it off.
+ * Registered for 13 and 15 only: the suspend_resume tracepoint's
+ * suspend_enter, start, is enter_state()'s first line, for every suspend
+ * (suspend.c L580). A suspend that begins while the replay hasn't run means
+ * an earlier one ended short of prepare_late: the replay is called off. A
+ * tracepoint probe can't sleep; this doesn't.
  */
-static int e1_pm_notify(struct notifier_block *nb, unsigned long action, void *data)
+static void e1_suspend_resume(void *data, const char *action, int val, bool start)
 {
-	if (action == PM_POST_SUSPEND && !replay_done) {
-		replay_done = 2;
-		pr_emerg("replay: a suspend ended before prepare_late; called off, nothing sent\n");
-	}
-	return NOTIFY_DONE;
-}
+	unsigned int n;
 
-static struct notifier_block e1_pm_nb = {
-	.notifier_call = e1_pm_notify,
-	.priority = INT_MAX,
-};
+	if (!start || strcmp(action, "suspend_enter"))
+		return;
+	n = atomic_inc_return(&attempt_count);
+	WRITE_ONCE(attempts, n);
+	if (n > 1 && !READ_ONCE(replay_done)) {
+		WRITE_ONCE(replay_done, 2);
+		pr_emerg("replay: suspend %u began, and the first never reached prepare_late; called off, nothing sent\n",
+			 n);
+	}
+}
 
 static void e1_restore_early(void)
 {
@@ -907,9 +955,9 @@ unlock:
 	}
 
 	if (replay & 8) {
-		ret = register_pm_notifier(&e1_pm_nb);
+		ret = register_trace_suspend_resume(e1_suspend_resume, NULL);
 		if (ret) {
-			pr_err("can't register the PM notifier: %d\n", ret);
+			pr_err("can't register the suspend_resume probe: %d\n", ret);
 			goto unmap;
 		}
 	}
@@ -933,8 +981,10 @@ static void __exit e1_hook_exit(void)
 	 * once it returns no op can run.
 	 */
 	set_ops(NULL);
-	if (replay & 8)
-		unregister_pm_notifier(&e1_pm_nb);
+	if (replay & 8) {
+		unregister_trace_suspend_resume(e1_suspend_resume, NULL);
+		tracepoint_synchronize_unregister();
+	}
 	e1_unmap();
 	module_put(smc_owner);
 	put_device(&smc_pdev->dev);

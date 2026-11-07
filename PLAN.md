@@ -224,12 +224,14 @@ steps, and restarting the DCP and the PMP afterwards.
       never-write list (the module checks again at load). How to read the
       night:
       - Dark until the power key: the replay reached the CPUs' power-down.
-        `BQCC` gives the floor.
-      - Awake again within seconds of the hand-off, or at the short press
-        before the reset: no floor. A replay that stops short fails its
-        suspend (`-EIO`), and a suspend that ends before `prepare_late`
-        calls the replay off. `e1_hook`'s log and parameters say which;
-        photograph them first.
+        `BQCC` gives the floor. Nothing else can make the Mac sleep with
+        `e1_hook` loaded: only the first suspend after its load can replay,
+        and any suspend that doesn't replay fails.
+      - Awake, with run-floor's "NO FLOOR" block on the screen: no floor.
+        The suspend failed, the replay stopped short (it then fails its
+        suspend, `-EIO`), or no suspend began within 120 s. The block says
+        which, from `suspend_stats` and `e1_hook`'s parameters and log;
+        photograph it, then restart.
       - Back in the regular boot instead of dark: a fault, restarted by
         run-floor's `kernel.panic=10`. `BACC` dates it.
   - **E2 onwards, from the floor's result.** If it stays high, one at a time

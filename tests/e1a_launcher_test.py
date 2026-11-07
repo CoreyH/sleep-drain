@@ -7,9 +7,13 @@ run-floor) pointed into a temp directory and stub insmod, rmmod, modinfo and
 sleep-drain-reading that record their calls. insmod fills in the module's
 parameters in the fake /sys/module. The module must stay loaded only after a
 reading that saved and asked for the suspend; every other way out unloads it.
-Both launchers get the same cases. run-floor's own: it sets kernel.panic and
-panic_on_oops (in a fake /proc/sys) before the load, refuses with pm_test set
-or an older build, and unloads a build that ignored its parameters.
+Both launchers get the same cases, but for the hand-off. run-floor's own: it
+sets kernel.panic and panic_on_oops (in a fake /proc/sys) before the load,
+refuses with pm_test set or an older build, and unloads a build that ignored
+its parameters. And after the hand-off it stays and watches a fake
+/sys/power/suspend_stats: a floor leaves it waiting with the replay armed; a
+suspend that fails (before any PM notifier, too) or comes back, no suspend at
+all, or a signal, calls the replay off (cancel) without an unload.
 
   python3 -I tests/e1a_launcher_test.py
 """
@@ -53,9 +57,13 @@ def write(path, text, mode=None):
 
 
 PM_TEST = "[none] core processors platform devices freezer\n"
-# modinfo -F parm, as for the floor's build; E1a's has no oneway.
+# modinfo -F parm, as for the floor's build; the floor's first build had no
+# cancel, and E1a's no oneway either.
 PARMS = {
-    "floor": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\nreplay:LAB ONLY (uint)\n",
+    "floor": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
+             "cancel:Write 1 to call the replay off (bool)\nreplay:LAB ONLY (uint)\n",
+    "floor-notifier": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
+                      "replay:LAB ONLY (uint)\n",
     "e1a": "replay_done: (uint)\nreplay:LAB ONLY, safe boot only (uint)\n",
 }
 
@@ -79,6 +87,9 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     write(os.path.join(tmp, "pm_test"), pm_test)
     write(os.path.join(tmp, "sysctl", "panic"), "0\n")
     write(os.path.join(tmp, "sysctl", "panic_on_oops"), "0\n")
+    for k, v in (("success", "0"), ("fail", "0"), ("last_failed_errno", "0"), ("last_failed_step", "")):
+        write(os.path.join(tmp, "stats", k), v + "\n")
+    os.makedirs(os.path.join(tmp, "log"))
     if loaded:
         os.makedirs(moddir)
     stubs = os.path.join(tmp, "stubs")
@@ -86,26 +97,50 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     # build that doesn't know replay and oneway ignores them.
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
               f' oneway=1) echo Y > {moddir}/parameters/oneway ;; esac; done\n') if takes else ""
+    # The rest of the floor's parameters, as before any suspend; cancel is
+    # write-only there, an empty file here.
+    params += (f'cd {moddir}/parameters && for kv in attempts=0 prepare_late_calls=0 replay_done=0'
+               f' replay_ret=1,1,1,1 eh_writes=0 post_writes=0 late_ret=1; do echo "${{kv#*=}}" > "${{kv%%=*}}";'
+               f' done && : > cancel\n')
     write(os.path.join(stubs, "insmod"),
           f'#!/bin/sh\necho "insmod $*" >> {calls}\nmkdir -p {moddir}/parameters\n{params}', 0o755)
     write(os.path.join(stubs, "rmmod"), f'#!/bin/sh\necho "rmmod $*" >> {calls}\n', 0o755)
+    write(os.path.join(stubs, "save"), f'#!/bin/sh\necho "sleep-drain-safe $*" >> {calls}\n', 0o755)
+    write(os.path.join(stubs, "dmesg"), '#!/bin/sh\necho "[   12.345678] e1_hook: replay: a stub line"\n', 0o755)
     write(os.path.join(stubs, "modinfo"),
           f'#!/bin/sh\ncase "$2" in\nvermagic) echo "{RELEASE} SMP preempt mod_unload aarch64" ;;\n'
           f'parm) printf "%s" "{PARMS[build]}" ;;\nesac\n', 0o755)
+    mp = f"{moddir}/parameters"
+    # What the kernel does with the suspend the reading asked for, a second
+    # after it exits: in the background, so that the launcher is watching.
+    later = {
+        # It fails before PM_SUSPEND_PREPARE (a sync cut by a wakeup): only the
+        # probe saw it begin, and only suspend_stats' fail moves.
+        "abort": f"echo 1 > {mp}/attempts; echo -16 > {tmp}/stats/last_failed_errno; echo 1 > {tmp}/stats/fail",
+        # The replay runs, stops short at MBSE=slpw, and fails the suspend.
+        "eio": (f"echo 1 > {mp}/attempts; echo 1 > {mp}/prepare_late_calls; echo 1 > {mp}/replay_done;"
+                f" echo -110,1,1,1 > {mp}/replay_ret; echo 31 > {mp}/eh_writes; echo -5 > {tmp}/stats/last_failed_errno;"
+                f" echo 1 > {tmp}/stats/fail"),
+    }
     body = {
         "ok": "exit 0",
         "fail": "exit 1",
         # Like the real reading: a long child, then the request for the suspend
         # as its last step. The child's output doesn't hold the test's pipes.
         "wait": f'echo "$PPID $$" > {tmp}/pids; sleep 30 > /dev/null 2>&1; echo "suspend" >> {calls}',
+        # The suspend asked for: then the launcher watches. "handoff" leaves
+        # suspend_stats alone (the test stops the launcher, or it times out).
+        "handoff": f'echo "$PPID $$" > {tmp}/pids; exit 0',
+        "abort": f'( sleep 1; {later["abort"]} ) > /dev/null 2>&1 & exit 0',
+        "eio": f'( sleep 1; {later["eio"]} ) > /dev/null 2>&1 & exit 0',
     }[reading]
     write(os.path.join(stubs, "reading"), f'#!/bin/bash\necho "reading $*" >> {calls}\n{body}\n', 0o755)
     return d
 
 
-def env(tmp, launcher):
+def env(tmp, launcher, watch_s=3):
     prefix = launcher[1]
-    return {
+    e = {
         "PATH": os.path.join(tmp, "stubs") + ":/usr/bin:/bin",
         prefix + "_SAFE_FLAG": os.path.join(tmp, "run", "active"),
         prefix + "_AC": os.path.join(tmp, "ac"),
@@ -114,6 +149,10 @@ def env(tmp, launcher):
         prefix + "_PM_TEST": os.path.join(tmp, "pm_test"),
         prefix + "_SYSCTL": os.path.join(tmp, "sysctl"),
     }
+    if prefix == "FLOOR":
+        e.update(FLOOR_SAVE=os.path.join(tmp, "stubs", "save"), FLOOR_STATS=os.path.join(tmp, "stats"),
+                 FLOOR_LOGDIR=os.path.join(tmp, "log"), FLOOR_RUNDIR=tmp, FLOOR_WATCH_S=str(watch_s))
+    return e
 
 
 def cmd(d, launcher):
@@ -128,8 +167,25 @@ def calls(tmp):
         return []
 
 
-def run(tmp, d, launcher, **kw):
-    return subprocess.run(cmd(d, launcher), env=env(tmp, launcher), capture_output=True, text=True, timeout=60, **kw)
+def run(tmp, d, launcher, watch_s=3, **kw):
+    return subprocess.run(cmd(d, launcher), env=env(tmp, launcher, watch_s), capture_output=True, text=True,
+                          timeout=60, **kw)
+
+
+def cancelled(tmp):
+    try:
+        with open(os.path.join(tmp, "module", "parameters", "cancel")) as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def wait_for(path):
+    for _ in range(200):
+        if os.path.exists(path) and os.path.getsize(path):
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def test_handoff(launcher):
@@ -146,6 +202,78 @@ def test_handoff(launcher):
               f"{script}: a reading that hands off to the suspend leaves the replay armed ({args});"
               f" kernel.panic={panic[0]} panic_on_oops={panic[1]}",
               r.stdout + r.stderr + "\n".join(c) + f"\nsysctl {sysctl(tmp)}")
+
+
+def test_floor_watch(launcher):
+    script, _, args, label = launcher
+
+    def insmod_reading(d):
+        return ["insmod " + os.path.join(d, "e1_hook.ko") + " " + args, f"reading take --label {label} --then suspend"]
+
+    # The floor: the suspend began and nothing runs again. Killing the
+    # launcher mid-watch stands in for that; the replay must still be armed.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, launcher, reading="handoff")
+        p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher, watch_s=30), stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+        wait_for(os.path.join(tmp, "pids"))
+        launcher_pid = int(open(os.path.join(tmp, "pids")).read().split()[0])
+        time.sleep(1.5)
+        alive = p.poll() is None
+        try:
+            os.kill(launcher_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        out, err = p.communicate(timeout=30)
+        c = calls(tmp)
+        check(alive and c == insmod_reading(d) and cancelled(tmp) == "" and sysctl(tmp) == ("10", "1"),
+              f"{script}: after the hand-off it waits for the suspend with the replay armed: no unload, no cancel;"
+              " kernel.panic=10 panic_on_oops=1",
+              f"alive {alive}\n" + out + err + "\n".join(c) + f"\ncancel {cancelled(tmp)!r} sysctl {sysctl(tmp)}")
+
+    for reading, what, want in (
+            ("abort", "a suspend that fails before any PM notifier (a sync cut by a wakeup)",
+             ("the suspend failed or came back", "attempts=1", "errno -16")),
+            ("eio", "a replay that stops short and fails its suspend",
+             ("the suspend failed or came back", "replay_done=1", "replay_ret=-110,1,1,1", "eh_writes=31")),
+            ("handoff", "no suspend within the watch",
+             ("no suspend began within 3 s",))):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, launcher, reading=reading)
+            t0 = time.monotonic()
+            r = run(tmp, d, launcher)
+            took = time.monotonic() - t0
+            c = calls(tmp)
+            logs = os.listdir(os.path.join(tmp, "log"))
+            logged = open(os.path.join(tmp, "log", logs[0])).read() if len(logs) == 1 else ""
+            check(r.returncode == 2 and cancelled(tmp) == "1\n" and c[:2] == insmod_reading(d)
+                  and not any(x.startswith("rmmod") for x in c)
+                  and c[2:] == ["sleep-drain-safe save " + os.path.join(tmp, "log", logs[0])]
+                  and "NO FLOOR" in r.stdout and all(w in r.stdout for w in want)
+                  and "e1_hook: replay: a stub line" in r.stdout and "NO FLOOR" in logged
+                  and (reading != "handoff" or took >= 3),
+                  f"{script}: {what}: the replay is called off, not unloaded; NO FLOOR printed, logged and saved;"
+                  " exit 2",
+                  f"exit {r.returncode}, {took:.1f} s\n" + r.stdout + r.stderr + "\n".join(c)
+                  + f"\ncancel {cancelled(tmp)!r}")
+
+    # A signal while it watches: the replay called off, the module left loaded.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, launcher, reading="handoff")
+        p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher, watch_s=30), stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True)
+        wait_for(os.path.join(tmp, "pids"))
+        launcher_pid = int(open(os.path.join(tmp, "pids")).read().split()[0])
+        time.sleep(1.5)
+        try:
+            os.kill(launcher_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        out, err = p.communicate(timeout=30)
+        c = calls(tmp)
+        check(p.returncode == 143 and cancelled(tmp) == "1\n" and c == insmod_reading(d),
+              f"{script}: SIGTERM while it watches: the replay called off, no unload, exit 143",
+              f"exit {p.returncode}\n" + out + err + "\n".join(c) + f"\ncancel {cancelled(tmp)!r}")
 
 
 def test_failed_reading(launcher):
@@ -215,7 +343,9 @@ def test_refusals(launcher):
 def test_floor_refusals(launcher):
     for what, kw, msg in (("with pm_test set", dict(pm_test="none core processors [platform] devices freezer\n"),
                            "pm_test isn't none"),
-                          ("an older build, without oneway (E1a's)", dict(build="e1a"), "older build")):
+                          ("an older build, without oneway (E1a's)", dict(build="e1a"), "older build"),
+                          ("the floor's first build, without cancel", dict(build="floor-notifier"),
+                           "older build")):
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)
             r = run(tmp, d, launcher)
@@ -238,7 +368,10 @@ def main():
         print("skip: needs bwrap")
         return 0
     for launcher in LAUNCHERS:
-        test_handoff(launcher)
+        if launcher[0] == "run-floor":
+            test_floor_watch(launcher)
+        else:
+            test_handoff(launcher)
         test_failed_reading(launcher)
         test_signals(launcher)
         test_broken_stdout(launcher)
