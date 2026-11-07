@@ -9,8 +9,8 @@ parameters in the fake /sys/module. The module must stay loaded only after a
 reading that saved and asked for the suspend; every other way out unloads it.
 Both launchers get the same cases, but for the hand-off. run-floor's own: it
 sets kernel.panic and panic_on_oops (in a fake /proc/sys) before the load,
-refuses with pm_test set or an older build, and unloads a build that ignored
-its parameters. And after the hand-off it stays and watches a fake
+refuses with pm_test set, an older build or an unknown argument, and unloads
+a build that ignored its parameters; --quiet adds quiet=1 and its own label. And after the hand-off it stays and watches a fake
 /sys/power/suspend_stats: a floor leaves it waiting with the replay armed; a
 suspend that fails (before any PM notifier, too) or comes back, no suspend at
 all, or a signal, calls the replay off (cancel) without an unload, and
@@ -31,13 +31,18 @@ E1_HOOK = os.path.realpath(os.path.join(HERE, "..", "e1-hook"))
 RELEASE = os.uname().release
 
 # Each launcher: its script, its environment's prefix, what it loads e1_hook
-# with, and its reading's label.
+# with, its reading's label, and its own arguments.
 LAUNCHERS = (
-    ("run-e1a", "E1A", "replay=5", "e1a"),
-    ("run-floor", "FLOOR", "replay=15 oneway=1", "floor"),
+    ("run-e1a", "E1A", "replay=5", "e1a", ()),
+    ("run-floor", "FLOOR", "replay=15 oneway=1", "floor", ()),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1", "floor-quiet", ("--quiet",)),
 )
 
 failed = 0
+
+
+def name(launcher):
+    return " ".join((launcher[0],) + launcher[4])
 
 
 def check(cond, what, detail=""):
@@ -59,10 +64,12 @@ def write(path, text, mode=None):
 
 PM_TEST = "[none] core processors platform devices freezer\n"
 # modinfo -F parm, as for the floor's build; the floor's first build had no
-# cancel, and E1a's no oneway either.
+# cancel, the next no quiet, and E1a's no oneway either.
 PARMS = {
     "floor": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
-             "cancel:Write 1 to call the replay off (bool)\nreplay:LAB ONLY (uint)\n",
+             "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\nreplay:LAB ONLY (uint)\n",
+    "floor-noquiet": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
+                     "cancel:Write 1 to call the replay off (bool)\nreplay:LAB ONLY (uint)\n",
     "floor-notifier": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                       "replay:LAB ONLY (uint)\n",
     "e1a": "replay_done: (uint)\nreplay:LAB ONLY, safe boot only (uint)\n",
@@ -74,7 +81,7 @@ def sysctl(tmp):
 
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
-          takes=True):
+          takes=True, takes_quiet=True):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -97,9 +104,10 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
         os.makedirs(moddir)
     stubs = os.path.join(tmp, "stubs")
     # The module's directory and its parameters, as the kernel shows them; a
-    # build that doesn't know replay and oneway ignores them.
+    # build that doesn't know replay and oneway (or quiet) ignores them.
+    quiet = f' quiet=1) echo Y > {moddir}/parameters/quiet ;;' if takes_quiet else ""
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
-              f' oneway=1) echo Y > {moddir}/parameters/oneway ;; esac; done\n') if takes else ""
+              f' oneway=1) echo Y > {moddir}/parameters/oneway ;;{quiet} esac; done\n') if takes else ""
     # The rest of the floor's parameters, as before any suspend; cancel is
     # write-only there, an empty file here.
     params += (f'cd {moddir}/parameters && for kv in attempts=0 prepare_late_calls=0 replay_done=0'
@@ -159,8 +167,9 @@ def env(tmp, launcher, watch_s=3):
     return e
 
 
-def cmd(d, launcher):
-    return ["bwrap", "--unshare-user", "--uid", "0", "--dev-bind", "/", "/", "bash", os.path.join(d, launcher[0])]
+def cmd(d, launcher, argv=None):
+    return (["bwrap", "--unshare-user", "--uid", "0", "--dev-bind", "/", "/", "bash", os.path.join(d, launcher[0])]
+            + list(launcher[4] if argv is None else argv))
 
 
 def calls(tmp):
@@ -171,8 +180,8 @@ def calls(tmp):
         return []
 
 
-def run(tmp, d, launcher, watch_s=3, **kw):
-    return subprocess.run(cmd(d, launcher), env=env(tmp, launcher, watch_s), capture_output=True, text=True,
+def run(tmp, d, launcher, watch_s=3, argv=None, **kw):
+    return subprocess.run(cmd(d, launcher, argv), env=env(tmp, launcher, watch_s), capture_output=True, text=True,
                           timeout=60, **kw)
 
 
@@ -197,9 +206,10 @@ def wait_for(path):
 
 
 def test_handoff(launcher):
-    script, _, args, label = launcher
+    script, _, args, label, _ = launcher
+    script = name(launcher)
     # run-floor makes a fault restart the Mac; run-e1a leaves both alone.
-    panic = ("10", "1") if script == "run-floor" else ("0", "0")
+    panic = ("10", "1") if launcher[0] == "run-floor" else ("0", "0")
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="ok")
         r = run(tmp, d, launcher)
@@ -213,7 +223,8 @@ def test_handoff(launcher):
 
 
 def test_floor_watch(launcher):
-    script, _, args, label = launcher
+    script, _, args, label, _ = launcher
+    script = name(launcher)
 
     def insmod_reading(d):
         return ["insmod " + os.path.join(d, "e1_hook.ko") + " " + args, f"reading take --label {label} --then suspend"]
@@ -291,7 +302,7 @@ def test_failed_reading(launcher):
         r = run(tmp, d, launcher)
         c = calls(tmp)
         check(r.returncode == 1 and c[-1:] == ["rmmod e1_hook"] and "unloaded" in r.stderr,
-              f"{launcher[0]}: a failed reading or save unloads the module, exit 1", r.stdout + r.stderr + "\n".join(c))
+              f"{name(launcher)}: a failed reading or save unloads the module, exit 1", r.stdout + r.stderr + "\n".join(c))
 
 
 def test_signals(launcher):
@@ -318,7 +329,7 @@ def test_signals(launcher):
                 who = "the reading and the launcher" if both else "the launcher only"
                 check(p.returncode == code and c[-1:] == ["rmmod e1_hook"] and "suspend" not in c
                       and time.monotonic() - t0 < 10,
-                      f"{launcher[0]}: {signal.Signals(sig).name} to {who}: no suspend, the module unloaded, exit {code}",
+                      f"{name(launcher)}: {signal.Signals(sig).name} to {who}: no suspend, the module unloaded, exit {code}",
                       f"exit {p.returncode}\n" + out + err + "\n".join(c))
 
 
@@ -334,7 +345,7 @@ def test_broken_stdout(launcher):
             os.close(wfd)
         c = calls(tmp)
         check(r.returncode != 0 and c[-1:] == ["rmmod e1_hook"] and not any(x.startswith("reading") for x in c),
-              f"{launcher[0]}: a broken stdout after insmod unloads the module before any reading",
+              f"{name(launcher)}: a broken stdout after insmod unloads the module before any reading",
               f"exit {r.returncode}\n" + r.stderr + "\n".join(c))
 
 
@@ -346,30 +357,53 @@ def test_refusals(launcher):
             d = setup(tmp, launcher, **kw)
             r = run(tmp, d, launcher)
             check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [] and sysctl(tmp) == ("0", "0"),
-                  f"{launcher[0]}: refuses {what}, and loads nothing", r.stdout + r.stderr + "\n".join(calls(tmp)))
+                  f"{name(launcher)}: refuses {what}, and loads nothing", r.stdout + r.stderr + "\n".join(calls(tmp)))
 
 
 def test_floor_refusals(launcher):
-    for what, kw, msg in (("with pm_test set", dict(pm_test="none core processors [platform] devices freezer\n"),
-                           "pm_test isn't none"),
-                          ("an older build, without oneway (E1a's)", dict(build="e1a"), "older build"),
-                          ("the floor's first build, without cancel", dict(build="floor-notifier"),
-                           "older build")):
+    quiet = "--quiet" in launcher[4]
+    cases = [("with pm_test set", dict(pm_test="none core processors [platform] devices freezer\n"), None,
+              "pm_test isn't none"),
+             ("an older build, without oneway (E1a's)", dict(build="e1a"), None, "older build"),
+             ("the floor's first build, without cancel", dict(build="floor-notifier"), None, "older build")]
+    if quiet:
+        cases.append(("a build without quiet", dict(build="floor-noquiet"), None, "without quiet"))
+    else:
+        # The floor's build before quiet still runs the floor itself.
+        cases += [("an unknown argument", {}, ["--loud"], "usage: run-floor [--quiet]"),
+                  ("a second argument", {}, ["--quiet", "--quiet"], "usage: run-floor [--quiet]")]
+    for what, kw, argv, msg in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, launcher, **kw)
+            r = run(tmp, d, launcher, argv=argv)
+            check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [] and sysctl(tmp) == ("0", "0"),
+                  f"{name(launcher)}: refuses {what}, and loads nothing", r.stdout + r.stderr + "\n".join(calls(tmp)))
+    # A build that loads but doesn't know the parameters, which the kernel
+    # only warns about: unloaded at once, before any reading.
+    ignored = [("replay and oneway", dict(takes=False))]
+    if quiet:
+        ignored.append(("quiet", dict(takes_quiet=False)))
+    for what, kw in ignored:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)
             r = run(tmp, d, launcher)
-            check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [] and sysctl(tmp) == ("0", "0"),
-                  f"{launcher[0]}: refuses {what}, and loads nothing", r.stdout + r.stderr + "\n".join(calls(tmp)))
-    # A build that loads but doesn't know the parameters, which the kernel
-    # only warns about: unloaded at once, before any reading.
-    with tempfile.TemporaryDirectory() as tmp:
-        d = setup(tmp, launcher, takes=False)
-        r = run(tmp, d, launcher)
-        c = calls(tmp)
-        check(r.returncode == 1 and "didn't take" in r.stderr and c[-1:] == ["rmmod e1_hook"]
-              and not any(x.startswith("reading") for x in c),
-              f"{launcher[0]}: a build that ignored replay and oneway is unloaded before any reading",
-              r.stdout + r.stderr + "\n".join(c))
+            c = calls(tmp)
+            check(r.returncode == 1 and "didn't take" in r.stderr and c[-1:] == ["rmmod e1_hook"]
+                  and not any(x.startswith("reading") for x in c),
+                  f"{name(launcher)}: a build that ignored {what} is unloaded before any reading",
+                  r.stdout + r.stderr + "\n".join(c))
+    if not quiet:
+        # The floor itself loads the build from before quiet. No suspend
+        # follows here, so it ends in the watch's NO FLOOR.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, launcher, reading="ok", build="floor-noquiet")
+            r = run(tmp, d, launcher)
+            c = calls(tmp)
+            check(r.returncode == 2 and c[:2] == ["insmod " + os.path.join(d, "e1_hook.ko") + " replay=15 oneway=1",
+                                                  "reading take --label floor --then suspend"]
+                  and "no suspend began" in r.stdout,
+                  f"{name(launcher)}: without --quiet, the build from before quiet loads as before",
+                  r.stdout + r.stderr + "\n".join(c))
 
 
 def main():

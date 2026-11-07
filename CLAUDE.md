@@ -100,7 +100,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   keys and PMP words (`e1-hook/run-e1a`); `15` is the floor, adding their 74
   post-`slpa` writes and every CPU powered down for good
   (`e1-hook/run-floor`: the Mac never wakes from it; its header says how to
-  end it with the power key). `13` is the floor with the CPUs left up. `13`
+  end it with the power key). `quiet=1` (`run-floor --quiet`, with `15`
+  only) leaves out maralcbr's 500 ms and its two AFNC reads after the
+  post-`slpa` writes, so the S2R-timer commit is the replay's last MMIO
+  access before the CPUs power down. `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
   (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s
