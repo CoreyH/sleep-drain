@@ -1613,3 +1613,47 @@ CPUs were idle in Linux, not parked.
 We replied on their issue #9 (JJRPF/Aurora-DeepIdle#9, comment 6709046397).
 The reply gives the ADT windows for their two pre-`slpw` words (which macOS
 driver writes them is still unknown) and the floor's result.
+
+### M1 run 1: the other seven cores down, both P complexes off, and still the reset at 30 s (2026-11-07)
+
+`e1-hook/run-floor --m1` (`replay=15 oneway=1 quiet=1 m1=1`, #34 at
+94f04b3; flag `radios-off`), in a safe boot, on battery at 79%. This was
+the M1 recipe: Naeem's T8103 entry mapped onto T6000, on top of the quiet
+floor. e1_hook.c's m1 block gives the full order. Raw data:
+`results/m1-run1-20261107/`.
+
+- The 10-minute reading ended at 19:57:07 and was saved. The Mac then
+  suspended and went dark, and reset itself into the regular boot. Corey
+  didn't see the keyboard light, so run-floor's watch didn't run.
+- **The breadcrumbs survived the reset** (the first time on T6000), and
+  `e1-hook/m1-crumbs` read them first thing in the next boot:
+  - Stage 0x50 was reached: the last SPMI command before nub-spmi0's acks,
+    the commit and CPU0's deep WFI.
+  - All 7 other cores parked, left their spin when released, and read off
+    in their PMGR power states within 10 ms. **PCPM0 and PCPM1, both P
+    complexes, read off.**
+  - CPU0 had nothing pending (`ISR_EL1` 0) before the commit, no core had
+    an interrupt pending at its stop, and the cores took no AIC events.
+  - The kernel's SPMI path still answered after `slpa`, and raw SPMI worked
+    from then on. The boot-error stage (0x6003) reads 0x50: the reset found
+    the replay's boot stage.
+  - WD1 was off by step 4. Its control word read 0x4 at the module's load,
+    before apple_wdt's suspend stopped it.
+- **The reset came 30.6 s after the commit.** The commit's PMU second was
+  in 0x6010. The arch counter, which restarts with the SoC, was compared
+  with the PMU's RTC in the next boot. This is the floor's signature: the
+  S2R watchdog (WD2) firing on an entry that didn't complete.
+- After the reset, the AP wake masks read Linux's values again (0, 0x40, 0,
+  ...): the run's masks don't outlive the reset. CPU-start + 0x4 read 0x880
+  as before.
+
+So with the seven other cores down, both P complexes off and nothing
+pending, the entry still doesn't complete. The one CPU this doesn't cover
+is CPU0. Its last breadcrumb comes before nub-spmi0's acks, the commit,
+and its own ACC_OVRD, CYC_OVRD and WFI, and nothing records whether CPU0,
+or the E complex with it, went down after that. So a CPU-side cause isn't
+ruled out for CPU0 and its cluster; it is ruled out for the rest. That's
+about where DeepIdle stands on T6020 (their R11-R17). Naeem's T8103 entry
+completes, so what his has and ours lacks is the next lead. One thing to
+start with: his kernel sends no SMC sleep keys, and ours sends maralcbr's
+four.
