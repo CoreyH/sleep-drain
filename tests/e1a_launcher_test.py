@@ -70,7 +70,7 @@ PM_TEST = "[none] core processors platform devices freezer\n"
 PARMS = {
     "floor": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
              "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
-             "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (array of int)\n"
+             "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
              "replay:LAB ONLY (uint)\n",
     "floor-nom1": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                   "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\nreplay:LAB ONLY (uint)\n",
@@ -118,7 +118,7 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     # The rest of the floor's parameters, as before any suspend; cancel is
     # write-only there, an empty file here.
     params += (f'cd {moddir}/parameters && for kv in attempts=0 prepare_late_calls=0 replay_done=0'
-               f' replay_ret=1,1,1,1 eh_writes=0 post_writes=0 late_ret=1 m1_ret=1,1; do echo "${{kv#*=}}" > "${{kv%%=*}}";'
+               f' replay_ret=1,1,1,1 eh_writes=0 post_writes=0 late_ret=1 m1_ret=1 m1_undo=1; do echo "${{kv#*=}}" > "${{kv%%=*}}";'
                f' done && : > cancel\n')
     write(os.path.join(stubs, "insmod"),
           f'#!/bin/sh\necho "insmod $*" >> {calls}\nmkdir -p {moddir}/parameters\n{params}', 0o755)
@@ -277,7 +277,7 @@ def test_floor_watch(launcher):
                   and not any(x.startswith("rmmod") for x in c)
                   and c[2:] == ["sleep-drain-safe save " + os.path.join(tmp, "log", logs[0])]
                   and "NO FLOOR" in r.stdout and all(w in r.stdout for w in want)
-                  and (("m1_ret=1,1" in r.stdout) == ("--m1" in launcher[4]))
+                  and (("m1_ret=1 m1_undo=1" in r.stdout) == ("--m1" in launcher[4]))
                   and "e1_hook: replay: a stub line" in r.stdout and "NO FLOOR" in logged
                   and (reading != "handoff" or took >= 3) and kbd(tmp) == "255",
                   f"{script}: {what}: the replay is called off, not unloaded; the keyboard lit; NO FLOOR printed,"

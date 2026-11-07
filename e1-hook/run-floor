@@ -40,7 +40,8 @@
 #          floor-m1. --m1 can also hang dark without completing the entry:
 #          DeepIdle's R20 did, on an M2 Pro, and its S2R watchdog never reset
 #          it. Only that reading's BQCC tells the two apart, and m1-crumbs
-#          says how far it got. So for --m1, be ready to end it this way.
+#          says how far it got, at least. So for --m1, be ready to end it
+#          this way.
 #   - No floor: the keyboard lights up, full, and this prints "NO FLOOR"
 #     with what happened (unlock the screen to see it), and tries to save it.
 #     Photograph it, then restart. That happens when the suspend
@@ -238,7 +239,7 @@ log "suspend_stats: before $base, now $(tries); last failed step $(get "$STATS/l
 log "e1_hook: attempts=$(get "$p/attempts") prepare_late_calls=$(get "$p/prepare_late_calls") replay_done=$(get "$p/replay_done")"
 log "         replay_ret=$(get "$p/replay_ret") eh_writes=$(get "$p/eh_writes") post_writes=$(get "$p/post_writes") late_ret=$(get "$p/late_ret")"
 log "  (replay_done: 1 = ran and stopped short, 2 = called off; replay_ret: MBSE=slpw, pmVC, WKTP, MBSE=slpa, 0 = accepted, 1 = not sent)"
-((!m1)) || log "         m1_ret=$(get "$p/m1_ret") (the PMU at the replay's start, then stage 0x02; 0 = done, 1 = not sent)"
+((!m1)) || log "         m1_ret=$(get "$p/m1_ret") m1_undo=$(get "$p/m1_undo") (the PMU at the replay's start, then boot stage 0x30 again and the breadcrumbs zeroed; 0 = done, 1 = not sent or not needed)"
 log "kernel log, e1_hook:"
 klog e1_hook
 log "================================================================================="

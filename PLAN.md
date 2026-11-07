@@ -273,18 +273,20 @@ steps, and restarting the DCP and the PMP afterwards.
         OK, 2026-11-07); `e1-hook/m1-crumbs` reads them at the next boot,
         and `--clear` zeroes them.
       - Left out: the RTC alarm (a PMU write not OK'd yet), WD1's dead-man,
-        and the report of idle clusters to the PMP (no known T6000
-        counterpart).
+        and three of Naeem's steps with no known T6000 form: the report of
+        idle clusters to the PMP, the CPM power gating at pmgr + 0x1c080,
+        and the watchdog block's + 0x8008/+ 0x800c.
       - Its risk: DeepIdle's R20 on an M2 Pro wrote the same cluster APSC
-        disable as the table, with its other cores parked in WFI; they
+        disable as the table, with its other cores parked in WFI; 7 of the 9
         never went down and the Mac hung dark for 28 minutes, with no
         watchdog reset. Here the cores spin through those writes, but a
         run may still hang instead of resetting: Corey at the power key.
-      - If it fails, the breadcrumbs say where. Next would be the APSC
-        writes moved after the cores' stop (macOS's T6020 order).
+      - If it fails, the breadcrumbs show how far it got, at least. Next
+        would be the APSC writes moved after the cores' stop (macOS's T6020
+        order).
     - Then, on top, one at a time: maralcbr's other bits (the domains
       macOS has off, 8-10; the AOP's notices, 6; the internal PCIe ports,
-      13), and the PMU boot stage 0x50. The SEP's SLEEP message (bit 11)
+      13). The PMU boot stage 0x50 is in the M1 recipe. The SEP's SLEEP message (bit 11)
       touches state the SEP shares with macOS: only with Corey's OK.
   - **The code.** An out-of-tree module: our own, written from these
     findings and maralcbr's tables (maralcbr/linux is GPL-2.0, as part of

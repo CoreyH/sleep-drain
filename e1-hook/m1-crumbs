@@ -28,6 +28,9 @@ RTC = 0x1406        # info-rtc: 6 bytes LE, the seconds in the upper four; the
                     # read must start here (pmu-alarm)
 CRUMBS = ((0x6004, 4), (0x6010, 7))  # the only bytes --clear writes
 
+# Each stage is the last breadcrumb that reached the PMU: the run got at least
+# that far. Raw SPMI stops at its first error and CPU0 goes on without it, so
+# a run may have gone further than its stage.
 STAGES = {
     0x00: "none: no M1 run since the last clear, or the bytes didn't survive",
     0x01: "K1: the replay began (the PMU written through the kernel's SPMI path)",
@@ -65,8 +68,8 @@ def stage(s):
         return STAGES[s]
     if 0x21 <= s <= 0x27:
         cpu = ORDER[s - 0x21]
-        return (f"6: releasing CPU{cpu}, the order's {s - 0x20} of 7 (1, 2, 3, 5, 6, 4, 7): it didn't get"
-                " further (a reset right at its stop, or a hang)")
+        return (f"6: releasing CPU{cpu}, the order's {s - 0x20} of 7 (1, 2, 3, 5, 6, 4, 7): the run stopped"
+                " at that core's stop (a reset or a hang), or a later breadcrumb failed and CPU0 went on")
     return "unknown"
 
 
@@ -80,6 +83,8 @@ def decode(b, rtc):
         " (0x50: an unclean end after the replay began)",
         f"stage 0x6004 = 0x{s:02x}: {stage(s)}",
     ]
+    if s:
+        out.append("  (the last breadcrumb that reached the PMU: the run got at least that far)")
     if s >= 0x10:
         out.append(f"parked (0x6005 = 0x{b[5]:02x}): {cpus(b[5])}")
     if s >= 0x30:
@@ -95,7 +100,8 @@ def decode(b, rtc):
         pend = "".join(n for bit, n in ((2, "A"), (1, "I"), (0, "F")) if f >> bit & 1) or "nothing"
         out.append(f"0x6014 = 0x{f:02x}: CPU0 had {pend} pending before the commit;"
                    f" PCPM0 {'off' if f & 0x10 else 'NOT off'}, PCPM1 {'off' if f & 0x20 else 'NOT off'};"
-                   f" WD1 {'was running (stopped)' if f & 0x40 else 'was off'}")
+                   f" WD1 {'was running (stopped)' if f & 0x40 else 'was off'};"
+                   f" K3's kernel-path write after slpa {'FAILED' if f & 0x08 else 'worked'}")
         out.append(f"0x6015 = 0x{b[0x15]:02x}: cores with an interrupt pending at their stop: {cpus(b[0x15])}")
         out.append(f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
     return out

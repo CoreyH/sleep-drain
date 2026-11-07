@@ -70,7 +70,9 @@ def main():
               and "parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7" in out
               and "read off within 10 ms (0x6007 = 0xfe)" in out
               and "RTC second at just before the commit: 4900, 100 s before now (5000)" in out
-              and "CPU0 had I pending before the commit; PCPM0 off, PCPM1 off; WD1 was off" in out
+              and "CPU0 had I pending before the commit; PCPM0 off, PCPM1 off; WD1 was off;"
+              " K3's kernel-path write after slpa worked" in out
+              and "the run got at least that far" in out
               and "interrupt pending at their stop: CPU4" in out and "0x6016 = 3" in out
               and "boot-error stage 0x6003 = 0x50" in out,
               "a run that reached 0x50: every field decoded", out + r.stderr)
@@ -78,8 +80,16 @@ def main():
         fake(path, scratch(0x26, parked=0xfe))
         r = run(path)
         check(r.returncode == 0 and "6: releasing CPU4, the order's 6 of 7" in r.stdout
+              and "or a later breadcrumb failed and CPU0 went on" in r.stdout
               and "parked (0x6005 = 0xfe)" in r.stdout and "left their spin" not in r.stdout,
-              "a run that stopped while releasing CPU4", r.stdout + r.stderr)
+              "a run last recorded releasing CPU4: stopped there, or its breadcrumbs did", r.stdout + r.stderr)
+
+        fake(path, scratch(0x50, parked=0xfe, left=0xfe, down=0x7e, secs=4999, flags=0x80 | 0x08 | 0x10))
+        r = run(path)
+        check(r.returncode == 0 and "K3's kernel-path write after slpa FAILED" in r.stdout
+              and "PCPM0 off, PCPM1 NOT off" in r.stdout and "CPU0 had nothing pending" in r.stdout
+              and "read off within 10 ms (0x6007 = 0x7e): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6" in r.stdout,
+              "K3's failure, PCPM1 still on and CPU7 not off, decoded", r.stdout + r.stderr)
 
         fake(path, scratch(0x02, secs=4990))
         r = run(path)
