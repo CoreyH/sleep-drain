@@ -83,19 +83,41 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
 - `sleep-peek`: both of the above as root (`pkexec`), awake and around one
   timed s2idle sleep that goes through the hook; writes
   `results/sleep-peek-<time>/`. Not installed by `install.sh`.
-- `e1-hook/`: E1's first check, the hook point (PLAN.md, A5). `e1_hook.c` is
-  an out-of-tree module (`make -C e1-hook`, against the running kernel's
-  headers) that registers its own s2idle ops, so that its `prepare_late`
-  runs after the whole noirq pass. `s2idle_set_ops` isn't exported, so it
-  finds it through a kprobe that's registered disabled and never armed: lab
-  only, never for upstream. This dry build only logs each op and reads one
+- `e1-hook/`: E1's module (PLAN.md, A5). `e1_hook.c` is an out-of-tree
+  module (`make -C e1-hook`, against the running kernel's headers) that
+  registers its own s2idle ops, so that its `prepare_late` runs after the
+  whole noirq pass. `s2idle_set_ops` isn't exported, so it finds it through
+  a kprobe that's registered disabled and never armed: lab only, never for
+  upstream. With `replay=0`, the default, it only logs each op and reads one
   SMC key, `B0AV`, at `prepare` and `prepare_late`; read-only parameters
   count the ops and keep the reads. `pkexec e1-hook/check`, in a safe boot
-  only, runs it under `pm_test=platform` and in a 60 s alarm sleep, with
+  only, runs that under `pm_test=platform` and in a 60 s alarm sleep, with
   ftrace's power events on the module's clock; `e1-hook/verdict` says
   whether `prepare_late` ran after the last noirq callback and whether the
   SMC answered there. It saves `/var/log/sleep-drain/e1-hook-<time>/` with
-  `sleep-drain-safe save`. Not installed by `install.sh`.
+  `sleep-drain-safe save`. `replay` is maralcbr's one-way replay, ported
+  from their `lab_s2r_run`, at the first `prepare_late`: `5` is E1a, their
+  keys and PMP words (`e1-hook/run-e1a`); `15` is the floor, adding their 74
+  post-`slpa` writes and every CPU powered down for good
+  (`e1-hook/run-floor`: the Mac never wakes from it; its header says how to
+  end it with the power key). `13` is the floor with the CPUs left up. `13`
+  and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
+  on the command line). Only the first suspend after their load can replay
+  (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s
+  first line), and any suspend that doesn't replay to its end fails with
+  `-EIO`, so with them loaded the Mac is in the floor or awake, never in a
+  plain s2idle; writing 1 to `cancel` calls the replay off. run-floor waits
+  for its suspend (`/sys/power/suspend_stats`) and, if it fails, comes back
+  or never begins, calls the replay off, lights the keyboard and prints
+  "NO FLOOR" with what happened. The module won't build or load if any of its writes would
+  touch the never-write list (0x28e0802d8, `ps_pmp`; 0x28e700000). Both
+  launchers run in a safe boot only, take the reading and suspend, and
+  unload the module on any other way out before the suspend is asked for;
+  after that, run-floor calls the replay off instead
+  (`tests/e1a_launcher_test.py`).
+  `e1-hook/e1a-platform` runs E1a's replay under `pm_test=platform` instead
+  and prints what each key write returned, for a photo, since the NVMe is
+  gone after `slpa`. Not installed by `install.sh`.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake
