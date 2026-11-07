@@ -1,23 +1,32 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quiet]
 #
 # THIS IS ONE WAY: THE MAC NEVER WAKES FROM IT. It loads e1_hook with
-# replay=15 oneway=1, so the next suspend's prepare_late runs maralcbr's whole
-# replay (e1_hook.c says what: the keys, the PMP words, the 74 post-slpa
-# writes, then every CPU powered down for good), then takes the 10-minute
-# reading, saves it and suspends, as V2 and E1a did
+# replay=15 oneway=1, so the next suspend's prepare_late runs maralcbr's
+# replay at its floor setting, bits 0-3 (e1_hook.c says what: the keys, the
+# PMP words, the 74 post-slpa writes, then every CPU powered down for good),
+# then takes the 10-minute reading, saves it and suspends, as V2 and E1a did
 # (sleep-drain-reading take --label floor --then suspend), and waits for that
-# suspend. It ends one of two ways:
-#   - The floor: the screen goes dark, if it isn't already, and it and the
-#     keyboard (dark since the reading began) stay dark. Nothing wakes the Mac
-#     from it. When the planned time is up:
+# suspend. --quiet (E2's first rung, PLAN.md) adds quiet=1: the same, but
+# without maralcbr's 500 ms and its two reads after the post-slpa writes, so
+# the commit is the last thing touched before the CPUs power down; its
+# reading's label is floor-quiet. It ends one of three ways:
+#   - A reset: about 30 s after the screen goes dark, the Mac restarts by
+#     itself into the regular boot. That's the S2R entry's watchdog
+#     (RESEARCH.md, "The floor"): the entry didn't complete. In the regular
+#     boot, pkexec /usr/local/bin/sleep-drain-safe collect; BACC dates it.
+#   - Dark for good: the screen goes dark, if it isn't already, and it and
+#     the keyboard (dark since the reading began) stay dark past 2 minutes.
+#     Nothing wakes the Mac from it. If that's new (it's a candidate for a
+#     completed entry), leave it at least 30 minutes, then:
 #       1. Press the power key once, briefly, and wait 30 s. If the screen
-#          comes back, it's the other ending, below.
+#          comes back, it's the last ending, below.
 #       2. If it stays dark, hold the key until the Mac is off (about 10 s;
 #          the screen gives no cue), let go, and press it once more straight
-#          away, so that BACC dates the end. Then, in the next boot:
+#          away, so that BACC dates the end. Then, in the next boot (the
+#          label as above: floor, or floor-quiet):
 #            pkexec bash -c '/usr/local/bin/sleep-drain-safe collect &&
 #                            /usr/local/bin/sleep-drain-reading take --label floor'
 #   - No floor: the keyboard lights up, full, and this prints "NO FLOOR"
@@ -58,6 +67,15 @@ WATCH_S=${FLOOR_WATCH_S:-120}
 
 die() { echo "run-floor: $*" >&2; exit 1; }
 
+quiet=0
+label=floor
+if (($# == 1)) && [[ $1 == --quiet ]]; then
+  quiet=1
+  label=floor-quiet
+elif (($# != 0)); then
+  die "usage: run-floor [--quiet]"
+fi
+
 here=$(cd "$(dirname "$0")" && pwd)
 ko=$here/e1_hook.ko
 [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
@@ -67,7 +85,9 @@ ko=$here/e1_hook.ko
 # Builds before this one have no cancel (E1a's has no oneway either), and
 # their insmod would fail with a bare "Invalid parameters", or load without
 # the one-shot rule.
-[[ $'\n'$(modinfo -F parm "$ko") == *$'\n'cancel:* ]] || die "$ko is an older build, without the floor: make -C $here"
+parms=$'\n'$(modinfo -F parm "$ko")
+[[ $parms == *$'\n'cancel:* ]] || die "$ko is an older build, without the floor: make -C $here"
+((!quiet)) || [[ $parms == *$'\n'quiet:* ]] || die "$ko is an older build, without quiet: make -C $here"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 [[ $(cat "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none, so the suspend wouldn't be a real one: echo none > $PM_TEST"
@@ -128,13 +148,16 @@ rm -f "$fifo"
 dmesg > /dev/null 2>&1 || true
 grep -F x /dev/null || true
 
+params=(replay=15 oneway=1)
+((!quiet)) || params+=(quiet=1)
 armed=1
-insmod "$ko" replay=15 oneway=1
-# A build that doesn't know them would load with both ignored, and only warn.
-[[ $(cat "$MODDIR/parameters/replay") == 15 && $(cat "$MODDIR/parameters/oneway") == Y ]] ||
-  die "e1_hook didn't take replay=15 oneway=1: make -C $here"
-echo "e1_hook loaded with replay=15 oneway=1. Leave the Mac alone: in about 10 minutes the reading ends and the Mac suspends into the floor, one way (this script's header says how to end it)"
-"$READING" take --label floor --then suspend &
+insmod "$ko" "${params[@]}"
+# A build that doesn't know them would load with them ignored, and only warn.
+[[ $(cat "$MODDIR/parameters/replay") == 15 && $(cat "$MODDIR/parameters/oneway") == Y ]] &&
+  { ((!quiet)) || [[ $(cat "$MODDIR/parameters/quiet") == Y ]]; } ||
+  die "e1_hook didn't take ${params[*]}: make -C $here"
+echo "e1_hook loaded with ${params[*]}. Leave the Mac alone: in about 10 minutes the reading ends and the Mac suspends into the floor, one way (this script's header says how it can end)"
+"$READING" take --label "$label" --then suspend &
 reader=$!
 wait "$reader"
 reader=

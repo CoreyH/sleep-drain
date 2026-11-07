@@ -241,20 +241,25 @@ steps, and restarting the DCP and the PMP afterwards.
     30 s in is very likely the entry watchdog's (DeepIdle: the 0x2925c4000
     write is the commit and arms it). Each attempt is quick: a short
     safe-boot run with no reading needed, since a reset about 30 s in means
-    "not yet". First the quiet commit: the other CPUs down before the
-    post-`slpa` writes, the commit as the last CPU's last MMIO access, then
-    straight to its deep WFI, with no AFNC reads or IPIs after it. Only a
-    cluster's last core arms ACC_OVRD's deep-sleep bits, which act per
-    cluster: Naeem's first Linux S2R run on T8103 hung when stopped cores
-    armed them under running ones (malik-na/linux-aurora 3bbb16ebac56).
-    Then, on top, one at a time: maralcbr's other bits (the domains macOS
-    has off, 8-10; the AOP's notices, 6; the internal PCIe ports, 13), and
-    the PMU boot stage 0x50. The SEP's SLEEP message (bit 11) touches state
-    the SEP shares with macOS: only with Corey's OK. A Mac that stays dark
-    is a candidate, not a result (RESEARCH.md, "The floor"). A breadcrumb
-    just before the commit (a PMU scratch write, so with Corey's OK) rules
-    out a hang before it; only a low BQCC reading shows the entry
-    completed.
+    "not yet". A Mac that stays dark is a candidate, not a result
+    (RESEARCH.md, "The floor"). A breadcrumb just before the commit (a PMU
+    scratch write, so with Corey's OK) rules out a hang before it; only a
+    low BQCC reading shows the entry completed. In order:
+    - [ ] **The quiet commit** (`pkexec e1-hook/run-floor --quiet`,
+      `quiet=1`): the floor without maralcbr's 500 ms and its two AFNC
+      reads, so the commit is the last MMIO access and every CPU powers down
+      right after it. On T8103 macOS adds only the RTC alarm and the same
+      write twice more before its cores go down, and Naeem's tries 26-31
+      reset because a last core touched a device after the commit.
+    - If it still resets: the other CPUs down before the post-`slpa`
+      writes, so the commit is the last thing any core does. Then only a
+      cluster's last core may arm ACC_OVRD's deep-sleep bits, which act per
+      cluster: Naeem's first Linux S2R run on T8103 hung when stopped cores
+      armed them under running ones (malik-na/linux-aurora 3bbb16ebac56).
+    - Then, on top, one at a time: maralcbr's other bits (the domains
+      macOS has off, 8-10; the AOP's notices, 6; the internal PCIe ports,
+      13), and the PMU boot stage 0x50. The SEP's SLEEP message (bit 11)
+      touches state the SEP shares with macOS: only with Corey's OK.
   - **The code.** An out-of-tree module: our own, written from these
     findings and maralcbr's tables (maralcbr/linux is GPL-2.0, as part of
     the kernel). maralcbr ran the replay from macsmc-reboot at s2idle's

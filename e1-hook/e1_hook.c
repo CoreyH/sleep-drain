@@ -193,7 +193,15 @@ MODULE_PARM_DESC(prepare_ret, "The last B0AV read at prepare: 0, -errno, or 1 be
  * Their 500 ms is kept, with its two reads: their fast mode always makes it
  * (it maps the AFNC page whenever it maps the table, L816), so it's part of
  * the timing this copies, though the reads change nothing. What they read is
- * in afnc, readable with 13 only. Left out, as diagnostics: their other reads
+ * in afnc, readable with 13 only. quiet=1 (with 15 only: E2's first rung,
+ * PLAN.md) leaves the 500 ms and its reads out, and the AFNC page unmapped:
+ * the table's last write, 1 to 0x2925c4000 (the S2R timer, which commits the
+ * PMGR's entry), is then the last MMIO access before every CPU powers down.
+ * On T8103, macOS adds only the RTC alarm and the same write twice more
+ * before its cores power down, and a last core that touched a device after
+ * the commit hung there, so the entry never completed (Naeem's try26-31,
+ * malik-na/m1-power-lab). The load checks that the commit is the table's
+ * last entry. Left out, as diagnostics: their other reads
  * of the watchdog (lab_dump_wdt(), L798) and of AFNC2/3 (lab_afnc(), L841,
  * L859, L862, L867), their prints between writes, and their lab_delay_stage
  * delays (off by default). Their prepare op (L481-489) only reads too.
@@ -208,6 +216,9 @@ MODULE_PARM_DESC(replay, "LAB ONLY, safe boot only: at the first prepare_late, m
 static bool oneway;
 module_param(oneway, bool, 0444);
 MODULE_PARM_DESC(oneway, "Must be 1 for replay=13 or 15, which can't be undone (15 never resumes); ignored for 0 and 5");
+static bool quiet;
+module_param(quiet, bool, 0444);
+MODULE_PARM_DESC(quiet, "replay=15 only: leave out maralcbr's 500 ms and its two AFNC reads, so that the S2R-timer commit is the last MMIO access before every CPU's power-down");
 static unsigned int replay_done;
 module_param(replay_done, uint, 0444);
 MODULE_PARM_DESC(replay_done, "0 not yet, 1 the replay has run at a prepare_late, 2 called off (13 and 15: a suspend began after the first, which never reached prepare_late; or cancel)");
@@ -359,6 +370,9 @@ static const struct e1_mmio_write {
 };
 
 static_assert(ARRAY_SIZE(e1_post_slpa) == 74);
+
+/* The table's last write: the S2R timer, the PMGR entry's commit (quiet=1). */
+#define E1_S2R_COMMIT		0x2925c4000ULL
 
 /* Each entry's own non-posted mapping, at its address (bit 3 only). */
 static void __iomem *post_map[ARRAY_SIZE(e1_post_slpa)];
@@ -529,8 +543,9 @@ static void e1_post_slpa_eh(void)
 {
 	unsigned int i, n = 0;
 
-	pr_emerg("replay: fast: %u watchdog and error-handler writes now; from MBSE=slpa on, no output: the other %zu writes, 500 ms%s\n",
+	pr_emerg("replay: fast: %u watchdog and error-handler writes now; from MBSE=slpa on, no output: the other %zu writes%s%s\n",
 		 post_eh, ARRAY_SIZE(e1_post_slpa) - post_eh,
+		 quiet ? ", the commit last" : ", 500 ms",
 		 (replay & 2) ? ", then every CPU's power-down" : "");
 	for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
 		if (!e1_post_is_eh(&e1_post_slpa[i]))
@@ -578,8 +593,8 @@ static void e1_cpu_down(void *unused)
 /*
  * Bit 3, right after MBSE=slpa was accepted, with no output: the table's
  * other entries, back to back, as lab_replay_post_slpa_fast() writes them
- * (L348-361), then dsb(sy), then their 500 ms with its two reads (L883-894).
- * With bit 1, every CPU's power-down follows (L895-898): the others through
+ * (L348-361), then dsb(sy), then their 500 ms with its two reads (L883-894),
+ * unless quiet. With bit 1, every CPU's power-down follows (L895-898): the others through
  * smp_call_function() without waiting, then this one, and nothing returns.
  * Preemption stays off from the first write on, so that no other task runs on
  * this CPU and it can't migrate before its own power-down; interrupts still
@@ -604,12 +619,14 @@ static void e1_after_slpa(void)
 		n++;
 	}
 	dsb(sy);
-	mdelay(100);
-	afnc[0] = readl(afnc_map + 0x160);
-	afnc[1] = readl(afnc_map + 0x178);
-	mdelay(400);
-	afnc[2] = readl(afnc_map + 0x160);
-	afnc[3] = readl(afnc_map + 0x178);
+	if (!quiet) {
+		mdelay(100);
+		afnc[0] = readl(afnc_map + 0x160);
+		afnc[1] = readl(afnc_map + 0x178);
+		mdelay(400);
+		afnc[2] = readl(afnc_map + 0x160);
+		afnc[3] = readl(afnc_map + 0x178);
+	}
 	if (replay & 2) {
 		smp_call_function(e1_cpu_down, NULL, 0);
 		e1_cpu_down(NULL);
@@ -788,6 +805,7 @@ static bool __init e1_safe_boot(void)
  */
 static int __init e1_check_params(void)
 {
+	const struct e1_mmio_write *last;
 	unsigned int i;
 
 	post_eh = 0;
@@ -813,6 +831,17 @@ static int __init e1_check_params(void)
 	if (replay != 0 && replay != 5 && replay != 13 && replay != 15) {
 		pr_err("replay=%u: only 0 (none), 5 (E1a: keys and PMP words), 13 (5 and the post-slpa writes, the CPUs up) and 15 (13 and every CPU's power-down: the floor) exist\n",
 		       replay);
+		return -EINVAL;
+	}
+	if (quiet && replay != 15) {
+		pr_err("quiet=1 changes only the floor's end: it needs replay=15\n");
+		return -EINVAL;
+	}
+	last = &e1_post_slpa[ARRAY_SIZE(e1_post_slpa) - 1];
+	if (quiet && (last->addr != E1_S2R_COMMIT || last->width != 4 || last->val != 1 ||
+		      e1_post_is_eh(last))) {
+		pr_err("quiet=1: the post-slpa table doesn't end with the commit (1 to 0x%llx); refusing\n",
+		       E1_S2R_COMMIT);
 		return -EINVAL;
 	}
 	if ((replay & (2 | 8)) && !oneway) {
@@ -931,11 +960,13 @@ unlock:
 			}
 			post_map[i] = p + (a & ~PAGE_MASK);
 		}
-		afnc_map = ioremap_np(E1_AFNC_PAGE, PAGE_SIZE);
-		if (!afnc_map) {
-			pr_err("can't map 0x%llx (AFNC2/3); refusing\n", E1_AFNC_PAGE);
-			ret = -ENOMEM;
-			goto unmap;
+		if (!quiet) {
+			afnc_map = ioremap_np(E1_AFNC_PAGE, PAGE_SIZE);
+			if (!afnc_map) {
+				pr_err("can't map 0x%llx (AFNC2/3); refusing\n", E1_AFNC_PAGE);
+				ret = -ENOMEM;
+				goto unmap;
+			}
 		}
 	}
 
