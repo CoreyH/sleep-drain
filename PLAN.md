@@ -247,12 +247,15 @@ steps, and restarting the DCP and the PMP afterwards.
     low BQCC reading shows the entry completed. In order:
     - [ ] **The quiet commit** (`pkexec e1-hook/run-floor --quiet`,
       `quiet=1`): the floor without maralcbr's 500 ms and its two AFNC
-      reads, so the commit is the last MMIO access and every CPU powers down
-      right after it. On T8103 macOS adds only the RTC alarm and the same
+      reads, so the commit is the replay's last MMIO access and every CPU
+      powers down right after it (an interrupt, such as a coprocessor's
+      message, can still reach any CPU before it masks them). On T8103
+      macOS adds only the RTC alarm and the same
       write twice more before its cores go down, and Naeem's tries 26-31
       reset because a last core touched a device after the commit.
     - If it still resets: the other CPUs down before the post-`slpa`
-      writes, so the commit is the last thing any core does. Then only a
+      writes, so the commit is the last thing any core does, with
+      interrupts masked on the last CPU before it. Then only a
       cluster's last core may arm ACC_OVRD's deep-sleep bits, which act per
       cluster: Naeem's first Linux S2R run on T8103 hung when stopped cores
       armed them under running ones (malik-na/linux-aurora 3bbb16ebac56).

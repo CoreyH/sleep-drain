@@ -196,7 +196,16 @@ MODULE_PARM_DESC(prepare_ret, "The last B0AV read at prepare: 0, -errno, or 1 be
  * in afnc, readable with 13 only. quiet=1 (with 15 only: E2's first rung,
  * PLAN.md) leaves the 500 ms and its reads out, and the AFNC page unmapped:
  * the table's last write, 1 to 0x2925c4000 (the S2R timer, which commits the
- * PMGR's entry), is then the last MMIO access before every CPU powers down.
+ * PMGR's entry), is then the replay's last MMIO access: nothing in it
+ * touches the hardware between the commit and every CPU's power-down. Not
+ * sealed, though: every CPU keeps its interrupts on until e1_cpu_down()
+ * masks them (this one because smp_call_function() needs them; the others,
+ * idle, until they take their IPI), and AIC2 delivers to all of them. The
+ * coprocessor mailboxes' interrupts stay armed through suspend
+ * (IRQF_NO_SUSPEND), so a message in that window, or a handler already
+ * running at the commit, can still touch the AIC and a mailbox after it.
+ * Taking the other CPUs down before the writes, the next rung, would let
+ * this CPU mask its interrupts before the commit with no other CPU up.
  * On T8103, macOS adds only the RTC alarm and the same write twice more
  * before its cores power down, and a last core that touched a device after
  * the commit hung there, so the entry never completed (Naeem's try26-31,
@@ -218,7 +227,7 @@ module_param(oneway, bool, 0444);
 MODULE_PARM_DESC(oneway, "Must be 1 for replay=13 or 15, which can't be undone (15 never resumes); ignored for 0 and 5");
 static bool quiet;
 module_param(quiet, bool, 0444);
-MODULE_PARM_DESC(quiet, "replay=15 only: leave out maralcbr's 500 ms and its two AFNC reads, so that the S2R-timer commit is the last MMIO access before every CPU's power-down");
+MODULE_PARM_DESC(quiet, "replay=15 only: leave out maralcbr's 500 ms and its two AFNC reads, so that the S2R-timer commit is the replay's last MMIO access before every CPU's power-down");
 static unsigned int replay_done;
 module_param(replay_done, uint, 0444);
 MODULE_PARM_DESC(replay_done, "0 not yet, 1 the replay has run at a prepare_late, 2 called off (13 and 15: a suspend began after the first, which never reached prepare_late; or cancel)");

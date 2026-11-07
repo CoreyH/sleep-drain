@@ -11,8 +11,8 @@
 # (sleep-drain-reading take --label floor --then suspend), and waits for that
 # suspend. --quiet (E2's first rung, PLAN.md) adds quiet=1: the same, but
 # without maralcbr's 500 ms and its two reads after the post-slpa writes, so
-# the commit is the last thing touched before the CPUs power down; its
-# reading's label is floor-quiet. It ends one of three ways:
+# the commit is the last thing the replay touches before the CPUs power down;
+# its reading's label is floor-quiet. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
 #     itself into the regular boot. That's the S2R entry's watchdog
 #     (RESEARCH.md, "The floor"): the entry didn't complete. In the regular
@@ -25,10 +25,10 @@
 #          comes back, it's the last ending, below.
 #       2. If it stays dark, hold the key until the Mac is off (about 10 s;
 #          the screen gives no cue), let go, and press it once more straight
-#          away, so that BACC dates the end. Then, in the next boot (the
-#          label as above: floor, or floor-quiet):
+#          away, so that BACC dates the end. Then, in the next boot:
 #            pkexec bash -c '/usr/local/bin/sleep-drain-safe collect &&
 #                            /usr/local/bin/sleep-drain-reading take --label floor'
+#          and after run-floor --quiet, the same with --label floor-quiet.
 #   - No floor: the keyboard lights up, full, and this prints "NO FLOOR"
 #     with what happened (unlock the screen to see it), and tries to save it.
 #     Photograph it, then restart. That happens when the suspend
