@@ -1614,7 +1614,7 @@ We replied on their issue #9 (JJRPF/Aurora-DeepIdle#9, comment 6709046397).
 The reply gives the ADT windows for their two pre-`slpw` words (which macOS
 driver writes them is still unknown) and the floor's result.
 
-### M1 run 1: every core down, both P complexes off, and still the reset at 30 s (2026-11-07)
+### M1 run 1: the other seven cores down, both P complexes off, and still the reset at 30 s (2026-11-07)
 
 `e1-hook/run-floor --m1` (`replay=15 oneway=1 quiet=1 m1=1`, #34 at
 94f04b3; flag `radios-off`), in a safe boot, on battery at 79%. This was
@@ -1647,9 +1647,13 @@ floor. e1_hook.c's m1 block gives the full order. Raw data:
   ...): the run's masks don't outlive the reset. CPU-start + 0x4 read 0x880
   as before.
 
-So the CPUs weren't what kept the entry from completing, or not all of it:
-with every core down, both P complexes off and nothing pending, it still
-doesn't complete. That's where DeepIdle stands on T6020 (their R11-R17).
-Naeem's T8103 entry completes, so what his has and ours lacks is the next
-lead. One thing to start with: his kernel sends no SMC sleep keys, and ours
-sends maralcbr's four.
+So with the seven other cores down, both P complexes off and nothing
+pending, the entry still doesn't complete. The one CPU this doesn't cover
+is CPU0. Its last breadcrumb comes before nub-spmi0's acks, the commit,
+and its own ACC_OVRD, CYC_OVRD and WFI, and nothing records whether CPU0,
+or the E complex with it, went down after that. So a CPU-side cause isn't
+ruled out for CPU0 and its cluster; it is ruled out for the rest. That's
+about where DeepIdle stands on T6020 (their R11-R17). Naeem's T8103 entry
+completes, so what his has and ours lacks is the next lead. One thing to
+start with: his kernel sends no SMC sleep keys, and ours sends maralcbr's
+four.
