@@ -106,9 +106,11 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   the Mac wakes with the log, and a suspend that ends before `prepare_late`
   calls them off. The module won't build or load if any of its writes would
   touch the never-write list (0x28e0802d8, `ps_pmp`; 0x28e700000). Both
-  launchers run in a safe boot only, take the
-  reading and suspend, and unload the module on any other way out
-  (`tests/e1a_launcher_test.py`). Not installed by `install.sh`.
+  launchers run in a safe boot only, take the reading and suspend, and
+  unload the module on any other way out (`tests/e1a_launcher_test.py`).
+  `e1-hook/e1a-platform` runs E1a's replay under `pm_test=platform` instead
+  and prints what each key write returned, for a photo, since the NVMe is
+  gone after `slpa`. Not installed by `install.sh`.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake

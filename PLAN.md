@@ -210,19 +210,32 @@ steps, and restarting the DCP and the PMP afterwards.
       four keys; it still answers after `slpa`; the NVMe is lost until a
       restart; no reset, no freeze. The alarm sleep couldn't run: its
       programs are on the lost disk.
-    - [ ] **The floor: the whole one-way replay** (keys, PMP words, the 74
-      post-`slpa` writes, then every CPU's power-down, maralcbr's bits 0-3),
-      in a safe boot, measured with `BQCC` across the power-key reset. Does
-      Linux get near macOS's 0.1 W? If it does, the sequence is right and
-      the wake path is what's left (the NVMe first). If it stays near 1.4-2
-      W, something before `slpa` is missing. The writes touch the watchdog,
-      the error handlers and the CPU clusters' DVFS and CPM: full review
-      first, every address checked against the never-write list. E1b (the
+    - [ ] **The floor: the whole one-way replay** (`pkexec
+      e1-hook/run-floor`: `replay=15 oneway=1`, maralcbr's bits 0-3 in their
+      default order: the 31 watchdog and error-handler writes, the keys and
+      PMP words, the other 43 post-`slpa` writes, their 500 ms, then every
+      CPU's power-down), in a safe boot, measured with `BQCC` across the
+      power-key reset. Does Linux get near macOS's 0.1 W? If it does, the
+      sequence is right and the wake path is what's left (the NVMe first).
+      If it stays near 1.4-2 W, something before `slpa` is missing. E1b (the
       74 writes with the CPUs up) is skipped: E1a shows nothing powers down
-      while they run.
-  - **E2 onwards, from E1's result.** The domains macOS has off (bits 8-10),
-    the SEP sleep message (bit 11), the AOP's notices (bit 6), the internal
-    PCIe ports (bit 13), and last the CPU power-down (bit 1).
+      while they run. Reviewed 2026-11-07: the table is maralcbr's L237-310
+      byte for byte, and nothing in it or the PMP words is on the
+      never-write list (the module checks again at load). How to read the
+      night:
+      - Dark until the power key: the replay reached the CPUs' power-down.
+        `BQCC` gives the floor.
+      - Awake again within seconds of the hand-off, or at the short press
+        before the reset: no floor. A replay that stops short fails its
+        suspend (`-EIO`), and a suspend that ends before `prepare_late`
+        calls the replay off. `e1_hook`'s log and parameters say which;
+        photograph them first.
+      - Back in the regular boot instead of dark: a fault, restarted by
+        run-floor's `kernel.panic=10`. `BACC` dates it.
+  - **E2 onwards, from the floor's result.** If it stays high, one at a time
+    on top of it: the domains macOS has off (bits 8-10), the SEP sleep
+    message (bit 11), the AOP's notices (bit 6), the internal PCIe ports
+    (bit 13).
   - **The code.** An out-of-tree module: our own, written from these
     findings and maralcbr's tables (maralcbr/linux is GPL-2.0, as part of
     the kernel). maralcbr ran the replay from macsmc-reboot at s2idle's
