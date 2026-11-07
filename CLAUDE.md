@@ -163,7 +163,12 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   change or draft m1n1 code, not even for Corey to type in. Corey decided on
   2026-11-05 that using m1n1 as a tool is fine here, since nothing goes to
   Asahi. Whether Claude may interpret an m1n1 trace is still open: Asahi's
-  policy names that case.
+  policy names that case. Corey decided on 2026-11-07 that Claude may read
+  Naeem Malik's Linux S2R driver (malik-na/linux-aurora `m1power/s2r-mem`:
+  `drivers/soc/apple/apple-s2r.c` and its deep stop in `smp_apple.c`),
+  GPL-2.0-only Linux code whose values come from m1n1 traces, crediting him.
+  That isn't m1n1 code; m1n1 itself, its patches and scripts, and DeepIdle's
+  Aura stay off limits.
 
 ## Experiments
 
