@@ -108,8 +108,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `-EIO`, so with them loaded the Mac is in the floor or awake, never in a
   plain s2idle; writing 1 to `cancel` calls the replay off. run-floor waits
   for its suspend (`/sys/power/suspend_stats`) and, if it fails, comes back
-  or never begins, calls the replay off and prints "NO FLOOR" with what
-  happened. The module won't build or load if any of its writes would
+  or never begins, calls the replay off, lights the keyboard and prints
+  "NO FLOOR" with what happened. The module won't build or load if any of its writes would
   touch the never-write list (0x28e0802d8, `ps_pmp`; 0x28e700000). Both
   launchers run in a safe boot only, take the reading and suspend, and
   unload the module on any other way out before the suspend is asked for;

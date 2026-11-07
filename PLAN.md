@@ -227,7 +227,8 @@ steps, and restarting the DCP and the PMP afterwards.
         `BQCC` gives the floor. Nothing else can make the Mac sleep with
         `e1_hook` loaded: only the first suspend after its load can replay,
         and any suspend that doesn't replay fails.
-      - Awake, with run-floor's "NO FLOOR" block on the screen: no floor.
+      - The keyboard lit, and run-floor's "NO FLOOR" block on the screen:
+        no floor.
         The suspend failed, the replay stopped short (it then fails its
         suspend, `-EIO`), or no suspend began within 120 s. The block says
         which, from `suspend_stats` and `e1_hook`'s parameters and log;

@@ -13,7 +13,8 @@ refuses with pm_test set or an older build, and unloads a build that ignored
 its parameters. And after the hand-off it stays and watches a fake
 /sys/power/suspend_stats: a floor leaves it waiting with the replay armed; a
 suspend that fails (before any PM notifier, too) or comes back, no suspend at
-all, or a signal, calls the replay off (cancel) without an unload.
+all, or a signal, calls the replay off (cancel) without an unload, and
+all but the signal light the keyboard.
 
   python3 -I tests/e1a_launcher_test.py
 """
@@ -90,6 +91,8 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     for k, v in (("success", "0"), ("fail", "0"), ("last_failed_errno", "0"), ("last_failed_step", "")):
         write(os.path.join(tmp, "stats", k), v + "\n")
     os.makedirs(os.path.join(tmp, "log"))
+    write(os.path.join(tmp, "kbd", "max_brightness"), "255\n")
+    write(os.path.join(tmp, "kbd", "brightness"), "0\n")
     if loaded:
         os.makedirs(moddir)
     stubs = os.path.join(tmp, "stubs")
@@ -151,7 +154,8 @@ def env(tmp, launcher, watch_s=3):
     }
     if prefix == "FLOOR":
         e.update(FLOOR_SAVE=os.path.join(tmp, "stubs", "save"), FLOOR_STATS=os.path.join(tmp, "stats"),
-                 FLOOR_LOGDIR=os.path.join(tmp, "log"), FLOOR_RUNDIR=tmp, FLOOR_WATCH_S=str(watch_s))
+                 FLOOR_LOGDIR=os.path.join(tmp, "log"), FLOOR_RUNDIR=tmp, FLOOR_WATCH_S=str(watch_s),
+                 FLOOR_KBD=os.path.join(tmp, "kbd"))
     return e
 
 
@@ -178,6 +182,10 @@ def cancelled(tmp):
             return f.read()
     except FileNotFoundError:
         return None
+
+
+def kbd(tmp):
+    return open(os.path.join(tmp, "kbd", "brightness")).read().strip()
 
 
 def wait_for(path):
@@ -226,9 +234,10 @@ def test_floor_watch(launcher):
             pass
         out, err = p.communicate(timeout=30)
         c = calls(tmp)
-        check(alive and c == insmod_reading(d) and cancelled(tmp) == "" and sysctl(tmp) == ("10", "1"),
-              f"{script}: after the hand-off it waits for the suspend with the replay armed: no unload, no cancel;"
-              " kernel.panic=10 panic_on_oops=1",
+        check(alive and c == insmod_reading(d) and cancelled(tmp) == "" and sysctl(tmp) == ("10", "1")
+              and kbd(tmp) == "0",
+              f"{script}: after the hand-off it waits for the suspend with the replay armed: no unload, no cancel,"
+              " the keyboard dark; kernel.panic=10 panic_on_oops=1",
               f"alive {alive}\n" + out + err + "\n".join(c) + f"\ncancel {cancelled(tmp)!r} sysctl {sysctl(tmp)}")
 
     for reading, what, want in (
@@ -251,9 +260,9 @@ def test_floor_watch(launcher):
                   and c[2:] == ["sleep-drain-safe save " + os.path.join(tmp, "log", logs[0])]
                   and "NO FLOOR" in r.stdout and all(w in r.stdout for w in want)
                   and "e1_hook: replay: a stub line" in r.stdout and "NO FLOOR" in logged
-                  and (reading != "handoff" or took >= 3),
-                  f"{script}: {what}: the replay is called off, not unloaded; NO FLOOR printed, logged and saved;"
-                  " exit 2",
+                  and (reading != "handoff" or took >= 3) and kbd(tmp) == "255",
+                  f"{script}: {what}: the replay is called off, not unloaded; the keyboard lit; NO FLOOR printed,"
+                  " logged and saved; exit 2",
                   f"exit {r.returncode}, {took:.1f} s\n" + r.stdout + r.stderr + "\n".join(c)
                   + f"\ncancel {cancelled(tmp)!r}")
 

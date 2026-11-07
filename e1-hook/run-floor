@@ -10,8 +10,9 @@
 # reading, saves it and suspends, as V2 and E1a did
 # (sleep-drain-reading take --label floor --then suspend), and waits for that
 # suspend. It ends one of two ways:
-#   - The floor: the screen goes dark, if it isn't already, and stays dark.
-#     Nothing wakes the Mac from it. When the planned time is up:
+#   - The floor: the screen goes dark, if it isn't already, and it and the
+#     keyboard (dark since the reading began) stay dark. Nothing wakes the Mac
+#     from it. When the planned time is up:
 #       1. Press the power key once, briefly, and wait 30 s. If the screen
 #          comes back, it's the other ending, below.
 #       2. If it stays dark, hold the key until the Mac is off (about 10 s;
@@ -19,9 +20,9 @@
 #          away, so that BACC dates the end. Then, in the next boot:
 #            pkexec bash -c '/usr/local/bin/sleep-drain-safe collect &&
 #                            /usr/local/bin/sleep-drain-reading take --label floor'
-#   - No floor: the screen comes back, or never goes dark, and this prints
-#     "NO FLOOR" with what happened (unlock the screen to see it), and tries
-#     to save it. Photograph it, then restart. That happens when the suspend
+#   - No floor: the keyboard lights up, full, and this prints "NO FLOOR"
+#     with what happened (unlock the screen to see it), and tries to save it.
+#     Photograph it, then restart. That happens when the suspend
 #     fails, when the replay stops short (e1_hook then fails the suspend, so
 #     that the Mac wakes with its log), or when no suspend begins within
 #     120 s. With e1_hook loaded, nothing else can put the Mac to sleep: only
@@ -50,6 +51,7 @@ PM_TEST=${FLOOR_PM_TEST:-/sys/power/pm_test}
 STATS=${FLOOR_STATS:-/sys/power/suspend_stats}
 SYSCTL=${FLOOR_SYSCTL:-/proc/sys/kernel}
 LOGDIR=${FLOOR_LOGDIR:-/var/log}
+KBD=${FLOOR_KBD:-/sys/class/leds/kbd_backlight}
 RUNDIR=${FLOOR_RUNDIR:-/run}
 # How long, awake, the suspend may take to begin after the reading asks.
 WATCH_S=${FLOOR_WATCH_S:-120}
@@ -180,6 +182,11 @@ else
   what="no suspend began within $WATCH_S s"
 fi
 printf '1\n' 2> /dev/null > "$MODDIR/parameters/cancel" || true
+# The sign that shows without touching the Mac: the keyboard, dark since the
+# reading began, lit full.
+kbd=$(get "$KBD/max_brightness")
+[[ $kbd =~ ^[0-9]+$ ]] || kbd=255
+printf '%s\n' "$kbd" 2> /dev/null > "$KBD/brightness" || true
 p=$MODDIR/parameters
 log ""
 log "===================== NO FLOOR: TAKE A PHOTO OF THIS SCREEN ====================="
