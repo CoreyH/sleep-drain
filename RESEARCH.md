@@ -1639,8 +1639,8 @@ floor. e1_hook.c's m1 block gives the full order. Raw data:
     the replay's boot stage.
   - WD1 was off by step 4. Its control word read 0x4 at the module's load,
     before apple_wdt's suspend stopped it.
-- **The reset came 30.6 s after the commit.** The commit's PMU second was
-  in 0x6010. The arch counter, which restarts with the SoC, was compared
+- **The reset came 30.6 s after the commit** (29.6-31.6 s: the PMU's RTC
+  counts whole seconds). The commit's PMU second was in 0x6010. The arch counter, which restarts with the SoC, was compared
   with the PMU's RTC in the next boot. This is the floor's signature: the
   S2R watchdog (WD2) firing on an entry that didn't complete.
 - After the reset, the AP wake masks read Linux's values again (0, 0x40, 0,
@@ -1658,20 +1658,29 @@ completes, so what his has and ours lacks is the next lead. One thing to
 start with: his kernel sends no SMC sleep keys, and ours sends maralcbr's
 four.
 
-### After M1 run 1: no post-mortem in the PMU, Naeem's entry completes either way, and run 2 watches CPU0 (2026-11-07)
+### After M1 run 1: no cause in the PMU, Naeem's entry completes either way, and run 2 watches CPU0 (2026-11-07)
 
-**The PMU keeps no record of the reset.** In the first boot after run 1's
-reset, the PMU's fault log (0x1000, 10 bytes) read all zeros. Its SoCD area
-(0x8b00, 0x400 bytes) held an "INIT" header and noise, not trace records.
-Both are read-only reads through the PMU's nvmem, at the offsets macOS's
-device tree gives. `results/m1-run1-20261107/pmu-after-reset.txt` has the
-details. A control read at a later clean boot will compare the hashes.
+**The PMU doesn't say what caused the reset.** In the first boot after run
+1's reset, the PMU's fault log (0x1000, 10 bytes) read all zeros. Its SoCD
+area (0x8b00, 0x400 bytes) held an "INIT" header and noise, not trace
+records.
+- The fault shadow (0x867b) has the bits for por, rst, wdog/reset_in1,
+  finger_reset, force_off and por_rtc set. But it read the same after the
+  floor's reset as after a clean power-off ("The floor"), so it keeps
+  history, not this reset.
+- The only trace of the reset in the PMU stays the boot-error stage, 0x6003
+  = 0x50.
+- All of these are read-only reads through the PMU's nvmem, at the offsets
+  macOS's device tree gives. `results/m1-run1-20261107/pmu-after-reset.txt`
+  has the details. A control read at a later clean boot will compare the
+  hashes.
 
 **Naeem's newer runs** (malik-na/m1-power-lab a2103f221e62, its
 `docs/evidence/2026-11-07-linux-s2r/README.md` at 5d77d5e45980): his Linux
 entry on T8103 completed in every run from 3 to 12. Each reached his last
 marker with no WD2 reset, and his WD1 dead-man restarted the Mac about
-181 s after the commit.
+181 s after the commit. The exception is test 7, with the dead-man off,
+which stayed down until a long press: nothing else reset a completed entry.
 - It completed both with macOS's SMC handshake (test 9: slpw, WKTP=2, slpa
   and SetAPPower 0x201, all acked) and without it (run 2).
 - It completed with pms_sram on (test 10) and with it off.
@@ -1681,6 +1690,12 @@ marker with no WD2 reset, and his WD1 dead-man restarted the Mac about
   handshake, still slept and woke. Blocking the PMP's 0x201 pair made macOS
   panic.
 - His remaining candidate, the PMP, is about the wake, not the entry.
+- He also decoded the AON reconfig engine's wake sequences from its SRAM.
+  The engine has progress registers at 0x23d2b8028 and 0x23d2b8040, and a
+  WD1 reset clears them, so they can't be read after a failed wake. They sit
+  in the AON watchdog block's 0x23d2b8000 page (his apple-s2r.c). Two things
+  here are our inference: that they also track the entry, and that T6000's
+  are at 0x2922b8028 and 0x2922b8040.
 
 For our entry, the SMC keys we send probably aren't what blocks it, since
 T8103 completes either way. Our run still keeps slpa, because T6000's PMU
@@ -1693,10 +1708,7 @@ declares its standby as an SMC write of MBSE (`function-external_standby`,
 - A WD2 reset means the engine's completion condition went unmet with every
   AP step done (try41).
 - In try41, a run with the CPU side complete still reset; try42, with fuller
-  tracing, slept. So something besides the cores can hold the entry: entry
-  timing, or the domains m1n1 kept on when it didn't trace the PMGR.
-- The engine has progress registers at 0x23d2b8028 and 0x23d2b8040, in the
-  watchdog block's second page, and a WD1 reset clears them.
+  tracing, slept. Naeem puts it down to entry timing.
 
 **Two loose ends in our own run:**
 - apple_wdt's default timeout is 30 s (aurora 4fdd0fc5 `apple_wdt.c`, L54),
@@ -1715,17 +1727,29 @@ released before the commit.
 - CPU7 reads the three watchdogs, the seven soc clusters' busy bits,
   SIO_CPU, the AP wake status, and the two words at T8103's
   progress-register offsets (0x2922b8028 and 0x2922b8040, inferred).
-- It records all of it in the OK'd breadcrumb bytes, then stops.
+- It records all of it in the OK'd breadcrumb bytes. Each stage byte says
+  which bytes hold what, whichever SPMI command lands last (Pullfrog's
+  catch on #37). Last, CPU7 records whether it had anything pending itself,
+  then stops.
 - e1_hook.c's m1 block has the byte layout. `m1-crumbs` decodes it and now
-  prints the reset time itself, from the PMU's RTC and the SoC's counter.
+  prints the reset time itself, from the PMU's RTC and the SoC's counter,
+  to within a second.
 
 What the outcomes would mean:
 - **CPU0 doesn't read off.** That's the first concrete difference from a
   completed T8103 entry, and the boot cluster is the next target.
 - **CPU0 and the E complex read off, and the reset still comes at ~30 s.**
-  The CPU side is closed on T6000, and the cause is elsewhere. The
-  observer's other bytes point at the first candidates: a soc cluster
-  still busy, SIO_CPU on, a new wake-status bit, or progress words that
-  stopped moving.
+  The CPU side is very likely closed. Run 1 had the other seven cores down
+  before the commit, and run 2 would show CPU0 and ECPM go down after it.
+  Still, no run sees all eight down together. CPU1-6 go down before the
+  commit, not after it as in macOS, and CPU7's own power-down after its
+  second of watching is unobserved; only its last pending check is recorded.
+  The observer's other bytes point at the first candidates elsewhere: a soc
+  cluster still busy, SIO_CPU on, or a new wake-status bit. The two
+  inferred progress words may help too, if they turn out to be the
+  engine's.
 - **The watchdog bytes.** They say whether the 30 s is WD2's, loaded at the
-  commit, or WD1's, turned back on.
+  commit, or WD1's, armed again (step 4 stopped it).
+- **Stage 0x50 with the observe mark.** Nothing CPU7 sent after the commit
+  landed: raw SPMI after the commit failed, or the hand-over never
+  happened.

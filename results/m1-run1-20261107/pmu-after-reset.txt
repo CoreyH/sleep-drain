@@ -13,6 +13,11 @@ scrpad 0x8000-0x8fff: 7.62 bits/byte; sha256 8710333144452c6326065154856db959; t
   same in two reads. Its bytes aren't kept here: their role is unknown, and some
   may be state iBoot or the SEP keep.
 
-So neither the fault log nor the SoCD area records the WD2 reset: the SoCD area
-holds a header and no records. A control read at a later clean boot compares the
-two hashes: the same means nothing rewrites these bytes at a boot or a reset.
+So neither the fault log nor the SoCD area says what caused the reset: the SoCD
+area holds a header and no records. The fault shadow (0x867b, in the scrpad
+above) has bits 2-4 (por, rst, wdog/reset_in1), 9 (finger_reset), 12
+(force_off) and 72 (por_rtc) set, but it read the same after the floor's reset
+as after a clean power-off (RESEARCH.md, "The floor"): history, not this reset.
+(Bit N is bit N % 8 of byte N / 8, named by the ADT's info-fault_name-N.) A
+control read at a later clean boot compares the two hashes: the same means
+nothing rewrites these bytes at a boot or a reset.

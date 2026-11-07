@@ -802,44 +802,59 @@ static void e1_after_slpa(void)
  *   0x6016  how many AIC events every core took off (up to 255)
  *
  * observe=1 (run-floor --m1-observe, E2's M1 run 2; PLAN.md): M1 run 1 saw
- * CPU1-7 and both P complexes power down and still got the reset 30.6 s
+ * CPU1-7 and both P complexes power down and still got the reset about 31 s
  * after the commit; nothing after CPU0's 0x50 was recorded. On T8103 an
  * entry completed only once every core, the last included, reached its deep
  * WFI (Naeem's mac27-hv try26-32), and DeepIdle's boot core is unverified
  * too. So CPU7, P1's last core, isn't released in 6 (stages 0x21-0x26 only;
- * CPU0 doesn't wait for PCPM1). In 9, before the commit, CPU0 reads the AP
- * wake status for CPU7 and writes CPU7's stop bit while CPU7 still spins, as
- * macOS writes the other cores' bits while they stall in WFE; after the
- * commit it hands over (go, with observe set, all of it cleaned) and goes to
- * 10, counting any WFI that returns. CPU7 (m1_observe()) then polls CPU0's
- * power state for up to 500 ms, then the E complex's (ECPM) for up to
- * 500 ms more, reads the three watchdogs, the soc clusters, SIO_CPU, the
- * wake status and two words that may be the S2R engine's progress, records
- * them, acks nub-spmi0 and stops. Its stages and bytes:
- *   0x6004  0x60 CPU7 began; 0x61 0x6005-0x6007 landed; 0x6f all landed
- *           (next: nub-spmi0's acks and CPU7's own deep WFI)
- *   0x6005  (0x61 on) bit 0 CPU0 read off within 500 ms; bits 1-6 the
- *           cores that read off at their release, as 0x6007 has them below
- *           0x61; bit 7 ECPM read off within 500 ms more
+ * CPU0 doesn't wait for PCPM1), and 0x6005's bit 0, never a parked core,
+ * marks the run as observe=1 in the crumbs of 4 and 7. In 9, before the
+ * commit, CPU0 reads the AP wake status for CPU7 and writes CPU7's stop bit
+ * while CPU7 still spins, as macOS writes the other cores' bits while they
+ * stall in WFE; after the commit it hands over (go, with observe set, all of
+ * it cleaned) and goes to 10, counting any WFI that returns. CPU7
+ * (m1_observe()) then polls CPU0's power state for up to 500 ms, then the E
+ * complex's (ECPM) for up to 500 ms more, reads the three watchdogs, the soc
+ * clusters, SIO_CPU, the wake status and two words that may be the S2R
+ * engine's progress, records them, records what it has pending itself, acks
+ * nub-spmi0 and stops. Several words it reads are the replay's own targets:
+ * the table zeroes WD0's control and writes the soc-cluster words in K2,
+ * step 4 stops WD1, and step 5 writes SIO_CPU (0x400024f). So a watchdog
+ * armed after the commit was armed again by something else. The stages and
+ * bytes are such that each stage says which bytes hold what, whichever SPMI
+ * command fails or lands last: a stage and its bytes go in one command, or
+ * the stage that announces new meanings goes first.
+ *   0x6004  0x60 CPU7 began; 0x61 0x6005-0x6007 are CPU7's (one command
+ *           with them); 0x62 0x6012-0x6013 and 0x6015-0x6016 are being
+ *           rewritten (CPU0's or CPU7's, not known which); 0x6f all landed,
+ *           and CPU7 had nothing pending just before its acks and WFI; 0x6e
+ *           all landed, but it had an interrupt or SError pending
+ *   0x6005  below 0x61, as in run 1 (bit 0 the observe mark); from 0x61,
+ *           bit 0 CPU0 read off within 500 ms; bits 1-6 the cores that read
+ *           off at their release (0x6007 below 0x61); bit 7 ECPM read off
+ *           within 500 ms more
  *   0x6006  (0x61 on) bits 0-2 WD2's control (0 IRQ_EN, 1 IRQ_STATUS,
  *           2 RESET_EN); 3 WD0's RESET_EN; 4-6 WD1's control; 7 CPU0's last
  *           WFI had returned by then
  *   0x6007  (0x61 on) the seconds before the first armed watchdog resets
  *           the SoC (bite minus count, rounded), 255 if none is armed
- *   0x6010  the commit's RTC second as in run 1; at 0x6f only its low two
- *           bytes stay, and 0x6012 and 0x6013 are the low bytes of the wdt
- *           page's + 0x28 and + 0x40 (T8103's progress registers' offsets)
- *   0x6014  as above; bit 5 (PCPM1) stays 0, since P1 is up at 8
- *   0x6015  (0x6f) bits 0-6 the soc clusters still busy (bit 4 of their
+ *   0x6010  the commit's RTC second as in run 1; from 0x62 only its low
+ *           two bytes are sure, and from 0x6e 0x6012 and 0x6013 are the low
+ *           bytes of the wdt page's + 0x28 and + 0x40 (T8103's progress
+ *           registers' offsets)
+ *   0x6014  as above, at every stage (CPU7 never writes it); bit 5 (PCPM1)
+ *           stays 0, since P1 is up at 8
+ *   0x6015  (0x6e on) bits 0-6 the soc clusters still busy (bit 4 of their
  *           word): EACC, PACC0, PACC1, ANE0, AFR, DISPLAY, AVEMSR (PACC1
  *           expected, CPU7 being up); bit 7 SIO_CPU's actual state not off
- *   0x6016  (0x6f) bits 0-6 the AP wake-status words with a bit set that
+ *   0x6016  (0x6e on) bits 0-6 the AP wake-status words with a bit set that
  *           wasn't just before the commit; bit 7 always set (a 0 here at
- *           0x6f means the byte didn't survive the reset)
+ *           0x6e or 0x6f means the byte didn't survive the reset)
  *
  * Left out: Naeem's RTC alarm and his WD1 dead-man, so that a completed
- * entry stays dark for a BQCC floor (the alarm is a PMU write Corey hasn't
- * OK'd, and its wake would land in m1n1); his report of idle clusters to the
+ * entry stays dark for a BQCC floor (the alarm's PMU writes, OK'd on
+ * 2026-11-07, wait for their own rung, PLAN.md, and its wake would land in
+ * m1n1); his report of idle clusters to the
  * PMP, which has no known T6000 counterpart; his CPM power gating (0x80000000
  * to pmgr + 0x1c080 and + 0x1c088), with none found either (the table's
  * writes to each cluster's CPM block may be its T6000 form); his zeros to the
@@ -847,8 +862,10 @@ static void e1_after_slpa(void)
  * unknown; his L1 clean by set and way, since nothing comes back; his clkgen
  * park and counter blocks, which the table already writes (its own forms,
  * before the keys). Never written:
- * MBSe, ps_pmp (0x28e0802d8), 0x28e700000, WD0, WD2, nub-spmi1, the SEP,
- * and nothing observe=1 only reads.
+ * MBSe, ps_pmp (0x28e0802d8), 0x28e700000, WD2, nub-spmi1, the SEP.
+ * observe=1 adds no address to what m1 writes: CPU0 writes CPU7's stop bit,
+ * before the commit, instead of CPU7 in 6, and CPU7 writes breadcrumbs and
+ * nub-spmi0's acks as CPU0 does.
  */
 #define M1_NCPUS		8
 #define M1_OTHERS		0xfe
@@ -898,9 +915,9 @@ static void e1_after_slpa(void)
 #define M1_UPMCR0_IMODE		GENMASK(18, 16)
 
 /*
- * observe=1 only, all read and never written. CPU0's and the E complex's
- * power states, in M1_PMGR_PS's page (ECPU0_0 and ECPM, as pmgr-map names
- * them).
+ * observe=1 only, read through mappings of their own (but the first two).
+ * CPU0's and the E complex's power states, in M1_PMGR_PS's page (ECPU0_0 and
+ * ECPM, as pmgr-map names them).
  */
 #define M1_PS_CPU0		0x00
 #define M1_PS_ECPM		0x60
@@ -926,7 +943,14 @@ static void e1_after_slpa(void)
 #define M1_WDX_PROG1		0x40
 /* PMGR reg[7] + 0x24: the AP wake status, inferred: 7 words right after the masks, as on T8103 and T6020. */
 #define M1_AON_WAKE_STATUS	0x292004024ULL
-/* PMGR reg[0] + 0x1c000: T8103's CPM-gating words at their T6000 place, inferred; logged at load only. */
+/*
+ * PMGR reg[0] + 0x1c000, logged at load only: where T6000's CPM gating may
+ * be, all inferred. + 0x80 and + 0x88 are T8103's (Naeem's pmgr + 0x1c080
+ * and + 0x1c088, 0x80000000 before his commit); + 0x30, + 0x34 and + 0x38
+ * are T6020's enableCPMPowerDomainGating words (PMGR reg[0] + 0xc030-0xc038,
+ * 0x80000000 under Linux; DeepIdle's worklog, 2026-11-06), moved by the
+ * 0x10000 between T6020's soc-cluster words (0x28e088000) and T6000's.
+ */
 #define M1_CPM_GATE		0x28e09c000ULL
 
 /*
@@ -1289,13 +1313,14 @@ static u32 m1_wd_left(unsigned int n)
  * it touches nothing behind a clock the table parked: PMGR and AON reads,
  * raw SPMI to the OK'd bytes (as Naeem's run 2 and macOS's alarm talk SPMI
  * after the commit), nub-spmi0's acks, then ACC_OVRD (if P1's last), CYC_OVRD
- * and its WFI. Up to 1 s of polls. The breadcrumbs are in the m1 comment.
+ * and its WFI. Up to 1 s of polls. The breadcrumbs, and the order that keeps
+ * each stage's meaning sure, are in the m1 comment.
  */
 static void __noreturn m1_observe(struct m1_core *c)
 {
 	static const u8 soc[7] = { 0, 1, 2, 3, 5, 6, 8 };	/* EACC PACC0 PACC1 ANE0 AFR DISPLAY AVEMSR */
 	u32 left = U32_MAX, ctrl0, ctrl1, ctrl2, wake;
-	u8 b[3], off = 0, cl = 0, wk = BIT(7);
+	u8 b[4], off = 0, cl = 0, wk = BIT(7), isr;
 	unsigned int i;
 	u64 t0;
 
@@ -1322,12 +1347,13 @@ static void __noreturn m1_observe(struct m1_core *c)
 	ctrl2 = readl(m1_wdt + M1_WD_CTRL(2));
 	for (i = 0; i < 3; i++)
 		left = min(left, m1_wd_left(i));
-	b[0] = off;
-	b[1] = (ctrl2 & 7) | (ctrl0 & M1_WD_RESET_EN ? BIT(3) : 0) | (ctrl1 & 7) << 4 |
+	/* The stage with its bytes, in one command, as step 7 sends 0x30. */
+	b[0] = 0x61;
+	b[1] = off;
+	b[2] = (ctrl2 & 7) | (ctrl0 & M1_WD_RESET_EN ? BIT(3) : 0) | (ctrl1 & 7) << 4 |
 	       (READ_ONCE(m1_core[0].wfi_ret) ? BIT(7) : 0);
-	b[2] = min(left, 255U);
-	m1_crumb(0x6005, b, 3);
-	m1_stage(0x61);
+	b[3] = min(left, 255U);
+	m1_crumb(0x6004, b, 4);
 
 	for (i = 0; i < ARRAY_SIZE(soc); i++) {
 		if (readl(m1_soc + 4 * soc[i]) & BIT(4))
@@ -1340,13 +1366,23 @@ static void __noreturn m1_observe(struct m1_core *c)
 		if (wake & ~READ_ONCE(m1_wake_pre[i]))
 			wk |= BIT(i);
 	}
+	/* 0x6012-0x6016 change meaning from here: say so before the first byte does. */
+	m1_stage(0x62);
 	b[0] = readl(m1_wdx + M1_WDX_PROG0);
 	b[1] = readl(m1_wdx + M1_WDX_PROG1);
 	m1_crumb(0x6012, b, 2);
 	b[0] = cl;
 	b[1] = wk;
 	m1_crumb(0x6015, b, 2);
-	m1_stage(0x6f);
+
+	/* What m1_park records at a stop: anything pending would end its WFI. */
+	write_sysreg_s(M1_IPI_SR_PENDING, M1_IPI_SR_EL1);
+	isb();
+	m1_drain_aic();
+	dsb(sy);
+	isb();
+	isr = (read_sysreg(isr_el1) >> 6) & 7;
+	m1_stage(isr ? 0x6e : 0x6f);
 
 	for (i = 0; i < M1_SPMI_WORDS; i++)
 		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
@@ -1435,7 +1471,7 @@ static void __noreturn m1_after_slpa(void)
 	/* observe=1: CPU7, P1's last, stays up through the commit if it parked. */
 	obs = observe && (parked & BIT(7));
 	b[0] = 0x10;
-	b[1] = parked;
+	b[1] = parked | (obs ? BIT(0) : 0);	/* CPU0 never parks: bit 0 marks observe */
 	m1_crumb(0x6004, b, 2);
 
 	/* 5: the table's other entries, the commit held back */
@@ -1481,7 +1517,7 @@ static void __noreturn m1_after_slpa(void)
 
 	/* 7 */
 	b[0] = 0x30;
-	b[1] = parked;
+	b[1] = parked | (obs ? BIT(0) : 0);
 	b[2] = left;
 	b[3] = down;
 	m1_crumb(0x6004, b, 4);
@@ -1559,9 +1595,8 @@ static bool __init m1_never(u64 pa, unsigned int n)
 
 /*
  * observe=1 at load: what CPU7 reads after the commit, mapped, and logged as
- * it is now, awake, for comparison (all reads; observe writes nothing m1
- * doesn't, but CPU7's stop bit, which CPU0 writes now, before the commit).
- * Also T6000's form of T8103's CPM-gating words, if it is there (inferred).
+ * it is now, awake, for comparison. Reads only. Also the candidates for
+ * T6000's CPM gating (M1_CPM_GATE, inferred).
  */
 static int __init m1_observe_init(void)
 {

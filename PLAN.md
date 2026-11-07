@@ -255,7 +255,7 @@ steps, and restarting the DCP and the PMP afterwards.
       reset because a last core touched a device after the commit.
     - [x] **The M1 recipe** (run 1, 2026-11-07; RESEARCH.md, "M1 run 1"):
       CPU1-7 parked, released and read off, both P complexes off, nothing
-      pending, and still the reset 30.6 s after the commit. CPU0 and the E
+      pending, and still the reset about 31 s after the commit. CPU0 and the E
       complex aren't covered. It was `pkexec e1-hook/run-floor --m1`,
       e1_hook `m1=1`: Naeem's T8103 entry, the
       first to complete from Linux (RESEARCH.md, "The team"), mapped to
@@ -296,6 +296,11 @@ steps, and restarting the DCP and the PMP afterwards.
       and records them in the OK'd breadcrumbs. `m1-crumbs` decodes them
       and prints the reset time. Its load log is the awake baseline. Read
       it first: it decides the next rung.
+      - Stage 0x50 with the observe mark (0x6005 bit 0): nothing CPU7 sent
+        after the commit landed. Raw SPMI after the commit failed, or the
+        hand-over never happened: that comes before anything else.
+      - Stage 0x6e: CPU7 had something pending before its own WFI, so it
+        likely never went down, and the run says nothing about the entry.
       - CPU0 or ECPM not off: the boot cluster first. Look for T6000's
         CPM gating; the load log reads the candidates at 0x28e09c000.
       - SIO_CPU not off: the table's literal 0x400024f asks for it on
@@ -311,8 +316,11 @@ steps, and restarting the DCP and the PMP afterwards.
       rung):
       1. The PMU's RTC alarm, written between the first commit and the
          other two. macOS does it on T8103, and Naeem's entries all do it;
-         no T600x attempt has. It needs Corey's OK: PMU writes to 0x14c0,
-         0x140c (now + 3600 s), 0x14c2 and 0x1401 (0x41).
+         no T600x attempt has. Corey OK'd its PMU writes on 2026-11-07:
+         0x14c0 (the event, written back if set), 0x140c (now + 3600 s),
+         0x14c2 (0) and 0x1401 (0x41). `m1-crumbs --clear` disarms it again
+         at the next boot (0x1401 back to 0x01), so it can't power the Mac
+         on an hour later.
       2. SetAPPower 0x201 to the SMC right after slpa, as macOS does on
          T8103 and T6020. It's a new message to the SMC firmware, so tell
          Corey first. DeepIdle's T6020 runs sent it and still reset.

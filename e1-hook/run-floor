@@ -22,8 +22,11 @@
 # stops; its label is floor-m1-observe, and what's said of --m1 below holds
 # for it too. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
-#     itself into the regular boot. That's the S2R entry's watchdog
-#     (RESEARCH.md, "The floor"): the entry didn't complete. In the regular
+#     itself into the regular boot. That's most likely the S2R entry's
+#     watchdog, WD2 (RESEARCH.md, "The floor"): the entry didn't complete.
+#     After --m1-observe, m1-crumbs says which watchdogs were armed about a
+#     second after the commit and when the first would bite; if it was WD1,
+#     armed again, the entry may have completed before it. In the regular
 #     boot, pkexec /usr/local/bin/sleep-drain-safe collect; BACC dates it.
 #     After --m1, also, before anything else touches the PMU:
 #       /home/corey/src/sleep-drain/e1-hook/m1-crumbs, for a photo or a copy,
