@@ -34,8 +34,17 @@ out=/var/log/e1a-platform-$(date +%Y%m%dT%H%M%S).txt
 # Builtins only from here on: printf, read, $(< file), [[ ]].
 log() { printf '%s\n' "$*"; printf '%s\n' "$*" >> "$out"; }
 now() { printf '%(%F %T)T' -1; }
-# One sysfs read, or what went wrong.
-get() { local v; if v=$(< "$1") 2> /dev/null; then printf '%s' "$v"; else printf 'READ FAILED'; fi; }
+# One sysfs read, or what went wrong. A checked read: $(< file) returns an
+# empty string, and success, when the read itself fails (an EIO from the SMC,
+# say). A value read without its newline still counts.
+get() {
+  local v=
+  if IFS= read -r v 2> /dev/null < "$1" || [[ -n $v ]]; then
+    printf '%s' "$v"
+  else
+    printf 'READ FAILED'
+  fi
+}
 nvme() { local s; for s in /sys/class/nvme/nvme*/state; do [[ -e $s ]] && printf '%s=%s ' "${s%/state}" "$(get "$s")"; done; }
 smc() { printf 'B0AV-backed voltage_now=%s' "$(get /sys/class/power_supply/macsmc-battery/voltage_now)"; }
 # The kernel log's lines that contain $1. dmesg and grep are programs on the
