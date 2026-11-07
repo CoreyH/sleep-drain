@@ -253,23 +253,40 @@ steps, and restarting the DCP and the PMP afterwards.
       macOS adds only the RTC alarm and the same
       write twice more before its cores go down, and Naeem's tries 26-31
       reset because a last core touched a device after the commit.
-    - [ ] **The M1 recipe** (the main bet, spec in progress): Naeem's
-      T8103 entry, the first to complete from Linux (RESEARCH.md, "The
-      team"), mapped to T6000 by function on top of maralcbr's keys and
-      table. The other CPUs stopped before the post-`slpa` writes, each
-      writing its stop bit in the PMGR's CPU-start block, so the commit is
-      the last thing any core does, with interrupts masked on the last CPU
-      before it. Only a cluster's last core may arm ACC_OVRD's deep-sleep
-      bits, which act per cluster: Naeem's first Linux S2R run on T8103
-      hung when stopped cores armed them under running ones
-      (malik-na/linux-aurora 3bbb16ebac56). Then, as on T8103: the AP wake
-      mask (only the PMU), nub-spmi's interrupts acked, AIC masked, the
-      commit three times, the PMP told the clusters are idle. PMU writes:
-      Corey OK'd boot stage 0x50 and breadcrumbs in spare scratch bytes on
-      2026-11-07.
+    - [ ] **The M1 recipe** (the main bet; built, `pkexec
+      e1-hook/run-floor --m1`, e1_hook `m1=1`): Naeem's T8103 entry, the
+      first to complete from Linux (RESEARCH.md, "The team"), mapped to
+      T6000 by function on top of maralcbr's keys and table and the quiet
+      commit. e1_hook.c says what each step does and why; in short:
+      - After `slpa`, CPU0 masks its interrupts and AIC2's, and parks the
+        other CPUs, awake, each with its own interrupt sources off. They
+        stay up through the table's 42 writes, as XNU's H13 code (T6000's
+        family) keeps them, since 15 of those writes go to the P clusters'
+        own blocks.
+      - Then each in turn writes its own stop bit in the PMGR's CPU-start
+        block and goes down; only a P cluster's last core arms its deep
+        sleep (Naeem's fix for a hang, malik-na/linux-aurora 3bbb16ebac56),
+        and CPU0 arms its own last. CPU0 checks each core's PMGR power state.
+      - Then, as on T8103: the AP wake mask (only the PMU), nub-spmi0's
+        interrupts off and acked, the commit three times.
+      - Boot stage 0x50 and breadcrumbs in spare PMU scratch bytes (Corey's
+        OK, 2026-11-07); `e1-hook/m1-crumbs` reads them at the next boot,
+        and `--clear` zeroes them.
+      - Left out: the RTC alarm (a PMU write not OK'd yet), WD1's dead-man,
+        and three of Naeem's steps with no known T6000 form: the report of
+        idle clusters to the PMP, the CPM power gating at pmgr + 0x1c080,
+        and the watchdog block's + 0x8008/+ 0x800c.
+      - Its risk: DeepIdle's R20 on an M2 Pro wrote the same cluster APSC
+        disable as the table, with its other cores parked in WFI; 7 of the 9
+        never went down and the Mac hung dark for 28 minutes, with no
+        watchdog reset. Here the cores spin through those writes, but a
+        run may still hang instead of resetting: Corey at the power key.
+      - If it fails, the breadcrumbs show how far it got, at least. Next
+        would be the APSC writes moved after the cores' stop (macOS's T6020
+        order).
     - Then, on top, one at a time: maralcbr's other bits (the domains
       macOS has off, 8-10; the AOP's notices, 6; the internal PCIe ports,
-      13), and the PMU boot stage 0x50. The SEP's SLEEP message (bit 11)
+      13). The PMU boot stage 0x50 is in the M1 recipe. The SEP's SLEEP message (bit 11)
       touches state the SEP shares with macOS: only with Corey's OK.
   - **The code.** An out-of-tree module: our own, written from these
     findings and maralcbr's tables (maralcbr/linux is GPL-2.0, as part of

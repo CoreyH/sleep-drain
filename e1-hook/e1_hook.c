@@ -42,10 +42,11 @@
  * With replay=0 (the default, and what e1-hook/check loads: E1's first check,
  * the hook point, RESEARCH.md "Before E1") it never writes an SMC key and
  * touches no MMIO. The replays, E1a's and the floor's, are below. Every op
- * returns 0, so it never fails or aborts a suspend, but for one case: with
+ * returns 0, so it never fails or aborts a suspend, but for two cases: with
  * replay 13 or 15, a prepare_late that doesn't run the replay to its end fails
- * the suspend with -EIO (below). The floor's prepare_late never returns at
- * all. .check and
+ * the suspend with -EIO (below); and with m1=1, a begin that can't pin the
+ * suspending task to CPU0 fails it with that error (end then has nothing to
+ * unpin). The floor's prepare_late never returns at all. .check and
  * .wake stay NULL: s2idle_loop() calls .wake instead of pm_wakeup_pending()
  * when it's set.
  *
@@ -71,30 +72,39 @@
  *
  *   make -C e1-hook && pkexec e1-hook/check       (in a safe boot)
  *   pkexec e1-hook/run-e1a, pkexec e1-hook/run-floor   (the same)
+ *   pkexec e1-hook/run-floor --m1                 (E2's M1 recipe: m1=1, below)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/atomic.h>
 #include <linux/bits.h>
 #include <linux/build_bug.h>
+#include <linux/cpumask.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
 #include <linux/kallsyms.h>
 #include <linux/kprobes.h>
 #include <linux/mfd/macsmc.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/preempt.h>
+#include <linux/sched.h>
 #include <linux/smp.h>
 #include <linux/string.h>
 #include <linux/suspend.h>
 #include <linux/time64.h>
 #include <linux/trace_clock.h>
+#include <asm/apple_m1_pmu.h>
 #include <asm/barrier.h>
+#include <asm/cputype.h>
 #include <asm/daifflags.h>
+#include <asm/sysreg.h>
+#include <asm/virt.h>
 #include <trace/events/power.h>
 
 #if IS_ENABLED(CONFIG_ACPI)
@@ -228,6 +238,18 @@ MODULE_PARM_DESC(oneway, "Must be 1 for replay=13 or 15, which can't be undone (
 static bool quiet;
 module_param(quiet, bool, 0444);
 MODULE_PARM_DESC(quiet, "replay=15 only: leave out maralcbr's 500 ms and its two AFNC reads, so that the S2R-timer commit is the replay's last MMIO access before every CPU's power-down");
+/* E2's M1 recipe, after e1_after_slpa() below, which it replaces. */
+static bool m1;
+module_param(m1, bool, 0444);
+MODULE_PARM_DESC(m1, "With replay=15 oneway=1 quiet=1 only: E2's M1 recipe (Naeem Malik's T8103 S2R entry, mapped onto T6000): the other CPUs parked before the post-slpa writes and stopped one by one before the commit, every interrupt masked, the AP wake mask, boot stage 0x50 and breadcrumbs in the PMU, the commit three times");
+static int m1_ret = 1, m1_undo = 1;
+module_param(m1_ret, int, 0444);
+module_param(m1_undo, int, 0444);
+MODULE_PARM_DESC(m1_ret, "m1: the PMU at the replay's start (breadcrumbs zeroed, boot stage 0x50, stage 0x01): 0, -errno, or 1 if not sent");
+MODULE_PARM_DESC(m1_undo, "m1: on a way back after 0x50 went out, boot stage 0x30 and the breadcrumbs zeroed: 0, -errno, or 1 if not needed");
+/* m1: the suspending task's CPUs before begin pinned it to CPU0. */
+static struct cpumask m1_saved_mask;
+static bool m1_pinned;
 static unsigned int replay_done;
 module_param(replay_done, uint, 0444);
 MODULE_PARM_DESC(replay_done, "0 not yet, 1 the replay has run at a prepare_late, 2 called off (13 and 15: a suspend began after the first, which never reached prepare_late; or cancel)");
@@ -503,11 +525,26 @@ static void log_read(const char *op, unsigned int n, u64 t, int ret,
 		op, n, us / USEC_PER_SEC, us % USEC_PER_SEC, t, ret, mv, ns);
 }
 
+/*
+ * m1: the suspending task pinned to CPU0 while the replay can still run, so
+ * that its prepare_late runs there; end unpins it. A failure fails the
+ * suspend (the PM core then calls end, which unpins only what this pinned).
+ */
 static int e1_begin(void)
 {
 	u64 t = trace_clock_local();
+	int ret;
 
 	log_op("begin", ++begin_calls, t);
+	if (!m1 || READ_ONCE(replay_done))
+		return 0;
+	cpumask_copy(&m1_saved_mask, current->cpus_ptr);
+	ret = set_cpus_allowed_ptr(current, cpumask_of(0));
+	if (ret) {
+		pr_emerg("m1: can't pin the suspending task to CPU0: %d; this suspend fails\n", ret);
+		return ret;
+	}
+	m1_pinned = true;
 	return 0;
 }
 
@@ -554,8 +591,9 @@ static void e1_post_slpa_eh(void)
 
 	pr_emerg("replay: fast: %u watchdog and error-handler writes now; from MBSE=slpa on, no output: the other %zu writes%s%s\n",
 		 post_eh, ARRAY_SIZE(e1_post_slpa) - post_eh,
+		 m1 ? ", the other CPUs parked through them and stopped one by one, the commit last" :
 		 quiet ? ", the commit last" : ", 500 ms",
-		 (replay & 2) ? ", then every CPU's power-down" : "");
+		 m1 ? ", then CPU0's power-down" : (replay & 2) ? ", then every CPU's power-down" : "");
 	for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
 		if (!e1_post_is_eh(&e1_post_slpa[i]))
 			continue;
@@ -647,6 +685,818 @@ static void e1_after_slpa(void)
 }
 
 /*
+ * m1=1, with replay=15 oneway=1 quiet=1 (run-floor --m1): E2's main bet, the
+ * M1 recipe (PLAN.md). The floor's S2R entry doesn't complete (RESEARCH.md,
+ * "The floor"). Naeem Malik's Linux entry does, on T8103: his apple-s2r.c
+ * and its deep stop in smp_apple.c and smp_apple_asm.S (malik-na/linux-aurora
+ * aca68b693bd2, branch m1power/s2r-mem; GPL-2.0-only, used here under
+ * GPL-2.0, with thanks; RESEARCH.md, "The team"). This maps his entry onto
+ * T6000 around maralcbr's keys and table, which stay as the floor has them.
+ * In order:
+ *
+ *   begin   the suspending task is pinned to CPU0, the boot CPU, so that
+ *           prepare_late runs there; end unpins it
+ *   prepare_late, on CPU0, with interrupts on, as the floor:
+ *     K1    the PMU, through the kernel's own SPMI path (its nvmem):
+ *           the breadcrumb bytes zeroed, boot stage 0x6001 = 0x50 and stage
+ *           0x6004 = 0x01, both read back, and the RTC's second at 0x6010
+ *     K2    the floor's replay as far as MBSE=slpa: the table's 31 watchdog
+ *           and error-handler entries, the PMP words and the keys
+ *     K3    stage 0x02: SPMI still answers after slpa (a failure sets bit 3
+ *           of 0x6014, written in step 8 if raw SPMI works)
+ *   then, never returning, without a lock, a print or a WFI or WFE (every
+ *   wait spins on the counter, CNTVCT):
+ *     1     CPU0 turns preemption and interrupts (IRQ, FIQ) off
+ *     2     AIC2: every IRQ masked, the words the driver masks at boot
+ *     3     park: each other CPU in turn (1, 2, 3, 5, 6, 4, 7), by IPI, masks
+ *           every exception, turns off its own interrupt sources (its
+ *           timers, its PMC's and the guest timers' FIQs, a pending fast
+ *           IPI, as aic_init_cpu() masks them at bring-up), takes any event
+ *           off its AIC event register, reports, and spins, awake; CPU0
+ *           waits up to 10 ms for each
+ *     4     AIC2 masked again, now that no other CPU can unmask an IRQ at
+ *           its handler's end; WD1 stopped if it runs (apple_wdt's own stop);
+ *           raw SPMI checked, if all 7 parked; stage 0x10
+ *     5     the table's other 42 entries, the commit held back; stage 0x20
+ *     6     release: each parked core in turn, in the same order, clears
+ *           its fast IPI and AIC events again, records ISR_EL1, writes its
+ *           own bit to the CPU-start block's stop word, arms its cluster's
+ *           ACC_OVRD deep sleep if it's the last core of P0 or P1, sets
+ *           CYC_OVRD as the floor does, and waits in WFI for good; CPU0
+ *           waits up to 10 ms for its PMGR power state to read off (and for
+ *           PCPM0's after CPU4, PCPM1's after CPU7); stages 0x21-0x27
+ *     7     stage 0x30 with what 3-6 saw; the AP wake mask: every source but
+ *           the PMU's (54); nub-spmi0's interrupt enables all off
+ *     8     CPU0 turns off its own interrupt sources as the others did; the
+ *           RTC's second and what CPU0 has pending, at 0x6010; stage 0x50,
+ *           the last SPMI command
+ *     9     nub-spmi0's events acked; every exception masked; the commit,
+ *           1 to 0x2925c4000, three times (Naeem's, as macOS 27 on T8103)
+ *     10    CPU0 arms its own cluster's deep sleep, sets CYC_OVRD and waits in
+ *           WFI for good, with no stop bit (CPU0 restarts through m1n1's
+ *           locked RVBAR, and macOS never stops it through the PMGR)
+ *
+ * Why the other cores park awake through 5 and power down after it, though
+ * Naeem's are down long before his finisher: on H13, which takes in T6000
+ * and T8103, XNU keeps its other cores awake, stalled in its sleep path,
+ * until the boot CPU's ml_arm_sleep() releases them, after the platform's
+ * sleep writes (xnu-12377.121.6 osfmk/arm64/cpu.c: __ARM_GLOBAL_SLEEP_BIT__,
+ * which H13.h sets), and 15 of the table's entries write the P clusters' own
+ * DVFS and CPM blocks. The risk: on T6020, DeepIdle's R20 wrote the same
+ * cluster APSC disable as e1_post_slpa[43..48] (RESEARCH.md's entries 44-49)
+ * while their other cores were parked in WFI, and most of those cores (7 of
+ * 9) never woke to sleep, PCPM0 stayed on, and the S2R timer didn't reset the
+ * SoC: it hung, dark, for 28 minutes until its owner held the power key
+ * (JJRPF/Aurora-DeepIdle 75d4729189). Here the cores spin through those
+ * writes and need no wake, as XNU's H13 stall doesn't. If they still fail to
+ * power down, this rung may hang the same way instead of resetting: the run
+ * needs Corey at the power key.
+ *
+ * The stop bits: Naeem's deep stop writes its core's bit, and only its own,
+ * to CPU-start + 0x0 just before ACC_OVRD, CYC_OVRD and the WFI
+ * (smp_apple_asm.S), and macOS writes the other cores' bits after slpa on
+ * T8103 and T6020 (Naeem's and DeepIdle's trace notes). On T6000 the block is
+ * at PMGR reg[0] + 0x54000, Asahi's docs/hw/cpu/smp.md offset for the M1
+ * series, which linux-aurora PR #170 also uses on a J314s; + 0x0's role is
+ * Naeem's. Each core's bit is 1 << (4 * cluster + core): + 0x4 reads 0x880
+ * here, exactly the two fused-off cores in that numbering.
+ * CPU0's bit and the fused-off cores' are never written. The ACC_OVRD rule
+ * is Naeem's fix for his first run's hang (3bbb16ebac56): only the last core
+ * of a cluster CPU0 isn't in arms its deep sleep, and CPU0 arms its own last.
+ * XNU calls the same register global; either way no core here runs an
+ * ordinary WFI once one is armed. The cores' power states, read to check
+ * each stop, are PMGR words that read 0x100 (off) for idle P cores here, and
+ * share their page with ps_pmp: only their offsets are ever read.
+ *
+ * SPMI: from 3 on, CPU0 drives nub-spmi0 itself, polled, as aurora's
+ * spmi-apple-controller (gen 1, at 4fdd0fc5) does, only if every other core
+ * parked (so none can be mid-transfer), after a FIFO flush, and only once a
+ * raw read of 0x6001 gives back K1's 0x50; it stops at its first error. Every
+ * PMU access, either path, goes through m1_pmu_ok(): writes only to 0x6001
+ * (0x50 or 0x30), 0x6004-0x6007 and 0x6010-0x6016, the spare legacy-scratch
+ * bytes DeepIdle uses (Corey's OK of 2026-11-07, PLAN.md); reads only there
+ * and of the RTC. Every way back from the replay after 0x50 went out writes
+ * 0x30 again and zeroes the breadcrumbs (m1_undo says how that went).
+ *
+ * The breadcrumbs (e1-hook/m1-crumbs reads and clears them). Each is the last
+ * one that reached the PMU, so the run got at least that far: raw SPMI stops
+ * at its first error, and CPU0 goes on without it.
+ *   0x6001  boot stage 0x50 from K1 on; macsmc-reboot's probe writes 0x30
+ *           at the next boot (0x6003, the boot-error stage, keeps what an
+ *           unclean reset found there, as it did for the floor)
+ *   0x6004  the stage: 0x01 K1, 0x02 K3, 0x10 parked (4), 0x20 the table
+ *           (5), 0x21-0x27 releasing the order's first to last core, 0x30
+ *           released (7), 0x50 the last before the commit (8)
+ *   0x6005  the cores that parked (bit n: CPUn), 0x6006 those that left
+ *           their spin to stop, 0x6007 those whose power state read off
+ *   0x6010  the RTC's second (4 bytes, LE): K1's, then step 8's at 0x50
+ *   0x6014  bits 0-2 CPU0's ISR_EL1 F, I, A before the commit; 3 K3 failed;
+ *           4 PCPM0 and 5 PCPM1 read off; 6 WD1 was running; 7 set
+ *   0x6015  the cores that had an interrupt pending (ISR_EL1) at their stop
+ *   0x6016  how many AIC events every core took off (up to 255)
+ *
+ * Left out: Naeem's RTC alarm and his WD1 dead-man, so that a completed
+ * entry stays dark for a BQCC floor (the alarm is a PMU write Corey hasn't
+ * OK'd, and its wake would land in m1n1); his report of idle clusters to the
+ * PMP, which has no known T6000 counterpart; his CPM power gating (0x80000000
+ * to pmgr + 0x1c080 and + 0x1c088), with none found either (the table's
+ * writes to each cluster's CPM block may be its T6000 form); his zeros to the
+ * watchdog block's + 0x8008 and + 0x800c, whose T6000 forms and roles are
+ * unknown; his L1 clean by set and way, since nothing comes back; his clkgen
+ * park and counter blocks, which the table already writes (its own forms,
+ * before the keys). Never written:
+ * MBSe, ps_pmp (0x28e0802d8), 0x28e700000, WD2, nub-spmi1, the SEP.
+ */
+#define M1_NCPUS		8
+#define M1_OTHERS		0xfe
+#define M1_P0			(BIT(2) | BIT(3) | BIT(4))
+#define M1_P1			(BIT(5) | BIT(6) | BIT(7))
+/* PMGR reg[0] + 0x54000: + 0x0, the stop word, a bit per core. */
+#define M1_CPU_START		0x28e0d4000ULL
+/* PMGR reg[0]: the cores' and complexes' power states, [7:4] 0 off. Read only. */
+#define M1_PMGR_PS		0x28e080000ULL
+#define M1_PS_PCPM0		0x68
+#define M1_PS_PCPM1		0x70
+/* AIC2: reg[0], 0xc000 (INFO1 + 0x4, INFO3 + 0xc), and reg[1], the event register. */
+#define M1_AIC			0x28e100000ULL
+#define M1_AIC_SIZE		0xc000
+#define M1_AIC_EVENT		0x28e10c000ULL
+/* PMGR reg[7] + 8: the AP wake-source masks, 7 words, a set bit masks one. */
+#define M1_AON_WAKE		0x292004008ULL
+/* wdt reg[0], WD1's control at + 0x1c (apple_wdt's watchdog). */
+#define M1_WDT			0x2922b0000ULL
+#define M1_WD1_CTRL		0x1c
+/* nub-spmi0, gen 1, as aurora's spmi-apple-controller.c lays it out. */
+#define M1_SPMI			0x2920a1300ULL
+#define M1_SPMI_STATUS		0x0
+#define M1_SPMI_CMD		0x4
+#define M1_SPMI_RSP		0x8
+#define M1_SPMI_EN(w)		(0x20 + 4 * (w))
+#define M1_SPMI_ACK(w)		(0x60 + 4 * (w))
+#define M1_SPMI_ACT		0xa4
+#define M1_SPMI_WORDS		9
+#define M1_SPMI_RX_EMPTY	BIT(24)
+#define M1_SPMI_ACT_FLUSH	BIT(0)
+#define M1_SPMI_REPLY_ACK	BIT(15)
+#define M1_SPMI_EXT_WRITEL	0x30
+#define M1_SPMI_EXT_READL	0x38
+#define M1_PMU_SID		0xf
+#define M1_PMU_NODE		"/soc/spmi@2920a1300/pmic@f"
+#define M1_SPMI_NODE		"/soc/spmi@2920a1300"
+/* The PMU's RTC: 6 bytes, LE, the seconds in the upper four (pmu-alarm). */
+#define M1_PMU_RTC		0x1406
+/* Each core's own interrupt sources, as irq-apple-aic.c names them. */
+#define M1_IPI_SR_EL1		sys_reg(3, 5, 15, 1, 1)
+#define M1_IPI_SR_PENDING	BIT(0)
+#define M1_VM_TMR_FIQ_ENA_EL2	sys_reg(3, 5, 15, 1, 3)
+#define M1_VM_TMR_FIQ_V		BIT(0)
+#define M1_VM_TMR_FIQ_P		BIT(1)
+#define M1_UPMCR0_EL1		sys_reg(3, 7, 15, 0, 4)
+#define M1_UPMCR0_IMODE		GENMASK(18, 16)
+
+/*
+ * This Mac's CPUs, as Linux numbers them, checked at load: MPIDR, the stop
+ * bit (1 << (4 * Aff1 + Aff0)) and the power state's offset in M1_PMGR_PS.
+ * CPU5-7 are the ADT's cpu6-8: each P cluster's fourth core is fused off.
+ */
+static const struct m1_cpu {
+	u64 mpidr;
+	u32 stop;
+	u32 ps;
+} m1_cpus[M1_NCPUS] = {
+	{ 0x00000, 0x001, 0x00 },	/* CPU0, E: never stopped this way */
+	{ 0x00001, 0x002, 0x08 },	/* CPU1, E */
+	{ 0x10100, 0x010, 0x20 },	/* CPU2-4, P0 */
+	{ 0x10101, 0x020, 0x28 },
+	{ 0x10102, 0x040, 0x30 },
+	{ 0x10200, 0x100, 0x40 },	/* CPU5-7, P1 */
+	{ 0x10201, 0x200, 0x48 },
+	{ 0x10202, 0x400, 0x50 },
+};
+/* Parked and released in this order: CPU4 and CPU7 are their clusters' last. */
+static const u8 m1_order[M1_NCPUS - 1] = { 1, 2, 3, 5, 6, 4, 7 };
+
+/*
+ * Every AP wake source masked but 54, NUB.SPMISw3IRQ (nub-spmi0's PMU
+ * interrupt), as Naeem's entry leaves its T8103 counterpart. Word 6 is
+ * macOS's own value. Linux runs with 0, 0x40, 0, 0, 0, 0, 0; maralcbr's bit
+ * 15 wrote macOS's values to these words on a J314s.
+ */
+static const u32 m1_wake_mask[7] = {
+	0xffffffff, 0xffbfffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x00001fff,
+};
+
+/* One per core, in a line of its own: written by it, or by CPU0 (arm, go). */
+struct m1_core {
+	u32 parked;	/* it quieted itself and spins */
+	u32 arm;	/* CPU0: arm its cluster's deep sleep before the WFI */
+	u32 go;		/* CPU0: stop now */
+	u32 left;	/* it left its spin; isr and drained are written */
+	u32 isr;	/* ISR_EL1 [8:6] just before its stop bit */
+	u32 drained;	/* AIC events it took off */
+} __aligned(128);
+static struct m1_core m1_core[M1_NCPUS];
+static call_single_data_t m1_csd[M1_NCPUS];
+
+static void __iomem *m1_cpu_start, *m1_ps, *m1_aic, *m1_aic_event, *m1_aon, *m1_wdt, *m1_spmi_page;
+#define m1_spmi			(m1_spmi_page + (M1_SPMI & ~PAGE_MASK))
+static unsigned int m1_aic_mask, m1_aic_words;
+static struct nvmem_device *m1_nvmem;
+/* The stock SPMI controller's module, held while this module is loaded. */
+static struct module *m1_spmi_owner;
+static u64 m1_tps;
+static bool m1_sent_50, m1_raw;
+
+static __always_inline u64 m1_now(void)
+{
+	isb();
+	return read_sysreg(cntvct_el0);
+}
+
+/* A record CPU0 reads, cleaned to the point of coherency: its core may power down first. */
+static __always_inline void m1_clean(const void *p)
+{
+	asm volatile("dc civac, %0" : : "r"(p) : "memory");
+	dsb(sy);
+}
+
+/*
+ * The only PMU bytes either path touches: writes to the spare scratch bytes
+ * and boot stage 0x50 or 0x30, reads of the scratch block and the RTC.
+ */
+static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n)
+{
+	unsigned int end = addr + n;
+
+	if (!n || n > 8)
+		return false;
+	if (!write)
+		return (addr >= 0x6000 && end <= 0x6020) || (addr == M1_PMU_RTC && n == 6);
+	if (addr == 0x6001)
+		return n == 1 && (b[0] == 0x50 || b[0] == 0x30);
+	return (addr >= 0x6004 && end <= 0x6008) || (addr >= 0x6010 && end <= 0x6017);
+}
+
+/* The kernel's SPMI path, through the PMU's nvmem: sleeps, so prepare_late only. */
+static int m1_kwrite(unsigned int addr, const u8 *b, unsigned int n)
+{
+	int ret;
+
+	if (!m1_pmu_ok(true, addr, b, n))
+		return -EPERM;
+	ret = nvmem_device_write(m1_nvmem, addr, n, (void *)b);
+	return ret == n ? 0 : ret < 0 ? ret : -EIO;
+}
+
+static int m1_kread(unsigned int addr, u8 *b, unsigned int n)
+{
+	int ret;
+
+	if (!m1_pmu_ok(false, addr, b, n))
+		return -EPERM;
+	ret = nvmem_device_read(m1_nvmem, addr, n, b);
+	return ret == n ? 0 : ret < 0 ? ret : -EIO;
+}
+
+/* K1: the breadcrumbs zeroed, boot stage 0x50, stage 0x01, both read back, the RTC's second. */
+static int m1_pmu_start(void)
+{
+	static const u8 zero[7];
+	u8 v, rtc[6];
+	int ret;
+
+	ret = m1_kwrite(0x6004, zero, 4);
+	if (!ret)
+		ret = m1_kwrite(0x6010, zero, 7);
+	if (ret)
+		return ret;
+	m1_sent_50 = true;
+	v = 0x50;
+	ret = m1_kwrite(0x6001, &v, 1);
+	if (!ret) {
+		v = 0x01;
+		ret = m1_kwrite(0x6004, &v, 1);
+	}
+	if (!ret) {
+		ret = m1_kread(0x6001, &v, 1);
+		if (!ret && v != 0x50)
+			ret = -EIO;
+	}
+	if (!ret) {
+		ret = m1_kread(0x6004, &v, 1);
+		if (!ret && v != 0x01)
+			ret = -EIO;
+	}
+	if (!ret)
+		ret = m1_kread(M1_PMU_RTC, rtc, 6);
+	if (!ret)
+		ret = m1_kwrite(0x6010, rtc + 2, 4);
+	return ret;
+}
+
+/*
+ * Every way back from the replay once 0x50 has gone out, whether or not that
+ * write said it landed: boot stage 0x30 again (a second try if the first
+ * fails), and the breadcrumbs zeroed. m1_undo keeps the first error.
+ */
+static void m1_pmu_undo(void)
+{
+	static const u8 v30 = 0x30, zero[7];
+	int ret, err;
+
+	if (!m1_sent_50)
+		return;
+	ret = m1_kwrite(0x6001, &v30, 1);
+	if (ret)
+		ret = m1_kwrite(0x6001, &v30, 1);
+	err = m1_kwrite(0x6004, zero, 4);
+	ret = ret ?: err;
+	err = m1_kwrite(0x6010, zero, 7);
+	ret = ret ?: err;
+	m1_undo = ret;
+	pr_emerg("m1: boot stage 0x30 again and the breadcrumbs zeroed: %d\n", ret);
+}
+
+/*
+ * One raw command to the PMU on nub-spmi0, polled, as aurora's spmi_raw_cmd()
+ * sends it on gen 1: the command word, then the data words, LE; then the
+ * reply word (ACK for a write, a parity bit per byte read), the data words,
+ * and the FIFO empty again. 50 ms for the reply, as aurora's poll. CPU0
+ * only, from step 4 on, with every other core parked.
+ */
+static int m1_spmi_raw(bool write, unsigned int addr, u8 *b, unsigned int n)
+{
+	void __iomem *s = m1_spmi;
+	u32 cmd, reply, w;
+	unsigned int i;
+	u64 t0;
+
+	if (!m1_pmu_ok(write, addr, b, n))
+		return -EPERM;
+	cmd = (write ? M1_SPMI_EXT_WRITEL : M1_SPMI_EXT_READL) | (n - 1);
+	cmd |= M1_PMU_SID << 8 | BIT(15) | addr << 16;
+	writel(cmd, s + M1_SPMI_CMD);
+	for (i = 0; write && i < n; i += 4) {
+		w = 0;
+		memcpy(&w, b + i, min(4U, n - i));
+		writel(w, s + M1_SPMI_CMD);
+	}
+	t0 = m1_now();
+	while (readl(s + M1_SPMI_STATUS) & M1_SPMI_RX_EMPTY) {
+		if (m1_now() - t0 > m1_tps / 20)
+			return -ETIMEDOUT;
+		cpu_relax();
+	}
+	reply = readl(s + M1_SPMI_RSP);
+	for (i = 0; !write && i < n; i += 4) {
+		if (readl(s + M1_SPMI_STATUS) & M1_SPMI_RX_EMPTY)
+			return -EIO;
+		w = readl(s + M1_SPMI_RSP);
+		memcpy(b + i, &w, min(4U, n - i));
+	}
+	if (!(readl(s + M1_SPMI_STATUS) & M1_SPMI_RX_EMPTY))
+		return -EIO;
+	if (write ? !(reply & M1_SPMI_REPLY_ACK) : (~(reply >> 16) & (BIT(n) - 1)))
+		return -EIO;
+	return 0;
+}
+
+/* Step 4: the FIFO flushed and every event acked, as aurora recovers, then 0x6001 must read 0x50. */
+static bool m1_raw_start(void)
+{
+	unsigned int i;
+	u8 v = 0;
+
+	writel(M1_SPMI_ACT_FLUSH, m1_spmi + M1_SPMI_ACT);
+	for (i = 0; i < M1_SPMI_WORDS; i++)
+		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
+	return !m1_spmi_raw(false, 0x6001, &v, 1) && v == 0x50;
+}
+
+/* A breadcrumb, raw; the first error stops them all. */
+static void m1_crumb(unsigned int addr, const u8 *b, unsigned int n)
+{
+	if (m1_raw && m1_spmi_raw(true, addr, (u8 *)b, n))
+		m1_raw = false;
+}
+
+static void m1_stage(u8 s)
+{
+	m1_crumb(0x6004, &s, 1);
+}
+
+/* Only the cores' and the P complexes' words: this page also holds ps_pmp. */
+static unsigned int m1_ps_state(unsigned int off)
+{
+	switch (off) {
+	case 0x08: case 0x20: case 0x28: case 0x30: case 0x40: case 0x48: case 0x50:
+	case M1_PS_PCPM0: case M1_PS_PCPM1:
+		return (readl(m1_ps + off) >> 4) & 0xf;
+	}
+	return 0xff;
+}
+
+/* Up to 10 ms for a power state to read off. */
+static bool m1_wait_off(unsigned int off)
+{
+	u64 t0 = m1_now();
+
+	while (m1_ps_state(off)) {
+		if (m1_now() - t0 > m1_tps / 100)
+			return false;
+		cpu_relax();
+	}
+	return true;
+}
+
+static void m1_aic_mask_all(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < m1_aic_words; i++)
+		writel_relaxed(U32_MAX, m1_aic + m1_aic_mask + 4 * i);
+	dsb(sy);
+}
+
+/* Each read of the event register takes this core's next event; an IRQ stays masked (AIC2 masks it on delivery). */
+static unsigned int m1_drain_aic(void)
+{
+	unsigned int n = 0;
+
+	while (n < 64 && readl(m1_aic_event))
+		n++;
+	return n;
+}
+
+/*
+ * This core's own interrupt sources, off, as aic_init_cpu() masks them when
+ * Linux brings a CPU up (irq-apple-aic.c at 4fdd0fc5): its two timers (the
+ * host's, at EL2 with VHE), the guest timers' FIQ, the PMC's and the uncore
+ * PMC's FIQ, and a pending fast IPI. A pending interrupt ends a WFI even
+ * with every exception masked: PR #170's CPU1, on a J314s, never powered off
+ * for one.
+ */
+static void m1_quiet_core(void)
+{
+	write_sysreg(0, cntp_ctl_el0);
+	write_sysreg(0, cntv_ctl_el0);
+	if (is_kernel_in_hyp_mode())
+		sysreg_clear_set_s(M1_VM_TMR_FIQ_ENA_EL2, M1_VM_TMR_FIQ_V | M1_VM_TMR_FIQ_P, 0);
+	sysreg_clear_set_s(SYS_IMP_APL_PMCR0_EL1, PMCR0_IMODE | PMCR0_IACT, 0);
+	sysreg_clear_set_s(M1_UPMCR0_EL1, M1_UPMCR0_IMODE, 0);
+	write_sysreg_s(M1_IPI_SR_PENDING, M1_IPI_SR_EL1);
+	isb();
+}
+
+/* ACC_OVRD's deep-sleep fields, as e1_cpu_down() sets them. */
+static void m1_arm_deep_sleep(void)
+{
+	u64 acc;
+
+	asm volatile("mrs %0, s3_5_c15_c6_0" : "=r"(acc));
+	acc &= ~(GENMASK_ULL(18, 13) | GENMASK_ULL(26, 25));
+	acc |= (3ULL << 13) | (2ULL << 15) | (3ULL << 17) | (3ULL << 25) |
+	       BIT_ULL(32) | BIT_ULL(34);
+	asm volatile("msr s3_5_c15_c6_0, %0; isb" : : "r"(acc));
+}
+
+/* CYC_OVRD as e1_cpu_down() sets it, then WFI for good, with Naeem's and XNU's ISB. */
+static void __noreturn m1_deep_wfi(void)
+{
+	u64 cyc;
+
+	asm volatile("mrs %0, s3_5_c15_c5_0" : "=r"(cyc));
+	cyc &= ~(GENMASK_ULL(25, 20) | BIT_ULL(0));
+	cyc |= 0x3000001ULL;
+	asm volatile("msr s3_5_c15_c5_0, %0; isb" : : "r"(cyc));
+	for (;;)
+		asm volatile("dsb sy; isb; wfi" : : : "memory");
+}
+
+/*
+ * Steps 3 and 6 on each other core, from CPU0's IPI (an async call: its csd
+ * is free before this runs, so never returning blocks nothing): park, and
+ * when CPU0 says go, stop for good.
+ */
+static void m1_park(void *data)
+{
+	struct m1_core *c = data;
+	unsigned int cpu = c - m1_core;
+	unsigned int n;
+
+	local_daif_mask();
+	m1_quiet_core();
+	n = m1_drain_aic();
+	c->drained = n;
+	smp_store_release(&c->parked, 1);
+	m1_clean(c);
+	while (!smp_load_acquire(&c->go))
+		cpu_relax();
+
+	write_sysreg_s(M1_IPI_SR_PENDING, M1_IPI_SR_EL1);
+	isb();
+	c->drained = n + m1_drain_aic();
+	c->isr = (read_sysreg(isr_el1) >> 6) & 7;
+	smp_store_release(&c->left, 1);
+	m1_clean(c);
+	writel_relaxed(m1_cpus[cpu].stop, m1_cpu_start);
+	dsb(sy);
+	isb();
+	if (READ_ONCE(c->arm))
+		m1_arm_deep_sleep();
+	m1_deep_wfi();
+}
+
+/* Steps K3 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
+static void __noreturn m1_after_slpa(void)
+{
+	static const u8 two = 0x02;
+	void __iomem *commit = post_map[ARRAY_SIZE(e1_post_slpa) - 1];
+	u8 parked = 0, left = 0, down = 0, isrs = 0, flags = BIT(7), b[7], rtc[6] = {};
+	unsigned int i, cpu, drained = 0;
+	u64 t0;
+
+	/* K3 */
+	if (m1_kwrite(0x6004, &two, 1))
+		flags |= BIT(3);
+
+	/* 1, 2 */
+	preempt_disable();
+	local_irq_disable();
+	m1_aic_mask_all();
+
+	/* 3: park */
+	for (i = 0; i < ARRAY_SIZE(m1_order); i++) {
+		cpu = m1_order[i];
+		if (smp_call_function_single_async(cpu, &m1_csd[cpu]))
+			continue;
+		t0 = m1_now();
+		while (!smp_load_acquire(&m1_core[cpu].parked) && m1_now() - t0 < m1_tps / 100)
+			cpu_relax();
+		if (smp_load_acquire(&m1_core[cpu].parked))
+			parked |= BIT(cpu);
+	}
+
+	/* 4 */
+	m1_aic_mask_all();
+	if (readl(m1_wdt + M1_WD1_CTRL)) {
+		writel(0, m1_wdt + M1_WD1_CTRL);
+		flags |= BIT(6);
+	}
+	m1_raw = parked == M1_OTHERS && m1_raw_start();
+	b[0] = 0x10;
+	b[1] = parked;
+	m1_crumb(0x6004, b, 2);
+
+	/* 5: the table's other entries, the commit held back */
+	for (i = 0; i < ARRAY_SIZE(e1_post_slpa) - 1; i++) {
+		const struct e1_mmio_write *w = &e1_post_slpa[i];
+
+		if (e1_post_is_eh(w))
+			continue;
+		if (w->width == 8)
+			writeq_relaxed(w->val, post_map[i]);
+		else
+			writel_relaxed(w->val, post_map[i]);
+	}
+	dsb(sy);
+	m1_stage(0x20);
+
+	/* 6: release */
+	for (i = 0; i < ARRAY_SIZE(m1_order); i++) {
+		struct m1_core *c;
+
+		cpu = m1_order[i];
+		c = &m1_core[cpu];
+		if (!(parked & BIT(cpu)))
+			continue;
+		m1_stage(0x21 + i);
+		if ((cpu == 4 && (parked & M1_P0) == M1_P0) || (cpu == 7 && (parked & M1_P1) == M1_P1))
+			WRITE_ONCE(c->arm, 1);
+		smp_store_release(&c->go, 1);
+		dsb(sy);
+		if (m1_wait_off(m1_cpus[cpu].ps))
+			down |= BIT(cpu);
+		if (smp_load_acquire(&c->left)) {
+			left |= BIT(cpu);
+			if (c->isr)
+				isrs |= BIT(cpu);
+			drained += c->drained;
+		}
+		if (cpu == 4 && m1_wait_off(M1_PS_PCPM0))
+			flags |= BIT(4);
+		if (cpu == 7 && m1_wait_off(M1_PS_PCPM1))
+			flags |= BIT(5);
+	}
+
+	/* 7 */
+	b[0] = 0x30;
+	b[1] = parked;
+	b[2] = left;
+	b[3] = down;
+	m1_crumb(0x6004, b, 4);
+	for (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)
+		writel(m1_wake_mask[i], m1_aon + 4 * i);
+	for (i = 0; i < M1_SPMI_WORDS; i++)
+		writel(0, m1_spmi + M1_SPMI_EN(i));
+
+	/* 8 */
+	m1_quiet_core();
+	drained += m1_drain_aic();
+	flags |= (read_sysreg(isr_el1) >> 6) & 7;
+	if (m1_raw && m1_spmi_raw(false, M1_PMU_RTC, rtc, 6))
+		m1_raw = false;
+	memcpy(b, rtc + 2, 4);
+	b[4] = flags;
+	b[5] = isrs;
+	b[6] = min(drained, 255U);
+	m1_crumb(0x6010, b, 7);
+	m1_stage(0x50);
+
+	/* 9 */
+	for (i = 0; i < M1_SPMI_WORDS; i++)
+		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
+	dsb(sy);
+	local_daif_mask();
+	writel_relaxed(1, commit);
+	writel_relaxed(1, commit);
+	writel_relaxed(1, commit);
+	dsb(sy);
+
+	/* 10 */
+	m1_arm_deep_sleep();
+	m1_deep_wfi();
+}
+
+static void m1_read_mpidr(void *p)
+{
+	*(u64 *)p = read_cpuid_mpidr() & MPIDR_HWID_BITMASK;
+}
+
+static int m1_match_node(struct device *dev, const void *np)
+{
+	return dev->of_node == np;
+}
+
+/* Any of n words from pa on the never-write list. */
+static bool __init m1_never(u64 pa, unsigned int n)
+{
+	unsigned int i;
+
+	for (i = 0; i < n; i++) {
+		if (e1_never_write(pa + 4 * i))
+			return true;
+	}
+	return false;
+}
+
+/*
+ * m1 at load: the CPUs as m1_cpus has them, AIC2's layout (one die, 4096
+ * IRQs), the stock SPMI controller (rtc-alarm-test's isn't, and has its own
+ * interrupt), held loaded from here on, so that rtc-alarm-test/load's rmmod
+ * of it fails rather than leave the PMU's nvmem without its controller; the
+ * PMU's nvmem with boot stage 0x30; and every address m1 writes off the
+ * never-write list. Then everything it reads or writes, mapped. Reads only:
+ * the words it writes later are logged as they are now.
+ */
+static int __init m1_init(void)
+{
+	struct platform_device *pdev;
+	struct device_driver *drv;
+	struct device_node *np;
+	u32 info1, info3, max_irq, nr_irq;
+	u8 v = 0, crumbs[0x20];
+	unsigned int cpu, i;
+
+	m1_tps = read_sysreg(cntfrq_el0);
+	if (m1_tps < 1000000) {
+		pr_err("m1: CNTFRQ_EL0 is %llu; refusing\n", m1_tps);
+		return -ENODEV;
+	}
+	if (num_possible_cpus() != M1_NCPUS || num_online_cpus() != M1_NCPUS) {
+		pr_err("m1: %u CPUs possible and %u online, not %u; refusing\n",
+		       num_possible_cpus(), num_online_cpus(), M1_NCPUS);
+		return -ENODEV;
+	}
+	for (cpu = 0; cpu < M1_NCPUS; cpu++) {
+		const struct m1_cpu *c = &m1_cpus[cpu];
+		u64 aff1 = MPIDR_AFFINITY_LEVEL(c->mpidr, 1), aff0 = MPIDR_AFFINITY_LEVEL(c->mpidr, 0);
+		u64 mpidr = ~0ULL;
+
+		if (smp_call_function_single(cpu, m1_read_mpidr, &mpidr, 1) || mpidr != c->mpidr ||
+		    c->stop != BIT(4 * aff1 + aff0) || c->ps != 0x20 * aff1 + 8 * aff0) {
+			pr_err("m1: CPU%u is MPIDR 0x%llx, not 0x%llx as m1_cpus has it; refusing\n",
+			       cpu, mpidr, c->mpidr);
+			return -ENODEV;
+		}
+		INIT_CSD(&m1_csd[cpu], m1_park, &m1_core[cpu]);
+	}
+
+	np = of_find_node_by_path(M1_SPMI_NODE);
+	pdev = np ? of_find_device_by_node(np) : NULL;
+	of_node_put(np);
+	if (pdev) {
+		device_lock(&pdev->dev);
+		drv = pdev->dev.driver;
+		if (drv && drv->owner && !strcmp(module_name(drv->owner), "spmi_apple_controller") &&
+		    try_module_get(drv->owner))
+			m1_spmi_owner = drv->owner;
+		device_unlock(&pdev->dev);
+		put_device(&pdev->dev);
+	}
+	if (!m1_spmi_owner) {
+		pr_err("m1: %s isn't bound to the stock spmi_apple_controller (rtc-alarm-test loaded?); refusing\n",
+		       M1_SPMI_NODE);
+		return -ENODEV;
+	}
+	np = of_find_node_by_path(M1_PMU_NODE);
+	m1_nvmem = np ? nvmem_device_find(np, m1_match_node) : ERR_PTR(-ENODEV);
+	of_node_put(np);
+	if (IS_ERR(m1_nvmem)) {
+		pr_err("m1: no nvmem for %s: %ld; refusing\n", M1_PMU_NODE, PTR_ERR(m1_nvmem));
+		m1_nvmem = NULL;
+		return -ENODEV;
+	}
+	if (m1_kread(0x6001, &v, 1) || v != 0x30 || m1_kread(0x6000, crumbs, 8) ||
+	    m1_kread(0x6008, crumbs + 8, 8) || m1_kread(0x6010, crumbs + 16, 8) ||
+	    m1_kread(0x6018, crumbs + 24, 8)) {
+		pr_err("m1: the PMU's boot stage isn't 0x30 (0x%02x), or its scratch didn't read; refusing\n", v);
+		return -EIO;
+	}
+	pr_info("m1: PMU 0x6000: %*ph\n", 32, crumbs);
+
+	m1_cpu_start = ioremap_np(M1_CPU_START, PAGE_SIZE);
+	m1_ps = ioremap_np(M1_PMGR_PS, PAGE_SIZE);
+	m1_aic = ioremap_np(M1_AIC, M1_AIC_SIZE);
+	m1_aic_event = ioremap_np(M1_AIC_EVENT, PAGE_SIZE);
+	m1_aon = ioremap_np(M1_AON_WAKE & PAGE_MASK, PAGE_SIZE);
+	m1_wdt = ioremap_np(M1_WDT, PAGE_SIZE);
+	m1_spmi_page = ioremap_np(M1_SPMI & PAGE_MASK, PAGE_SIZE);
+	if (!m1_cpu_start || !m1_ps || !m1_aic || !m1_aic_event || !m1_aon || !m1_wdt || !m1_spmi_page) {
+		pr_err("m1: a mapping failed; refusing\n");
+		return -ENOMEM;
+	}
+	m1_aon += M1_AON_WAKE & ~PAGE_MASK;
+
+	info1 = readl(m1_aic + 0x4);
+	info3 = readl(m1_aic + 0xc);
+	nr_irq = info1 & 0xffff;
+	max_irq = info3 & 0xffff;
+	if (((info1 >> 24) & 0xf) || max_irq != 4096 || !nr_irq || nr_irq > max_irq) {
+		pr_err("m1: AIC2 INFO1 0x%08x INFO3 0x%08x: not one die of 4096 IRQs; refusing\n", info1, info3);
+		return -ENODEV;
+	}
+	/* After IRQ_CFG (a word per IRQ), SW_SET and SW_CLR (a bit each). */
+	m1_aic_mask = 0x2000 + 4 * max_irq + 2 * 4 * (max_irq / 32);
+	m1_aic_words = DIV_ROUND_UP(nr_irq, 32);
+	if (m1_aic_mask + 4 * m1_aic_words > M1_AIC_SIZE) {
+		pr_err("m1: AIC2 MASK_SET past its window; refusing\n");
+		return -ENODEV;
+	}
+	if (m1_never(M1_CPU_START, 1) || m1_never(M1_AIC + m1_aic_mask, m1_aic_words) ||
+	    m1_never(M1_AON_WAKE, ARRAY_SIZE(m1_wake_mask)) || m1_never(M1_WDT + M1_WD1_CTRL, 1) ||
+	    m1_never(M1_SPMI + M1_SPMI_CMD, 1) || m1_never(M1_SPMI + M1_SPMI_EN(0), M1_SPMI_WORDS) ||
+	    m1_never(M1_SPMI + M1_SPMI_ACK(0), M1_SPMI_WORDS) || m1_never(M1_SPMI + M1_SPMI_ACT, 1)) {
+		pr_err("m1: a write would touch the never-write list; refusing\n");
+		return -EPERM;
+	}
+
+	pr_info("m1: %u IRQs, MASK_SET 0x%llx (%u words); WD1 ctrl 0x%x; AP wake masks %08x %08x %08x %08x %08x %08x %08x\n",
+		nr_irq, M1_AIC + m1_aic_mask, m1_aic_words, readl(m1_wdt + M1_WD1_CTRL),
+		readl(m1_aon), readl(m1_aon + 4), readl(m1_aon + 8), readl(m1_aon + 12),
+		readl(m1_aon + 16), readl(m1_aon + 20), readl(m1_aon + 24));
+	for (i = 0; i < M1_SPMI_WORDS; i++)
+		pr_info("m1: nub-spmi0 word %u: enable %08x, pending %08x\n", i,
+			readl(m1_spmi + M1_SPMI_EN(i)), readl(m1_spmi + M1_SPMI_ACK(i)));
+	for (cpu = 1; cpu < M1_NCPUS; cpu++)
+		pr_info("m1: CPU%u: stop bit 0x%03x, power state %08x\n", cpu, m1_cpus[cpu].stop,
+			readl(m1_ps + m1_cpus[cpu].ps));
+	return 0;
+}
+
+static void m1_unmap(void)
+{
+	if (m1_cpu_start)
+		iounmap(m1_cpu_start);
+	if (m1_ps)
+		iounmap(m1_ps);
+	if (m1_aic)
+		iounmap(m1_aic);
+	if (m1_aic_event)
+		iounmap(m1_aic_event);
+	if (m1_aon)
+		iounmap((void __iomem *)((unsigned long)m1_aon & PAGE_MASK));
+	if (m1_wdt)
+		iounmap(m1_wdt);
+	if (m1_spmi_page)
+		iounmap(m1_spmi_page);
+	if (m1_nvmem)
+		nvmem_device_put(m1_nvmem);
+	if (m1_spmi_owner)
+		module_put(m1_spmi_owner);
+}
+
+/*
  * The replay, in maralcbr's order (above). Under the SMC device's lock, tried
  * only: if it's busy, or macsmc isn't bound, nothing is written at all. It
  * stops at the first key write that fails, so that a broken sequence never
@@ -662,6 +1512,12 @@ static bool e1_replay(void)
 	bool done = false;
 
 	replay_done = 1;
+	/* m1: CPU0, pinned there since begin, with every CPU online. */
+	if (m1 && (raw_smp_processor_id() != 0 || num_online_cpus() != M1_NCPUS)) {
+		pr_emerg("m1: prepare_late is on CPU%u with %u CPUs online, not on CPU0 with all %u; nothing sent\n",
+			 raw_smp_processor_id(), num_online_cpus(), M1_NCPUS);
+		return false;
+	}
 	if (!device_trylock(dev)) {
 		pr_emerg("replay: the SMC's device lock is busy; nothing sent\n");
 		return false;
@@ -669,6 +1525,13 @@ static bool e1_replay(void)
 	if (!dev->driver || strcmp(dev->driver->name, SMC_DRIVER) || dev_get_drvdata(dev) != smc) {
 		pr_emerg("replay: macsmc isn't bound; nothing sent\n");
 		goto unlock;
+	}
+	if (m1) {
+		m1_ret = m1_pmu_start();
+		pr_emerg("m1: the PMU, breadcrumbs zeroed, boot stage 0x50, stage 0x01: %d%s\n", m1_ret,
+			 m1_ret ? "; nothing more sent" : "");
+		if (m1_ret)
+			goto unlock;
 	}
 	if (replay & 8)
 		e1_post_slpa_eh();
@@ -688,11 +1551,15 @@ static bool e1_replay(void)
 	}
 	if ((replay & 1) &&
 	    replay_write(3, "MBSE=slpa", apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpa)))) {
+		if (m1)
+			m1_after_slpa();
 		if (replay & 8)
 			e1_after_slpa();
 		done = true;
 	}
 unlock:
+	if (m1 && !done)
+		m1_pmu_undo();
 	device_unlock(dev);
 	return done;
 }
@@ -770,6 +1637,10 @@ static void e1_end(void)
 	u64 t = trace_clock_local();
 
 	log_op("end", ++end_calls, t);
+	if (m1_pinned) {
+		set_cpus_allowed_ptr(current, &m1_saved_mask);
+		m1_pinned = false;
+	}
 }
 
 /*
@@ -853,6 +1724,10 @@ static int __init e1_check_params(void)
 		       E1_S2R_COMMIT);
 		return -EINVAL;
 	}
+	if (m1 && (replay != 15 || !quiet)) {
+		pr_err("m1=1 is built on the quiet floor: it needs replay=15 quiet=1 (and oneway=1)\n");
+		return -EINVAL;
+	}
 	if ((replay & (2 | 8)) && !oneway) {
 		pr_err("replay=%u can't be undone: it writes the post-slpa table%s. Load it with oneway=1 as well\n",
 		       replay, (replay & 2) ? " and powers every CPU down for good" : "");
@@ -885,6 +1760,7 @@ static void e1_unmap(void)
 		iounmap(sleep_req_page);
 	if (pmp_dvfs_page)
 		iounmap(pmp_dvfs_page);
+	m1_unmap();
 }
 
 static int __init e1_hook_init(void)
@@ -978,6 +1854,11 @@ unlock:
 			}
 		}
 	}
+	if (m1) {
+		ret = m1_init();
+		if (ret)
+			goto unmap;
+	}
 
 	/* s2idle_set_ops()'s address, from a kprobe that is never armed. */
 	ret = register_kprobe(&kp);
@@ -1002,8 +1883,8 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u\n",
-		sym, replay);
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s\n",
+		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "");
 	return 0;
 
 unmap:
