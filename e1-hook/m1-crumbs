@@ -1,0 +1,136 @@
+#!/usr/bin/python3 -I
+"""e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1, e1_hook
+m1=1) leaves in the PMU, read and decoded, and cleared again.
+
+  e1-hook/m1-crumbs               read them (no root needed)
+  pkexec e1-hook/m1-crumbs --clear   zero them, after reading (root)
+
+They're bytes of the PMU's legacy scratch that e1_hook writes through SPMI
+(e1_hook.c, m1=1, says when): 0x6004-0x6007 and 0x6010-0x6016, which iBoot
+and macOS are believed not to use (DeepIdle's notes; they read 0 here before
+the first run), and 0x6001, the boot stage, which macsmc-reboot sets back to
+0x30 at every boot. 0x6003, the boot-error stage, is the PMU's own record of
+the stage an unclean end found. The PMU is reached through the kernel's nvmem
+interface for the pmic@f node, as pmu-alarm does. --clear writes zeros to the
+breadcrumb bytes and nothing else, so that the next run starts clean and no
+stale byte stays in state that iBoot and macOS share. Exit status: 0, or 2 if
+it can't read (or clear) them.
+"""
+import glob
+import os
+import sys
+
+NODE = "/soc/spmi@2920a1300/pmic@f"
+# Tests point this at a fake nvmem file.
+NVMEM = os.environ.get("M1_CRUMBS_NVMEM")
+
+RTC = 0x1406        # info-rtc: 6 bytes LE, the seconds in the upper four; the
+                    # read must start here (pmu-alarm)
+CRUMBS = ((0x6004, 4), (0x6010, 7))  # the only bytes --clear writes
+
+STAGES = {
+    0x00: "none: no M1 run since the last clear, or the bytes didn't survive",
+    0x01: "K1: the replay began (the PMU written through the kernel's SPMI path)",
+    0x02: "K3: MBSE=slpa was accepted; nothing after it reached the PMU (not all 7 cores parked, or raw SPMI failed)",
+    0x10: "4: all 7 other cores parked, raw SPMI working",
+    0x20: "5: the 42 post-slpa writes done",
+    0x30: "7: every parked core released",
+    0x50: "8: the last SPMI command; next came nub-spmi0's acks, the commit x3, CPU0's deep WFI",
+}
+ORDER = (1, 2, 3, 5, 6, 4, 7)  # e1_hook's m1_order
+
+
+def die(msg):
+    print(f"m1-crumbs: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def find_nvmem():
+    """The nvmem device for NODE; its number isn't fixed (pmu-alarm)."""
+    if NVMEM:
+        return NVMEM
+    found = [d for d in sorted(glob.glob("/sys/bus/nvmem/devices/spmi_nvmem*"))
+             if os.path.realpath(f"{d}/of_node").endswith(NODE)]
+    if len(found) != 1:
+        die(f"want one nvmem device for {NODE}, found {len(found)}")
+    return f"{found[0]}/nvmem"
+
+
+def cpus(mask):
+    return ",".join(f"CPU{n}" for n in range(8) if mask >> n & 1) or "none"
+
+
+def stage(s):
+    if s in STAGES:
+        return STAGES[s]
+    if 0x21 <= s <= 0x27:
+        cpu = ORDER[s - 0x21]
+        return (f"6: releasing CPU{cpu}, the order's {s - 0x20} of 7 (1, 2, 3, 5, 6, 4, 7): it didn't get"
+                " further (a reset right at its stop, or a hang)")
+    return "unknown"
+
+
+def decode(b, rtc):
+    """b: 0x6000-0x601f; rtc: 6 bytes at 0x1406. One line per fact."""
+    s = b[4]
+    out = [
+        f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
+        f"0x6010: {b[0x10:0x18].hex(' ')}  {b[0x18:0x20].hex(' ')}",
+        f"boot stage 0x6001 = 0x{b[1]:02x} (0x30 after a boot); boot-error stage 0x6003 = 0x{b[3]:02x}"
+        " (0x50: an unclean end after the replay began)",
+        f"stage 0x6004 = 0x{s:02x}: {stage(s)}",
+    ]
+    if s >= 0x10:
+        out.append(f"parked (0x6005 = 0x{b[5]:02x}): {cpus(b[5])}")
+    if s >= 0x30:
+        out.append(f"left their spin to stop (0x6006 = 0x{b[6]:02x}): {cpus(b[6])}")
+        out.append(f"read off within 10 ms (0x6007 = 0x{b[7]:02x}): {cpus(b[7])}")
+    secs = int.from_bytes(b[0x10:0x14], "little")
+    now = int.from_bytes(rtc[2:6], "little")
+    if s >= 0x01 and secs:
+        when = "just before the commit" if s == 0x50 else "the replay's start (K1)"
+        out.append(f"RTC second at {when}: {secs}, {now - secs} s before now ({now})")
+    if s == 0x50:
+        f = b[0x14]
+        pend = "".join(n for bit, n in ((2, "A"), (1, "I"), (0, "F")) if f >> bit & 1) or "nothing"
+        out.append(f"0x6014 = 0x{f:02x}: CPU0 had {pend} pending before the commit;"
+                   f" PCPM0 {'off' if f & 0x10 else 'NOT off'}, PCPM1 {'off' if f & 0x20 else 'NOT off'};"
+                   f" WD1 {'was running (stopped)' if f & 0x40 else 'was off'}")
+        out.append(f"0x6015 = 0x{b[0x15]:02x}: cores with an interrupt pending at their stop: {cpus(b[0x15])}")
+        out.append(f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
+    return out
+
+
+def main():
+    args = sys.argv[1:]
+    if args not in ([], ["--clear"]):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        sys.exit(2)
+    clear = args == ["--clear"]
+    path = find_nvmem()
+    try:
+        fd = os.open(path, os.O_RDWR if clear else os.O_RDONLY)
+        b = os.pread(fd, 0x20, 0x6000)
+        rtc = os.pread(fd, 6, RTC)
+    except OSError as e:
+        die(f"{path}: {e}")
+    if len(b) != 0x20 or len(rtc) != 6:
+        die(f"{path}: short read")
+    for line in decode(b, rtc):
+        print(line)
+    if clear:
+        try:
+            for off, n in CRUMBS:
+                if os.pwrite(fd, bytes(n), off) != n:
+                    die(f"short write at {off:#x}")
+            after = [os.pread(fd, n, off) for off, n in CRUMBS]
+        except OSError as e:
+            die(f"{path}: {e}")
+        if any(a != bytes(n) for a, (_, n) in zip(after, CRUMBS)):
+            die("cleared, but they don't read back as zeros")
+        print("cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

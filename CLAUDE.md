@@ -103,7 +103,13 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   end it with the power key). `quiet=1` (`run-floor --quiet`, with `15`
   only) leaves out maralcbr's 500 ms and its two AFNC reads after the
   post-`slpa` writes, so the S2R-timer commit is the replay's last MMIO
-  access before the CPUs power down. `13` is the floor with the CPUs left up. `13`
+  access before the CPUs power down. `m1=1` (`run-floor --m1`, with `15`
+  and `quiet=1` only) is E2's M1 recipe, Naeem Malik's T8103 entry mapped
+  onto T6000: the suspend pinned to CPU0, the other CPUs parked awake
+  before the post-`slpa` writes and stopped one by one before the commit,
+  interrupts masked, the AP wake mask, boot stage 0x50 and breadcrumbs in
+  the PMU's spare scratch bytes; `e1-hook/m1-crumbs` reads and (`--clear`,
+  root) zeroes them at the next boot. `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
   (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s
@@ -136,7 +142,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   safe boot's initramfs hook in mkinitcpio's busybox ash, in a bubblewrap
   sandbox with stub mount and blockdev, one failure per case;
   `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe
-  boot and `collect` in a fake next boot; `tests/sleep_drain_reading_test.py`
+  boot and `collect` in a fake next boot; `tests/m1_crumbs_test.py` runs
+  `e1-hook/m1-crumbs` on a fake PMU nvmem file; `tests/sleep_drain_reading_test.py`
   runs `sleep-drain-reading` as uid 0 in a bubblewrap user namespace against
   a fake battery, with stub `sleep-drain-safe` and `systemctl`.
 - `patches/`: patch series for upstream, kept here for review before they're
