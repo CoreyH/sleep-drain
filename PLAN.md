@@ -264,8 +264,9 @@ steps, and restarting the DCP and the PMP afterwards.
       hung when stopped cores armed them under running ones
       (malik-na/linux-aurora 3bbb16ebac56). Then, as on T8103: the AP wake
       mask (only the PMU), nub-spmi's interrupts acked, AIC masked, the
-      commit three times, the PMP told the clusters are idle. PMU writes
-      (boot stage 0x50, the RTC alarm, breadcrumbs) only with Corey's OK.
+      commit three times, the PMP told the clusters are idle. PMU writes:
+      Corey OK'd boot stage 0x50 and breadcrumbs in spare scratch bytes on
+      2026-11-07.
     - Then, on top, one at a time: maralcbr's other bits (the domains
       macOS has off, 8-10; the AOP's notices, 6; the internal PCIe ports,
       13), and the PMU boot stage 0x50. The SEP's SLEEP message (bit 11)
