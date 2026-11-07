@@ -210,10 +210,10 @@ steps, and restarting the DCP and the PMP afterwards.
       four keys; it still answers after `slpa`; the NVMe is lost until a
       restart; no reset, no freeze. The alarm sleep couldn't run: its
       programs are on the lost disk.
-    - [x] **The floor: the whole one-way replay** (ran 2026-11-07: the Mac
-      reset itself about 30 s in, the S2R entry's watchdog; RESEARCH.md, "The
-      floor"). (`pkexec
-      e1-hook/run-floor`: `replay=15 oneway=1`, maralcbr's bits 0-3 in their
+    - [x] **The floor: maralcbr's one-way replay, bits 0-3** (ran
+      2026-11-07: the Mac reset itself about 30 s in, very likely the S2R
+      entry's watchdog; RESEARCH.md, "The floor"). (`pkexec
+      e1-hook/run-floor`: `replay=15 oneway=1`, in maralcbr's
       default order: the 31 watchdog and error-handler writes, the keys and
       PMP words, the other 43 post-`slpa` writes, their 500 ms, then every
       CPU's power-down), in a safe boot, measured with `BQCC` across the
@@ -238,14 +238,22 @@ steps, and restarting the DCP and the PMP afterwards.
       - Back in the regular boot instead of dark: a fault, restarted by
         run-floor's `kernel.panic=10`. `BACC` dates it.
   - **E2 onwards: make the S2R entry complete.** The floor's reset about
-    30 s in is the entry watchdog's (DeepIdle: the 0x2925c4000 write is the
-    commit and arms it). Each attempt is quick: a short safe-boot run with
-    no reading needed, since a reset about 30 s in means "not yet". On top of
-    the floor, one at a time: maralcbr's other bits (the domains macOS has
-    off, 8-10; the AOP's notices, 6; the internal PCIe ports, 13), and the
-    PMU boot stage 0x50. The SEP's SLEEP message (bit 11) touches state the
-    SEP shares with macOS: only with Corey's OK. Only an attempt that
-    doesn't reset gets the full BQCC reading.
+    30 s in is very likely the entry watchdog's (DeepIdle: the 0x2925c4000
+    write is the commit and arms it). Each attempt is quick: a short
+    safe-boot run with no reading needed, since a reset about 30 s in means
+    "not yet". First the quiet commit: the other CPUs down before the
+    post-`slpa` writes, the commit as the last CPU's last MMIO access, then
+    straight to its deep WFI, with no AFNC reads or IPIs after it. Only a
+    cluster's last core arms ACC_OVRD's deep-sleep bits, which act per
+    cluster: Naeem's first Linux S2R run on T8103 hung when stopped cores
+    armed them under running ones (malik-na/linux-aurora 3bbb16ebac56).
+    Then, on top, one at a time: maralcbr's other bits (the domains macOS
+    has off, 8-10; the AOP's notices, 6; the internal PCIe ports, 13), and
+    the PMU boot stage 0x50. The SEP's SLEEP message (bit 11) touches state
+    the SEP shares with macOS: only with Corey's OK. A Mac that stays dark
+    is a candidate, not a result (RESEARCH.md, "The floor"): a breadcrumb
+    before the commit (a PMU scratch write, so with Corey's OK) tells it
+    from a hang, and only then does it get the full BQCC reading.
   - **The code.** An out-of-tree module: our own, written from these
     findings and maralcbr's tables (maralcbr/linux is GPL-2.0, as part of
     the kernel). maralcbr ran the replay from macsmc-reboot at s2idle's
