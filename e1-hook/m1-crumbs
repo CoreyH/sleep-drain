@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -I
-"""e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1, e1_hook
-m1=1) leaves in the PMU, read and decoded, and cleared again.
+"""e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1 or
+--m1-observe, e1_hook m1=1, observe=1) leaves in the PMU, read and decoded, and
+cleared again.
 
   e1-hook/m1-crumbs               read them (no root needed)
   pkexec e1-hook/m1-crumbs --clear   zero them, after reading (root)
@@ -13,16 +14,22 @@ the first run), and 0x6001, the boot stage, which macsmc-reboot sets back to
 the stage an unclean end found. The PMU is reached through the kernel's nvmem
 interface for the pmic@f node, as pmu-alarm does. --clear writes zeros to the
 breadcrumb bytes and nothing else, so that the next run starts clean and no
-stale byte stays in state that iBoot and macOS share. Exit status: 0, or 2 if
-it can't read (or clear) them.
+stale byte stays in state that iBoot and macOS share.
+
+After a run that reached the commit, it also says when the SoC restarted: the
+SoC's counter (CNTVCT) restarts with it, so the PMU's RTC now, less the
+counter's age, against the commit's RTC second. That holds only in the first
+boot after the run, before anything else restarts the Mac. Exit status: 0, or
+2 if it can't read (or clear) them.
 """
 import glob
 import os
 import sys
 
 NODE = "/soc/spmi@2920a1300/pmic@f"
-# Tests point this at a fake nvmem file.
+# Tests point this at a fake nvmem file, and give the counter as "ticks freq".
 NVMEM = os.environ.get("M1_CRUMBS_NVMEM")
+CNTVCT = os.environ.get("M1_CRUMBS_CNTVCT")
 
 RTC = 0x1406        # info-rtc: 6 bytes LE, the seconds in the upper four; the
                     # read must start here (pmu-alarm)
@@ -39,8 +46,32 @@ STAGES = {
     0x20: "5: the 42 post-slpa writes done",
     0x30: "7: every parked core released",
     0x50: "8: the last SPMI command; next came nub-spmi0's acks, the commit x3, CPU0's deep WFI",
+    # observe=1: CPU7's, after the commit
+    0x60: "observe: CPU7 began watching after the commit; nothing it read reached the PMU (a hang or a"
+          " reset in its first polls, or raw SPMI failed)",
+    0x61: "observe: CPU7 recorded CPU0's and ECPM's power states and the watchdogs (0x6005-0x6007, in one"
+          " command with this stage); it didn't begin to rewrite 0x6012-0x6016",
+    0x62: "observe: CPU7 was rewriting 0x6012-0x6013 and 0x6015-0x6016 when its breadcrumbs stopped, so"
+          " those bytes may be CPU0's or CPU7's",
+    0x6e: "observe: CPU7 recorded everything, but had an interrupt or SError pending just before its own"
+          " WFI, which ends a WFI: it likely never powered down",
+    0x6f: "observe: CPU7 recorded everything, with nothing pending; next came nub-spmi0's acks and its own"
+          " deep WFI",
 }
+# The run's own variants, when 0x6005 bit 0 marks it observe=1 (CPU0 never
+# parks, so the bit is free below 0x61).
+OBSERVE_STAGES = {
+    0x10: "4: all 7 other cores parked, raw SPMI working (observe=1: CPU7 to stay up for the observer)",
+    0x30: "7: every parked core but CPU7 released (observe=1: CPU7 stays up through the commit)",
+    0x50: "8: the last SPMI command; next came nub-spmi0's acks, the wake-status snapshot, CPU7's stop bit,"
+          " the commit x3, the hand-over to CPU7 and CPU0's deep WFI. Nothing CPU7 sent after the commit"
+          " landed: it never took the hand-over, or raw SPMI after the commit failed",
+}
+OBSERVED = (0x61, 0x62, 0x6e, 0x6f)  # 0x6005-0x6007 are CPU7's
+FULL = (0x6e, 0x6f)  # 0x6012-0x6013 and 0x6015-0x6016 are CPU7's too
+SHORT = (0x62, 0x6e, 0x6f)  # only 0x6010-0x6011 of the commit's second are sure
 ORDER = (1, 2, 3, 5, 6, 4, 7)  # e1_hook's m1_order
+SOC = ("EACC", "PACC0", "PACC1", "ANE0", "AFR", "DISPLAY", "AVEMSR")  # 0x6015 bits 0-6
 
 
 def die(msg):
@@ -63,7 +94,9 @@ def cpus(mask):
     return ",".join(f"CPU{n}" for n in range(8) if mask >> n & 1) or "none"
 
 
-def stage(s):
+def stage(s, observe=False):
+    if observe and s in OBSERVE_STAGES:
+        return OBSERVE_STAGES[s]
     if s in STAGES:
         return STAGES[s]
     if 0x21 <= s <= 0x27:
@@ -73,37 +106,120 @@ def stage(s):
     return "unknown"
 
 
-def decode(b, rtc):
-    """b: 0x6000-0x601f; rtc: 6 bytes at 0x1406. One line per fact."""
+def counter():
+    """CNTVCT and CNTFRQ, or None. Python has no mrs, so this runs the two
+    instructions from an executable page: mrs x0, cntvct_el0 (or cntfrq_el0),
+    ret. Linux lets EL0 read both (its vDSO does)."""
+    if CNTVCT:
+        if CNTVCT == "none":
+            return None
+        ticks, freq = CNTVCT.split()
+        return int(ticks), int(freq)
+    if os.uname().machine != "aarch64":
+        return None
+    try:
+        import ctypes
+        import mmap
+        code = (0xd53be040, 0xd65f03c0, 0xd53be000, 0xd65f03c0)
+        m = mmap.mmap(-1, mmap.PAGESIZE, prot=mmap.PROT_READ | mmap.PROT_WRITE | mmap.PROT_EXEC)
+        m.write(b"".join(w.to_bytes(4, "little") for w in code))
+        addr = ctypes.addressof(ctypes.c_char.from_buffer(m))
+        fn = ctypes.CFUNCTYPE(ctypes.c_uint64)
+        return fn(addr)(), fn(addr + 8)()
+    except (OSError, ValueError):
+        return None
+
+
+def ctrl(c):
+    """A watchdog's control bits, as apple_wdt names them."""
+    on = [n for bit, n in ((0, "IRQ_EN"), (1, "IRQ_STATUS"), (2, "RESET_EN")) if c >> bit & 1]
+    return f"{c}" + (f" ({', '.join(on)})" if on else " (off)")
+
+
+def decode(b, rtc, cnt=None):
+    """b: 0x6000-0x601f; rtc: 6 bytes at 0x1406; cnt: (CNTVCT, CNTFRQ) or
+    None. One line per fact."""
     s = b[4]
+    obs = s in OBSERVED
+    mark = 0x10 <= s <= 0x60 and bool(b[5] & 1)  # an observe=1 run, below CPU7's own stages
     out = [
         f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
         f"0x6010: {b[0x10:0x18].hex(' ')}  {b[0x18:0x20].hex(' ')}",
         f"boot stage 0x6001 = 0x{b[1]:02x} (0x30 after a boot); boot-error stage 0x6003 = 0x{b[3]:02x}"
         " (0x50: an unclean end after the replay began)",
-        f"stage 0x6004 = 0x{s:02x}: {stage(s)}",
+        f"stage 0x6004 = 0x{s:02x}: {stage(s, mark)}",
     ]
     if s:
         out.append("  (the last breadcrumb that reached the PMU: the run got at least that far)")
-    if s >= 0x10:
-        out.append(f"parked (0x6005 = 0x{b[5]:02x}): {cpus(b[5])}")
-    if s >= 0x30:
-        out.append(f"left their spin to stop (0x6006 = 0x{b[6]:02x}): {cpus(b[6])}")
-        out.append(f"read off within 10 ms (0x6007 = 0x{b[7]:02x}): {cpus(b[7])}")
-    secs = int.from_bytes(b[0x10:0x14], "little")
+    if mark:
+        out.append("  observe=1 (0x6005 bit 0): CPU7 was kept up for the observer, so it isn't in 0x6006 or 0x6007"
+                   " and PCPM1 wasn't checked")
+    if obs:
+        off = b[5]
+        out.append(f"0x6005 = 0x{off:02x}: CPU0 {'read off' if off & 1 else 'did NOT read off'} within 500 ms of the"
+                   f" hand-over; the E complex (ECPM) {'read off' if off & 0x80 else 'did NOT read off'} within 500 ms"
+                   f" more; read off at their release: {cpus(off & 0x7e)}")
+        w = b[6]
+        wd1 = ctrl(w >> 4 & 7) + (": armed again after step 4 stopped it" if w & 0x40 else "")
+        out.append(f"0x6006 = 0x{w:02x}: after the commit, WD2 control {ctrl(w & 7)}; WD1 control {wd1};"
+                   f" WD0 {'ARMED again (K2 zeroed its control)' if w & 8 else 'not armed'} to reset; CPU0's last"
+                   f" WFI {'HAD RETURNED (not power-gated then)' if w & 0x80 else 'had not returned'}")
+        out.append(f"0x6007 = {b[7]}: " + ("no watchdog was armed to reset the SoC" if b[7] == 255 else
+                                         f"{b[7]} s until the first armed watchdog's reset, as CPU7 read it"))
+    elif s >= 0x10:
+        out.append(f"parked (0x6005 = 0x{b[5]:02x}): {cpus(b[5] & 0xfe)}")
+        if s >= 0x30:
+            out.append(f"left their spin to stop (0x6006 = 0x{b[6]:02x}): {cpus(b[6])}")
+            out.append(f"read off within 10 ms (0x6007 = 0x{b[7]:02x}): {cpus(b[7])}")
     now = int.from_bytes(rtc[2:6], "little")
-    if s >= 0x01 and secs:
-        when = "just before the commit" if s == 0x50 else "the replay's start (K1)"
-        out.append(f"RTC second at {when}: {secs}, {now - secs} s before now ({now})")
-    if s == 0x50:
+    commit = None
+    if s in SHORT:
+        low = int.from_bytes(b[0x10:0x12], "little")
+        commit = now - ((now - low) & 0xffff)
+        out.append(f"RTC second just before the commit, from its low two bytes: {commit}, {now - commit} s before"
+                   f" now ({now}); right if this read comes within 18 h of the commit")
+    else:
+        secs = int.from_bytes(b[0x10:0x14], "little")
+        if s >= 0x01 and secs:
+            when = "just before the commit" if s >= 0x50 else "the replay's start (K1)"
+            out.append(f"RTC second at {when}: {secs}, {now - secs} s before now ({now})")
+            if s >= 0x50:
+                commit = secs
+    if s >= 0x50:
         f = b[0x14]
         pend = "".join(n for bit, n in ((2, "A"), (1, "I"), (0, "F")) if f >> bit & 1) or "nothing"
+        pcpm1 = "not checked (CPU7 kept up)" if s >= 0x60 or mark else "off" if f & 0x20 else "NOT off"
         out.append(f"0x6014 = 0x{f:02x}: CPU0 had {pend} pending before the commit;"
-                   f" PCPM0 {'off' if f & 0x10 else 'NOT off'}, PCPM1 {'off' if f & 0x20 else 'NOT off'};"
+                   f" PCPM0 {'off' if f & 0x10 else 'NOT off'}, PCPM1 {pcpm1};"
                    f" WD1 {'was running (stopped)' if f & 0x40 else 'was off'};"
                    f" K3's kernel-path write after slpa {'FAILED' if f & 0x08 else 'worked'}")
+    if s in FULL:
+        out.append(f"0x6012 0x6013 = {b[0x12]:02x} {b[0x13]:02x}: the low bytes of the wdt page's +0x28 and +0x40"
+                   " after the commit (T8103's S2R-engine progress registers, inferred; e1_hook's load log has"
+                   " them awake)")
+        cl = b[0x15]
+        busy = ",".join(n for i, n in enumerate(SOC) if cl >> i & 1) or "none"
+        out.append(f"0x6015 = 0x{cl:02x}: soc clusters still busy: {busy} (PACC1 expected, CPU7 being up);"
+                   f" SIO_CPU's actual state {'NOT off' if cl & 0x80 else 'off'}")
+        wk = b[0x16]
+        if not wk & 0x80:
+            out.append(f"0x6016 = 0x{wk:02x}: bit 7 is clear, so this byte didn't survive the reset; don't read it")
+        else:
+            words = ",".join(str(i) for i in range(7) if wk >> i & 1) or "none"
+            out.append(f"0x6016 = 0x{wk:02x}: AP wake-status words with a bit set that wasn't just before the"
+                       f" commit: {words}")
+    elif s == 0x62:
+        out.append(f"0x6012 0x6013 = {b[0x12]:02x} {b[0x13]:02x}, 0x6015 0x6016 = {b[0x15]:02x} {b[0x16]:02x}: CPU0's"
+                   " or CPU7's (it was rewriting them): not decoded")
+    elif s >= 0x50:
         out.append(f"0x6015 = 0x{b[0x15]:02x}: cores with an interrupt pending at their stop: {cpus(b[0x15])}")
         out.append(f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
+    if commit is not None and cnt and cnt[1]:
+        age = cnt[0] / cnt[1]
+        x = now - age - commit
+        out.append(f"the SoC restarted about {x:.0f} s after the commit ({x - 1:.1f} to {x + 1:.1f} s: the PMU's RTC"
+                   f" counts whole seconds); its counter (CNTVCT) is {age:.1f} s old. Right only in the first boot"
+                   " after the run")
     return out
 
 
@@ -122,7 +238,7 @@ def main():
         die(f"{path}: {e}")
     if len(b) != 0x20 or len(rtc) != 6:
         die(f"{path}: short read")
-    for line in decode(b, rtc):
+    for line in decode(b, rtc, counter()):
         print(line)
     if clear:
         try:

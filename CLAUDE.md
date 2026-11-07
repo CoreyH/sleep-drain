@@ -109,7 +109,11 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   before the post-`slpa` writes and stopped one by one before the commit,
   interrupts masked, the AP wake mask, boot stage 0x50 and breadcrumbs in
   the PMU's spare scratch bytes; `e1-hook/m1-crumbs` reads and (`--clear`,
-  root) zeroes them at the next boot. `13` is the floor with the CPUs left up. `13`
+  root) zeroes them at the next boot, and says when the SoC restarted.
+  `observe=1` (`run-floor --m1-observe`, with `m1=1` only) is its run 2:
+  CPU7 stays up through the commit, watches CPU0 and the E complex power
+  down, reads the watchdogs and other state, and records them in the same
+  breadcrumbs. `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
   (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s
