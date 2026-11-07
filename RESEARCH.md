@@ -1657,3 +1657,75 @@ about where DeepIdle stands on T6020 (their R11-R17). Naeem's T8103 entry
 completes, so what his has and ours lacks is the next lead. One thing to
 start with: his kernel sends no SMC sleep keys, and ours sends maralcbr's
 four.
+
+### After M1 run 1: no post-mortem in the PMU, Naeem's entry completes either way, and run 2 watches CPU0 (2026-11-07)
+
+**The PMU keeps no record of the reset.** In the first boot after run 1's
+reset, the PMU's fault log (0x1000, 10 bytes) read all zeros. Its SoCD area
+(0x8b00, 0x400 bytes) held an "INIT" header and noise, not trace records.
+Both are read-only reads through the PMU's nvmem, at the offsets macOS's
+device tree gives. `results/m1-run1-20261107/pmu-after-reset.txt` has the
+details. A control read at a later clean boot will compare the hashes.
+
+**Naeem's newer runs** (malik-na/m1-power-lab a2103f221e62, its
+`docs/evidence/2026-11-07-linux-s2r/README.md` at 5d77d5e45980): his Linux
+entry on T8103 completed in every run from 3 to 12. Each reached his last
+marker with no WD2 reset, and his WD1 dead-man restarted the Mac about
+181 s after the commit.
+- It completed both with macOS's SMC handshake (test 9: slpw, WKTP=2, slpa
+  and SetAPPower 0x201, all acked) and without it (run 2).
+- It completed with pms_sram on (test 10) and with it off.
+- What fails there now is the wake: the boot CPU never runs its first
+  instruction at the RVBAR (test 8).
+- His bisection of macOS: blocking the AOP's message, or the whole SMC
+  handshake, still slept and woke. Blocking the PMP's 0x201 pair made macOS
+  panic.
+- His remaining candidate, the PMP, is about the wake, not the entry.
+
+For our entry, the SMC keys we send probably aren't what blocks it, since
+T8103 completes either way. Our run still keeps slpa, because T6000's PMU
+declares its standby as an SMC write of MBSE (`function-external_standby`,
+`info-has_slpsmc`).
+
+**From his macOS traces** (mac27-hv README, same repo):
+- The AON engine loads WD2 itself at the commit. Its count read 0.10 s at
+  the last core's snapshot.
+- A WD2 reset means the engine's completion condition went unmet with every
+  AP step done (try41).
+- In try41, a run with the CPU side complete still reset; try42, with fuller
+  tracing, slept. So something besides the cores can hold the entry: entry
+  timing, or the domains m1n1 kept on when it didn't trace the PMGR.
+- The engine has progress registers at 0x23d2b8028 and 0x23d2b8040, in the
+  watchdog block's second page, and a WD1 reset clears them.
+
+**Two loose ends in our own run:**
+- apple_wdt's default timeout is 30 s (aurora 4fdd0fc5 `apple_wdt.c`, L54),
+  about our reset time. WD1 was off by step 4 (run 1's 0x6014). Whether
+  anything turns it back on after the commit isn't known.
+- T6020's reset comes about 60 s after the commit, and T8103's about 5 s.
+
+**So M1 run 2 is the observer** (`run-floor --m1-observe`, e1_hook
+`observe=1`). It is run 1 with one change: CPU7, P1's last core, isn't
+released before the commit.
+- CPU0 writes CPU7's stop bit before the commit, while CPU7 still spins.
+  That's macOS's order: on T8103 it writes the other cores' bits while
+  they stall in WFE.
+- After the commit, CPU0 hands over and goes into its deep WFI. CPU7 then
+  polls CPU0's and the E complex's PMGR power states for up to 500 ms each.
+- CPU7 reads the three watchdogs, the seven soc clusters' busy bits,
+  SIO_CPU, the AP wake status, and the two words at T8103's
+  progress-register offsets (0x2922b8028 and 0x2922b8040, inferred).
+- It records all of it in the OK'd breadcrumb bytes, then stops.
+- e1_hook.c's m1 block has the byte layout. `m1-crumbs` decodes it and now
+  prints the reset time itself, from the PMU's RTC and the SoC's counter.
+
+What the outcomes would mean:
+- **CPU0 doesn't read off.** That's the first concrete difference from a
+  completed T8103 entry, and the boot cluster is the next target.
+- **CPU0 and the E complex read off, and the reset still comes at ~30 s.**
+  The CPU side is closed on T6000, and the cause is elsewhere. The
+  observer's other bytes point at the first candidates: a soc cluster
+  still busy, SIO_CPU on, a new wake-status bit, or progress words that
+  stopped moving.
+- **The watchdog bytes.** They say whether the 30 s is WD2's, loaded at the
+  commit, or WD1's, turned back on.

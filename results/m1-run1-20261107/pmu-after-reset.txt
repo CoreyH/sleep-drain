@@ -1,0 +1,18 @@
+# The PMU's fault log and SoCD area, read in the first boot after M1 run 1's reset
+# (2026-11-07 21:53 +0100, uptime 6902 s; read-only, as corey, through
+# /sys/bus/nvmem/devices/spmi_nvmem2/nvmem, the pmic@f node; offsets from
+# macOS's ADT, spmi-mpmu@F: info-fault_log 0x1000 + 0xa, info-scrpad 0x8000 +
+# 0x1000, info-scrpad_socd 0x8b00 + 0x400, info-fault_shadow 0x867b + 0x10)
+
+fault_log 0x1000: 00 00 00 00 00 00 00 00 00 00
+leg_scrpad 0x6000: 00 30 00 50 00 00 00 00 00 00 00 00 00 00 00 00  (m1-crumbs --clear had run)
+socd header 0x8b00: 49 4e 49 54 00 00 00 00 00 01 03 00 00 00 00 00 00 00 00 00  ("INIT")
+socd body 0x8b14-0x8eff: 7.79 bits/byte, 998 of 1004 bytes nonzero: noise, not
+  XNU's 44-byte trace entries; sha256 456f75a667c5b9b39e9e1d9689c0b12f (first 128 bits)
+scrpad 0x8000-0x8fff: 7.62 bits/byte; sha256 8710333144452c6326065154856db959; the
+  same in two reads. Its bytes aren't kept here: their role is unknown, and some
+  may be state iBoot or the SEP keep.
+
+So neither the fault log nor the SoCD area records the WD2 reset: the SoCD area
+holds a header and no records. A control read at a later clean boot compares the
+two hashes: the same means nothing rewrites these bytes at a boot or a reset.
