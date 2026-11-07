@@ -154,6 +154,8 @@ MODULE_PARM_DESC(prepare_ret, "The last B0AV read at prepare: 0, -errno, or 1 be
  *   bit 0   MBSE = slpa                                      (L875-879)
  *   bit 3   the table's other entries, back to back, with writeq_relaxed or
  *           writel_relaxed by width, then dsb(sy)            (L880-881)
+ *   bit 3   500 ms, reading AFNC2's and AFNC3's power states 100 ms in and
+ *           at the end                                       (L883-894)
  *   bit 1   every other CPU through smp_call_function(), then this one, each
  *           powering itself down for good                    (L895-898)
  *
@@ -178,15 +180,17 @@ MODULE_PARM_DESC(prepare_ret, "The last B0AV read at prepare: 0, -errno, or 1 be
  * in a safe boot, with sleepdrain.safe on the kernel command line, since the
  * reset that ends them could damage a writable disk.
  *
- * Left out of their flow, as diagnostics: their reads of the watchdog
- * (lab_dump_wdt(), L798) and of AFNC2/3's power states (lab_afnc(), L841,
- * L859, L862, L867, and L883-894, which waits 500 ms between the post-slpa
- * writes and the CPUs' power-down), their prints between writes, and their
- * lab_delay_stage delays (off by default). Their prepare op (L481-489) only
- * reads too. Nothing else in their flow touches the hardware with these four
- * bits. Where they map each page at prepare_late and skip a write whose page
- * didn't map (L808-821, L353, L825), this maps them all at load and refuses
- * to load if one fails. One way: there's no undo, and with bit 1 no resume.
+ * Their 500 ms is kept, with its two reads: their fast mode always makes it
+ * (it maps the AFNC page whenever it maps the table, L816), so it's part of
+ * the timing this copies, though the reads change nothing. What they read is
+ * in afnc, readable with 13 only. Left out, as diagnostics: their other reads
+ * of the watchdog (lab_dump_wdt(), L798) and of AFNC2/3 (lab_afnc(), L841,
+ * L859, L862, L867), their prints between writes, and their lab_delay_stage
+ * delays (off by default). Their prepare op (L481-489) only reads too.
+ * Nothing else in their flow touches the hardware with these four bits.
+ * Where they map each page at prepare_late and skip a write whose page didn't
+ * map (L808-821, L353, L825), this maps them all at load and refuses to load
+ * if one fails. One way: there's no undo, and with bit 1 no resume.
  */
 static unsigned int replay;
 module_param(replay, uint, 0444);
@@ -324,6 +328,18 @@ static_assert(ARRAY_SIZE(e1_post_slpa) == 74);
 
 /* Each entry's own non-posted mapping, at its address (bit 3 only). */
 static void __iomem *post_map[ARRAY_SIZE(e1_post_slpa)];
+
+/*
+ * The PMGR page with AFNC2's (+0x160) and AFNC3's (+0x178) power states, which
+ * their 500 ms reads (bit 3 only; mapped as their lab_afnc_map, L816).
+ */
+#define E1_AFNC_PAGE		0x28e580000ULL
+static_assert(!(E1_AFNC_PAGE & ~PAGE_MASK));
+static void __iomem *afnc_map;
+static unsigned int afnc[4];
+static int afnc_n = 4;
+module_param_array(afnc, uint, &afnc_n, 0444);
+MODULE_PARM_DESC(afnc, "Bit 3: AFNC2's and AFNC3's power states 100 ms after the post-slpa writes, then 500 ms after; readable with 13 only");
 /* How many of the table's entries e1_post_is_eh() picks, counted at load. */
 static unsigned int post_eh;
 
@@ -479,7 +495,7 @@ static void e1_post_slpa_eh(void)
 {
 	unsigned int i, n = 0;
 
-	pr_emerg("replay: fast: %u watchdog and error-handler writes now; from MBSE=slpa on, no output: the other %zu writes%s\n",
+	pr_emerg("replay: fast: %u watchdog and error-handler writes now; from MBSE=slpa on, no output: the other %zu writes, 500 ms%s\n",
 		 post_eh, ARRAY_SIZE(e1_post_slpa) - post_eh,
 		 (replay & 2) ? ", then every CPU's power-down" : "");
 	for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
@@ -528,13 +544,14 @@ static void e1_cpu_down(void *unused)
 /*
  * Bit 3, right after MBSE=slpa was accepted, with no output: the table's
  * other entries, back to back, as lab_replay_post_slpa_fast() writes them
- * (L348-361), then dsb(sy). With bit 1, every CPU's power-down follows at once
- * (L895-898): the others through smp_call_function() without waiting, then
- * this one, and nothing returns. Preemption stays off from the first write
- * on, so that no other task runs on this CPU and it can't migrate before its
- * own power-down; interrupts still can, until e1_cpu_down() masks them
- * (smp_call_function() needs them on). This CPU powers down right after
- * sending the IPIs, usually before the others have taken theirs.
+ * (L348-361), then dsb(sy), then their 500 ms with its two reads (L883-894).
+ * With bit 1, every CPU's power-down follows (L895-898): the others through
+ * smp_call_function() without waiting, then this one, and nothing returns.
+ * Preemption stays off from the first write on, so that no other task runs on
+ * this CPU and it can't migrate before its own power-down; interrupts still
+ * can, until e1_cpu_down() masks them (smp_call_function() needs them on).
+ * This CPU powers down right after sending the IPIs, usually before the
+ * others have taken theirs.
  */
 static void e1_after_slpa(void)
 {
@@ -553,13 +570,20 @@ static void e1_after_slpa(void)
 		n++;
 	}
 	dsb(sy);
+	mdelay(100);
+	afnc[0] = readl(afnc_map + 0x160);
+	afnc[1] = readl(afnc_map + 0x178);
+	mdelay(400);
+	afnc[2] = readl(afnc_map + 0x160);
+	afnc[3] = readl(afnc_map + 0x178);
 	if (replay & 2) {
 		smp_call_function(e1_cpu_down, NULL, 0);
 		e1_cpu_down(NULL);
 	}
 	preempt_enable();
 	post_writes = n;
-	pr_emerg("replay: MBSE=slpa 0, then the other %u post-slpa writes; the CPUs stay up\n", n);
+	pr_emerg("replay: MBSE=slpa 0, then the other %u post-slpa writes; the CPUs stay up; afnc2 %08x afnc3 %08x at +100 ms, %08x %08x at +500 ms\n",
+		 n, afnc[0], afnc[1], afnc[2], afnc[3]);
 }
 
 /*
@@ -769,6 +793,8 @@ static void e1_unmap(void)
 		if (post_map[i])
 			iounmap(post_map[i] - (e1_post_slpa[i].addr & ~PAGE_MASK));
 	}
+	if (afnc_map)
+		iounmap(afnc_map);
 	if (sleep_req_page)
 		iounmap(sleep_req_page);
 	if (pmp_dvfs_page)
@@ -856,6 +882,12 @@ unlock:
 				goto unmap;
 			}
 			post_map[i] = p + (a & ~PAGE_MASK);
+		}
+		afnc_map = ioremap_np(E1_AFNC_PAGE, PAGE_SIZE);
+		if (!afnc_map) {
+			pr_err("can't map 0x%llx (AFNC2/3); refusing\n", E1_AFNC_PAGE);
+			ret = -ENOMEM;
+			goto unmap;
 		}
 	}
 
