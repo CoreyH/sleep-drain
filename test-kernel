@@ -169,7 +169,7 @@ remove_kernel() {
 
   rm -f "$script"
   regen_grub "$script" || die "grub.cfg not regenerated; $name's files are still in place"
-  if grub-editenv - list | grep -qx "next_entry=aurora-test-$name"; then
+  if grub-editenv - list | grep -x "next_entry=aurora-test-$name" > /dev/null; then
     grub-editenv - unset next_entry
   fi
   rm -rf -- "${IMAGES:?}/${name:?}"

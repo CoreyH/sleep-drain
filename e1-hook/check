@@ -76,7 +76,7 @@ die() { echo "check: $*" | tee -p >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
 [[ -f /run/sleep-drain-safe/active ]] || die "this isn't a safe boot: pkexec sleep-drain-safe boot, then restart"
-tr '\0' '\n' < /proc/device-tree/compatible | grep -qx 'apple,j314s' || die "this isn't a J314s"
+tr '\0' '\n' < /proc/device-tree/compatible | grep -x 'apple,j314s' > /dev/null || die "this isn't a J314s"
 [[ -f $KO ]] || die "no $KO: run make -C $DIR first"
 [[ $(modinfo -F vermagic "$KO" | cut -d' ' -f1) == "$(uname -r)" ]] ||
   die "e1_hook.ko isn't built for $(uname -r): run make -C $DIR again"
