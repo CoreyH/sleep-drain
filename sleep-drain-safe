@@ -96,7 +96,7 @@ cmd_boot() {
   mkdir -p "$IMAGE_DIR"
   mkinitcpio -k "$release" -A sleepdrain-safe -g "$IMAGE.new" > "$IMAGE_DIR/mkinitcpio.log" 2>&1 ||
     { rm -f "$IMAGE.new"; die "mkinitcpio failed; see $IMAGE_DIR/mkinitcpio.log"; }
-  lsinitcpio -a "$IMAGE.new" 2> /dev/null | grep -q 'sleepdrain-safe' ||
+  lsinitcpio -a "$IMAGE.new" 2> /dev/null | grep 'sleepdrain-safe' > /dev/null ||
     { rm -f "$IMAGE.new"; die "the new image has no sleepdrain-safe hook"; }
   mv -f "$IMAGE.new" "$IMAGE"
 
@@ -302,7 +302,7 @@ cmd_remove() {
   ! compgen -G "$IMAGE_DIR/saved/*.tar" > /dev/null || die "uncollected results in $IMAGE_DIR/saved: collect first"
   rm -f "$SCRIPT"
   regen_grub || die "grub.cfg not regenerated; the image is still in place"
-  if grub-editenv - list | grep -qx "next_entry=$ENTRY"; then
+  if grub-editenv - list | grep -x "next_entry=$ENTRY" > /dev/null; then
     grub-editenv - unset next_entry
   fi
   rm -rf -- "${IMAGE_DIR:?}"

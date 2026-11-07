@@ -60,7 +60,7 @@ done
 [[ -z $funcs || $funcs =~ ^[[:graph:]]{4}(,[[:graph:]]{4})*$ ]] || die "bad --read-funcs: $funcs"
 
 [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
-tr '\0' '\n' < /proc/device-tree/compatible | grep -qx 'apple,j314s' || die "this isn't a J314s"
+tr '\0' '\n' < /proc/device-tree/compatible | grep -x 'apple,j314s' > /dev/null || die "this isn't a J314s"
 [[ -f $KO ]] || die "no $KO: run make -C $DIR/smc-peek"
 [[ $(modinfo -F vermagic "$KO" | cut -d' ' -f1) == "$(uname -r)" ]] ||
   die "smc_peek.ko isn't built for $(uname -r): run make -C $DIR/smc-peek again"
