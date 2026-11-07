@@ -1479,3 +1479,65 @@ saving has to come from the steps after `slpa`: maralcbr's 74 post-`slpa`
 writes and the CPU power-down. That's the next run, the floor: the whole
 one-way replay, measured with `BQCC` across the power-key reset, against
 macOS's 0.1 W.
+
+### The floor: the S2R entry starts, and a watchdog resets it (2026-11-07)
+
+`e1-hook/run-floor` (`replay=15 oneway=1`, #29; flag `radios-off`), in a
+safe boot, on battery at 100%. maralcbr's one-way replay at its floor
+setting, their bits 0-3 only: the 31 watchdog and error-handler writes, the
+keys and PMP words, the other 43 post-`slpa` writes ending with 1 to
+0x2925c4000, their 500 ms, then every CPU powered down. None of their other
+bits ran: no AOP notices, no power-domain writes, no SEP message, no
+internal-PCIe-port teardown, no wake masks.
+
+- The 10-minute reading ended at 13:44:57 and was saved; the Mac then
+  suspended and went dark. **About 30 s later it reset itself** and booted
+  the regular system. This boot's `BACC` puts the power-on at 13:45:32,
+  and Corey saw "maybe 30 seconds". The keyboard never lit, so run-floor's
+  watch never ran: the suspend didn't come back, and the CPUs went down.
+- Not our panic restart: `kernel.panic=10` plus a restart (3.5 s here)
+  would have powered the Mac on about 15 s after the replay, not 30 s.
+- macsmc-reboot's probe logged "PMU logged 1 boot error(s) and 0 panic(s)".
+  The PMU's boot-error stage (nvmem 0x6003) reads 0x30, the stage
+  macsmc-reboot sets at probe, so the reset came while Linux's stage was
+  still set. Here the line follows only unclean ends: it's also in the
+  boots after the power-key reset on 11-06 (22:01) and the restart at
+  09:51 today. Clean boots log nothing. The PMU's `fault-shadow` read the
+  same after this reset and after a clean power-off, so it doesn't record
+  this.
+- **The SD card reader's link didn't come up** in the boot after the reset
+  ("pci@1,0 link didn't come up"), the first time in 13 boots. It was
+  back after a full power-off. Its port is PCIe, which the replay only
+  touches after `slpa` (apcie writes at the table's start), so the replay
+  very likely ran past `slpa`.
+- The `BQCC` across the 35 s is about 2 mAh: too short to give a floor.
+
+DeepIdle's worklog (JJRPF/Aurora-DeepIdle, 2026-11-05 to 11-07, runs D to
+R19) explains the reset. On T6020, `AppleT6020PMGR::startS2RTimer` is one
+write, 1 to MPMGR_AON + 0x4000: the same word as 0x2925c4000 here, the
+replay's last write. It is the **commit** of the PMGR's S2R entry, and it
+loads a watchdog (WD2, the AON "reconfig watchdog") that only a completed
+entry stops. When the entry doesn't complete, it resets the SoC: about
+60 s after the write on T6020 (85-86 s after `echo mem`), every run.
+WD2 isn't the only thing: stopping it 100 ms after the write (their W1)
+moved the reset to about 116 s instead of removing it. Their R11-R17 had every core in its final deep sleep, the clusters and
+device domains off, the SMC's AP-sleep messages (boot stage 0x50), WD1
+off and nothing touched after the commit, and the entry still never
+completed. Their open candidates include the SEP's SLEEP message.
+
+So T6000 very likely stops where T6020 does: at the commit, with an entry
+that doesn't complete, reset after about 25-30 s. That the commit arms the
+reset is DeepIdle's T6020 finding, not yet shown here: the floor without
+its last write would show it (E1a, without the table, stayed dark 46
+minutes with no reset). A floor figure needs the entry to complete; until
+then the Mac can't stay asleep long enough to measure.
+
+Each attempt now has a fast signature: a reset about 30 s in means "not
+yet". A Mac that stays dark is only a candidate, though. A hang before the
+commit looks the same (E1a), and so would a hang in the commit write
+itself. A breadcrumb written just before the commit, read on the next
+boot, rules out the first but not the second. What shows a completed entry
+is a low `BQCC` reading: a hang draws s2idle's ~2 W (E1a, 162 mA). A high
+reading leaves it open, since on T8103 completed entries drew about 2.3 W
+until the PMP saw the clusters idle (Naeem's try39, malik-na/m1-power-lab
+74833809d621).
