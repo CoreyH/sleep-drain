@@ -1,0 +1,79 @@
+#!/bin/bash
+# e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
+#
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor
+#
+# THIS IS ONE WAY: THE MAC NEVER WAKES FROM IT. It loads e1_hook with
+# replay=15 oneway=1, so the next suspend's prepare_late runs maralcbr's whole
+# replay (e1_hook.c says what: the keys, the PMP words, the 74 post-slpa
+# writes, then every CPU powered down for good), then takes the 10-minute
+# reading, saves it and suspends, as V2 and E1a did
+# (sleep-drain-reading take --label floor --then suspend). Nothing wakes the
+# Mac from that sleep: end it with the power key once the planned time is up,
+# then in the next boot
+#   pkexec bash -c '/usr/local/bin/sleep-drain-safe collect &&
+#                   /usr/local/bin/sleep-drain-reading take --label floor'
+#
+# The module stays loaded only once the reading has saved and asked for the
+# suspend. Any other way out (a failed reading or save, a closed terminal, a
+# signal, a broken stdout) unloads it again, so nothing stays armed for a later
+# lid close without its saved reading.
+set -euo pipefail
+
+SAFE_FLAG=${FLOOR_SAFE_FLAG:-/run/sleep-drain-safe/active}
+AC=${FLOOR_AC:-/sys/class/power_supply/macsmc-ac}
+MODDIR=${FLOOR_MODDIR:-/sys/module/e1_hook}
+READING=${FLOOR_READING:-/usr/local/bin/sleep-drain-reading}
+
+die() { echo "run-floor: $*" >&2; exit 1; }
+
+here=$(cd "$(dirname "$0")" && pwd)
+ko=$here/e1_hook.ko
+[[ $EUID -eq 0 ]] || die "run as root (pkexec)"
+[[ -f $SAFE_FLAG ]] || die "the floor runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
+[[ -f $ko ]] || die "no $ko: make -C $here"
+[[ $(modinfo -F vermagic "$ko" | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r): make -C $here"
+[[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
+[[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
+
+# Disarm on every exit but the hand-off. The reading runs in the background
+# and the launcher waits for it, because bash holds a trapped signal until a
+# foreground command ends: a signal now interrupts the wait at once. Its
+# handler stops the reading's own process (a save under way still finishes;
+# only the request for the suspend, its last step, can't come any more), waits
+# for it to end, and exits with 128 + the signal, which runs the EXIT trap.
+# SIGPIPE is ignored, so a broken stdout fails the write (and set -e exits)
+# instead of killing the launcher outright.
+armed=0
+reader=
+disarm() {
+  if ((armed)); then
+    armed=0
+    if rmmod e1_hook 2> /dev/null; then
+      echo "run-floor: nothing replayed; e1_hook unloaded" >&2 2> /dev/null || true
+    fi
+  fi
+}
+cancel() {
+  if [[ -n $reader ]]; then
+    kill -TERM "$reader" 2> /dev/null || true
+    wait "$reader" 2> /dev/null || true
+    reader=
+  fi
+  exit "$1"
+}
+trap 'disarm' EXIT
+trap 'cancel 129' HUP
+trap 'cancel 130' INT
+trap 'cancel 143' TERM
+trap '' PIPE
+
+armed=1
+insmod "$ko" replay=15 oneway=1
+echo "e1_hook loaded with replay=15 oneway=1: the next suspend is the floor, one way; only the power key ends it"
+"$READING" take --label floor --then suspend &
+reader=$!
+wait "$reader"
+reader=
+# The reading saved and asked for the suspend: leave the replay armed for it.
+armed=0

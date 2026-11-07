@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * e1_hook: E1's first check, the hook point (PLAN.md, A5; RESEARCH.md, "Before
- * E1"), in its dry build: no replay. It registers s2idle ops of its own, so
+ * e1_hook: E1's module (PLAN.md, A5). It registers s2idle ops of its own, so
  * that its prepare_late runs at s2idle's step 4. In suspend_enter()
  * (kernel/power/suspend.c at omacom/linux-aurora 4fdd0fc5, aurora14's):
  *
@@ -11,15 +10,16 @@
  *                                  suspend_noirq (async ones included), genpd
  *                                  switching each domain off after its last
  *                                  device
- *   4. s2idle_ops->prepare_late    here: log, and read B0AV
+ *   4. s2idle_ops->prepare_late    here: log, and read B0AV; at the first one,
+ *                                  the replay that replay asks for (below)
  *      suspend_test(TEST_PLATFORM) pm_test=platform waits here and resumes
  *   5. s2idle_loop()
  *
  * begin comes before dpm_suspend_start(); on the way back, restore_early comes
  * before dpm_resume_noirq(), restore before dpm_resume_early(), end after
- * dpm_resume_end(). Each op only logs one line, with its time on the clock
- * ftrace uses by default, so that e1-hook/check can line prepare_late up
- * against the power:* trace events (one line, wrapped here):
+ * dpm_resume_end(). Each op logs one line, with its time on the clock ftrace
+ * uses by default, so that e1-hook/check can line prepare_late up against the
+ * power:* trace events (one line, wrapped here):
  *
  *   e1_hook: op=prepare_late n=1 t=1234.567890 t_ns=1234567890123
  *            key=B0AV ret=0 mv=12634 read_ns=812345
@@ -39,10 +39,12 @@
  *                                 the last read at prepare and at prepare_late,
  *                                 as logged; ret is 1 until the op has run
  *
- * With replay=0 (the default, and what e1-hook/check loads) it never writes an
- * SMC key and touches no MMIO; replay is E1a's, below. Either way it can't fail
- * or abort a suspend: every op returns 0. .check and .wake stay NULL: s2idle_loop() calls
- * .wake instead of pm_wakeup_pending() when it's set.
+ * With replay=0 (the default, and what e1-hook/check loads: E1's first check,
+ * the hook point, RESEARCH.md "Before E1") it never writes an SMC key and
+ * touches no MMIO. The replays, E1a's and the floor's, are below. Whatever
+ * replay is, every op returns 0, so it never fails or aborts a suspend (the
+ * floor's prepare_late never returns at all). .check and .wake stay NULL:
+ * s2idle_loop() calls .wake instead of pm_wakeup_pending() when it's set.
  *
  * Lab only, never for upstream: s2idle_set_ops() is declared in
  * include/linux/suspend.h but not exported (it isn't in Module.symvers). The
@@ -65,11 +67,15 @@
  * about 1.5 s, though it never fails it.
  *
  *   make -C e1-hook && pkexec e1-hook/check       (in a safe boot)
+ *   pkexec e1-hook/run-e1a, pkexec e1-hook/run-floor   (the same)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/bits.h>
+#include <linux/build_bug.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/io.h>
 #include <linux/kallsyms.h>
 #include <linux/kprobes.h>
 #include <linux/mfd/macsmc.h>
@@ -77,10 +83,14 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/preempt.h>
+#include <linux/smp.h>
 #include <linux/string.h>
 #include <linux/suspend.h>
 #include <linux/time64.h>
 #include <linux/trace_clock.h>
+#include <asm/barrier.h>
+#include <asm/daifflags.h>
 
 #if IS_ENABLED(CONFIG_ACPI)
 #error "ACPI registers s2idle ops of its own, and this module would replace them"
@@ -118,29 +128,201 @@ module_param(prepare_read_ns, ullong, 0444);
 MODULE_PARM_DESC(prepare_ret, "The last B0AV read at prepare: 0, -errno, or 1 before the first");
 
 /*
- * E1a (PLAN.md, A5): replay=5 adds, at the first prepare_late only, maralcbr's
- * sleep-entry keys and PMP request words for J314s, in their order
- * (maralcbr/linux 37be2668, drivers/power/reset/macsmc-reboot.c L839-876):
- *   bit 2: 4 to 0x28e3d8328 (pmgr reg[41] + 0x18328)
- *   bit 0: MBSE = slpw, pmVC = 0x100, WKTP = 2
- *   bit 2: 1 << 61 to 0x28e3d0860 (SOC-DEV-DVFS + 4), then 1 to 0x28e3d8328
- *   bit 0: MBSE = slpa
- * Nothing else: not the 74 post-slpa writes (bit 3), and the CPUs stay up.
- * One way: there's no undo, and a resume may not come. Safe boot only.
+ * The replays (PLAN.md, A5): at the first prepare_late only, maralcbr's
+ * one-way replay of macOS 15.6.1's sleep entry on J314s, ported from their
+ * lab_s2r_run() (maralcbr/linux 37be2668e36f, drivers/power/reset/
+ * macsmc-reboot.c L789-914; GPL-2.0-only OR MIT there, used here under
+ * GPL-2.0). replay takes their lab_s2r_floor bits:
+ *   bit 0 (1)   the SMC sleep keys
+ *   bit 1 (2)   every CPU powered down, never to return
+ *   bit 2 (4)   the PMP request words
+ *   bit 3 (8)   the 74 post-slpa writes
+ * with lab_post_fast and lab_eh_early at their defaults (true, L341 and L329),
+ * and none of their other bits. Allowed: 0 (none), 5 (E1a), 13 (E1a and the
+ * post-slpa writes, the CPUs left up) and 15 (the floor: all four). Neither
+ * bit 1 nor bit 3 can be undone, so 13 and 15 also need oneway=1. In their
+ * order:
+ *   bit 3   the table's watchdog and error-handler entries (L823-831), each
+ *           with writel, then dsb(sy)
+ *   bit 2   4 to 0x28e3d8328 (pmgr reg[41] + 0x18328)       (L839-840)
+ *   bit 0   MBSE = slpw, pmVC = 0x100, WKTP = 2              (L843-850)
+ *   bit 2   1 << 61 to 0x28e3d0860 (SOC-DEV-DVFS + 4), then 1 to 0x28e3d8328
+ *                                                            (L851-854)
+ *   bit 0   MBSE = slpa                                      (L875-879)
+ *   bit 3   the table's other entries, back to back, with writeq_relaxed or
+ *           writel_relaxed by width, then dsb(sy)            (L880-881)
+ *   bit 1   every other CPU through smp_call_function(), then this one, each
+ *           powering itself down for good                    (L895-898)
+ *
+ * It stops at the first key write that fails: nothing after it runs, so a
+ * broken sequence never reaches the PMP words' second half, MBSE=slpa, the
+ * post-slpa writes or the CPUs' power-down. The sleep then stays an ordinary
+ * s2idle that the power key wakes, and the log says what failed; with bit 3,
+ * the watchdog and error-handler writes have been made by then. With bit 3,
+ * nothing is printed from MBSE=slpa on, unless slpa fails, as in their fast
+ * mode (L822, L877-878).
+ *
+ * Left out of their flow, as diagnostics: their reads of the watchdog
+ * (lab_dump_wdt(), L798) and of AFNC2/3's power states (lab_afnc(), L841,
+ * L859, L862, L867, and L883-894, which waits 500 ms between the post-slpa
+ * writes and the CPUs' power-down), their prints between writes, and their
+ * lab_delay_stage delays (off by default). Their prepare op (L481-489) only
+ * reads too. Nothing else in their flow touches the hardware with these four
+ * bits. Where they map each page at prepare_late and skip a write whose page
+ * didn't map (L808-821, L353, L825), this maps them all at load and refuses
+ * to load if one fails. One way: there's no undo, and with bit 1 no resume.
+ * Safe boot only.
  */
 static unsigned int replay;
 module_param(replay, uint, 0444);
-MODULE_PARM_DESC(replay, "LAB ONLY, safe boot only: at the first prepare_late, 1 = maralcbr's SMC sleep keys, 4 = their PMP request words, 5 = both (E1a)");
+MODULE_PARM_DESC(replay, "LAB ONLY, safe boot only: at the first prepare_late, maralcbr's replay: 0 none, 5 their keys and PMP words (E1a), 13 those and the 74 post-slpa writes, 15 those and every CPU powered down for good (the floor); 13 and 15 need oneway=1");
+static bool oneway;
+module_param(oneway, bool, 0444);
+MODULE_PARM_DESC(oneway, "Must be 1 for replay=13 or 15, which can't be undone (15 never resumes); ignored for 0 and 5");
 static unsigned int replay_done;
 module_param(replay_done, uint, 0444);
 static int replay_ret[4] = { 1, 1, 1, 1 };
 static int replay_nret = 4;
 module_param_array(replay_ret, int, &replay_nret, 0444);
 MODULE_PARM_DESC(replay_ret, "MBSE=slpw, pmVC, WKTP, MBSE=slpa: 0, -errno, or 1 if not sent");
+static unsigned int eh_writes, post_writes;
+module_param(eh_writes, uint, 0444);
+module_param(post_writes, uint, 0444);
+MODULE_PARM_DESC(eh_writes, "Bit 3: the post-slpa table's watchdog and error-handler writes, made before the keys");
+MODULE_PARM_DESC(post_writes, "Bit 3: the post-slpa table's other writes, made right after MBSE=slpa");
 
 #define E1_PMGR_SLEEP_REQ	0x28e3d8328ULL
 #define E1_PMP_DVFS4		0x28e3d0860ULL
 static void __iomem *sleep_req_page, *pmp_dvfs_page;
+
+/*
+ * The never-write list: nothing here may write either address, nor any other
+ * byte of the 8 from it. 0x28e0802d8 is PMP's power state, ps_pmp, whose reset
+ * crashed a T6020 (RESEARCH.md, "PMGR power states on this Mac"); 0x28e700000
+ * is on the lab's list as well. The PMP words are checked here at build time;
+ * the post-slpa table at load, before anything else, whatever replay is: a
+ * table entry on the list refuses the module.
+ */
+#define E1_NEVER_PS_PMP		0x28e0802d8ULL
+#define E1_NEVER_28E700000	0x28e700000ULL
+static_assert((E1_PMGR_SLEEP_REQ & ~7ULL) != E1_NEVER_PS_PMP &&
+	      (E1_PMGR_SLEEP_REQ & ~7ULL) != E1_NEVER_28E700000);
+static_assert((E1_PMP_DVFS4 & ~7ULL) != E1_NEVER_PS_PMP &&
+	      (E1_PMP_DVFS4 & ~7ULL) != E1_NEVER_28E700000);
+
+static bool e1_never_write(u64 addr)
+{
+	u64 block = addr & ~7ULL;
+
+	return block == E1_NEVER_PS_PMP || block == E1_NEVER_28E700000;
+}
+
+/*
+ * maralcbr's lab_post_slpa[] (L235-311), entry for entry: macOS 15.6.1's MMIO
+ * writes on J314s between MBSE=slpa and the CPUs' power-down, in the order of
+ * their hypervisor trace. Address, width in bytes, value; the comments are
+ * theirs.
+ */
+static const struct e1_mmio_write {
+	u64 addr;
+	u8 width;
+	u64 val;
+} e1_post_slpa[] = {
+	{ 0x580080000ULL, 4, 0x8fULL },	/* apcie[2]+0x00 */
+	{ 0x580080000ULL, 4, 0x8cULL },	/* apcie[2]+0x00 */
+	{ 0x2922b000cULL, 4, 0x0ULL },	/* wdt[0]+0x0c */
+	{ 0x282000a00ULL, 4, 0x0ULL },	/* error-handler[7]+0xa00 */
+	{ 0x304000a00ULL, 4, 0x0ULL },	/* error-handler[8]+0xa00 */
+	{ 0x383000a00ULL, 4, 0x0ULL },	/* error-handler[9]+0xa00 */
+	{ 0x402000a00ULL, 4, 0x0ULL },	/* error-handler[10]+0xa00 */
+	{ 0x28e0ad000ULL, 4, 0x0ULL },	/* error-handler[2]+0x2d000 */
+	{ 0x28e0f8000ULL, 4, 0x0ULL },	/* error-handler[2]+0x78000 */
+	{ 0x28e0f9000ULL, 4, 0x0ULL },	/* error-handler[2]+0x79000 */
+	{ 0x28e0fa000ULL, 4, 0x0ULL },	/* error-handler[2]+0x7a000 */
+	{ 0x28e0fb000ULL, 4, 0x0ULL },	/* error-handler[2]+0x7b000 */
+	{ 0x28e0fc000ULL, 4, 0x0ULL },	/* error-handler[2]+0x7c000 */
+	{ 0x28e0fd000ULL, 4, 0x0ULL },	/* error-handler[2]+0x7d000 */
+	{ 0x28e070000ULL, 4, 0x0ULL },	/* error-handler[1]+0x70000 */
+	{ 0x28e5d8000ULL, 4, 0x0ULL },	/* pmgr[2]+0x58000 */
+	{ 0x210e20660ULL, 8, 0x0ULL },	/* pmgr[8]+0x660 */
+	{ 0x210e48080ULL, 8, 0x0ULL },	/* pmgr[10]+0x8080 */
+	{ 0x211e20660ULL, 8, 0x0ULL },	/* pmgr[15]+0x660 */
+	{ 0x211e48080ULL, 8, 0x0ULL },	/* pmgr[17]+0x8080 */
+	{ 0x212e20660ULL, 8, 0x0ULL },	/* pmgr[24]+0x660 */
+	{ 0x212e48080ULL, 8, 0x0ULL },	/* pmgr[26]+0x8080 */
+	{ 0x58c008014ULL, 4, 0x1ULL },	/* pmgr[56]+0x8014 */
+	{ 0x58c0082bcULL, 4, 0x1ULL },	/* pmgr[56]+0x82bc */
+	{ 0x58c0082bcULL, 4, 0x2ULL },	/* pmgr[56]+0x82bc */
+	{ 0x58c0082bcULL, 4, 0x4ULL },	/* pmgr[56]+0x82bc */
+	{ 0x210e20020ULL, 8, 0x100101ULL },	/* pmgr[8]+0x20 */
+	{ 0x211e20020ULL, 8, 0x100101ULL },	/* pmgr[15]+0x20 */
+	{ 0x210e40250ULL, 8, 0xff092df01000ULL },	/* pmgr[10]+0x250 */
+	{ 0x211e40250ULL, 8, 0x10ff092df01000ULL },	/* pmgr[17]+0x250 */
+	{ 0x212e40250ULL, 8, 0x10ff092df01000ULL },	/* pmgr[26]+0x250 */
+	{ 0x210e40240ULL, 8, 0x10000000ULL },	/* pmgr[10]+0x240 */
+	{ 0x211e40240ULL, 8, 0x10000000ULL },	/* pmgr[17]+0x240 */
+	{ 0x212e40240ULL, 8, 0x10000000ULL },	/* pmgr[26]+0x240 */
+	{ 0x210e48400ULL, 8, 0x5b2002df02000ULL },	/* pmgr[10]+0x8400 */
+	{ 0x211e48400ULL, 8, 0x5b2005df05200ULL },	/* pmgr[17]+0x8400 */
+	{ 0x212e48400ULL, 8, 0x5b2005df05200ULL },	/* pmgr[26]+0x8400 */
+	{ 0x28e5e0000ULL, 4, 0x0ULL },	/* pmgr[2]+0x60000 */
+	{ 0x28e5e4000ULL, 4, 0x0ULL },	/* pmgr[2]+0x64000 */
+	{ 0x28e0c8200ULL, 4, 0x0ULL },	/* error-handler[2]+0x48200 */
+	{ 0x28e0c8400ULL, 4, 0x0ULL },	/* error-handler[2]+0x48400 */
+	{ 0x28e0c8600ULL, 4, 0x0ULL },	/* error-handler[2]+0x48600 */
+	{ 0x28e0c8000ULL, 4, 0x0ULL },	/* error-handler[2]+0x48000 */
+	{ 0x210e20020ULL, 8, 0x40000500101ULL },	/* pmgr[8]+0x20 */
+	{ 0x211e20020ULL, 8, 0x40000500101ULL },	/* pmgr[15]+0x20 */
+	{ 0x212e20020ULL, 8, 0x40000500101ULL },	/* pmgr[24]+0x20 */
+	{ 0x210e20020ULL, 8, 0x40000500101ULL },	/* pmgr[8]+0x20 */
+	{ 0x211e20020ULL, 8, 0x40000500101ULL },	/* pmgr[15]+0x20 */
+	{ 0x212e20020ULL, 8, 0x40000500101ULL },	/* pmgr[24]+0x20 */
+	{ 0x28e20c800ULL, 4, 0x557ULL },	/* pmgr[38]+0x800 */
+	{ 0x28e20c800ULL, 4, 0x775ULL },	/* pmgr[38]+0x800 */
+	{ 0x28e0801e8ULL, 4, 0x0ULL },	/* error-handler[2]+0x1e8 */
+	{ 0x28e098000ULL, 4, 0x0ULL },	/* error-handler[2]+0x18000 */
+	{ 0x28e098004ULL, 4, 0x20ULL },	/* error-handler[2]+0x18004 */
+	{ 0x28e098008ULL, 4, 0x20ULL },	/* error-handler[2]+0x18008 */
+	{ 0x28e09800cULL, 4, 0x0ULL },	/* error-handler[2]+0x1800c */
+	{ 0x28e5e4000ULL, 4, 0x0ULL },	/* pmgr[2]+0x64000 */
+	{ 0x28e098014ULL, 4, 0x0ULL },	/* error-handler[2]+0x18014 */
+	{ 0x28e098018ULL, 4, 0x20ULL },	/* error-handler[2]+0x18018 */
+	{ 0x28e0c8400ULL, 4, 0x0ULL },	/* error-handler[2]+0x48400 */
+	{ 0x28e098020ULL, 4, 0x0ULL },	/* error-handler[2]+0x18020 */
+	{ 0x28e580188ULL, 4, 0x400024fULL },	/* pmgr[2]+0x188 */
+	{ 0x28e038164ULL, 4, 0x80100000ULL },	/* error-handler[1]+0x38164 */
+	{ 0x28e03816cULL, 4, 0x80100000ULL },	/* error-handler[1]+0x3816c */
+	{ 0x28e038168ULL, 4, 0x80100000ULL },	/* error-handler[1]+0x38168 */
+	{ 0x28e03815cULL, 4, 0x80100000ULL },	/* error-handler[1]+0x3815c */
+	{ 0x28e038170ULL, 4, 0x80100000ULL },	/* error-handler[1]+0x38170 */
+	{ 0x28e224000ULL, 4, 0x219ULL },	/* pmgr[46]+0x00 */
+	{ 0x28e224000ULL, 4, 0x21bULL },	/* pmgr[46]+0x00 */
+	{ 0x28e224000ULL, 4, 0x8000021aULL },	/* pmgr[46]+0x00 */
+	{ 0x28e224000ULL, 4, 0x21aULL },	/* pmgr[46]+0x00 */
+	{ 0x28e224000ULL, 4, 0x21aULL },	/* pmgr[46]+0x00 */
+	{ 0x28e224000ULL, 4, 0x21aULL },	/* pmgr[46]+0x00 */
+	{ 0x2925c4000ULL, 4, 0x1ULL },	/* pmgr[36]+0x4000 */
+};
+
+static_assert(ARRAY_SIZE(e1_post_slpa) == 74);
+
+/* Each entry's own non-posted mapping, at its address (bit 3 only). */
+static void __iomem *post_map[ARRAY_SIZE(e1_post_slpa)];
+/* How many of the table's entries e1_post_is_eh() picks, counted at load. */
+static unsigned int post_eh;
+
+/*
+ * maralcbr's lab_post_is_eh() (L333-339): the watchdog (WD0's control) and
+ * error-handler entries, which their default writes before the keys. Its
+ * range also takes in 0x28e0801e8, AFR's power state.
+ */
+static bool e1_post_is_eh(const struct e1_mmio_write *w)
+{
+	u64 a = w->addr;
+
+	return a == 0x2922b000cULL || (a & 0xfff) == 0xa00 ||
+	       (a >= 0x28e030000ULL && a < 0x28e100000ULL);
+}
 
 static unsigned long long late_t_ns, late_read_ns;
 static int late_ret = 1;
@@ -255,11 +437,14 @@ static int e1_prepare(void)
 /*
  * One of the replay's key writes: logged, and on a failure the drain after a
  * timeout (as for the reads above) and false, so that nothing more is sent.
+ * With bit 3, MBSE=slpa (i 3) is logged only if it fails: from slpa on,
+ * nothing is printed (their fast mode, L877-878).
  */
 static bool replay_write(int i, const char *what, int ret)
 {
 	replay_ret[i] = ret;
-	pr_emerg("replay: %s %d\n", what, ret);
+	if (ret || i != 3 || !(replay & 8))
+		pr_emerg("replay: %s %d\n", what, ret);
 	if (!ret)
 		return true;
 	if (ret == -ETIMEDOUT)
@@ -269,11 +454,103 @@ static bool replay_write(int i, const char *what, int ret)
 }
 
 /*
- * E1a's replay, in maralcbr's order. Under the SMC device's lock, tried only:
- * if it's busy, nothing is sent. It stops at the first key write that fails,
- * so that a broken sequence never reaches the PMP words' second half or
- * MBSE=slpa: the sleep stays an ordinary s2idle that the power key wakes, and
- * the log says what failed. Nothing here can fail the suspend.
+ * Bit 3, before the keys: the post-slpa table's watchdog and error-handler
+ * entries, in table order, each with writel, then dsb(sy), as their default
+ * does (lab_eh_early, L823-831). Each of them is 4 bytes wide (checked at
+ * load), so writel is the width.
+ */
+static void e1_post_slpa_eh(void)
+{
+	unsigned int i, n = 0;
+
+	pr_emerg("replay: fast: %u watchdog and error-handler writes now; from MBSE=slpa on, no output: the other %zu writes%s\n",
+		 post_eh, ARRAY_SIZE(e1_post_slpa) - post_eh,
+		 (replay & 2) ? ", then every CPU's power-down" : "");
+	for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
+		if (!e1_post_is_eh(&e1_post_slpa[i]))
+			continue;
+		writel(e1_post_slpa[i].val, post_map[i]);
+		n++;
+	}
+	dsb(sy);
+	eh_writes = n;
+	pr_emerg("replay: %u watchdog and error-handler writes done\n", n);
+}
+
+/*
+ * One CPU's power-down, never to return: maralcbr's lab_floor_cpu()
+ * (L441-458), unchanged. With every exception masked, it sets ACC_OVRD
+ * (s3_5_c15_c6_0) and CYC_OVRD (s3_5_c15_c5_0) for a deep sleep, and waits in
+ * WFI for good. The fields, as Asahi's docs/hw/cpu/system-registers.md names
+ * them:
+ *   ACC_OVRD   [14:13] OK to power down SRM = 3, [16:15] disable L2 flush for
+ *              ACC sleep = 2, [18:17] OK to train down link = 3, [26:25] OK to
+ *              power down CPM = 3, [32] disable PIO on WFI CPU, [34] enable
+ *              deep sleep
+ *   CYC_OVRD   [21:20] FIQ mode and [23:22] IRQ mode = 0, [25:24] OK to power
+ *              down = 3 (force down), [0] disable WFI return: 0x3000001,
+ *              which macOS writes (maralcbr, L452)
+ */
+static void e1_cpu_down(void *unused)
+{
+	u64 acc, cyc;
+
+	local_daif_mask();
+	asm volatile("mrs %0, s3_5_c15_c6_0" : "=r"(acc));
+	acc &= ~(GENMASK_ULL(18, 13) | GENMASK_ULL(26, 25));
+	acc |= (3ULL << 13) | (2ULL << 15) | (3ULL << 17) | (3ULL << 25) |
+	       BIT_ULL(32) | BIT_ULL(34);
+	asm volatile("msr s3_5_c15_c6_0, %0" : : "r"(acc));
+	asm volatile("mrs %0, s3_5_c15_c5_0" : "=r"(cyc));
+	cyc &= ~(GENMASK_ULL(25, 20) | BIT_ULL(0));
+	cyc |= 0x3000001ULL;
+	asm volatile("msr s3_5_c15_c5_0, %0; isb" : : "r"(cyc));
+	for (;;)
+		asm volatile("dsb sy; wfi");
+}
+
+/*
+ * Bit 3, right after MBSE=slpa was accepted, with no output: the table's
+ * other entries, back to back, as lab_replay_post_slpa_fast() writes them
+ * (L348-361), then dsb(sy). With bit 1, every CPU's power-down follows at once
+ * (L895-898): the others through smp_call_function() without waiting, then
+ * this one, and nothing returns. Preemption stays off from the first write
+ * on, so that nothing else runs on this CPU in between, and the last
+ * power-down is on the CPU that sent the others theirs.
+ */
+static void e1_after_slpa(void)
+{
+	unsigned int i, n = 0;
+
+	preempt_disable();
+	for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
+		const struct e1_mmio_write *w = &e1_post_slpa[i];
+
+		if (e1_post_is_eh(w))
+			continue;
+		if (w->width == 8)
+			writeq_relaxed(w->val, post_map[i]);
+		else
+			writel_relaxed(w->val, post_map[i]);
+		n++;
+	}
+	dsb(sy);
+	if (replay & 2) {
+		smp_call_function(e1_cpu_down, NULL, 0);
+		e1_cpu_down(NULL);
+	}
+	preempt_enable();
+	post_writes = n;
+	pr_emerg("replay: MBSE=slpa 0, then the other %u post-slpa writes; the CPUs stay up\n", n);
+}
+
+/*
+ * The replay, in maralcbr's order (above). Under the SMC device's lock, tried
+ * only: if it's busy, or macsmc isn't bound, nothing is written at all. It
+ * stops at the first key write that fails, so that a broken sequence never
+ * reaches the PMP words' second half, MBSE=slpa or anything after it: the
+ * sleep stays an ordinary s2idle that the power key wakes, and the log says
+ * what failed. Nothing here can fail the suspend.
  */
 static void e1_replay(void)
 {
@@ -290,6 +567,8 @@ static void e1_replay(void)
 		pr_emerg("replay: macsmc isn't bound; nothing sent\n");
 		goto unlock;
 	}
+	if (replay & 8)
+		e1_post_slpa_eh();
 	if ((replay & 4) && req) {
 		writel(4, req);
 		pr_emerg("replay: 4 -> 0x%llx\n", E1_PMGR_SLEEP_REQ);
@@ -304,8 +583,10 @@ static void e1_replay(void)
 		writel(1, req);
 		pr_emerg("replay: 1<<61 -> 0x%llx, 1 -> 0x%llx\n", E1_PMP_DVFS4, E1_PMGR_SLEEP_REQ);
 	}
-	if (replay & 1)
-		replay_write(3, "MBSE=slpa", apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpa)));
+	if ((replay & 1) &&
+	    replay_write(3, "MBSE=slpa", apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpa))) &&
+	    (replay & 8))
+		e1_after_slpa();
 unlock:
 	device_unlock(dev);
 }
@@ -358,6 +639,70 @@ static const struct platform_s2idle_ops e1_ops = {
 	.end = e1_end,
 };
 
+/*
+ * Before anything else at load. First the post-slpa table, whatever replay
+ * is: an entry on the never-write list refuses the module, as does one this
+ * port doesn't write as maralcbr does (a width other than 4 or 8, an
+ * unaligned address, a 4-byte value over 32 bits, or a watchdog or
+ * error-handler entry that isn't 4 bytes, since those go out with writel).
+ * Then replay and oneway.
+ */
+static int __init e1_check_params(void)
+{
+	unsigned int i;
+
+	post_eh = 0;
+	for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
+		const struct e1_mmio_write *w = &e1_post_slpa[i];
+
+		if (e1_never_write(w->addr)) {
+			pr_err("post-slpa write %u is to 0x%llx, on the never-write list; refusing\n",
+			       i, w->addr);
+			return -EPERM;
+		}
+		if ((w->width != 4 && w->width != 8) || !IS_ALIGNED(w->addr, w->width) ||
+		    (w->width == 4 && w->val > U32_MAX) ||
+		    (e1_post_is_eh(w) && w->width != 4)) {
+			pr_err("post-slpa write %u (0x%llx, %u bytes) isn't one this port writes as maralcbr does; refusing\n",
+			       i, w->addr, w->width);
+			return -EINVAL;
+		}
+		if (e1_post_is_eh(w))
+			post_eh++;
+	}
+
+	if (replay != 0 && replay != 5 && replay != 13 && replay != 15) {
+		pr_err("replay=%u: only 0 (none), 5 (E1a: keys and PMP words), 13 (5 and the post-slpa writes, the CPUs up) and 15 (13 and every CPU's power-down: the floor) exist\n",
+		       replay);
+		return -EINVAL;
+	}
+	if ((replay & (2 | 8)) && !oneway) {
+		pr_err("replay=%u can't be undone: it writes the post-slpa table%s. Load it with oneway=1 as well\n",
+		       replay, (replay & 2) ? " and powers every CPU down for good" : "");
+		return -EINVAL;
+	}
+	if (replay && !of_machine_is_compatible("apple,j314s")) {
+		pr_err("replay is maralcbr's J314s sequence, and this isn't a J314s\n");
+		return -ENODEV;
+	}
+	return 0;
+}
+
+/* Every mapping made at load; each pointer is NULL if it wasn't made. */
+static void e1_unmap(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
+		if (post_map[i])
+			iounmap(post_map[i] - (e1_post_slpa[i].addr & ~PAGE_MASK));
+	}
+	if (sleep_req_page)
+		iounmap(sleep_req_page);
+	if (pmp_dvfs_page)
+		iounmap(pmp_dvfs_page);
+}
+
 static int __init e1_hook_init(void)
 {
 	struct kprobe kp = {
@@ -368,8 +713,12 @@ static int __init e1_hook_init(void)
 	struct device_node *np;
 	unsigned long long ns;
 	struct device *dev;
-	unsigned int mv;
+	unsigned int i, mv;
 	int ret;
+
+	ret = e1_check_params();
+	if (ret)
+		return ret;
 
 	np = of_find_compatible_node(NULL, NULL, SMC_COMPATIBLE);
 	if (!np)
@@ -406,16 +755,6 @@ unlock:
 	if (ret)
 		goto put_dev;
 
-	if (replay & ~5U) {
-		pr_err("replay=%u: only bit 0 (keys) and bit 2 (PMP words) exist\n", replay);
-		ret = -EINVAL;
-		goto put_mod;
-	}
-	if (replay && !of_machine_is_compatible("apple,j314s")) {
-		pr_err("replay is maralcbr's J314s sequence, and this isn't a J314s\n");
-		ret = -ENODEV;
-		goto put_mod;
-	}
 	if (replay & 4) {
 		/*
 		 * Non-posted, as maralcbr maps them (L808-809) and as Apple SoCs
@@ -427,6 +766,24 @@ unlock:
 		if (!sleep_req_page || !pmp_dvfs_page) {
 			ret = -ENOMEM;
 			goto unmap;
+		}
+	}
+	if (replay & 8) {
+		/*
+		 * A page of its own for each entry, non-posted, as maralcbr maps
+		 * them (L816-821), but here, not at prepare_late, which is left
+		 * with nothing but the writes.
+		 */
+		for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
+			u64 a = e1_post_slpa[i].addr;
+			void __iomem *p = ioremap_np(a & PAGE_MASK, PAGE_SIZE);
+
+			if (!p) {
+				pr_err("can't map post-slpa write %u (0x%llx); refusing\n", i, a);
+				ret = -ENOMEM;
+				goto unmap;
+			}
+			post_map[i] = p + (a & ~PAGE_MASK);
 		}
 	}
 
@@ -451,11 +808,7 @@ unlock:
 	return 0;
 
 unmap:
-	if (sleep_req_page)
-		iounmap(sleep_req_page);
-	if (pmp_dvfs_page)
-		iounmap(pmp_dvfs_page);
-put_mod:
+	e1_unmap();
 	module_put(smc_owner);
 put_dev:
 	put_device(dev);
@@ -469,10 +822,7 @@ static void __exit e1_hook_exit(void)
 	 * once it returns no op can run.
 	 */
 	set_ops(NULL);
-	if (sleep_req_page)
-		iounmap(sleep_req_page);
-	if (pmp_dvfs_page)
-		iounmap(pmp_dvfs_page);
+	e1_unmap();
 	module_put(smc_owner);
 	put_device(&smc_pdev->dev);
 	pr_info("unloaded: calls begin=%u prepare=%u prepare_late=%u restore_early=%u restore=%u end=%u\n",
@@ -482,5 +832,5 @@ static void __exit e1_hook_exit(void)
 
 module_init(e1_hook_init);
 module_exit(e1_hook_exit);
-MODULE_DESCRIPTION("E1's hook point: s2idle ops that only log and read B0AV (lab only)");
+MODULE_DESCRIPTION("E1: s2idle ops at prepare_late, and maralcbr's one-way sleep replay for J314s (lab only)");
 MODULE_LICENSE("GPL");
