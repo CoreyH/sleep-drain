@@ -1753,3 +1753,58 @@ What the outcomes would mean:
 - **Stage 0x50 with the observe mark.** Nothing CPU7 sent after the commit
   landed: raw SPMI after the commit failed, or the hand-over never
   happened.
+
+### M1 run 2, the observer: CPU0 and the E complex go down too, and WD2 still resets at ~30 s (2026-11-07)
+
+`e1-hook/run-floor --m1-observe` (`replay=15 oneway=1 quiet=1 m1=1
+observe=1`, #37 at b3f664e; flag `radios-off`), in a safe boot, on battery
+at 84%. Raw data: `results/m1-run2-20261107/`. Its load log
+(`e1_hook-load.txt`) is the awake baseline for everything CPU7 read.
+
+- The reading ended at 23:14:17 and was saved. The Mac then suspended, went
+  dark and restarted by itself into the regular boot. The power key wasn't
+  needed.
+- `m1-crumbs`, about 4 minutes into the next boot, found **stage 0x6f**:
+  every breadcrumb landed, CPU7's included.
+- **Every core went down.**
+  - CPU1-6 read off at their release, before the commit, as in run 1.
+  - After the commit, CPU0's PMGR power state read off within 500 ms of
+    the hand-over, and the E complex's (ECPM) within 500 ms more. CPU0's
+    deep WFI never returned.
+  - CPU7 had nothing pending just before its own deep WFI. Its own
+    power-down isn't observed: nothing was left awake to see it.
+- **The reset is WD2's.**
+  - About a second after the commit, WD2's control was 4 (RESET_EN), with
+    about 30 s to go. WD1 and WD0 were off.
+  - Awake at load, WD2's control was 0, with a 90 s bite and its count
+    running. WD1 had apple_wdt's 30 s, and apple_wdt's suspend had stopped
+    it by step 4.
+  - So the commit arms WD2 with about 30 s.
+  - The SoC restarted about 30 s after the commit (28.6-30.6 s), as in run
+    1.
+- **What differed from awake, about a second after the commit:**
+  - Bit 4 was set in the soc-cluster words of EACC, PACC0, PACC1 and
+    DISPLAY, and clear in ANE0's, AFR's and AVEMSR's. Awake, no soc
+    cluster had bit 4 set (EACC 0x0f, the others 0x2f).
+  - The table had written EACC, ANE0, AFR and AVEMSR to 0, and PACC0, PACC1
+    and DISPLAY to 0x20. It writes them in K2, before `slpw`, with every
+    CPU up, because e1_hook's error-handler address range (maralcbr's
+    `lab_post_is_eh`) catches them; macOS writes them after `slpa`.
+  - SIO_CPU's actual state wasn't off. The table's step-5 write is
+    0x400024f, target f.
+- **What didn't differ:**
+  - No AP wake-status bit was new. Those words are inferred at
+    0x292004024, and all read 0 awake.
+  - The two words at T8103's progress-register offsets (0x2922b8028 and
+    0x2922b8040) read 0 awake, and their low bytes read 0 after the commit.
+    Nothing there tracks the entry on T6000, or not at those offsets.
+- **Two awake reads settle older questions:**
+  - wdt reg[3] (0x2922b8008) reads 0, so macOS's watchdog disable has
+    nothing to clear here.
+  - The CPM-gating candidates read 0x80000000 at 0x28e09c030 and +0x80,
+    and 0 at +0x34, +0x38 and +0x88. Their role is inferred.
+
+So with every core and both CPU complexes down, nothing pending and no new
+wake-status bit, the engine still doesn't complete its entry, and WD2,
+armed at the commit, resets the SoC about 30 s later. CPU7 saw two things
+differ from awake: the four soc clusters' bit 4, and SIO_CPU still on.

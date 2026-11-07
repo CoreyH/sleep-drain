@@ -1,0 +1,14 @@
+0x6000: 00 30 00 50 6f ff 04 1e  00 00 00 00 00 00 00 00
+0x6010: fe 08 00 00 90 a7 80 00  00 00 00 00 00 00 00 00
+boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (0x50: an unclean end after the replay began)
+stage 0x6004 = 0x6f: observe: CPU7 recorded everything, with nothing pending; next came nub-spmi0's acks and its own deep WFI
+  (the last breadcrumb that reached the PMU: the run got at least that far)
+0x6005 = 0xff: CPU0 read off within 500 ms of the hand-over; the E complex (ECPM) read off within 500 ms more; read off at their release: CPU1,CPU2,CPU3,CPU4,CPU5,CPU6
+0x6006 = 0x04: after the commit, WD2 control 4 (RESET_EN); WD1 control 0 (off); WD0 not armed to reset; CPU0's last WFI had not returned
+0x6007 = 30: 30 s until the first armed watchdog's reset, as CPU7 read it
+RTC second just before the commit, from its low two bytes: 133374, 257 s before now (133631); right if this read comes within 18 h of the commit
+0x6014 = 0x90: CPU0 had nothing pending before the commit; PCPM0 off, PCPM1 not checked (CPU7 kept up); WD1 was off; K3's kernel-path write after slpa worked
+0x6012 0x6013 = 00 00: the low bytes of the wdt page's +0x28 and +0x40 after the commit (T8103's S2R-engine progress registers, inferred; e1_hook's load log has them awake)
+0x6015 = 0xa7: soc clusters still busy: EACC,PACC0,PACC1,DISPLAY (PACC1 expected, CPU7 being up); SIO_CPU's actual state NOT off
+0x6016 = 0x80: AP wake-status words with a bit set that wasn't just before the commit: none
+the SoC restarted about 30 s after the commit (28.6 to 30.6 s: the PMU's RTC counts whole seconds); its counter (CNTVCT) is 227.4 s old. Right only in the first boot after the run

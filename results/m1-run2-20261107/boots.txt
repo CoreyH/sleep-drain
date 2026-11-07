@@ -1,0 +1,7 @@
+# Boots around M1 run 2 (journalctl --list-boots), and this boot's start
+ -2 8d655b2e5f464c7aa0cbef329419ad5a Sat 2026-11-07 14:05:08 CET  Sat 2026-11-07 19:45:34 CET
+ -1 909642e7cabb48998e60b668d3fb1044 Sat 2026-11-07 19:45:34 CET  Sat 2026-11-07 23:02:59 CET
+  0 0712d45e7296415fb9411d9c293bd174 Sat 2026-11-07 23:02:59 CET  Sat 2026-11-07 23:21:09 CET
+uptime -s: 2026-11-07 23:15:14
+safe boot journal: /var/log/sleep-drain/safe-journal-20261107T231418.txt (collected); the reading: /var/log/sleep-drain/reading-20261107T230417/
+m1-crumbs read at 2026-11-07 23:18:38, about 4 minutes into the boot after the reset
