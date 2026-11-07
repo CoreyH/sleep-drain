@@ -1534,8 +1534,10 @@ then the Mac can't stay asleep long enough to measure.
 
 Each attempt now has a fast signature: a reset about 30 s in means "not
 yet". A Mac that stays dark is only a candidate, though. A hang before the
-commit looks the same (E1a), and on T8103 completed entries drew about
-2.3 W until the PMP saw the clusters idle (Naeem's try39,
-malik-na/m1-power-lab 74833809d621). What tells them apart is a breadcrumb
-written just before the commit and read on the next boot: with it and no
-reset, the entry completed, and a low `BQCC` reading then gives the floor.
+commit looks the same (E1a), and so would a hang in the commit write
+itself. A breadcrumb written just before the commit, read on the next
+boot, rules out the first but not the second. What shows a completed entry
+is a low `BQCC` reading: a hang draws s2idle's ~2 W (E1a, 162 mA). A high
+reading leaves it open, since on T8103 completed entries drew about 2.3 W
+until the PMP saw the clusters idle (Naeem's try39, malik-na/m1-power-lab
+74833809d621).

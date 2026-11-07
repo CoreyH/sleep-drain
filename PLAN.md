@@ -251,9 +251,10 @@ steps, and restarting the DCP and the PMP afterwards.
     has off, 8-10; the AOP's notices, 6; the internal PCIe ports, 13), and
     the PMU boot stage 0x50. The SEP's SLEEP message (bit 11) touches state
     the SEP shares with macOS: only with Corey's OK. A Mac that stays dark
-    is a candidate, not a result (RESEARCH.md, "The floor"): a breadcrumb
-    before the commit (a PMU scratch write, so with Corey's OK) tells it
-    from a hang, and only then does it get the full BQCC reading.
+    is a candidate, not a result (RESEARCH.md, "The floor"). A breadcrumb
+    just before the commit (a PMU scratch write, so with Corey's OK) rules
+    out a hang before it; only a low BQCC reading shows the entry
+    completed.
   - **The code.** An out-of-tree module: our own, written from these
     findings and maralcbr's tables (maralcbr/linux is GPL-2.0, as part of
     the kernel). maralcbr ran the replay from macsmc-reboot at s2idle's
