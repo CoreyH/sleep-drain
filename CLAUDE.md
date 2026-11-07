@@ -99,9 +99,12 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   from their `lab_s2r_run`, at the first `prepare_late`: `5` is E1a, their
   keys and PMP words (`e1-hook/run-e1a`); `15` is the floor, adding their 74
   post-`slpa` writes and every CPU powered down for good
-  (`e1-hook/run-floor`: the Mac never wakes from it; the power key ends it).
-  `13` is the floor with the CPUs left up. `13` and `15` load only with
-  `oneway=1`, and the module won't build or load if any of its writes would
+  (`e1-hook/run-floor`: the Mac never wakes from it; its header says how to
+  end it with the power key). `13` is the floor with the CPUs left up. `13`
+  and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
+  on the command line); if their replay stops short, the suspend fails and
+  the Mac wakes with the log, and a suspend that ends before `prepare_late`
+  calls them off. The module won't build or load if any of its writes would
   touch the never-write list (0x28e0802d8, `ps_pmp`; 0x28e700000). Both
   launchers run in a safe boot only, take the
   reading and suspend, and unload the module on any other way out

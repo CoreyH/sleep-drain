@@ -9,10 +9,29 @@
 # writes, then every CPU powered down for good), then takes the 10-minute
 # reading, saves it and suspends, as V2 and E1a did
 # (sleep-drain-reading take --label floor --then suspend). Nothing wakes the
-# Mac from that sleep: end it with the power key once the planned time is up,
-# then in the next boot
-#   pkexec bash -c '/usr/local/bin/sleep-drain-safe collect &&
-#                   /usr/local/bin/sleep-drain-reading take --label floor'
+# Mac from the floor. When the planned time is up:
+#   1. Press the power key once, briefly, and wait 30 s. If the session comes
+#      back (the lock screen or the desktop, not a boot), the floor didn't
+#      happen: a replay that stops short fails its suspend, so that the Mac
+#      wakes with e1_hook's log. Don't reset. Photograph the output of
+#        dmesg | grep e1_hook
+#        for f in /sys/module/e1_hook/parameters/*; do echo "$f=$(< $f)"; done
+#      (the second is bash builtins only, for when the disk is gone), then
+#      try pkexec /usr/local/bin/sleep-drain-safe save.
+#   2. If it stays dark, hold the key until the Mac is off (about 10 s; the
+#      screen gives no cue), let go, and press it once more straight away,
+#      so that BACC dates the end. Then, in the next boot:
+#        pkexec bash -c '/usr/local/bin/sleep-drain-safe collect &&
+#                        /usr/local/bin/sleep-drain-reading take --label floor'
+# A Mac found awake at any time after the hand-off didn't reach the floor
+# either: a suspend that ends before prepare_late calls the replay off. Read
+# it as in step 1, and restart before anything else suspends it.
+#
+# A fault in the replay (an oops, or the SError a bad write raises) would
+# leave the Mac hung and dark, as if it were in the floor. So this sets
+# kernel.panic=10 and kernel.panic_on_oops=1 before it loads the module: a
+# fault then restarts the Mac 10 s later (into the regular boot), which BACC
+# dates. They stay set until the restart.
 #
 # The module stays loaded only once the reading has saved and asked for the
 # suspend. Any other way out (a failed reading or save, a closed terminal, a
@@ -24,6 +43,8 @@ SAFE_FLAG=${FLOOR_SAFE_FLAG:-/run/sleep-drain-safe/active}
 AC=${FLOOR_AC:-/sys/class/power_supply/macsmc-ac}
 MODDIR=${FLOOR_MODDIR:-/sys/module/e1_hook}
 READING=${FLOOR_READING:-/usr/local/bin/sleep-drain-reading}
+PM_TEST=${FLOOR_PM_TEST:-/sys/power/pm_test}
+SYSCTL=${FLOOR_SYSCTL:-/proc/sys/kernel}
 
 die() { echo "run-floor: $*" >&2; exit 1; }
 
@@ -33,8 +54,12 @@ ko=$here/e1_hook.ko
 [[ -f $SAFE_FLAG ]] || die "the floor runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
 [[ -f $ko ]] || die "no $ko: make -C $here"
 [[ $(modinfo -F vermagic "$ko" | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r): make -C $here"
+# E1a's build has no oneway, and its insmod would fail with a bare "Invalid
+# parameters".
+[[ $'\n'$(modinfo -F parm "$ko") == *$'\n'oneway:* ]] || die "$ko is an older build, without the floor: make -C $here"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
+[[ $(cat "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none, so the suspend wouldn't be a real one: echo none > $PM_TEST"
 
 # Disarm on every exit but the hand-off. The reading runs in the background
 # and the launcher waits for it, because bash holds a trapped signal until a
@@ -68,9 +93,14 @@ trap 'cancel 130' INT
 trap 'cancel 143' TERM
 trap '' PIPE
 
+echo 10 > "$SYSCTL/panic"
+echo 1 > "$SYSCTL/panic_on_oops"
 armed=1
 insmod "$ko" replay=15 oneway=1
-echo "e1_hook loaded with replay=15 oneway=1: the next suspend is the floor, one way; only the power key ends it"
+# A build that doesn't know them would load with both ignored, and only warn.
+[[ $(cat "$MODDIR/parameters/replay") == 15 && $(cat "$MODDIR/parameters/oneway") == Y ]] ||
+  die "e1_hook didn't take replay=15 oneway=1: make -C $here"
+echo "e1_hook loaded with replay=15 oneway=1: the next suspend is the floor, one way. At the planned time, press the power key briefly and wait 30 s first; hold it only if the Mac stays dark (this script's header says why)"
 "$READING" take --label floor --then suspend &
 reader=$!
 wait "$reader"

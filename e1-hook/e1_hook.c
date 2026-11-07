@@ -41,10 +41,12 @@
  *
  * With replay=0 (the default, and what e1-hook/check loads: E1's first check,
  * the hook point, RESEARCH.md "Before E1") it never writes an SMC key and
- * touches no MMIO. The replays, E1a's and the floor's, are below. Whatever
- * replay is, every op returns 0, so it never fails or aborts a suspend (the
- * floor's prepare_late never returns at all). .check and .wake stay NULL:
- * s2idle_loop() calls .wake instead of pm_wakeup_pending() when it's set.
+ * touches no MMIO. The replays, E1a's and the floor's, are below. Every op
+ * returns 0, so it never fails or aborts a suspend, but for one case: with
+ * replay 13 or 15, a prepare_late whose replay stops short fails the suspend
+ * with -EIO (below). The floor's prepare_late never returns at all. .check and
+ * .wake stay NULL: s2idle_loop() calls .wake instead of pm_wakeup_pending()
+ * when it's set.
  *
  * Lab only, never for upstream: s2idle_set_ops() is declared in
  * include/linux/suspend.h but not exported (it isn't in Module.symvers). The
@@ -64,7 +66,7 @@
  * held), but the read itself still waits for macsmc's mutex and up to 500 ms
  * for the SMC's reply, and after a timeout holds that mutex for DRAIN_MS more,
  * as smc_peek does (drain_after_timeout()). So an op can hold a suspend up for
- * about 1.5 s, though it never fails it.
+ * about 1.5 s, though a read never fails it.
  *
  *   make -C e1-hook && pkexec e1-hook/check       (in a safe boot)
  *   pkexec e1-hook/run-e1a, pkexec e1-hook/run-floor   (the same)
@@ -80,6 +82,7 @@
 #include <linux/kprobes.h>
 #include <linux/mfd/macsmc.h>
 #include <linux/module.h>
+#include <linux/notifier.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -156,11 +159,24 @@ MODULE_PARM_DESC(prepare_ret, "The last B0AV read at prepare: 0, -errno, or 1 be
  *
  * It stops at the first key write that fails: nothing after it runs, so a
  * broken sequence never reaches the PMP words' second half, MBSE=slpa, the
- * post-slpa writes or the CPUs' power-down. The sleep then stays an ordinary
- * s2idle that the power key wakes, and the log says what failed; with bit 3,
- * the watchdog and error-handler writes have been made by then. With bit 3,
- * nothing is printed from MBSE=slpa on, unless slpa fails, as in their fast
- * mode (L822, L877-878).
+ * post-slpa writes or the CPUs' power-down. (Their lab_s2r_run() carries on
+ * past a failed key, L843-850, and always returns 0.) With 5, the sleep then
+ * stays an ordinary s2idle that the power key wakes, and the log says what
+ * failed. With 13 and 15 the watchdog and error-handler writes have been made
+ * by then, and the power-key reset that ends a one-way sleep would wipe the
+ * log with the safe boot's RAM. So when their replay stops short, or can't
+ * start (the SMC's device lock busy, macsmc unbound), prepare_late fails the
+ * suspend with -EIO: the PM core resumes at once, and the Mac wakes with its
+ * log rather than sleeping as if the replay had run. That resume, after
+ * those writes, is untried. With bit 3, nothing is printed from MBSE=slpa on,
+ * unless slpa fails, as in their fast mode (L822, L877-878).
+ *
+ * 13 and 15 are armed for one suspend: one that ends without reaching
+ * prepare_late (tasks that won't freeze, a device's suspend error, an early
+ * wakeup, pm_test=freezer or devices) calls them off (replay_done=2), so that
+ * they can't run at a later suspend, away from their reading. They load only
+ * in a safe boot, with sleepdrain.safe on the kernel command line, since the
+ * reset that ends them could damage a writable disk.
  *
  * Left out of their flow, as diagnostics: their reads of the watchdog
  * (lab_dump_wdt(), L798) and of AFNC2/3's power states (lab_afnc(), L841,
@@ -171,7 +187,6 @@ MODULE_PARM_DESC(prepare_ret, "The last B0AV read at prepare: 0, -errno, or 1 be
  * bits. Where they map each page at prepare_late and skip a write whose page
  * didn't map (L808-821, L353, L825), this maps them all at load and refuses
  * to load if one fails. One way: there's no undo, and with bit 1 no resume.
- * Safe boot only.
  */
 static unsigned int replay;
 module_param(replay, uint, 0444);
@@ -181,6 +196,7 @@ module_param(oneway, bool, 0444);
 MODULE_PARM_DESC(oneway, "Must be 1 for replay=13 or 15, which can't be undone (15 never resumes); ignored for 0 and 5");
 static unsigned int replay_done;
 module_param(replay_done, uint, 0444);
+MODULE_PARM_DESC(replay_done, "0 not yet, 1 the replay has run at a prepare_late, 2 called off (13 and 15: a suspend ended before prepare_late)");
 static int replay_ret[4] = { 1, 1, 1, 1 };
 static int replay_nret = 4;
 module_param_array(replay_ret, int, &replay_nret, 0444);
@@ -515,8 +531,10 @@ static void e1_cpu_down(void *unused)
  * (L348-361), then dsb(sy). With bit 1, every CPU's power-down follows at once
  * (L895-898): the others through smp_call_function() without waiting, then
  * this one, and nothing returns. Preemption stays off from the first write
- * on, so that nothing else runs on this CPU in between, and the last
- * power-down is on the CPU that sent the others theirs.
+ * on, so that no other task runs on this CPU and it can't migrate before its
+ * own power-down; interrupts still can, until e1_cpu_down() masks them
+ * (smp_call_function() needs them on). This CPU powers down right after
+ * sending the IPIs, usually before the others have taken theirs.
  */
 static void e1_after_slpa(void)
 {
@@ -548,20 +566,21 @@ static void e1_after_slpa(void)
  * The replay, in maralcbr's order (above). Under the SMC device's lock, tried
  * only: if it's busy, or macsmc isn't bound, nothing is written at all. It
  * stops at the first key write that fails, so that a broken sequence never
- * reaches the PMP words' second half, MBSE=slpa or anything after it: the
- * sleep stays an ordinary s2idle that the power key wakes, and the log says
- * what failed. Nothing here can fail the suspend.
+ * reaches the PMP words' second half, MBSE=slpa or anything after it. True
+ * if it ran to its end: MBSE=slpa accepted and, with bit 3, the post-slpa
+ * writes made (with bit 1 it never returns then).
  */
-static void e1_replay(void)
+static bool e1_replay(void)
 {
 	struct device *dev = &smc_pdev->dev;
 	void __iomem *req = sleep_req_page ? sleep_req_page + (E1_PMGR_SLEEP_REQ & ~PAGE_MASK) : NULL;
 	void __iomem *dvfs = pmp_dvfs_page ? pmp_dvfs_page + (E1_PMP_DVFS4 & ~PAGE_MASK) : NULL;
+	bool done = false;
 
 	replay_done = 1;
 	if (!device_trylock(dev)) {
 		pr_emerg("replay: the SMC's device lock is busy; nothing sent\n");
-		return;
+		return false;
 	}
 	if (!dev->driver || strcmp(dev->driver->name, SMC_DRIVER) || dev_get_drvdata(dev) != smc) {
 		pr_emerg("replay: macsmc isn't bound; nothing sent\n");
@@ -584,14 +603,20 @@ static void e1_replay(void)
 		pr_emerg("replay: 1<<61 -> 0x%llx, 1 -> 0x%llx\n", E1_PMP_DVFS4, E1_PMGR_SLEEP_REQ);
 	}
 	if ((replay & 1) &&
-	    replay_write(3, "MBSE=slpa", apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpa))) &&
-	    (replay & 8))
-		e1_after_slpa();
+	    replay_write(3, "MBSE=slpa", apple_smc_write_u32(smc, SMC_KEY(MBSE), SMC_KEY(slpa)))) {
+		if (replay & 8)
+			e1_after_slpa();
+		done = true;
+	}
 unlock:
 	device_unlock(dev);
+	return done;
 }
 
-/* Step 4, after the noirq pass: where E1's replay runs. */
+/*
+ * Step 4, after the noirq pass: where E1's replay runs. With 13 or 15, a
+ * replay that stopped short fails the suspend (see the replays, above).
+ */
 static int e1_prepare_late(void)
 {
 	u64 t = trace_clock_local();
@@ -600,10 +625,33 @@ static int e1_prepare_late(void)
 	late_t_ns = t;
 	late_ret = read_b0av(&late_mv, &late_read_ns);
 	log_read("prepare_late", n, t, late_ret, late_mv, late_read_ns);
-	if (replay && !replay_done)
-		e1_replay();
+	if (replay && !replay_done && !e1_replay() && (replay & 8)) {
+		pr_emerg("replay: stopped short; this suspend fails with -EIO, so that the Mac wakes with this log\n");
+		return -EIO;
+	}
 	return 0;
 }
+
+/*
+ * Registered for 13 and 15 only. PM_POST_SUSPEND ends every suspend that got
+ * as far as PM_SUSPEND_PREPARE, whether it reached prepare_late or not, and
+ * this notifier has the highest priority, so that another's refusal of
+ * PM_SUSPEND_PREPARE still sends it PM_POST_SUSPEND. A suspend that ended
+ * without running the replay calls it off.
+ */
+static int e1_pm_notify(struct notifier_block *nb, unsigned long action, void *data)
+{
+	if (action == PM_POST_SUSPEND && !replay_done) {
+		replay_done = 2;
+		pr_emerg("replay: a suspend ended before prepare_late; called off, nothing sent\n");
+	}
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block e1_pm_nb = {
+	.notifier_call = e1_pm_notify,
+	.priority = INT_MAX,
+};
 
 static void e1_restore_early(void)
 {
@@ -640,12 +688,31 @@ static const struct platform_s2idle_ops e1_ops = {
 };
 
 /*
+ * Whether this is a safe boot: its GRUB entry adds the word sleepdrain.safe
+ * to the kernel command line, which /chosen/bootargs carries here.
+ */
+static bool __init e1_safe_boot(void)
+{
+	static const char word[] = "sleepdrain.safe";
+	const size_t n = sizeof(word) - 1;
+	const char *args, *p;
+
+	if (of_property_read_string(of_chosen, "bootargs", &args))
+		return false;
+	for (p = args; (p = strstr(p, word)); p += n) {
+		if ((p == args || p[-1] == ' ') && (!p[n] || p[n] == ' '))
+			return true;
+	}
+	return false;
+}
+
+/*
  * Before anything else at load. First the post-slpa table, whatever replay
  * is: an entry on the never-write list refuses the module, as does one this
  * port doesn't write as maralcbr does (a width other than 4 or 8, an
  * unaligned address, a 4-byte value over 32 bits, or a watchdog or
  * error-handler entry that isn't 4 bytes, since those go out with writel).
- * Then replay and oneway.
+ * Then replay and oneway, and for 13 and 15 a safe boot.
  */
 static int __init e1_check_params(void)
 {
@@ -680,6 +747,11 @@ static int __init e1_check_params(void)
 		pr_err("replay=%u can't be undone: it writes the post-slpa table%s. Load it with oneway=1 as well\n",
 		       replay, (replay & 2) ? " and powers every CPU down for good" : "");
 		return -EINVAL;
+	}
+	if ((replay & (2 | 8)) && !e1_safe_boot()) {
+		pr_err("replay=%u ends in a power-key reset, so it loads only in a safe boot (sleepdrain.safe on the kernel command line): pkexec sleep-drain-safe boot, then restart\n",
+		       replay);
+		return -EPERM;
 	}
 	if (replay && !of_machine_is_compatible("apple,j314s")) {
 		pr_err("replay is maralcbr's J314s sequence, and this isn't a J314s\n");
@@ -802,6 +874,13 @@ unlock:
 		goto unmap;
 	}
 
+	if (replay & 8) {
+		ret = register_pm_notifier(&e1_pm_nb);
+		if (ret) {
+			pr_err("can't register the PM notifier: %d\n", ret);
+			goto unmap;
+		}
+	}
 	set_ops(&e1_ops);
 	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u\n",
 		sym, replay);
@@ -822,6 +901,8 @@ static void __exit e1_hook_exit(void)
 	 * once it returns no op can run.
 	 */
 	set_ops(NULL);
+	if (replay & 8)
+		unregister_pm_notifier(&e1_pm_nb);
 	e1_unmap();
 	module_put(smc_owner);
 	put_device(&smc_pdev->dev);

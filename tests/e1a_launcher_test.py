@@ -4,9 +4,12 @@
 Each case runs a copy of a launcher as uid 0 in a bubblewrap user namespace,
 next to a fake e1_hook.ko, with its paths (E1A_* for run-e1a, FLOOR_* for
 run-floor) pointed into a temp directory and stub insmod, rmmod, modinfo and
-sleep-drain-reading that record their calls. The module must stay loaded only
-after a reading that saved and asked for the suspend; every other way out
-unloads it. Both launchers get the same cases.
+sleep-drain-reading that record their calls. insmod fills in the module's
+parameters in the fake /sys/module. The module must stay loaded only after a
+reading that saved and asked for the suspend; every other way out unloads it.
+Both launchers get the same cases. run-floor's own: it sets kernel.panic and
+panic_on_oops (in a fake /proc/sys) before the load, refuses with pm_test set
+or an older build, and unloads a build that ignored its parameters.
 
   python3 -I tests/e1a_launcher_test.py
 """
@@ -49,9 +52,23 @@ def write(path, text, mode=None):
         os.chmod(path, mode)
 
 
-def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False):
+PM_TEST = "[none] core processors platform devices freezer\n"
+# modinfo -F parm, as for the floor's build; E1a's has no oneway.
+PARMS = {
+    "floor": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\nreplay:LAB ONLY (uint)\n",
+    "e1a": "replay_done: (uint)\nreplay:LAB ONLY, safe boot only (uint)\n",
+}
+
+
+def sysctl(tmp):
+    return tuple(open(os.path.join(tmp, "sysctl", k)).read().strip() for k in ("panic", "panic_on_oops"))
+
+
+def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
+          takes=True):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
+    moddir = os.path.join(tmp, "module")
     d = os.path.join(tmp, "e1-hook")
     os.makedirs(d)
     shutil.copy(os.path.join(E1_HOOK, script), os.path.join(d, script))
@@ -59,12 +76,22 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False):
     if safe:
         write(os.path.join(tmp, "run", "active"), "")
     write(os.path.join(tmp, "ac", "online"), ac + "\n")
+    write(os.path.join(tmp, "pm_test"), pm_test)
+    write(os.path.join(tmp, "sysctl", "panic"), "0\n")
+    write(os.path.join(tmp, "sysctl", "panic_on_oops"), "0\n")
     if loaded:
-        os.makedirs(os.path.join(tmp, "module"))
+        os.makedirs(moddir)
     stubs = os.path.join(tmp, "stubs")
-    write(os.path.join(stubs, "insmod"), f'#!/bin/sh\necho "insmod $*" >> {calls}\n', 0o755)
+    # The module's directory and its parameters, as the kernel shows them; a
+    # build that doesn't know replay and oneway ignores them.
+    params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
+              f' oneway=1) echo Y > {moddir}/parameters/oneway ;; esac; done\n') if takes else ""
+    write(os.path.join(stubs, "insmod"),
+          f'#!/bin/sh\necho "insmod $*" >> {calls}\nmkdir -p {moddir}/parameters\n{params}', 0o755)
     write(os.path.join(stubs, "rmmod"), f'#!/bin/sh\necho "rmmod $*" >> {calls}\n', 0o755)
-    write(os.path.join(stubs, "modinfo"), f'#!/bin/sh\necho "{RELEASE} SMP preempt mod_unload aarch64"\n', 0o755)
+    write(os.path.join(stubs, "modinfo"),
+          f'#!/bin/sh\ncase "$2" in\nvermagic) echo "{RELEASE} SMP preempt mod_unload aarch64" ;;\n'
+          f'parm) printf "%s" "{PARMS[build]}" ;;\nesac\n', 0o755)
     body = {
         "ok": "exit 0",
         "fail": "exit 1",
@@ -84,6 +111,8 @@ def env(tmp, launcher):
         prefix + "_AC": os.path.join(tmp, "ac"),
         prefix + "_MODDIR": os.path.join(tmp, "module"),
         prefix + "_READING": os.path.join(tmp, "stubs", "reading"),
+        prefix + "_PM_TEST": os.path.join(tmp, "pm_test"),
+        prefix + "_SYSCTL": os.path.join(tmp, "sysctl"),
     }
 
 
@@ -105,14 +134,18 @@ def run(tmp, d, launcher, **kw):
 
 def test_handoff(launcher):
     script, _, args, label = launcher
+    # run-floor makes a fault restart the Mac; run-e1a leaves both alone.
+    panic = ("10", "1") if script == "run-floor" else ("0", "0")
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="ok")
         r = run(tmp, d, launcher)
         c = calls(tmp)
         check(r.returncode == 0 and c == ["insmod " + os.path.join(d, "e1_hook.ko") + " " + args,
-                                          f"reading take --label {label} --then suspend"],
-              f"{script}: a reading that hands off to the suspend leaves the replay armed ({args})",
-              r.stdout + r.stderr + "\n".join(c))
+                                          f"reading take --label {label} --then suspend"]
+              and sysctl(tmp) == panic,
+              f"{script}: a reading that hands off to the suspend leaves the replay armed ({args});"
+              f" kernel.panic={panic[0]} panic_on_oops={panic[1]}",
+              r.stdout + r.stderr + "\n".join(c) + f"\nsysctl {sysctl(tmp)}")
 
 
 def test_failed_reading(launcher):
@@ -175,8 +208,29 @@ def test_refusals(launcher):
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)
             r = run(tmp, d, launcher)
-            check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [],
+            check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [] and sysctl(tmp) == ("0", "0"),
                   f"{launcher[0]}: refuses {what}, and loads nothing", r.stdout + r.stderr + "\n".join(calls(tmp)))
+
+
+def test_floor_refusals(launcher):
+    for what, kw, msg in (("with pm_test set", dict(pm_test="none core processors [platform] devices freezer\n"),
+                           "pm_test isn't none"),
+                          ("an older build, without oneway (E1a's)", dict(build="e1a"), "older build")):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, launcher, **kw)
+            r = run(tmp, d, launcher)
+            check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [] and sysctl(tmp) == ("0", "0"),
+                  f"{launcher[0]}: refuses {what}, and loads nothing", r.stdout + r.stderr + "\n".join(calls(tmp)))
+    # A build that loads but doesn't know the parameters, which the kernel
+    # only warns about: unloaded at once, before any reading.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, launcher, takes=False)
+        r = run(tmp, d, launcher)
+        c = calls(tmp)
+        check(r.returncode == 1 and "didn't take" in r.stderr and c[-1:] == ["rmmod e1_hook"]
+              and not any(x.startswith("reading") for x in c),
+              f"{launcher[0]}: a build that ignored replay and oneway is unloaded before any reading",
+              r.stdout + r.stderr + "\n".join(c))
 
 
 def main():
@@ -189,6 +243,8 @@ def main():
         test_signals(launcher)
         test_broken_stdout(launcher)
         test_refusals(launcher)
+        if launcher[0] == "run-floor":
+            test_floor_refusals(launcher)
     print(f"{failed} failed" if failed else "all ok")
     return 1 if failed else 0
 
