@@ -205,10 +205,14 @@ steps, and restarting the DCP and the PMP afterwards.
       writes). Ran 2026-11-06, 46 min: about 162 mA, the same as plain
       s2idle, and no self-reset. Its log was lost with the reset, so whether
       the SMC accepted the keys isn't known yet.
-    - [ ] **E1a again, woken by the alarm after 2-3 minutes**, to read each
-      key's result (`replay_ret`) and the log, and see whether the Mac still
-      resumes after `slpa`. Needs `run-e1a` to arm the alarm, or a manual
-      `rtcwake -m no` after `rtc-alarm-test/load`.
+    - [ ] **E1a under `pm_test=platform`** (`e1-hook/e1a-platform`): the
+      replay runs at `prepare_late`, then the test suspend resumes 5 s later
+      without sleeping, so each key's result (`replay_ret`) and the log can
+      be read at once, and what the Mac does after `slpa` while awake can be
+      watched. Then, if it's still healthy, a 60 s alarm sleep in the same
+      boot shows whether it still wakes after `slpa`: load
+      `rtc-alarm-test`, then arm `rtcwake -m no -s 60` immediately before
+      `systemctl suspend`, never before a reading.
     - [ ] **E1b: the 74 post-`slpa` writes** (bit 3), only once E1a's keys
       are known to be accepted. They touch the watchdog, the error
       handlers and the CPU clusters' DVFS and CPM, so they get a full review
