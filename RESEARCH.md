@@ -1541,3 +1541,74 @@ is a low `BQCC` reading: a hang draws s2idle's ~2 W (E1a, 162 mA). A high
 reading leaves it open, since on T8103 completed entries drew about 2.3 W
 until the PMP saw the clusters idle (Naeem's try39, malik-na/m1-power-lab
 74833809d621).
+
+### The team: Naeem's Linux S2R entry completes on T8103; DeepIdle's R20 hangs (2026-11-07)
+
+**Naeem Malik (M1 Air, T8103): the first S2R entry from Linux.** His run 2
+(malik-na/m1-power-lab 84a905788261,
+`docs/evidence/2026-11-07-linux-s2r/README.md`; driver malik-na/linux-aurora
+`m1power/s2r-mem` at aca68b693bd2, read with Corey's OK):
+
+- His finisher ran through its third commit: PMU scratch 0x9f0a reads `g`.
+  It also set boot_stage 0x50 and programmed the RTC alarm 60 s after the
+  commit, and the alarm fired.
+- The next boot came 181 s after the commit: his WD1 dead-man (170 s) plus
+  the boot. WD2's reset would have come 5 s after the commit, so the entry
+  completed.
+- There's no resume yet: the wake lands in m1n1, which can't hand back to
+  Linux. The power wasn't measured.
+- Run 1 hung before the finisher. His stopped secondaries had armed
+  ACC_OVRD's deep-sleep bits, which act per cluster, under cores that were
+  still running. The fix: only the last core of a cluster that isn't CPU0's
+  arms them, and CPU0 arms its own last.
+
+His order (`apple-s2r.c`), as `platform_suspend_ops` for "mem":
+
+1. The PM core takes the secondaries offline into an S2R deep stop. Each
+   cleans its L1, writes its bit in the PMGR CPU-start block's STOP
+   register, arms ACC_OVRD under the cluster rule, sets CYC_OVRD to WFI
+   mode 3 with no WFI return, and waits in WFI.
+2. Then CPU0, in `cpu_suspend()`'s finisher with interrupts off:
+   - the AON wake mask, so that only the PMU can wake the AP;
+   - the AON watchdogs off (WD1 kept as the dead-man);
+   - PMU boot_stage 0x50;
+   - the clkgen muxes parked;
+   - the PMGR counter blocks, CPM gating, cluster PS and SIO AUTO_ENABLE;
+   - nub-spmi's interrupts: only the PMU alarm enabled, all acked;
+   - the commit;
+   - AIC masked;
+   - the RTC alarm, over polled SPMI;
+   - the commit twice more;
+   - SPMI acked, and both clusters reported idle to the PMP;
+   - CPU0's own deep WFI.
+
+`apple-s2r.c` itself writes no SMC keys.
+
+**What our floor does differently.** Its table already has T6000's forms of
+the counter blocks (pmgr + 0x48000-0x48600 and + 0x78000-0x7d000), the
+cluster PS words (pmgr + 0x18000-0x18020) and WD0 off, and more besides (the
+APSC disables, the PLL-off sequence). But:
+
+- the other CPUs stay up through the commit, and power down by IPI 500 ms
+  after it, without a stop bit;
+- interrupts stay on;
+- there's no wake mask, no SPMI acks and no AIC mask;
+- the commit is written once;
+- there's no 0x50, no alarm and no report to the PMP.
+
+PLAN.md's E2 now has these as the M1 recipe.
+
+**DeepIdle (M2 Pro, T6020), R20** (JJRPF/Aurora-DeepIdle 75d4729189). They
+wrote the cluster APSC disable, the same writes as entries 44-49 of
+maralcbr's table here, before their release IPIs:
+
+- most of their parked secondaries never woke to sleep, and PCPM0 stayed on;
+- for the first time the timer didn't reset the SoC, and the Mac hung for
+  28 minutes until the owner held power.
+
+Our floor wrote the same disables and still reset about 30 s in. Our other
+CPUs were idle in Linux, not parked.
+
+We replied on their issue #9 (JJRPF/Aurora-DeepIdle#9, comment 6709046397).
+The reply gives the ADT windows for their two pre-`slpw` words (which macOS
+driver writes them is still unknown) and the floor's result.

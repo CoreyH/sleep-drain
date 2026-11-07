@@ -253,12 +253,19 @@ steps, and restarting the DCP and the PMP afterwards.
       macOS adds only the RTC alarm and the same
       write twice more before its cores go down, and Naeem's tries 26-31
       reset because a last core touched a device after the commit.
-    - If it still resets: the other CPUs down before the post-`slpa`
-      writes, so the commit is the last thing any core does, with
-      interrupts masked on the last CPU before it. Then only a
-      cluster's last core may arm ACC_OVRD's deep-sleep bits, which act per
-      cluster: Naeem's first Linux S2R run on T8103 hung when stopped cores
-      armed them under running ones (malik-na/linux-aurora 3bbb16ebac56).
+    - [ ] **The M1 recipe** (the main bet, spec in progress): Naeem's
+      T8103 entry, the first to complete from Linux (RESEARCH.md, "The
+      team"), mapped to T6000 by function on top of maralcbr's keys and
+      table. The other CPUs stopped before the post-`slpa` writes, each
+      writing its stop bit in the PMGR's CPU-start block, so the commit is
+      the last thing any core does, with interrupts masked on the last CPU
+      before it. Only a cluster's last core may arm ACC_OVRD's deep-sleep
+      bits, which act per cluster: Naeem's first Linux S2R run on T8103
+      hung when stopped cores armed them under running ones
+      (malik-na/linux-aurora 3bbb16ebac56). Then, as on T8103: the AP wake
+      mask (only the PMU), nub-spmi's interrupts acked, AIC masked, the
+      commit three times, the PMP told the clusters are idle. PMU writes
+      (boot stage 0x50, the RTC alarm, breadcrumbs) only with Corey's OK.
     - Then, on top, one at a time: maralcbr's other bits (the domains
       macOS has off, 8-10; the AOP's notices, 6; the internal PCIe ports,
       13), and the PMU boot stage 0x50. The SEP's SLEEP message (bit 11)
