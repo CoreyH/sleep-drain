@@ -1584,10 +1584,11 @@ His order (`apple-s2r.c`), as `platform_suspend_ops` for "mem":
 
 `apple-s2r.c` itself writes no SMC keys.
 
-**What our floor does differently.** Its table already has T6000's forms of
-the counter blocks (pmgr + 0x48000-0x48600 and + 0x78000-0x7d000), the
-cluster PS words (pmgr + 0x18000-0x18020) and WD0 off, and more besides (the
-APSC disables, the PLL-off sequence). But:
+**What our floor does differently.** Its table already writes at the PMGR
+offsets of his counter blocks (pmgr + 0x48000-0x48600 and + 0x78000-0x7d000
+here) and cluster PS words (pmgr + 0x18000-0x18020), so very likely their
+T6000 forms. It also turns WD0 off, and does more besides (the APSC
+disables, the PLL-off sequence). But:
 
 - the other CPUs stay up through the commit, and power down by IPI 500 ms
   after it, without a stop bit;
