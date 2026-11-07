@@ -1,0 +1,12 @@
+0x6000: 00 30 00 50 50 fe fe fe  00 00 00 00 00 00 00 00
+0x6010: c8 da 01 00 b0 00 00 00  00 00 00 00 00 00 00 00
+boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (0x50: an unclean end after the replay began)
+stage 0x6004 = 0x50: 8: the last SPMI command; next came nub-spmi0's acks, the commit x3, CPU0's deep WFI
+  (the last breadcrumb that reached the PMU: the run got at least that far)
+parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+left their spin to stop (0x6006 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+read off within 10 ms (0x6007 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+RTC second at just before the commit: 121544, 171 s before now (121715)
+0x6014 = 0xb0: CPU0 had nothing pending before the commit; PCPM0 off, PCPM1 off; WD1 was off; K3's kernel-path write after slpa worked
+0x6015 = 0x00: cores with an interrupt pending at their stop: none
+0x6016 = 0: AIC events the cores took off their event registers

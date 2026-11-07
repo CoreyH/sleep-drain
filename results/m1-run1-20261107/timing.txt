@@ -1,0 +1,11 @@
+# PMU RTC vs /proc/uptime, then vs the arch counter (CNTVCT, which restarts at a SoC reset), read in the regular boot after the reset
+wall 2026-11-07 20:00:02 +0100  uptime 117.03 s  PMU RTC now 121715
+scratch 0x6000: 00 30 00 50 50 fe fe fe 00 00 00 00 00 00 00 00 c8 da 01 00 b0 00 00 00 00 00 00 00 00 00 00 00
+commit at PMU second 121544: 171 s ago
+this kernel started about 117 s ago, so 54 s after the commit (minus firmware/boot time before the kernel)
+
+# second read, with the counter:
+cntvct 4474210727 cntfrq 24000000 -> 186.425 s since the counter started; boottime 162.951 s; realtime 1794078048.262 (2026-11-07 20:00:48 +0100)
+PMU RTC now 121761; commit 121544: 217 s ago
+counter started 186.4 s ago -> 30.6 s after the commit
+kernel boottime started 163.0 s ago -> 54.0 s after the commit; firmware and boot loader before the kernel ~23.5 s
