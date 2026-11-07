@@ -205,18 +205,21 @@ steps, and restarting the DCP and the PMP afterwards.
       writes). Ran 2026-11-06, 46 min: about 162 mA, the same as plain
       s2idle, and no self-reset. Its log was lost with the reset, so whether
       the SMC accepted the keys isn't known yet.
-    - [ ] **E1a under `pm_test=platform`** (`e1-hook/e1a-platform`): the
-      replay runs at `prepare_late`, then the test suspend resumes 5 s later
-      without sleeping, so each key's result (`replay_ret`) and the log can
-      be read at once, and what the Mac does after `slpa` while awake can be
-      watched. Then, if it's still healthy, a 60 s alarm sleep in the same
-      boot shows whether it still wakes after `slpa`: load
-      `rtc-alarm-test`, then arm `rtcwake -m no -s 60` immediately before
-      `systemctl suspend`, never before a reading.
-    - [ ] **E1b: the 74 post-`slpa` writes** (bit 3), only once E1a's keys
-      are known to be accepted. They touch the watchdog, the error
-      handlers and the CPU clusters' DVFS and CPM, so they get a full review
-      first, and their addresses are checked against the never-write list.
+    - [x] **E1a under `pm_test=platform`** (`e1-hook/e1a-platform`): done
+      2026-11-07 (RESEARCH.md, "E1's checks and E1a"). The SMC accepted all
+      four keys; it still answers after `slpa`; the NVMe is lost until a
+      restart; no reset, no freeze. The alarm sleep couldn't run: its
+      programs are on the lost disk.
+    - [ ] **The floor: the whole one-way replay** (keys, PMP words, the 74
+      post-`slpa` writes, then every CPU's power-down, maralcbr's bits 0-3),
+      in a safe boot, measured with `BQCC` across the power-key reset. Does
+      Linux get near macOS's 0.1 W? If it does, the sequence is right and
+      the wake path is what's left (the NVMe first). If it stays near 1.4-2
+      W, something before `slpa` is missing. The writes touch the watchdog,
+      the error handlers and the CPU clusters' DVFS and CPM: full review
+      first, every address checked against the never-write list. E1b (the
+      74 writes with the CPUs up) is skipped: E1a shows nothing powers down
+      while they run.
   - **E2 onwards, from E1's result.** The domains macOS has off (bits 8-10),
     the SEP sleep message (bit 11), the AOP's notices (bit 6), the internal
     PCIe ports (bit 13), and last the CPU power-down (bit 1).
