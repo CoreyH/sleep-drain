@@ -1,0 +1,37 @@
+Nov 07 23:04:17.030715 corey-mbp14-omarchy kernel: e1_hook: loading out-of-tree module taints kernel.
+Nov 07 23:04:17.035704 corey-mbp14-omarchy kernel: e1_hook: op=load key=B0AV ret=0 mv=12210 read_ns=1157875
+Nov 07 23:04:17.035742 corey-mbp14-omarchy kernel: e1_hook: m1: PMU 0x6000: 00 30 00 50 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+Nov 07 23:04:17.035773 corey-mbp14-omarchy kernel: e1_hook: m1: 1806 IRQs, MASK_SET 0x28e106400 (57 words); WD1 ctrl 0x4; AP wake masks 00000000 00000040 00000000 00000000 00000000 00000000 00000000
+Nov 07 23:04:17.035808 corey-mbp14-omarchy kernel: e1_hook: m1: nub-spmi0 word 0: enable 00000000, pending 00000000
+Nov 07 23:04:17.035871 corey-mbp14-omarchy kernel: e1_hook: m1: nub-spmi0 word 1: enable 00000000, pending 3d000000
+Nov 07 23:04:17.035902 corey-mbp14-omarchy kernel: e1_hook: m1: nub-spmi0 word 2: enable 00000000, pending 00000000
+Nov 07 23:04:17.035926 corey-mbp14-omarchy kernel: e1_hook: m1: nub-spmi0 word 3: enable 00000000, pending 00000000
+Nov 07 23:04:17.035953 corey-mbp14-omarchy kernel: e1_hook: m1: nub-spmi0 word 4: enable 00000000, pending 00000000
+Nov 07 23:04:17.035982 corey-mbp14-omarchy kernel: e1_hook: m1: nub-spmi0 word 5: enable 00000000, pending 00000000
+Nov 07 23:04:17.036009 corey-mbp14-omarchy kernel: e1_hook: m1: nub-spmi0 word 6: enable 00000000, pending 00000001
+Nov 07 23:04:17.036036 corey-mbp14-omarchy kernel: e1_hook: m1: nub-spmi0 word 7: enable 00000000, pending 00250100
+Nov 07 23:04:17.036066 corey-mbp14-omarchy kernel: e1_hook: m1: nub-spmi0 word 8: enable 00000000, pending 00000000
+Nov 07 23:04:17.036102 corey-mbp14-omarchy kernel: e1_hook: m1: CPU1: stop bit 0x002, power state 000001f0
+Nov 07 23:04:17.036132 corey-mbp14-omarchy kernel: e1_hook: m1: CPU2: stop bit 0x010, power state 000001f0
+Nov 07 23:04:17.036159 corey-mbp14-omarchy kernel: e1_hook: m1: CPU3: stop bit 0x020, power state 000001f0
+Nov 07 23:04:17.036184 corey-mbp14-omarchy kernel: e1_hook: m1: CPU4: stop bit 0x040, power state 00000100
+Nov 07 23:04:17.036209 corey-mbp14-omarchy kernel: e1_hook: m1: CPU5: stop bit 0x100, power state 000001f0
+Nov 07 23:04:17.036233 corey-mbp14-omarchy kernel: e1_hook: m1: CPU6: stop bit 0x200, power state 000001f0
+Nov 07 23:04:17.036259 corey-mbp14-omarchy kernel: e1_hook: m1: CPU7: stop bit 0x400, power state 00000100
+Nov 07 23:04:17.036283 corey-mbp14-omarchy kernel: e1_hook: m1: observe: WD0 count 6d772e91 bite 00000000 ctrl 0
+Nov 07 23:04:17.036311 corey-mbp14-omarchy kernel: e1_hook: m1: observe: WD1 count 0b139850 bite 2aea5400 ctrl 4
+Nov 07 23:04:17.036335 corey-mbp14-omarchy kernel: e1_hook: m1: observe: WD2 count 66bd7074 bite 80befc00 ctrl 0
+Nov 07 23:04:17.036363 corey-mbp14-omarchy kernel: e1_hook: m1: observe: wdt page 2: +0x8 00000000 +0xc 00000000 +0x20 00000000 +0x28 00000000 +0x2c 00000000 +0x40 00000000
+Nov 07 23:04:17.036388 corey-mbp14-omarchy kernel: e1_hook: m1: observe: AP wake status 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+Nov 07 23:04:17.036412 corey-mbp14-omarchy kernel: e1_hook: m1: observe: soc cluster 0 (EACC): 0000000f
+Nov 07 23:04:17.036440 corey-mbp14-omarchy kernel: e1_hook: m1: observe: soc cluster 1 (PACC0): 0000002f
+Nov 07 23:04:17.036464 corey-mbp14-omarchy kernel: e1_hook: m1: observe: soc cluster 2 (PACC1): 0000002f
+Nov 07 23:04:17.036488 corey-mbp14-omarchy kernel: e1_hook: m1: observe: soc cluster 3 (ANE0): 0000002f
+Nov 07 23:04:17.036515 corey-mbp14-omarchy kernel: e1_hook: m1: observe: soc cluster 4 (4): 00000000
+Nov 07 23:04:17.036539 corey-mbp14-omarchy kernel: e1_hook: m1: observe: soc cluster 5 (AFR): 0000002f
+Nov 07 23:04:17.036565 corey-mbp14-omarchy kernel: e1_hook: m1: observe: soc cluster 6 (DISPLAY): 0000002f
+Nov 07 23:04:17.036590 corey-mbp14-omarchy kernel: e1_hook: m1: observe: soc cluster 7 (7): 0000000f
+Nov 07 23:04:17.036618 corey-mbp14-omarchy kernel: e1_hook: m1: observe: soc cluster 8 (AVEMSR): 0000002f
+Nov 07 23:04:17.036642 corey-mbp14-omarchy kernel: e1_hook: m1: observe: SIO 1f0000ff SIO_CPU 1400024f; CPU0 00000100 ECPM 000001f0
+Nov 07 23:04:17.036668 corey-mbp14-omarchy kernel: e1_hook: m1: observe: 0x28e09c000 +0x30 80000000 +0x34 00000000 +0x38 00000000 +0x80 80000000 +0x88 00000000
+Nov 07 23:04:17.041708 corey-mbp14-omarchy kernel: e1_hook: loaded: s2idle ops set through s2idle_set_ops+0x0/0x34; times are trace_clock_local(); replay=15 quiet=1 m1=1 observe=1

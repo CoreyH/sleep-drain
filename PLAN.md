@@ -1,6 +1,6 @@
 # Plan
 
-Last updated 2026-11-07. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-08. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
@@ -23,6 +23,11 @@ the PR with that session's work.
     the key macOS writes, wasn't read. `CLSP` reads 0 and `CLWK` doesn't
     move, so the SMC apparently never registers a sleep (inferred).
   - The likely S2R timer is 0x2925c4000, which already reads 1 under Linux.
+- **In progress: E2, making the S2R entry complete** (A5). maralcbr's
+  replay with Naeem's M1 recipe takes every core down and commits the entry,
+  but the entry never completes: the engine's own watchdog, WD2, resets the
+  SoC about 30 s after the commit (RESEARCH.md, "M1 run 2"). Next is M1 run
+  3.
 
 ## Picking this up
 
@@ -287,60 +292,123 @@ steps, and restarting the DCP and the PMP afterwards.
       - If it fails, the breadcrumbs show how far it got, at least. Next
         would be the APSC writes moved after the cores' stop (macOS's T6020
         order).
-    - [ ] **M1 run 2, the observer** (built; `pkexec e1-hook/run-floor
-      --m1-observe`, e1_hook `observe=1`; RESEARCH.md, "After M1 run 1"):
-      run 1, but CPU7 stays up through the commit, with its stop bit
-      written before it (macOS's order). It watches CPU0 and the E complex
-      power down, reads the watchdogs, the soc clusters, SIO_CPU, the AP
-      wake status and the two words that may be the S2R engine's progress,
-      and records them in the OK'd breadcrumbs. `m1-crumbs` decodes them
-      and prints the reset time. Its load log is the awake baseline. Read
-      it first: it decides the next rung.
-      - Stage 0x50 with the observe mark (0x6005 bit 0): nothing CPU7 sent
-        after the commit landed. Raw SPMI after the commit failed, or the
-        hand-over never happened: that comes before anything else.
-      - Stage 0x6e: CPU7 had something pending before its own WFI, so it
-        likely never went down, and the run says nothing about the entry.
-      - CPU0 or ECPM not off: the boot cluster first. Look for T6000's
-        CPM gating; the load log reads the candidates at 0x28e09c000.
-      - SIO_CPU not off: the table's literal 0x400024f asks for it on
-        (target f) after genpd asked for it off. Replace it with macOS's
-        read-modify-write.
-      - A soc cluster still busy (not PACC1): that cluster's domains, with
-        macOS's waits.
-      - WD1 armed after the commit: the 30 s is WD1's, not WD2's. Find what
-        arms it.
-      - All clean, and still ~30 s: the fix rungs below, one per run, each
-        keeping observe=1.
-    - The fix rungs, ranked (one per run unless Corey picks a cumulative
-      rung):
-      1. The PMU's RTC alarm, written between the first commit and the
-         other two. macOS does it on T8103, and Naeem's entries all do it;
-         no T600x attempt has. Corey OK'd its PMU writes on 2026-11-07:
-         0x14c0 (the event, written back if set), 0x140c (now + 3600 s),
-         0x14c2 (0) and 0x1401 (0x41). `m1-crumbs --clear` disarms it again
-         at the next boot (0x1401 back to 0x01), so it can't power the Mac
-         on an hour later.
-      2. SetAPPower 0x201 to the SMC right after slpa, as macOS does on
-         T8103 and T6020. It's a new message to the SMC firmware, so tell
-         Corey first. DeepIdle's T6020 runs sent it and still reset.
-      3. The PMP: its idle pair (SET_AP and SET_IOP 0x201) after slpa, or a
-         boot where it never starts (`module_blacklist=apple_pmp`, a
-         pre-check boot first: it costs the GPU and maybe the panel). Every
-         completed Linux entry ran without the PMP's firmware; ours runs it
-         and never tells it anything.
-      4. Replay fidelity: clkgen's bit-30 wait (Naeem's), and waits on
-         ANE0, AFR and AVEMSR.
-      5. wdt reg[3]'s low byte (0x2922b8008) cleared before the commit, as
-         macOS's watchdog kext does at sleep, if the load log reads it
-         nonzero.
-      - Later, each with Corey's OK: the SEP's SLEEP message (after
-        DeepIdle's R18 result); WD2 stopped after the commit, which breaks
-        e1_hook's own never-write rule and can leave the Mac dark.
-    - Also open, on top: maralcbr's other bits (the domains macOS has off,
-      8-10; the AOP's notices, 6; the internal PCIe ports, 13). The SEP's
-      SLEEP message (bit 11) touches state the SEP shares with macOS: only
-      with Corey's OK.
+    - [x] **M1 run 2, the observer** (ran 2026-11-07; RESEARCH.md, "M1 run
+      2" and "After M1 run 2"): stage 0x6f, every breadcrumb in. CPU0 and
+      the E complex went down after the commit too, and WD2, armed by the
+      commit with about 30 s, reset the SoC. About a second after the
+      commit, four soc clusters had a power-down pending (EACC, PACC0,
+      PACC1, DISPLAY) and SIO_CPU was on; no wake-status bit was new. It
+      was `pkexec e1-hook/run-floor --m1-observe`, e1_hook `observe=1`: run
+      1, but CPU7 stays up through the commit, with its stop bit written
+      before it (macOS's order), and records what it sees in the OK'd
+      breadcrumbs.
+      - Its reading: DISPLAY can't finish powering down with Linux's
+        display chain on, and macOS waits for it. EACC and PACC0 may only
+        have been read too soon. The replay sends 26 of macOS's PMGR
+        quiesce writes before `slpw` (maralcbr's lab order, not macOS's),
+        makes none of its waits, turns SIO_CPU back on under an off SIO,
+        and lowers DCS with the PMP running.
+      - Dropped with it: the wdt reg[3] rung (it reads 0, so there's
+        nothing to clear), and the prepared answer to "SIO_CPU not off"
+        (macOS's read-modify-write would leave it off, which isn't macOS's
+        state either).
+    - [ ] **M1 run 3: the PMGR quiesce in macOS's place** (to build:
+      e1_hook `pmgr_late=1`, `pkexec e1-hook/run-floor --m1-late`). Run 2's
+      recipe, the observer included, with one change: where the table's
+      PMGR quiesce goes, and macOS's waits after it. No new write and no
+      new PMU byte. Its value is mostly the readout: T6020 ran the same
+      steps in macOS's order with waits and still reset.
+      - K2 keeps only the five watchdog and error-handler words (entries
+        2-6). That is still maralcbr's order, not macOS's; a later rung can
+        move them. The other 26 go out in step 5 at their places in the
+        table, after `slpa`, with the other cores parked awake.
+      - CPU0 then waits as macOS does, up to 10 ms each, and records which
+        waits time out: DCS (entries 49-50: its busy bit clear and actual
+        = target), AFR's power state (51), ANE0, AFR, DISPLAY and AVEMSR
+        (55, 57, 58, 60), SIO_CPU (61), the ClkGen muxes (62-66) and
+        PLL-off (72). It also reads PACC0's bit 4 just before the commit.
+      - CPU7 times EACC's and PACC0's power-downs from the hand-over,
+        stopping about 500 ms after ECPM reads off, and reads DCS's p-state
+        last, after its other crumbs are out. It gives up run 2's wdt-page
+        and wake-status bytes, which read nothing new.
+      - New reads, all of registers macOS polls, or for the load log's
+        baseline: the ClkGen muxes, PLL-off, DCS, the fabric's p-state and
+        ps_sio.
+      - How to read it:
+        - The expected case: a reset at ~30 s with only DISPLAY's wait
+          timed out (AFR's power state is already off, so its wait passes),
+          and EACC and PACC0 settled. DISPLAY is then the only one of
+          macOS's PMGR waits that fails. Next are the alarm, then DISPLAY
+          (fix rungs 1 and 3 below).
+        - EACC or PACC0 still pending ~500 ms after their complexes read
+          off: a CPU cluster doesn't finish even in macOS's place. Fix rung
+          4 comes up; first rule out CPU7's own PACC1.
+        - DCS's wait times out, or DCS isn't at 5 before the commit: the
+          DRAM p-state doesn't settle with the PMP running, and fix rung 2
+          (the PMP) moves up. A DCS changed after the commit could be the
+          engine's doing or the PMP's: Naeem found most registers rewritten
+          by the engine right after the commit.
+        - SIO_CPU's wait times out: most likely its off parent. ClkGen's or
+          PLL-off's: a new lead.
+        - Dark past 2 minutes: a candidate. Leave it 30+ minutes, then the
+          power key, `m1-crumbs` and a BQCC reading.
+        - Dark with a stage before the commit: a write or a wait in step 5
+          stalled, and the stage says where.
+      - A reset with the observer up doesn't rule a change out: CPU7 stays
+        up about 2 s after the commit. Any rung whose readout comes back
+        clean gets a run without it.
+    - The fix rungs after run 3, ranked: one per run, and each one that
+      moves the replay toward macOS's sequence stays in the runs after it,
+      unless Corey picks a cumulative rung.
+      1. **The PMU's RTC alarm** (run 4), written between the first commit
+         and the other two. macOS does it on T8103, every completed T8103
+         Linux entry has it, and T6020's PMU quiesce re-programs it after
+         quiesceHW; no T600x attempt has written it after the commit.
+         Corey OK'd its PMU writes on 2026-11-07: 0x14c0 (the event,
+         written back if set), 0x140c (now + 3600 s), 0x14c2 (0) and 0x1401
+         (0x41). `m1-crumbs --clear` disarms it again at the next boot
+         (0x1401 back to 0x01), so it can't power the Mac on an hour later.
+         Not in run 3: an SPMI error there would also cost CPU7's readout.
+      2. **The PMP out of the entry.** Its idle pair (SetAPPower, then
+         SetIOPPower 0x201, once each: a doubled SetAPPower crashed T6020's
+         PMP), then its CPU stopped (the ASC's RUN bit, 0x28ec00044), as
+         macOS does before quiesceHW. Or a boot where it never starts
+         (`module_blacklist=apple_pmp`, after a pre-check boot: it costs
+         the GPU and maybe the panel). Every completed T8103 Linux entry
+         ran with no PMP firmware or with it idled. Naeem's run 9 idled it
+         between `slpw` and `slpa` (malik-na/linux-aurora
+         `m1power/s2r-pmp`), while macOS's T6020 trace sends the pair right
+         after `slpa`. On T6000 the PMP owns DCS, which the table lowers. A
+         new PMP message and an ASC write: Corey's OK first. ps_pmp stays
+         on the never-write list. Against it: T6020 idled the PMP and still
+         reset.
+      3. **DISPLAY settled at the commit.** First an A/B with DISPLAY's
+         write skipped (no new write). Then, with Corey told first, the
+         display chain off before DISPLAY's write, as macOS has it: the DCP
+         firmware shut down or its ASC stopped, then disp0's and dispext0's
+         CPU and FE domains to 0, then DISPLAY's write with its wait. Two of
+         those words share ps_pmp's page; the never-write check stays.
+         T6020's display-off runs still reset, so this is at most one
+         necessary condition.
+      4. **The CPU-cluster targets written last**, after the cores' stop and
+         without a poll, as Naeem's finisher does: only if run 3 finds EACC
+         or PACC0 stuck.
+      5. **CPM gating.** Read the 0x28e09c000 page first, at e1_hook's
+         load. Write only what the read supports, and tell Corey first.
+      6. **SetAPPower 0x201 to the SMC** right after `slpa`. A new message
+         to the SMC firmware: tell Corey first. T8103 completes with and
+         without the SMC handshake, and T6020 sent it and still reset.
+      - Riding along when bytes allow, reads only: WD2's raw count and bite
+        after the commit (what the commit loads), AON perf group 0's state
+        counters (0x2922b4000; enabling them is a write) and the commit
+        page.
+      - Later, each with Corey's OK: the SEP's SLEEP message, after
+        DeepIdle's R18 (it touches state the SEP shares with macOS); WD2
+        stopped after the commit, which breaks the recipe's documented rule
+        (`e1_never_write()` doesn't enforce WD2) and can leave the Mac dark;
+        maralcbr's other bits (the domains macOS has off, 8-10; the AOP's
+        notices, 6; the internal PCIe ports, 13); XNU's per-core debug
+        power-down before the deep WFI; anything on nub-spmi1.
   - **The code.** An out-of-tree module: our own, written from these
     findings and maralcbr's tables (maralcbr/linux is GPL-2.0, as part of
     the kernel). maralcbr ran the replay from macsmc-reboot at s2idle's
