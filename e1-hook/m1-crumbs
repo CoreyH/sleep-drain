@@ -1,7 +1,7 @@
 #!/usr/bin/python3 -I
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
---m1-observe or --m1-late, e1_hook m1=1, observe=1, pmgr_late=1) leaves in the
-PMU, read and decoded, and cleared again.
+--m1-observe, --m1-late or --m1-alarm; e1_hook m1=1, observe=1, pmgr_late=1,
+alarm=1) leaves in the PMU, read and decoded, and cleared again.
 
   e1-hook/m1-crumbs               read them (no root needed)
   pkexec e1-hook/m1-crumbs --clear   zero them, after reading (root)
@@ -13,14 +13,20 @@ the first run), and 0x6001, the boot stage, which macsmc-reboot sets back to
 0x30 at every boot. 0x6003, the boot-error stage, is the PMU's own record of
 the stage an unclean end found. The PMU is reached through the kernel's nvmem
 interface for the pmic@f node, as pmu-alarm does. --clear writes zeros to the
-breadcrumb bytes and nothing else, so that the next run starts clean and no
-stale byte stays in state that iBoot and macOS share.
+breadcrumb bytes, so that the next run starts clean and no stale byte stays in
+state that iBoot and macOS share. After an alarm=1 run that armed the RTC alarm
+(stages 0x59 and 0x5f), it first sets the alarm's control, 0x1401, back to
+0x01, so that the alarm can't power the Mac on an hour later. It writes nothing
+else; in particular not 0x14c0, and not 0x1401 after any other stage (macOS's
+own wakes arm that alarm).
 
 After a run that reached the commit, it also says when the SoC restarted: the
 SoC's counter (CNTVCT) restarts with it, so the PMU's RTC now, less the
 counter's age, against the commit's RTC second. That holds only in the first
-boot after the run, before anything else restarts the Mac. Exit status: 0, or
-2 if it can't read (or clear) them.
+boot after the run, before anything else restarts the Mac. It also prints the
+RTC alarm's registers, read-only, and after an alarm=1 run says whether the
+alarm was written as the run meant and whether it survived the reset. Exit
+status: 0, or 2 if it can't read (or clear) them.
 """
 import glob
 import os
@@ -33,7 +39,12 @@ CNTVCT = os.environ.get("M1_CRUMBS_CNTVCT")
 
 RTC = 0x1406        # info-rtc: 6 bytes LE, the seconds in the upper four; the
                     # read must start here (pmu-alarm)
-CRUMBS = ((0x6004, 4), (0x6010, 7))  # the only bytes --clear writes
+CRUMBS = ((0x6004, 4), (0x6010, 7))  # the bytes --clear zeroes
+# The RTC alarm: control (bit 6 enable, bit 1 latched when it fired), the
+# compare value (4 bytes LE, the RTC's seconds), event, mask (pmu-alarm).
+ALARM_CTRL, ALARM, ALARM_EVENT, ALARM_MASK = 0x1401, 0x140c, 0x14c0, 0x14c2
+ALARM_STAGES = (0x59, 0x5f)  # alarm=1: 0x6016 is the alarm's byte, and the alarm may be armed
+ALARM_SECS = 3600  # e1_hook's M1_ALARM_SECS
 
 # Each stage is the last breadcrumb that reached the PMU: the run got at least
 # that far. Raw SPMI stops at its first error and CPU0 goes on without it, so
@@ -74,10 +85,14 @@ OBSERVE_STAGES = {
 # of runs 1 and 2 it stands for. From 0x28 on, 0x6006 holds qto, the waits
 # that timed out, where those have 0 or the cores that left their spin; and
 # CPU7's 0x7e and 0x7f have 0x6012-0x6013 and 0x6016 of their own.
-LATE = {0x28: 0x20, **{0x29 + i: 0x21 + i for i in range(7)}, 0x38: 0x30, 0x58: 0x50,
+LATE = {0x28: 0x20, **{0x29 + i: 0x21 + i for i in range(7)}, 0x38: 0x30, 0x58: 0x50, 0x59: 0x50, 0x5f: 0x50,
         0x70: 0x60, 0x71: 0x61, 0x72: 0x62, 0x7e: 0x6e, 0x7f: 0x6f}
 LATE_TEXT = {
     0x28: "5: the 68 post-slpa writes done, with macOS's waits after 15 of them",
+    0x59: "8 (alarm=1): the last SPMI command before the commit; next came nub-spmi0's acks, the first commit, the"
+          " alarm's commands, the other two commits",
+    0x5f: "alarm=1: the commit x3 and the alarm's commands done (0x6016 says how far); next came nub-spmi0's acks"
+          " and CPU0's deep WFI",
 }
 # qto, by bit: each of macOS's waits that was still unmet 10 ms after its write.
 WAITS = ("DCS's p-state after entry 49 (to 7), after 50 (to 5), or both (its busy bit 31 clear, macOS's poll,"
@@ -160,15 +175,59 @@ def qto(q):
                             "macOS's waits that timed out after 10 ms: " + "; ".join(timed))
 
 
+def alarm_byte(v):
+    """alarm=1's 0x6016: how far the alarm's commands got."""
+    if not v & 0x80:
+        return (f"0x6016 = 0x{v:02x}: the alarm's commands left no result (bit 7 clear): they didn't run, or the"
+                " byte didn't land or survive")
+    if v in (0xbd, 0xbf):
+        ev = "the event was set, and echoed" if v == 0xbf else "no event was set"
+        return f"0x6016 = 0x{v:02x}: every alarm command was acked ({ev}): 0x140c, 0x14c2 = 0, then 0x1401 = 0x41"
+    steps = ((0, "0x14c0's read"), (2, "0x14c0's echo"), (3, "0x140c"), (4, "0x14c2 = 0"), (5, "0x1401 = 0x41"))
+    done = [n for bit, n in steps if v >> bit & 1]
+    stop = next((n for bit, n in steps if not v >> bit & 1), None)
+    if stop is None or v & 0x40:
+        return f"0x6016 = 0x{v:02x}: not a value e1_hook writes; don't read it"
+    return (f"0x6016 = 0x{v:02x}: the alarm's commands STOPPED at {stop} (before it: {', '.join(done) or 'nothing'}"
+            f"{'; the event was set' if v & 2 else ''}): so the alarm wasn't tested. A repeat, not a negative")
+
+
+def alarm_lines(s, commit, alarm, now):
+    """The alarm's registers at this boot, always; for an alarm=1 stage, what they say. alarm: 0x1401, the
+    compare value, 0x14c0, 0x14c2."""
+    c, when, ev, mask = alarm
+    state = {0x01: "not armed", 0x03: "fired, latched"}.get(c)
+    if c == 0x41:
+        state = f"armed, fires in {when - now} s" if when > now else f"armed, {now - when} s past its time"
+    out = [f"PMU alarm: 0x1401 = 0x{c:02x}{f' ({state})' if state else ''}, 0x140c = {when},"
+           f" 0x14c0 event 0x{ev:02x}, 0x14c2 mask 0x{mask:02x}"]
+    if s not in ALARM_STAGES:
+        return out
+    right = commit is not None and when == commit + ALARM_SECS
+    if commit is None:
+        out.append("  the commit's second isn't known, so 0x140c can't be checked")
+    elif right:
+        out.append(f"  0x140c is the commit's second + {ALARM_SECS}, as the run wrote it")
+    else:
+        out.append(f"  0x140c is NOT the commit's second + {ALARM_SECS} ({commit + ALARM_SECS}): the alarm wasn't tested")
+    if c in (0x41, 0x03):
+        out.append(f"  the armed alarm survived the reset{' and has fired' if c == 0x03 else ''}")
+    elif c == 0x01 and right:
+        out.append("  0x1401 reads 0x01 with 0x140c right: the reset or the boot firmware cleared the enable (new; the"
+                   " writes went through if 0x6016 says so)")
+    return out
+
+
 def ctrl(c):
     """A watchdog's control bits, as apple_wdt names them."""
     on = [n for bit, n in ((0, "IRQ_EN"), (1, "IRQ_STATUS"), (2, "RESET_EN")) if c >> bit & 1]
     return f"{c}" + (f" ({', '.join(on)})" if on else " (off)")
 
 
-def decode(b, rtc, cnt=None):
+def decode(b, rtc, cnt=None, alarm=None):
     """b: 0x6000-0x601f; rtc: 6 bytes at 0x1406; cnt: (CNTVCT, CNTFRQ) or
-    None. One line per fact."""
+    None; alarm: the RTC alarm's registers (alarm_lines()), or None. One line
+    per fact."""
     s = b[4]
     late = s in LATE
     base = LATE.get(s, s)  # the stage of runs 1 and 2 it stands for
@@ -282,13 +341,16 @@ def decode(b, rtc, cnt=None):
                    " or CPU7's (it was rewriting them): not decoded")
     elif base >= 0x50:
         out.append(f"0x6015 = 0x{b[0x15]:02x}: cores with an interrupt pending at their stop: {cpus(b[0x15])}")
-        out.append(f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
+        out.append(alarm_byte(b[0x16]) if s in ALARM_STAGES else
+                   f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
     if commit is not None and cnt and cnt[1]:
         age = cnt[0] / cnt[1]
         x = now - age - commit
         out.append(f"the SoC restarted about {x:.0f} s after the commit ({x - 1:.1f} to {x + 1:.1f} s: the PMU's RTC"
                    f" counts whole seconds); its counter (CNTVCT) is {age:.1f} s old. Right only in the first boot"
                    " after the run")
+    if alarm:
+        out += alarm_lines(s, commit, alarm, now)
     return out
 
 
@@ -303,14 +365,23 @@ def main():
         fd = os.open(path, os.O_RDWR if clear else os.O_RDONLY)
         b = os.pread(fd, 0x20, 0x6000)
         rtc = os.pread(fd, 6, RTC)
+        al = [os.pread(fd, n, off) for off, n in ((ALARM_CTRL, 1), (ALARM, 4), (ALARM_EVENT, 1), (ALARM_MASK, 1))]
     except OSError as e:
         die(f"{path}: {e}")
-    if len(b) != 0x20 or len(rtc) != 6:
+    if len(b) != 0x20 or len(rtc) != 6 or [len(x) for x in al] != [1, 4, 1, 1]:
         die(f"{path}: short read")
-    for line in decode(b, rtc, counter()):
+    alarm = (al[0][0], int.from_bytes(al[1], "little"), al[2][0], al[3][0])
+    for line in decode(b, rtc, counter(), alarm):
         print(line)
     if clear:
         try:
+            # Before the crumbs, so that a failed disarm keeps the stage for another try.
+            if b[4] in ALARM_STAGES and alarm[0] & 0x42:
+                if os.pwrite(fd, b"\x01", ALARM_CTRL) != 1:
+                    die("short write at 0x1401")
+                if os.pread(fd, 1, ALARM_CTRL) != b"\x01":
+                    die("0x1401 didn't read back as 0x01; the breadcrumbs stay, so this can run again")
+                print("disarmed: 0x1401 = 0x01")
             for off, n in CRUMBS:
                 if os.pwrite(fd, bytes(n), off) != n:
                     die(f"short write at {off:#x}")

@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quiet | --m1 | --m1-observe | --m1-late]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm]
 #
 # THIS IS ONE WAY: THE MAC NEVER WAKES FROM IT. It loads e1_hook with
 # replay=15 oneway=1, so the next suspend's prepare_late runs maralcbr's
@@ -24,7 +24,12 @@
 # the table's PMGR quiesce goes out after slpa, in its place, with macOS's
 # waits, and the breadcrumbs say which waits timed out and when EACC and
 # PACC0 finished powering down; its label is floor-m1-late, and what's said
-# of --m1 and --m1-observe below holds for it too. It ends one of three ways:
+# of --m1 and --m1-observe below holds for it too. --m1-alarm (E2's M1 run 4)
+# is --m1 with pmgr_late=1 and alarm=1: the PMGR quiesce as in --m1-late, no
+# observer (CPU7 goes down before the commit, as in --m1, so no CPU7 record),
+# and the PMU's RTC alarm, for an hour after the commit, written between the
+# commit's first write and the other two; its label is floor-m1-alarm, and
+# what's said of --m1 below holds for it too. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
 #     itself into the regular boot. That's most likely the S2R entry's
 #     watchdog, WD2 (RESEARCH.md, "The floor"): the entry didn't complete.
@@ -37,10 +42,17 @@
 #     After --m1, also, before anything else touches the PMU:
 #       /home/corey/src/sleep-drain/e1-hook/m1-crumbs, for a photo or a copy,
 #       then pkexec /home/corey/src/sleep-drain/e1-hook/m1-crumbs --clear
+#       (after --m1-alarm, --clear also disarms the alarm, 0x1401 back to 0x01,
+#       so that it can't power the Mac on an hour later; every m1 run refuses
+#       to load while it reads armed).
 #   - Dark for good: the screen goes dark, if it isn't already, and it and
 #     the keyboard (dark since the reading began) stay dark past 2 minutes.
 #     Nothing wakes the Mac from it. If that's new (it's a candidate for a
-#     completed entry), leave it at least 30 minutes, then:
+#     completed entry), leave it at least 30 minutes, then the steps below.
+#     After --m1-alarm, do them before about 55 minutes: the alarm fires 60
+#     minutes after the commit, and if it wakes the SoC, the wake lands in
+#     m1n1 with no way back and the Mac hangs, at an unknown draw, until the
+#     power key. If it's dark past that, expect that and end it the same way.
 #       1. Press the power key once, briefly, and wait 30 s. If the screen
 #          comes back, it's the last ending, below.
 #       2. If it stays dark, hold the key until the Mac is off (about 10 s;
@@ -51,7 +63,8 @@
 #          and after run-floor --quiet, the same with --label floor-quiet.
 #          After --m1: m1-crumbs first, as above, then the same with --label
 #          floor-m1 (floor-m1-observe after --m1-observe, floor-m1-late
-#          after --m1-late). --m1 can also hang
+#          after --m1-late, floor-m1-alarm after --m1-alarm: --clear before
+#          the reading, since a PMU write can't change BQCC). --m1 can also hang
 #          dark without completing the entry: DeepIdle's R20 did, on an M2
 #          Pro, and its S2R watchdog never reset it. Only that reading's BQCC tells the two apart, and m1-crumbs
 #          says how far it got, at least. So for --m1, be ready to end it
@@ -98,6 +111,7 @@ quiet=0
 m1=0
 observe=0
 late=0
+alarm=0
 label=floor
 if (($# == 1)) && [[ $1 == --quiet ]]; then
   quiet=1
@@ -117,8 +131,14 @@ elif (($# == 1)) && [[ $1 == --m1-late ]]; then
   observe=1
   late=1
   label=floor-m1-late
+elif (($# == 1)) && [[ $1 == --m1-alarm ]]; then
+  quiet=1
+  m1=1
+  late=1
+  alarm=1
+  label=floor-m1-alarm
 elif (($# != 0)); then
-  die "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late]"
+  die "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -136,6 +156,7 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!m1)) || [[ $parms == *$'\n'm1:* ]] || die "$ko is an older build, without m1: make -C $here"
 ((!observe)) || [[ $parms == *$'\n'observe:* ]] || die "$ko is an older build, without observe: make -C $here"
 ((!late)) || [[ $parms == *$'\n'pmgr_late:* ]] || die "$ko is an older build, without pmgr_late: make -C $here"
+((!alarm)) || [[ $parms == *$'\n'alarm:* ]] || die "$ko is an older build, without alarm: make -C $here"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 [[ $(cat "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none, so the suspend wouldn't be a real one: echo none > $PM_TEST"
@@ -201,6 +222,7 @@ params=(replay=15 oneway=1)
 ((!m1)) || params+=(m1=1)
 ((!observe)) || params+=(observe=1)
 ((!late)) || params+=(pmgr_late=1)
+((!alarm)) || params+=(alarm=1)
 armed=1
 insmod "$ko" "${params[@]}"
 # A build that doesn't know them would load with them ignored, and only warn.
@@ -208,7 +230,8 @@ insmod "$ko" "${params[@]}"
   { ((!quiet)) || [[ $(cat "$MODDIR/parameters/quiet") == Y ]]; } &&
   { ((!m1)) || [[ $(cat "$MODDIR/parameters/m1") == Y ]]; } &&
   { ((!observe)) || [[ $(cat "$MODDIR/parameters/observe") == Y ]]; } &&
-  { ((!late)) || [[ $(cat "$MODDIR/parameters/pmgr_late") == Y ]]; } ||
+  { ((!late)) || [[ $(cat "$MODDIR/parameters/pmgr_late") == Y ]]; } &&
+  { ((!alarm)) || [[ $(cat "$MODDIR/parameters/alarm") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
 echo "e1_hook loaded with ${params[*]}. Leave the Mac alone: in about 10 minutes the reading ends and the Mac suspends into the floor, one way (this script's header says how it can end)"
 "$READING" take --label "$label" --then suspend &

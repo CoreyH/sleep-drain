@@ -75,6 +75,7 @@
  *   pkexec e1-hook/run-floor --m1                 (E2's M1 recipe: m1=1, below)
  *   pkexec e1-hook/run-floor --m1-observe         (its run 2: m1=1 observe=1)
  *   pkexec e1-hook/run-floor --m1-late            (its run 3: those and pmgr_late=1)
+ *   pkexec e1-hook/run-floor --m1-alarm           (its run 4: m1=1 pmgr_late=1 alarm=1)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -256,6 +257,9 @@ MODULE_PARM_DESC(observe, "With m1=1 only: CPU7 isn't released before the commit
 static bool pmgr_late;
 module_param(pmgr_late, bool, 0444);
 MODULE_PARM_DESC(pmgr_late, "With m1=1 only: the table's PMGR quiesce goes out after slpa, in its place in the table (macOS's), with macOS's waits; only WD0's control and the four error-handler masks stay before the keys");
+static bool alarm;
+module_param(alarm, bool, 0444);
+MODULE_PARM_DESC(alarm, "With m1=1 and pmgr_late=1, without observe=1: the PMU's RTC alarm (now + 3600 s) between the commit's first write and the other two, as macOS does on T8103; m1-crumbs --clear disarms it");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -800,8 +804,10 @@ static void e1_after_slpa(void)
  * raw read of 0x6001 gives back K1's 0x50; it stops at its first error. Every
  * PMU access, either path, goes through m1_pmu_ok(): writes only to 0x6001
  * (0x50 or 0x30), 0x6004-0x6007 and 0x6010-0x6016, the spare legacy-scratch
- * bytes DeepIdle uses (Corey's OK of 2026-11-07, PLAN.md); reads only there
- * and of the RTC. Every way back from the replay after 0x50 went out writes
+ * bytes DeepIdle uses (Corey's OK of 2026-11-07, PLAN.md); reads only there,
+ * of the RTC and of the alarm's control (0x1401, every m1 load's check that
+ * no alarm is armed). alarm=1 adds its own, below. Every way back from the
+ * replay after 0x50 went out writes
  * 0x30 again and zeroes the breadcrumbs (m1_undo says how that went).
  *
  * The breadcrumbs (e1-hook/m1-crumbs reads and clears them). Each is the last
@@ -942,10 +948,42 @@ static void e1_after_slpa(void)
  * entry sequences right after it (malik-na/m1-power-lab f4d61b6, the
  * linux-s2r README, L123-125), so a change there wouldn't say whose it was.
  *
- * Left out: Naeem's RTC alarm and his WD1 dead-man, so that a completed
- * entry stays dark for a BQCC floor (the alarm's PMU writes, OK'd on
- * 2026-11-07, wait for their own rung, PLAN.md, and its wake would land in
- * m1n1); his report of idle clusters to the
+ * alarm=1 (run-floor --m1-alarm, E2's M1 run 4; PLAN.md; with pmgr_late=1 and
+ * no observer, since CPU7's record would take 0x6016): the PMU's RTC alarm
+ * between the commit's first write and the other two, as macOS does on T8103
+ * (malik-na/m1-power-lab, the mac27-hv README, try23) and as Naeem's finisher
+ * does (malik-na/linux-aurora m1power/s2r-mem 148c72964eaa, apple-s2r.c
+ * L450-478, GPL-2.0-only), at this Mac's registers (macOS's ADT, spmi-mpmu@F),
+ * with the PMU writes Corey OK'd on 2026-11-07. In 9: the first commit write,
+ * dsb, then raw and polled, each only if the last one worked: 0x14c0 read
+ * (the event) and written back if it wasn't 0, 0x140c = step 8's RTC second +
+ * 3600 (4 bytes, LE, the RTC's own seconds), 0x14c2 = 0, 0x1401 = 0x41. Then
+ * the other two commit writes, dsb, stage 0x5f and nub-spmi0's acks again:
+ * every SPMI command leaves a vector to ack before the deep WFI. CPU7 goes
+ * down in 6, as in run 1, so nothing is up after the commit but CPU0. The
+ * helper stops at its first failure, flushes the FIFO as m1_raw_start() does
+ * and leaves m1_raw alone, so the other two commits and the last crumbs still
+ * go out: a failure leaves a run-3-shaped run, recorded. The bytes:
+ *   0x6004  0x59 in place of 0x58 (8: it says 0x6016 is the result below);
+ *           0x5f after the third commit write
+ *   0x6010  step 8's RTC second, all four bytes, as in run 1
+ *   0x6016  0 from step 8 (the AIC count gives way), then the helper's one
+ *           byte: bit 7 it wrote this; 0 the 0x14c0 read worked; 1 the event
+ *           was set; 2 its echo was acked or not needed; 3 0x140c, 4 0x14c2
+ *           and 5 0x1401 acked (0xbd: all acked, no event; 0xbf: all acked,
+ *           one echoed; bit 7 alone or a partial byte says where it stopped)
+ * With step 7's nub-spmi0 enables all 0, a fired alarm most likely only
+ * latches (Naeem's reading on T8103, apple-s2r.c L417-418; not tested here),
+ * so a completed entry stays dark until the power key. If that's wrong, its
+ * wake at + 3600 s would land in m1n1 with WD1 off and no way back, and hang
+ * until the power key: run-floor's header says to end a dark candidate
+ * before then. m1-crumbs --clear sets 0x1401 back to 0x01 at the next boot,
+ * after a stage that armed it (0x59, 0x5f), and every m1=1 load refuses while
+ * 0x1401 reads armed.
+ *
+ * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
+ * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
+ * clusters to the
  * PMP, which has no known T6000 counterpart; his CPM power gating (0x80000000
  * to pmgr + 0x1c080 and + 0x1c088), with none found either (the table's
  * writes to each cluster's CPM block may be its T6000 form); his zeros to the
@@ -1001,6 +1039,13 @@ static void e1_after_slpa(void)
 #define M1_SPMI_NODE		"/soc/spmi@2920a1300"
 /* The PMU's RTC: 6 bytes, LE, the seconds in the upper four (pmu-alarm). */
 #define M1_PMU_RTC		0x1406
+/* Its alarm (macOS's ADT, spmi-mpmu@F; rtc-alarm-test and pmu-alarm use the same). */
+#define M1_PMU_ALARM_CTRL	0x1401	/* bit 6 enable, bit 0 monitor, bit 1 latched when it fired */
+#define M1_PMU_ALARM		0x140c	/* the compare value: 4 bytes, LE, in the RTC's seconds */
+#define M1_PMU_ALARM_EVENT	0x14c0	/* bit 0, write 1 to clear */
+#define M1_PMU_ALARM_MASK	0x14c2	/* 0 unmasks */
+#define M1_ALARM_ON		0x41
+#define M1_ALARM_SECS		3600
 /* Each core's own interrupt sources, as irq-apple-aic.c names them. */
 #define M1_IPI_SR_EL1		sys_reg(3, 5, 15, 1, 1)
 #define M1_IPI_SR_PENDING	BIT(0)
@@ -1136,16 +1181,30 @@ static __always_inline void m1_clean(const void *p)
 
 /*
  * The only PMU bytes either path touches: writes to the spare scratch bytes
- * and boot stage 0x50 or 0x30, reads of the scratch block and the RTC.
+ * and boot stage 0x50 or 0x30, reads of the scratch block, the RTC and the
+ * alarm's control; with alarm=1, the alarm's registers as Corey OK'd them on
+ * 2026-11-07 (the event written back if it was set, the compare value, 0 to
+ * the mask, 0x41 to the control).
  */
 static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n)
 {
 	unsigned int end = addr + n;
+	bool one = n == 1;
 
 	if (!n || n > 8)
 		return false;
-	if (!write)
+	if (!write) {
+		if (addr == M1_PMU_ALARM_CTRL && one)
+			return true;
+		if (alarm && ((addr == M1_PMU_ALARM && n == 4) ||
+			      ((addr == M1_PMU_ALARM_EVENT || addr == M1_PMU_ALARM_MASK) && one)))
+			return true;
 		return (addr >= 0x6000 && end <= 0x6020) || (addr == M1_PMU_RTC && n == 6);
+	}
+	if (alarm && ((addr == M1_PMU_ALARM_EVENT && one && b[0]) || (addr == M1_PMU_ALARM && n == 4) ||
+		      (addr == M1_PMU_ALARM_MASK && one && !b[0]) ||
+		      (addr == M1_PMU_ALARM_CTRL && one && b[0] == M1_ALARM_ON)))
+		return true;
 	if (addr == 0x6001)
 		return n == 1 && (b[0] == 0x50 || b[0] == 0x30);
 	return (addr >= 0x6004 && end <= 0x6008) || (addr >= 0x6010 && end <= 0x6017);
@@ -1666,6 +1725,53 @@ static void m1_park(void *data)
 	m1_deep_wfi(NULL);
 }
 
+/*
+ * alarm=1, CPU0, between the commit's first write and the other two: the PMU's
+ * RTC alarm, raw and polled (the m1 comment says whose order and what the
+ * byte means). rtc is step 8's 6-byte read of 0x1406. It stops at the first
+ * command that fails, flushes the FIFO and acks as m1_raw_start() does, and
+ * leaves m1_raw alone, so that the commit's other two writes and the last
+ * crumbs still go out; 0x6016 stays 0 if it never began.
+ */
+static void m1_alarm_arm(const u8 *rtc)
+{
+	u8 res = BIT(7), ev = 0, v;
+	unsigned int i;
+	u32 secs;
+
+	memcpy(&secs, rtc + 2, 4);
+	if (!m1_raw || !secs)
+		return;
+	if (m1_spmi_raw(false, M1_PMU_ALARM_EVENT, &ev, 1))
+		goto fail;
+	res |= BIT(0);
+	if (ev) {
+		res |= BIT(1);
+		if (m1_spmi_raw(true, M1_PMU_ALARM_EVENT, &ev, 1))
+			goto fail;
+	}
+	res |= BIT(2);
+	secs += M1_ALARM_SECS;
+	if (m1_spmi_raw(true, M1_PMU_ALARM, (u8 *)&secs, 4))
+		goto fail;
+	res |= BIT(3);
+	v = 0;
+	if (m1_spmi_raw(true, M1_PMU_ALARM_MASK, &v, 1))
+		goto fail;
+	res |= BIT(4);
+	v = M1_ALARM_ON;
+	if (m1_spmi_raw(true, M1_PMU_ALARM_CTRL, &v, 1))
+		goto fail;
+	res |= BIT(5);
+	goto done;
+fail:
+	writel(M1_SPMI_ACT_FLUSH, m1_spmi + M1_SPMI_ACT);
+	for (i = 0; i < M1_SPMI_WORDS; i++)
+		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
+done:
+	m1_crumb(0x6016, &res, 1);
+}
+
 /* Steps K3 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
 {
@@ -1787,10 +1893,10 @@ static void __noreturn m1_after_slpa(void)
 	memcpy(b, rtc + 2, 4);
 	b[4] = flags;
 	b[5] = isrs;
-	b[6] = min(drained, 255U);
+	b[6] = alarm ? 0 : min(drained, 255U);	/* alarm=1: 0x6016 is m1_alarm_arm()'s */
 	m1_crumb(0x6010, b, 7);
 	if (pmgr_late) {
-		b[0] = 0x58;
+		b[0] = alarm ? 0x59 : 0x58;
 		b[1] = parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
 		b[3] = down;
@@ -1817,9 +1923,21 @@ static void __noreturn m1_after_slpa(void)
 			pacc0 = readl(m1_soc + M1_SOC_PACC0) & BIT(4);
 	}
 	writel_relaxed(1, commit);
+	if (alarm) {
+		dsb(sy);
+		m1_alarm_arm(rtc);
+	}
 	writel_relaxed(1, commit);
 	writel_relaxed(1, commit);
 	dsb(sy);
+	if (alarm) {
+		/* The last SPMI command: every one leaves a vector to ack before the deep WFI. */
+		m1_stage(0x5f);
+		for (i = 0; i < M1_SPMI_WORDS; i++)
+			writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
+		dsb(sy);
+		isb();
+	}
 	if (obs) {
 		o->raw = m1_raw;
 		o->down = down;
@@ -1938,7 +2056,7 @@ static int __init m1_init(void)
 	struct device_driver *drv;
 	struct device_node *np;
 	u32 info1, info3, max_irq, nr_irq;
-	u8 v = 0, crumbs[0x20];
+	u8 v = 0, ctrl = 0, crumbs[0x20];
 	unsigned int cpu, i;
 
 	m1_tps = read_sysreg(cntfrq_el0);
@@ -1997,6 +2115,28 @@ static int __init m1_init(void)
 		return -EIO;
 	}
 	pr_info("m1: PMU 0x6000: %*ph\n", 32, crumbs);
+
+	/* Any m1 run: an armed alarm would fire under it, and K1 would zero the mark m1-crumbs --clear needs. */
+	if (m1_kread(M1_PMU_ALARM_CTRL, &ctrl, 1)) {
+		pr_err("m1: the PMU's 0x1401 (the RTC alarm's control) didn't read; refusing\n");
+		return -EIO;
+	}
+	if (ctrl & ~0x03) {
+		pr_err("m1: 0x1401 is %02x: the PMU's RTC alarm is armed. After an alarm=1 run: pkexec e1-hook/m1-crumbs --clear. If macOS left it, pmu-alarm status shows it, and clearing that needs Corey's word (it's outside the 2026-11-07 OK); refusing\n",
+		       ctrl);
+		return -EBUSY;
+	}
+	if (alarm) {
+		u8 ev, mask, cmp[4];
+
+		if (m1_kread(M1_PMU_ALARM, cmp, 4) || m1_kread(M1_PMU_ALARM_EVENT, &ev, 1) ||
+		    m1_kread(M1_PMU_ALARM_MASK, &mask, 1)) {
+			pr_err("m1: alarm: its registers didn't read; refusing\n");
+			return -EIO;
+		}
+		pr_info("m1: alarm: 0x1401 control %02x, 0x140c compare %*ph, 0x14c0 event %02x, 0x14c2 mask %02x\n",
+			ctrl, 4, cmp, ev, mask);
+	}
 
 	m1_cpu_start = ioremap_np(M1_CPU_START, PAGE_SIZE);
 	m1_ps = ioremap_np(M1_PMGR_PS, PAGE_SIZE);
@@ -2357,6 +2497,10 @@ static int __init e1_check_params(void)
 		pr_err("pmgr_late=1 is part of the M1 recipe: it needs m1=1 (and replay=15 oneway=1 quiet=1)\n");
 		return -EINVAL;
 	}
+	if (alarm && (!m1 || !pmgr_late || observe)) {
+		pr_err("alarm=1 needs m1=1 pmgr_late=1 and no observe=1 (CPU7's record would take 0x6016)\n");
+		return -EINVAL;
+	}
 	if ((replay & (2 | 8)) && !oneway) {
 		pr_err("replay=%u can't be undone: it writes the post-slpa table%s. Load it with oneway=1 as well\n",
 		       replay, (replay & 2) ? " and powers every CPU down for good" : "");
@@ -2517,9 +2661,9 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
-		pmgr_late ? " pmgr_late=1" : "");
+		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "");
 	return 0;
 
 unmap:
