@@ -26,10 +26,14 @@ the PR with that session's work.
 - **In progress: E2, making the S2R entry complete** (A5). maralcbr's
   replay with Naeem's M1 recipe takes every core down and commits the entry,
   but the entry never completes: the engine's own watchdog, WD2, resets the
-  SoC about 30 s after the commit (RESEARCH.md, "M1 run 2" and "M1 run 3"). In
-  run 3, with macOS's PMGR quiesce in macOS's place, only DISPLAY's and
-  SIO_CPU's waits timed out. Next is M1 run 4, the RTC alarm rung (fix rung 1
-  below), built and waiting for an attended run (`run-floor --m1-alarm`).
+  SoC about 30 s after the commit (RESEARCH.md, "M1 run 2", "M1 run 3" and
+  "M1 run 4"). In run 3, with macOS's PMGR quiesce in macOS's place, only
+  DISPLAY's and SIO_CPU's waits timed out. Run 4 (2026-11-08: that quiesce,
+  the PMU's RTC alarm between the commit's first write and the other two, no
+  observer) ended the same way, the reset 29.6-31.3 s after the commit, with
+  CPU1-7 and both P complexes off before it; the armed alarm survived the
+  reset. Next is Corey's pick from the rungs below (their order is at the
+  top of that list).
 
 ## Picking this up
 
@@ -382,11 +386,18 @@ steps, and restarting the DCP and the PMP afterwards.
       - A reset with the observer up doesn't rule a change out: CPU7 stays
         up to about 1.5 s after the commit. Any rung whose readout comes
         back clean gets a run without it.
-    - The fix rungs after run 3, ranked (RESEARCH.md, "After M1 run 3"): one
-      per run, and each one that moves the replay toward macOS's sequence
-      stays in the runs after it, unless Corey picks a cumulative rung.
-      1. **M1 run 4: the PMU's RTC alarm** (built, to run: e1_hook `alarm=1`,
-         `pkexec e1-hook/run-floor --m1-alarm`), written between the first
+    - The fix rungs after run 3, ranked (RESEARCH.md, "After M1 run 3" and
+      "After M1 run 4"): one per run, and each one that moves the replay
+      toward macOS's sequence stays in the runs after it, unless Corey picks
+      a cumulative rung.
+      **The order after run 4 (judgment; this is the only place it's kept):**
+      the PMP out (rung 3) first if Corey OKs its new RTKit message and ASC
+      write, else every core held (rung 2), which needs only Corey's go; then,
+      beside the ladder, the reconfig SRAM question and DJ's T8140 driver
+      (both Corey's OK); then rungs 4-7 as numbered. Corey picks.
+      1. **M1 run 4: the PMU's RTC alarm** (ran 2026-11-08, `e1_hook alarm=1`,
+         `pkexec e1-hook/run-floor --m1-alarm`: stage 0x5f, 0x6016 = 0xbd,
+         the reset at about 30 s; the armed alarm survived it), written between the first
          commit and the other two. macOS does it on T8103 (mac27-hv README
          L88-91);
          DeepIdle reports the alarm after the commit from DJ's T8140 trace
@@ -394,12 +405,15 @@ steps, and restarting the DCP and the PMP afterwards.
          are, or whether any follow the alarm), and its decode of macOS 13.5
          has T6020 re-program the alarm
          after quiesceHW (a static decode, not a trace). Every completed
-         T8103 Linux entry has it. No T600x attempt has written it after the
-         commit: T6020 armed it before the suspend (L2741), and this Mac's
-         three runs never armed it. Against it: macOS's try41 had the alarm
-         and still took WD2's reset (README L370-373), so it isn't enough by
-         itself, and whether it's needed is untested on every SoC. A cheap
-         test of a low-prior cause.
+         T8103 Linux entry has it. Only this Mac's run 4 has written it after
+         the commit, between the commit's first write and the other two (run 4,
+         with nub-spmi0's enables all 0, and it still took the reset); T6020
+         armed it before the suspend (L2741), and runs 1-3 never armed it.
+         Against it: macOS's try41 had the alarm and still took WD2's reset
+         (README L370-373), so it isn't enough by itself (run 4: nor on T6000
+         with its line off), and whether it's needed is untested on every
+         SoC (run 4 can't say: an entry that doesn't complete looks the same
+         either way). A cheap test of a low-prior cause.
          - Corey OK'd its PMU writes on 2026-11-07: 0x14c0 (the event,
            written back if set), 0x140c (now + 3600 s), 0x14c2 (0), 0x1401
            (0x41), and 0x1401 back to 0x01 at the next boot. No new MMIO, no
@@ -412,8 +426,12 @@ steps, and restarting the DCP and the PMP afterwards.
            macOS, whose own entries keep every core up to the commit (rung
            2). Two changes against run 3, so it's cumulative; on a reset it
            clears the alarm and CPU7's staying up as sole blockers in one
-           run. (The strict way, one change at a time, was run 3 without
-           the observer first, then the alarm.)
+           run (run 4, a reset: both, on the assumption that the alarm's
+           commands and the post-commit acks are harmless. Run 1, CPU7 down
+           with no alarm and no `pmgr_late`, had already reset; run 4 extends
+           that to `pmgr_late`; run 3 without the observer and without the
+           alarm is still unrun). (The strict way, one change at a time, was
+           run 3 without the observer first, then the alarm.)
          - The build: `alarm=1` (with `m1=1 pmgr_late=1`, no `observe`). In
            step 9: commit once, dsb; then over raw polled SPMI, only if step
            8's RTC read worked: read 0x14c0 and, if it read non-zero, write
@@ -459,10 +477,16 @@ steps, and restarting the DCP and the PMP afterwards.
              survived the reset. 0x01 with 0x140c right means the reset or
              the boot firmware cleared it (new; the run still counts), or,
              past the alarm's time, that it may have fired (T8103's fired
-             alarm reads 0x01). `m1-crumbs` says which.
+             alarm reads 0x01). `m1-crumbs` says which. (Run 4, 2026-11-08:
+             0x41, 0x140c = 188497 = the commit's second + 3600: the armed
+             alarm survived the reset and the boot; `--clear` set 0x1401 back
+             to 0x01.)
            - A reset at about 30 s: the alarm written between the commits,
              with nub-spmi0's enables all 0, doesn't complete the entry,
-             assuming its own commands are harmless. That doesn't test the
+             assuming its own commands are harmless. (Run 4: this case, with
+             CPU7 down before the commit and no observer; its own commands
+             include the SPMI commands after the first commit and the
+             post-commit acks.) That doesn't test the
              alarm with its line enabled: every completed T8103 run had word
              6 = 1 or word 0 bit 2 set (apple-s2r.c L420-436). A later variant
              could set EN(0) = BIT(2) in step 7 (a new value in a register
@@ -480,17 +504,22 @@ steps, and restarting the DCP and the PMP afterwards.
              build then; no module change).
            - A reset well away from 30 s: new; read everything else first.
       2. **Every core held through the commit** (XNU's global sleep on H13;
-         RESEARCH.md, "After M1 run 3"). CPU0 writes each parked core's stop
-         bit before the first commit, as `observe=1` does for CPU7, and
-         releases them after the third; then each arms ACC_OVRD and takes
-         its deep WFI. Same addresses, no new PMU byte, toward macOS, so
+         RESEARCH.md, "After M1 run 3" and "After M1 run 4"). Each parked
+         core writes its own stop bit, as in runs 1, 3 and 4, and holds,
+         spinning, until CPU0 lets go after the third commit write (Naeem's
+         reading of the T8103 traces has each secondary writing its own bit,
+         about 40 ms before the commit, bd01a988d309; CPU0 writing CPU7's bit
+         in `observe=1` was this replay's choice); then each arms ACC_OVRD and
+         takes its deep WFI. Same addresses, no new PMU byte, toward macOS, so
          it needs only Corey's go. Naeem's newest commits do this on T8103,
-         with no result yet. Against it: his earlier T8103 Linux entries
+         with no result yet. Against it: Naeem's earlier T8103 Linux entries
          complete without it, and T6020's R11-R15 released their secondaries
-         after the commit, R16-R17 before it, and all reset. Low prior. With
-         CPU0 alone after the commit, nothing would read the others down;
-         keeping CPU7 as the observer for that run would (it reads CPU1-6 as
-         it reads CPU0).
+         after the commit, R16-R17 before it, and all reset. Low prior (about
+         1 in 15, judgment). The readout: CPU0 reads the others down after
+         the release and goes last, since CPU7 as the observer would stay up
+         through the commit in a way the rung is about (and `alarm=1` refuses
+         the observer); a run without that readout comes after a clean one.
+         To build next, unless Corey OKs rung 3 first.
          - Could ride along: entries 2-6 (WD0's control and the four +0xa00
            masks), which `pmgr_late` still sends before the keys in
            maralcbr's lab order. Toward macOS, no new write, low prior.
@@ -545,11 +574,20 @@ steps, and restarting the DCP and the PMP afterwards.
         read-only, the one step that could read what it waits for rather
         than guess. Naeem dumped and decoded T8103's (0x23df00000, 128 KiB,
         12 sequences; linux-s2r README L99-104); on T6000 the address isn't
-        known. The AON block isn't a same-offset copy of T8103's (the commit
-        is +0x2c4000 on T8103 and +0x5c4000 here), and the ADT's AON windows
-        don't reach the offset T8103's would suggest (0x292f00000, a guess).
-        So first a basis for the address. An unmapped or unlisted AON
-        address may SError or have read side effects.
+        known. A basis (inferred; RESEARCH.md, "After M1 run 4"): PongoOS's
+        table has T8012's and T8015's at AON + 0xf00000, as T8103's is, which
+        here would be 0x292f00000; but the AON block isn't a same-offset
+        copy of T8103's (the commit is +0x2c4000 on T8103 and +0x5c4000 here),
+        the ADT's AON windows don't reach that offset, and PongoOS's are
+        0x10000 long and read the table's offset from a config register
+        (T8103's is at SRAM + 0, Naeem's dump). So the first read would be that
+        register's analogue by the commit's shift, 0x2925c0200 (and its lock
+        at 0x2925c0214, as PongoOS's +0x2c0214), inside the ADT-declared
+        window 0x2925c0000 + 0x14000; then one word of 0x292f00000; then a
+        table check before any dump, 0x10000 first. An unmapped or unlisted
+        AON address may SError or have read side effects, and a read isn't
+        part of any run: Corey's OK first, in a safe boot of its own or with
+        the confound stated.
       - Riding along when bytes allow, reads only: WD2's raw count and bite
         after the commit (what the commit loads), and the commit page. If an
         observer run comes back: first-read buckets in microseconds with a

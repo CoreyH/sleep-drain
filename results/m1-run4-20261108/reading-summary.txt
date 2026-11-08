@@ -1,0 +1,1 @@
+time=2026-11-08T13:33:00+01:00 ts=1794141180 label=floor-m1-alarm boot=safe then=suspend boot_id=e679a97a-c202-4e27-b1ce-c63f481e2fd4 minutes=10 samples=61 window=1794141120-1794141180 charge_now_uah=4997000 voltage_uv=12477000 current_ua=-514000 charge_counter=-352773 capacity=99 uptime_s=636.84 ac=0

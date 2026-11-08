@@ -1669,7 +1669,12 @@ records.
   floor's reset as after a clean power-off ("The floor"), so it keeps
   history, not this reset.
 - The only trace of the reset in the PMU stays the boot-error stage, 0x6003
-  = 0x50.
+  = 0x50. It keeps the stage of the last unclean end: since run 1 that has
+  been 0x50 at every boot (runs 2-4's load logs read it 0x50 before those
+  runs), so it can't tell one reset from another. The per-boot record is
+  macsmc-reboot's "PMU logged N boot error(s)" line in that boot's journal
+  (macsmc-reboot.c L189-198 at 4fdd0fc5; run 4's reset logged 1, and the safe
+  boot before it logged none).
 - All of these are read-only reads through the PMU's nvmem, at the offsets
   macOS's device tree gives. `results/m1-run1-20261107/pmu-after-reset.txt`
   has the details. A control read at a later clean boot will compare the
@@ -1720,8 +1725,11 @@ declares its standby as an SMC write of MBSE (`function-external_standby`,
 `observe=1`). It is run 1 with one change: CPU7, P1's last core, isn't
 released before the commit.
 - CPU0 writes CPU7's stop bit before the commit, while CPU7 still spins.
-  That's macOS's order: on T8103 it writes the other cores' bits while
-  they stall in WFE.
+  That was the replay's reading of macOS's order: on T8103 each secondary
+  writes its own stop request about 40 ms before the commit (Naeem's reading
+  of the T8103 traces, malik-na/linux-aurora bd01a988d309's message), and only then
+  arms ACC_OVRD and takes its deep WFI after the commit; CPU0 doesn't write
+  them. T6000's macOS order isn't traced publicly.
 - After the commit, CPU0 hands over and goes into its deep WFI. CPU7 then
   polls CPU0's and the E complex's PMGR power states for up to 500 ms each.
 - CPU7 reads the three watchdogs, the seven soc clusters' busy bits,
@@ -2056,8 +2064,10 @@ decoder):**
   holds the engine: both were unfinished, and no byte reads the engine.
   T6020 was left with neither as far as its records go (display domains off,
   SIO on), but it recorded neither DISPLAY's bit nor SIO_CPU's state.
-- Whether `pmgr_late` matters without the observer: no run has `pmgr_late`
-  and no observer. Run 1 had no observer and no `pmgr_late`.
+- Whether `pmgr_late` matters without the observer: run 4 has `pmgr_late`
+  and no observer, but with the alarm in the same run; `pmgr_late`, no
+  observer and no alarm is still unrun. Run 1 had no observer and no
+  `pmgr_late`.
 - EACC: CPU7's first read is at the hand-over itself (e1_hook.c L1530-1533)
   and bucket 0 is any read under 5 ms. EACC has no earlier read, so "never
   pending in this run" (its awake state is bit 4 clear) can't be told from
@@ -2072,7 +2082,10 @@ decoder):**
   boot; the table never writes it; T6020's macOS ends it at 3, worklog L2682), and anything
   behind the parked clocks: not read.
 - Whether CPU7 staying up matters: it was up at most about 1.5 s after the
-  commit, likely milliseconds; nothing here says, either way.
+  commit, likely milliseconds; nothing here says, either way. Run 1 (CPU7
+  down, no alarm, no `pmgr_late`) had already reset; run 4 took CPU7 down
+  before the commit with `pmgr_late` and reset the same way, so CPU7 staying
+  up is not the sole blocker, if the alarm's commands are harmless (inferred).
 
 **So:** with the quiesce in macOS's place and every wait but DISPLAY's and
 SIO_CPU's reading met within 10 ms, the entry still ends in the reset. The
@@ -2124,7 +2137,8 @@ on it.
   and wake cycles, including an 8/8 soak" on Linux since 2026-11-06, with no
   power figure; the author's claim, read as prose. The driver it names
   (`drivers/soc/apple/t8140-sleep.c`) wasn't found publicly and has no OK of
-  Corey's to read.
+  Corey's to read. (2026-11-08: aurora-silicon/linux PR #1208 carries it,
+  unread; "After M1 run 4" has what its text reports.)
 
 **What the three SoCs still say (inferred):** T8103's Linux entry completes
 with almost nothing: no SMC handshake in one run, no PMP firmware or an
@@ -2134,8 +2148,209 @@ waits, every driver-held domain off, the PMP idled, SMC, AOP, SIO and SEP
 messages and macOS's wake mask. T6000 and T6020 fail at the same point with
 very different device state, so a common cause is favoured over a
 T6000-only anomaly, and the common untested set is short: the alarm after
-the commit, the PMP's CPU stopped or absent, the fabric lanes' PS_AUTO, the
-PCIe ports, the SMC deadline word, the MCC quiesce. Nothing here shows what
-the AON engine's completion condition is, on any SoC.
+the commit (tested since on T6000 alone, run 4: not sufficient with
+nub-spmi0's enables all 0; its line enabled untested), the PMP's CPU stopped
+or absent, the fabric lanes' PS_AUTO, the PCIe ports, the SMC deadline word,
+the MCC quiesce. Nothing here shows what the AON engine's completion
+condition is on T8103, T6020 or T6000; on T8140, DJ's PR text names two
+CPU-side conditions ("After M1 run 4").
 
-**The ladder from here** is in PLAN.md (M1 run 4 and the rungs after it).
+**The ladder from here** is in PLAN.md (the rungs after M1 run 4).
+
+### M1 run 4: the PMGR quiesce and the RTC alarm, no observer: every core but CPU0 down before the commit, the alarm written between the commits, and the SoC still resets at about 30 s (2026-11-08)
+
+`e1-hook/run-floor --m1-alarm` (`replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1
+alarm=1`, #41 at 3336cf1; flag `radios-off`), in a safe boot, on battery at
+99% (`reading-summary.txt`). Against run 3 it has two changes, Corey's pick of
+a cumulative shape: the PMU's RTC alarm, written between the commit's first
+write and the other two, and no observer (CPU7 released before the commit, as
+in run 1). Raw data: `results/m1-run4-20261108/`; its load log is the awake
+baseline.
+
+The reading ended at 13:33:00 and was saved. The Mac suspended, went dark and
+restarted by itself into the regular boot (`boots.txt`: `uptime -s` 13:33:57).
+That boot's journal has macsmc-reboot's "PMU logged 1 boot error(s) and 0
+panic(s)"; the safe boot's journal doesn't. macsmc-reboot.c L189-198 (at
+4fdd0fc5) only logs and zeroes the PMU's counts; that the count marks an
+unclean end is inferred, from the cell's name and the pattern here.
+
+**The facts (each byte re-derived from e1_hook.c at 3336cf1, not from the
+decoder):**
+- **Stage 0x5f** (L1937): the last SPMI command after all three commit writes
+  and a dsb (L1927-1934). CPU0 issued the third commit write and raw SPMI still
+  worked after it. Nothing later is recorded: the acks, ACC_OVRD, CYC_OVRD, the
+  WFI.
+- **0x6016 = 0xbd** (`m1_alarm_arm()`, L1738-1775): 0x14c0 read 0 (no event,
+  nothing to echo), then 0x140c, 0x14c2 = 0 and 0x1401 = 0x41, each acked
+  (the reply's ack bit, L1334), all between the commit's first write and the
+  other two (L1927-1933). Acked isn't a read-back: the next boot's 0x140c and
+  0x1401 confirm those two; 0x14c2 read 0 at load already, so its value shows
+  nothing.
+- **The commit's second:** 0x6010-0x6013 = 184897, step 8's RTC second, about
+  0.1 ms (two SPMI commands, inferred) before the first commit write
+  (L1893-1899).
+- **The cores:** parked 0xfe (all seven). 0x6007 = 0xfe: CPU1-7, CPU7 included,
+  read off within 10 ms of their release, in the order 1, 2, 3, 5, 6, 4, 7.
+  0x6014 = 0xb0: PCPM0 and PCPM1 read off (PCPM1 and CPU7 for the first time
+  with `pmgr_late`: run 3 kept CPU7 up, run 1 had no `pmgr_late`), CPU0 had
+  nothing pending at step 8, WD1 was off at step 4 (apple_wdt's suspend had
+  stopped it: it read 0x4 at load), K3's write worked. 0x6015 = 0: no core had
+  an interrupt pending at its stop.
+- **qto (0x6006) = 0x50:** of macOS's 15 waits, only DISPLAY's (entry 58) and
+  SIO_CPU's (61) timed out, as in run 3; the other 13 read met within 10 ms,
+  both DCS waits among them (no byte in this run records DCS's value).
+- **The reset.** The SoC restarted by itself 29.6-31.3 s after step 8's
+  second (two `m1-crumbs` reads, 29.6-31.6 and 29.3-31.3, `boots.txt`), the
+  ending of runs 1-3 (29.6-31.6, 28.6-30.6, 30.0-31.6). The four windows still
+  meet at 30.0-30.6 s, as run 3's three did (inferred, if the delay is the same
+  each time; the counter's restart may lag the reset by an amount common to all
+  runs). That it's WD2's reset is a strong inference (runs 2 and 3 read its
+  control 4 with 30 s to its bite; the timing; WD1 off at step 4); no observer
+  read WD2 in this run, and the PMU doesn't record the cause.
+- **The alarm survived the reset.** At the next boot 0x1401 read 0x41 (armed),
+  0x140c 188497 (the commit's second 184897 + 3600), 0x14c0 0, 0x14c2 0, about
+  8 minutes after the reset and again about 40 s later at `m1-crumbs --clear`,
+  which then set 0x1401 back to 0x01 and zeroed the breadcrumbs (`crumbs.txt`,
+  `boots.txt`). Disarmed at about +9 minutes, it never fired.
+- **The load log** against run 3's: the alarm line is new (0x1401 = 01, 0x140c =
+  96 8e 00 00 = 36502, 0x14c0 and 0x14c2 = 0); the observer's lines are gone with
+  the observer; which idle P cores read power state 0x100 differs, as it does
+  between any two boots; no wait word changed. 36502 is `e1-hook/check`'s 60 s
+  alarm of 2026-11-06 19:19:48 UTC (`e1-hook-20261106T201837/log.txt`; inferred
+  from the PMU RTC's epoch): the compare value stayed through 41 hours and the
+  floor runs' and runs 1-3's resets (inferred, nothing else wrote it).
+- 0x6003 = 0x50 says nothing about this run: it keeps the stage of the last
+  unclean end, and since run 1 that has been 0x50 at every boot (run 4's load
+  log already reads it, as runs 2's and 3's do), so it can't tell one reset from
+  another.
+
+**What they show:**
+1. The run counts by PLAN.md's rule (0x5f with 0x6016 = 0xbd): the alarm's
+   commands were acked and all three commit writes were sent. The entry still
+   doesn't complete. The alarm written between the commits, with nub-spmi0's
+   enables all 0 (step 7, L1886-1887), doesn't complete the entry on T6000
+   (for this configuration; as macOS's try41 already showed on T8103 with the
+   alarm present).
+2. CPU7 and PCPM1 down before the commit with macOS's PMGR quiesce in macOS's
+   place: shown for the first time, with the same two waits timing out as in
+   run 3. That match says nothing about CPU7: `qto` is measured in step 5,
+   before step 6 releases any core (L1823-1851), so in runs 3 and 4 all seven
+   cores were parked and spinning at every wait. With no observer and CPU7 down
+   before the commit, the reset is unchanged, so CPU7's staying up (runs 2
+   and 3) is not the sole blocker, if the alarm's commands are harmless
+   (inferred). Run 1 (CPU7 down, no alarm, no `pmgr_late`) had already reset;
+   run 4 extends that to `pmgr_late`.
+3. `pmgr_late`'s result repeats without the observer, but with the alarm in
+   the same run: the cell `pmgr_late`, no observer, no alarm is still unrun.
+4. The reset's timing doesn't depend on which core goes down last: CPU0 alone
+   after the commit in runs 1 and 4, CPU7 in runs 2 and 3 (inferred, if the
+   delay is constant; the windows allow it).
+5. New: on T6000 the armed alarm survives the reset and the boot firmware, as
+   the PMU's scratch bytes do. Every alarm run must be followed by `m1-crumbs
+   --clear`, or the alarm stays armed until +3600 s; what a fired alarm does
+   after a reset is unknown.
+
+**What the data can't tell apart:**
+- Alarm not needed, needed but not sufficient, or the alarm's commands
+  harmful: a reset looks the same. The commands aren't only the alarm's three
+  writes: there's a read and four SPMI writes between the commit's first write
+  and the other two (0x14c0, 0x140c, 0x14c2, 0x1401, the 0x6016 crumb), stage
+  0x5f after the third, and a second round of nine acks, none of which runs 1-3
+  had.
+- Which open blocker holds the engine, or several: DISPLAY's unfinished
+  power-down and SIO_CPU's half-on state (`qto` 0x50 again), the PMP, or
+  something no byte reads. No byte reads the engine.
+- That this reset is WD2's: strongly inferred, not read in this run.
+- CPU0's and the E complex's state after the commit: nothing here reads them
+  (runs 2 and 3 read them off, with CPU7 up). Whether CPU0 reached its deep WFI
+  is not recorded either: 0x5f comes before the acks and the WFI.
+- Which commit write anchors WD2's count: the writes are 0.2-0.4 ms apart at
+  most (inferred) against a 1 s timer.
+
+**So:** with every core but CPU0 down before the commit, both P complexes off,
+nothing pending, macOS's PMGR quiesce in its place and the alarm armed between
+the commits, the entry still ends in the reset at about 30 s. The alarm doesn't
+complete the entry here, in this configuration, and stays in the recipe as a
+move toward macOS. The clearest unmet differences at the commit remain
+DISPLAY's unfinished power-down, SIO_CPU's half-on state and the PMP running
+un-idled (none is shown to matter).
+
+### After M1 run 4: what's new, and what's left to try (2026-11-08)
+
+Desk work, no hardware: five research tracks (run 4's bytes re-derived from the
+code, new sources, every core held through the commit, the PMP out, what else
+is left), a synthesis, and an adversarial check of every claim the next rung
+rests on. Sources, heads rechecked 2026-11-08 at 13:53-14:04 UTC:
+JJRPF/Aurora-DeepIdle 03cb9f059cc9, malik-na/m1-power-lab a2d5e147f0dc,
+malik-na/linux-aurora `m1power/s2r-pmp` b6b2ea1d19e0 and `m1power/s2r-mem`
+148c72964eaa (Naeem's Linux driver and deep stop, GPL-2.0-only), maralcbr/linux
+(unchanged), omacom/linux-aurora 4fdd0fc5, xnu-12377.121.6, checkra1n/PongoOS
+(`recfg_soc.c` and `recfg.h`: its base table and sequence format only),
+aurora-silicon/linux PRs #1208, #1217 and #1225 and aurora-silicon/aura #112
+and #117 (the PR text only; #119's title only) and macOS's ADT. No m1n1 code,
+scripts or traces, and no Aura code.
+
+**New since run 3:**
+- No public source shows an S2R entry completed from Linux on T600x.
+- **DJ's T8140 series** (aurora-silicon/linux#1208, head cd27afb6ccd0; the
+  author's prose, and the driver wasn't opened: it has no OK of Corey's to
+  read) reports completed, returning entries from Linux on a J700: 30 of 30
+  over two boots, and 16 of 16 on battery with nothing plugged in, with a
+  0.049 W average over a 300 s sleep (entry and wake included), against 0.109 W
+  measured for macOS under aura on that machine. Its text names two CPU-side
+  conditions: a core that misses its stop holds the sleep engine until the
+  watchdog resets the SoC, and a cluster power-gate enable, set at boot,
+  without which "the sleep engine never started" (a 5 s reset there). It says
+  nothing of a device-side condition, though its driver refuses a sleep unless
+  both DCPs, the PMP and SIO have stopped; its text says the PMP's "idle and
+  stop" are the sleep's last step. T8140's order starts with WD2, which T6000's
+  table never writes, so the order itself doesn't transfer.
+- **Naeem's global sleep:** no result published. b6b2ea1d19e0's message says
+  "Found by review of bd01a988d before the hardware run", and bd01a988d309's
+  names this repo's T6000 port as the lead, so that support isn't independent
+  of this repo. Naeem's newest reading of the T8103 traces corrects this notebook:
+  each secondary writes its own stop bit about 40 ms before the commit
+  (corrected in the "M1 run 2" section above).
+- **DeepIdle:** R18B was armed and stopped before suspend (the SEP driver
+  failed to bind, a loader race, fixed); no result yet, and R21 is built and
+  not armed (03cb9f059cc9).
+- **The PMU's alarm on a J316s:** RyanTheTide's receipts on aurora-silicon/linux
+  #1225 (2026-11-08) report, on their test kernel, that the alarm's comparator
+  matches (the control's ARM bit clears itself) but the alarm never reaches the
+  AP's SPMI interrupt, and the event register "keeps the same value". This Mac's
+  own result is the opposite: the alarm wakes s2idle through the SPMI interrupt
+  ("The alarm wakes J314s from s2idle"). "Keeps the same value" fits this
+  repo's note that a set 0x14c0 blocks the edge ("Awake test: the alarm fires,
+  and how its event clears"), but their board or setup could differ; not told
+  apart.
+
+**Where the candidates stand** (the order is in PLAN.md, and only there):
+- **The PMP out** (idle pair, then its CPU stopped). Every completed T8103 Linux
+  entry had no PMP firmware or an idled PMP (Naeem's linux-s2r README L108-120);
+  T8140's text stops the PMP in the sleep's last step; T6020 idled the PMP and
+  reset, and no R-run stopped its CPU; macOS on T6000 has the PMP and PMS_SRAM
+  domains off at sleep entry ("PMGR power states on this Mac", above), which no
+  run reaches, since ps_pmp is never-write. On this Mac the PMP has run un-idled through all four
+  runs. So it's the largest difference at the commit that T8103 can't speak
+  against and T6020 only half tried (inferred). Against holding the cores first:
+  T8103's Linux entries complete without it, T6020's R11-R15 went down after the
+  commit and reset, and on this Mac CPU1-6 read off at their release in all four
+  runs (CPU7 before the commit in runs 1 and 4; in runs 2 and 3 it stayed up and
+  its power-down is unobserved). A moderate prior, perhaps 1 in 5 (judgment).
+  It's a new RTKit message and an ASC write: Corey's OK first.
+- **Every core held through the commit** (XNU's H13 global sleep, no new
+  address, no new PMU byte): the same shape as T8140's held cores, but T8103's
+  Linux entries complete without it and CPU7 held through the commit in runs 2
+  and 3 changed nothing. A low prior, about 1 in 15 (judgment); it would read
+  all seven cores going down after the commit for the first time on T6000.
+- **The engine's reconfig SRAM, read-only.** There is now a basis for T6000's
+  address (inferred): PongoOS's table has T8012 and T8015 at AON + 0xf00000 and
+  Naeem's T8103 SRAM is AON + 0xf00000 (0x292f00000 here, by the ADT's AON
+  base), but T6000's AON isn't a same-offset copy (the commit is +0x5c4000 here,
+  +0x2c4000 on T8103). PongoOS reads the table's offset from a config register
+  at AON + 0x2c0200 on those SoCs, and the lock at +0x2c0214; by the commit's
+  shift those would be 0x2925c0200 and 0x2925c0214, inside the ADT-declared
+  window 0x2925c0000 + 0x14000, which makes them the safer first read
+  (inferred). PLAN.md has the question for Corey.
+- **DJ's T8140 driver:** reading it needs Corey's OK, as Naeem's did; the
+  alternative is asking DJ (a post, Corey's OK each time). Not a rung.

@@ -1,0 +1,16 @@
+0x6000: 00 30 00 50 5f fe 50 fe  00 00 00 00 00 00 00 00
+0x6010: 41 d2 02 00 b0 00 bd 00  00 00 00 00 00 00 00 00
+boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (0x50: an unclean end after the replay began)
+stage 0x6004 = 0x5f (pmgr_late=1): alarm=1: the commit x3 and the alarm's commands done (0x6016 says how far); next came nub-spmi0's acks and CPU0's deep WFI
+  (the last breadcrumb that reached the PMU: the run got at least that far)
+parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+0x6006 = 0x50: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)
+read off within 10 ms (0x6007 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+RTC second at just before the commit: 184897, 512 s before now (185409)
+0x6014 = 0xb0: CPU0 had nothing pending before the commit; PCPM0 off, PCPM1 off; WD1 was off; K3's kernel-path write after slpa worked
+0x6015 = 0x00: cores with an interrupt pending at their stop: none
+0x6016 = 0xbd: every alarm command was acked (no event was set): 0x140c, 0x14c2 = 0, then 0x1401 = 0x41
+the SoC restarted about 31 s after the commit (29.6 to 31.6 s: the PMU's RTC counts whole seconds); its counter (CNTVCT) is 481.4 s old. Right only in the first boot after the run
+PMU alarm: 0x1401 = 0x41 (armed, fires in 3088 s), 0x140c = 188497, 0x14c0 event 0x00, 0x14c2 mask 0x00
+  0x140c is the commit's second + 3600, as the run wrote it
+  the armed alarm survived the reset
