@@ -961,6 +961,74 @@ def main():
             check(r.returncode == 0 and f"0x{st:02x} (pmgr_late=1)" in r.stdout and "hold=1" not in r.stdout,
                   f"stage 0x{st:02x} stays pmgr_late's, not hold's", r.stdout + r.stderr)
 
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+        run1 = "4800000000 24000000"
+        # pmp_out=1 on hold=1, the expected reset. Bit 7 of the stage byte says 0x6015 is the PMP's byte.
+        rec = dict(parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0xb0, drained=0xbd, prog=[0xfe, 0x00])
+        fake(path, scratch(0x5e | 0x80, isrs=0x8e, **rec), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0xde (pmp_out=1: bit 7, so the stage is 0x5e) (pmgr_late=1): hold=1: everything recorded" in out
+              and "0x6015 = 0x8e: K4 ran: the idle pair returned 0, CPU_STATUS read idle (low bits 10), RUN read 1 before its clear and 0: the PMP's CPU is STOPPED\n" in out
+              and "cores with an interrupt pending" not in out
+              and "read off after the release (0x6005 = 0xfe" in out
+              and "0x6016 = 0xbd: every alarm command was acked" in out
+              and "0x140c is the commit's second + 3600, as the run wrote it" in out,
+              "pmp_out=1's 0xde, the expected reset: the PMP's byte, not the cores' interrupts", out + r.stderr)
+        fake(path, scratch(0x5e | 0x80, isrs=0xce, **rec), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and "the PMP's CPU is STOPPED; some core had an interrupt pending at its stop\n" in r.stdout,
+              "pmp_out=1: bit 6 is the cores' interrupts, reduced to a bit", r.stdout + r.stderr)
+
+        def pmp(byte, stage=0xde):
+            fake(path, scratch(stage, isrs=byte, **rec), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+            r = run(path, cnt=run1)
+            return r.returncode, r.stdout, r.stderr
+
+        for byte, want, what in (
+                (0x83, "CPU_STATUS read idle (low bits 11); RUN wasn't touched (pmp_stop=0)", "pmp_stop=0, idle seen"),
+                (0x80, "CPU_STATUS's low two bits read 0 for the whole 10 ms", "the status never read idle: RUN not cleared"),
+                (0x90, "the idle pair TIMED OUT (-ETIME)", "-ETIME: the PMP's state unknown"),
+                (0xa0, "firmware CRASHED during the idle pair", "the firmware crashed"),
+                (0xb0, "the idle pair FAILED with another error", "another error"),
+                (0x89, "RUN read 0 before its clear and 0: the PMP's CPU is STOPPED", "RUN read 0 before, 0 after"),
+                (0x86, "RUN read 1 before its clear and 1 after the write: NOT stopped", "RUN stuck at 1 after the write")):
+            rc, out, err = pmp(byte)
+            check(rc == 0 and want in out and f"0x6015 = 0x{byte:02x}: K4 ran" in out, f"pmp_out=1's byte: {what}", out + err)
+        rc, out, err = pmp(0x06)
+        check(rc == 0 and "bit 7 is clear, so the PMP's byte didn't survive the reset" in out and "K4 ran" not in out,
+              "pmp_out=1's byte, bit 7 clear: not decoded", out + err)
+        # Stage 0x5a tagged: the alarm's inconclusive case still reads, and the second stays whole.
+        rc, out, err = pmp(0x8e, stage=0xda)
+        check(rc == 0 and "0xda (pmp_out=1: bit 7, so the stage is 0x5a)" in out and "stage 0x5a, so nothing records the two commit writes" in out
+              and "K4 ran" in out, "pmp_out=1's 0xda: decoded as hold's 0x5a, plus the PMP's byte", out + err)
+        # K4's own stage, and a stage 0x02 run: K4's kernel byte, or a stall.
+        fake(path, scratch(0x83, isrs=0x8e, secs=4900), rtc_secs=5000)
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and "0x6004 = 0x83 (pmp_out=1: bit 7, so the stage is 0x3)" in r.stdout and "K4 (pmp_out=1): the PMP's idle pair" in r.stdout
+              and "0x6015 = 0x8e: K4 ran" in r.stdout, "stage 0x83: K4 done, its byte decoded", r.stdout + r.stderr)
+        fake(path, scratch(0x02, secs=4900), rtc_secs=5000)
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and "or CPU0 stalled in K4" in r.stdout and "K4 ran" not in r.stdout,
+              "stage 0x02 says a pmp_out=1 run may have stalled in K4, and doesn't read 0x6015 as the PMP's", r.stdout + r.stderr)
+        # Tagged stages decode like the plain ones through the park and the table.
+        for raw, want in ((0x90, "4: all 7 other cores parked"), (0xb1, "requesting CPU1's stop"), (0xb9, "every core's stop requested"), (0xa8, "pmgr_late")):
+            fake(path, scratch(raw, parked=0xfe, left=0x50, down=0xfe, secs=4900, flags=0xb0, isrs=0x8e), rtc_secs=5000)
+            r = run(path, cnt=run1)
+            check(r.returncode == 0 and want in r.stdout and "K4 ran" in r.stdout, f"stage 0x{raw:02x}: decoded with the tag off", r.stdout + r.stderr)
+        # --clear with the tag: the run's alarm is disarmed and the crumbs zeroed.
+        orig = fake(path, scratch(0xde, isrs=0x8e, **rec), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, "--clear", cnt=run1)
+        with open(path, "rb") as f:
+            after = f.read()
+        want = bytearray(orig)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        want[0x1401] = 0x01
+        check(r.returncode == 0 and after == bytes(want) and "disarmed" in r.stdout and "cleared" in r.stdout,
+              "--clear after a pmp_out=1 run (tagged stage): disarms the alarm and zeroes the crumbs", r.stdout + r.stderr)
+
     # m1-crumbs' tables against e1_hook.c's: each qto bit names the entries
     # its waits follow, and the buckets' edges are m1_bucket_ms[].
     g = runpy.run_path(TOOL, run_name="m1_crumbs")

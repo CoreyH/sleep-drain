@@ -390,7 +390,12 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 4 (judgment; this is the only place it's kept):**
+      **The order after DJ's T8140 driver (read 2026-11-08; judgment; this is
+      the only place it's kept):** every core held (rung 2) first, as Corey is
+      running it; then the PMP out on top of it (rung 3, OK'd 2026-11-08,
+      `--m1-pmp`, the highest prior of the named rungs: about 1 in 3 as at least one blocker); then the display
+      chain (rung 6, Corey told first; DJ's driver says the engine waits for it
+      with no timeout). Earlier, **after run 4:**
       the PMP out (rung 3) first if Corey OKs its new RTKit message and ASC
       write, else every core held (rung 2), which needs only Corey's go; then,
       beside the ladder, the reconfig SRAM question and DJ's T8140 driver
@@ -601,6 +606,50 @@ steps, and restarting the DCP and the PMP afterwards.
          rungs that need a new OK (judgment), but T6020 idled the PMP and
          still reset, and no R-run stopped its CPU. A new PMP message and an
          ASC write: Corey's OK first. ps_pmp stays on the never-write list.
+         OK'd by Corey on 2026-11-08, as asked: the idle pair, once each, and one
+         write of 0x28ec00044 that clears RUN, only after the ASC reads idle.
+         Built, to run (`e1_hook pmp_out=1`, on `hold=1`; `pkexec
+         e1-hook/run-floor --m1-pmp`; `--m1-pmp-idle` adds `pmp_stop=0`, the
+         idle pair alone).
+         - K4, right after K3 with interrupts still on: `apple_rtkit_idle` on
+           the PMP's RTKit, reached through its mailbox's drvdata (once:
+           SetAPPower 0x201, then SetIOPPower 0x201, acks awaited, 1 s each);
+           then, unless `pmp_stop=0`, CPU_STATUS (0x28ec00048) polled up to 10
+           ms for macOS's idle mask (`status & 3`), and only if that's seen,
+           one read-modify-write of CPU_CONTROL (0x28ec00044) clearing RUN (bit
+           4), read back. The load refuses if the PMP's driver isn't bound or
+           its RTKit isn't running, and logs CPU_CONTROL and CPU_STATUS awake.
+           The acks come through RTKit's own workqueue, which no run has used
+           after noirq: if they don't come, each times out at 1 s, the byte says
+           -ETIME, and the replay goes on with the PMP's state unknown.
+         - Breadcrumbs: every stage byte from K4 on has bit 7 set, which says
+           0x6015 is the PMP's byte (0x83 is K4 done): bit 7 K4 ran, bit 6 a core
+           had an interrupt pending at its stop (the byte's old meaning, reduced
+           to a bit), bits 5-4 the idle pair (0 returned 0, 1 -ETIME, 2 the
+           firmware crashed, 3 another error), bit 3 RUN read 0 after the
+           write, bit 2 RUN read 1 before it, bits 1-0 CPU_STATUS's low two bits
+           when the poll ended. No new PMU byte.
+         - How to read it: the expected case is stage 0xde (0x5e with bit 7), the
+           hold run's bytes, and 0x6015 = 0x8d, 0x8e or 0x8f (acks came, idle seen,
+           RUN read 1 then 0). If the reset still comes at about 30 s, the PMP's
+           running isn't the sole blocker, and T6020's result (idled, reset)
+           is repeated with its CPU stopped as well. 0x6015's bits 5-4 non-zero:
+           the idle pair failed, so the run hasn't tested a stopped PMP
+           (bit 4 alone, -ETIME: an ack never came and the PMP's state is
+           unknown; bit 5 alone, the firmware crashed). Bits 1-0 zero: never read idle by
+           macOS's mask, so RUN wasn't cleared: the run idled the PMP
+           and didn't stop it. Stage 0x02, K3's, with nothing after it: CPU0
+           stalled in K4, or raw SPMI failed. Dark past 2 minutes: a
+           candidate, at least 30 minutes and end before about 55, then
+           `m1-crumbs`, `--clear` and BQCC, as for the hold run; then attribute
+           it (without the PMP, without hold).
+         - What Corey's OK doesn't cover, from DJ's driver (a new OK if wanted):
+           RUN cleared twice and with no idle gate (t8140-sleep.c:761-772,
+           pmp-export.c:148-150; it ignores the status poll), a different status
+           mask ((status & 0x22) == 0x22), and the mailbox's receive turned off
+           before the stop (0x28ec08114). The report requests withdrawn first, as
+           T8140 does, is an existing flag (`sleep-drain-pmp release 0xc 0xd`,
+           used on 2026-10-29), but it's a second variable: Corey's pick.
       4. **Two unfinished transitions removed** (a probe, not a fix): skip
          table entries 58 (DISPLAY) and 61 (SIO_CPU), and keep their wait
          loops running, so `qto` should read 0x00. No new write. These are
@@ -661,6 +710,11 @@ steps, and restarting the DCP and the PMP afterwards.
         reading planned, and retiring the observer gives them up, but
         enabling them is a new AON write (Corey's OK) and CPU7 can't see past
         its own stop, so they may only ever show AWAKE.
+      - After DJ's T8140 driver (read 2026-11-08), a free variant: the stop bits
+        written at the park, before step 5, as T8140 and T8103's macOS do (no new
+        register or byte), and `--m1-hold-nowatch`, since DJ's comment gives the
+        cores about 33 ms from the complex words to the WFI (t8140-sleep.c:2381-2382)
+        and this replay's waits and CPU0's watch are longer. Neither is built.
       - Later, each with Corey's OK: SetAPPower 0x201 to the SMC right after
         `slpa` (T8103 completes with and without it, and T6020 sent it and
         still reset); the SEP's SLEEP message (it touches state the SEP
