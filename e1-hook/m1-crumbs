@@ -203,11 +203,12 @@ def qto(q):
                             "macOS's waits that timed out after 10 ms: " + "; ".join(timed))
 
 
-def run_second(low, compare, now):
-    """hold=1 from 0x5c on: the commit's whole second, if the alarm's compare value is the run's (its second
-    + 3600, not later than now, with these low two bytes); else None. low 0 counts as lost."""
+def run_second(low, compare, now, res):
+    """hold=1 from 0x5c on: the commit's whole second, if 0x6016 (res) says the run's 0x140c write was acked and
+    the compare value fits it (its second + 3600, not later than now, with these low two bytes); else None.
+    low 0 counts as lost."""
     whole = compare - ALARM_SECS
-    return whole if low and 0 < whole <= now and whole & 0xffff == low else None
+    return whole if res & 0x88 == 0x88 and low and 0 < whole <= now and whole & 0xffff == low else None
 
 
 def alarm_byte(v):
@@ -329,7 +330,7 @@ def decode(b, rtc, cnt=None, alarm=None):
     commit = None
     if base in SHORT or s in HOLD_AFTER:
         low = int.from_bytes(b[0x10:0x12], "little")
-        whole = run_second(low, alarm[1], now) if s in HOLD_AFTER and alarm else None
+        whole = run_second(low, alarm[1], now, b[0x16]) if s in HOLD_AFTER and alarm else None
         if whole is not None:
             commit = whole
             out.append(f"RTC second just before the commit, from its low two bytes and the run's alarm: {commit},"
@@ -481,7 +482,7 @@ def main():
         if b[4] in HOLD_AFTER:  # hold=1: the second's upper bytes are rewritten; its low two bytes stay
             now_s = int.from_bytes(rtc[2:6], "little")
             low = int.from_bytes(b[0x10:0x12], "little")
-            secs = run_second(low, alarm[1], now_s) or (now_s - ((now_s - low) & 0xffff) if low else 0)
+            secs = run_second(low, alarm[1], now_s, b[0x16]) or (now_s - ((now_s - low) & 0xffff) if low else 0)
         mine = b[4] in ALARM_STAGES and (alarm[1] == secs + ALARM_SECS if secs else b[0x16] in ALARM_ACKED)
         try:
             # Before the crumbs, so that a failed disarm keeps the stage for another try.

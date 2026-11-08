@@ -891,6 +891,30 @@ def main():
         check(r.returncode == 0 and after[0x1401] == 0x01 and "disarmed: 0x1401 = 0x01" in r.stdout,
               "--clear, read 20 h later: still the run's alarm, disarmed", r.stdout + r.stderr)
 
+        # A stale compare value that fits the low two bytes (one 16-bit cycle earlier) isn't the run's:
+        # 0x6016 must say 0x140c's write was acked. Without that, the recent-time second stands.
+        stale = 121544 + 3600 - 65536
+        fake(path, scratch(0x5e, **dict(rec, drained=0x85)), rtc_secs=121761, alarm=(0x01, stale, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "from its low two bytes: 121544, 217 s before now (121761)" in out
+              and "and the run's alarm" not in out and "the SoC restarted about 31 s after the commit" in out
+              and "0x140c is NOT the commit's second + 3600 (125144)" in out,
+              "hold=1: a stale, colliding compare with 0x140c's write unacked: not taken for the run's", out + r.stderr)
+        before = fake(path, scratch(0x5e, **dict(rec, drained=0x85)), rtc_secs=121761, alarm=(0x41, stale, 0, 0))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        want = bytearray(before)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        check(r.returncode == 0 and after == bytes(want) and "disarmed" not in r.stdout and "left alone" in r.stdout,
+              "--clear: a foreign alarm with a colliding compare, 0x140c unacked: left alone", r.stdout + r.stderr)
+        # 0x140c acked, a later command not (0x8d): the compare is the run's, so it pins the second.
+        fake(path, scratch(0x5e, **dict(rec, drained=0x8d)), rtc_secs=121544 + 72000, alarm=(0x01, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and "from its low two bytes and the run's alarm: 121544," in r.stdout,
+              "hold=1: 0x140c acked and a later command not: the compare still pins the second", r.stdout + r.stderr)
+
         # The observer's short stages share the formula: low 0 means lost there too.
         fake(path, scratch(0x6f, parked=0xff, left=0x04, down=29, secs=0, prog=(0x12, 0x34), flags=0x90, isrs=0x33, drained=0x85),
              rtc_secs=121761)
