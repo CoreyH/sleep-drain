@@ -478,8 +478,9 @@ steps, and restarting the DCP and the PMP afterwards.
         up: 16 bits per sample, no room for raw words. A layout that fits, to be
         settled at the build. Byte A: `PHASE` bits 3:0, `HS_A` bits 31 and 24, and
         the state word's class (0xa03, 1, 0xa02, other). Byte B: SIO_CPU's word as a
-        3-bit class (27:24 not f; f with actual not f; f with
-        actual f; target 0 with bit 11 set; target 0 with bit 11 clear; other),
+        3-bit class, tested in this order so the classes don't overlap (all ones,
+        a failed read; target 0 with bit 11 set; target 0 with bit 11 clear; then,
+        with any other target, 27:24 not f; f with actual not f; f with actual f),
         WD2's RESET_EN, WD2's count within 0.25 s of CPU0's own time since the first
         commit write (the preamble ran at the commit, at 24 MHz, with no re-arm
         between samples), and the gate's three bits (0x2922c0044 bits 2 and 3,
@@ -543,7 +544,10 @@ steps, and restarting the DCP and the PMP afterwards.
           somewhere in ops 33-229. SIO_CPU's word places it only as far as op 91,
           read against the word at entry 61's wait (the awake value won't do: bits
           27:24 went from 4 to f across an off SIO with no B2,
-          `safe-journal-20261106T201952.txt` L5650, L6262). If 27:24 weren't f at
+          `safe-journal-20261106T201952.txt` L5650, L6262). Target 0 is tested first
+          (the last two cases below): the others are for a target that isn't 0, so
+          0x0400024f is the early state, and 0x00000800 and 0x00000000 are target 0.
+          If 27:24 weren't f at
           entry 61's wait (0x6005 bit 0 clear, the expected case, since entry 61
           writes 4 there): not f, B2 is before op 49; changed to f with actual not f,
           B2 wrote op 49 and op 50 isn't met (SIO next). If they already read f there
