@@ -2363,8 +2363,6 @@ scripts or traces, and no Aura code.
   names are empty), and being listed doesn't make it safe to read: the map
   lists MMIO too (region-id-32 is 0x28e700000, on the never-write list).
   PLAN.md has the steps (Corey's OK of 2026-11-08; `e1-hook/recfg-peek`).
-- **DJ's T8140 driver:** reading it needs Corey's OK, as Naeem's did; the
-  alternative is asking DJ (a post, Corey's OK each time). Not a rung.
 - **DJ's T8140 driver:** read, with Corey's OK of 2026-11-08 ("DJ's T8140
   driver, read", below). Not a rung.
 
