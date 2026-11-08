@@ -8,24 +8,35 @@
 //   stage 2: the SRAM's first word (0x292f00000)
 //   stage 3: the table: 16 words at the SRAM + the offset from stage 1 (or
 //            SRAM + 0 if that doesn't fit), each one a sequence's address >> 4
+//            (16 is a guess at the table's length: PongoOS walks 8 entries on
+//            T8012 and T8015, and T8103 has 12 sequences; the words are only
+//            counted and bounded, never followed)
 //   stage 4: the SRAM's first 0x10000 bytes, to a file
-//   stage 5: as far as the table's sequences say (the last one + 0x10000),
-//            to a second file
+//   stage 5: as far as the table's sequences say (the last one + 0x10000,
+//            capped at the SRAM's 0x70000), to a file of its own. This is the
+//            read most exposed to an SRAM smaller than 0x70000 (T8103's is
+//            128 KiB), so the launcher runs it only when asked (--rest), after
+//            someone has decoded stage 4's dump
 //
 // The addresses are inferred (PLAN.md, "the engine's reconfig SRAM"). PongoOS
 // (recfg_soc.c, MIT) has T8012's and T8015's table offset register at AON +
 // 0x2c0200, its lock at + 0x2c0214, the SRAM at AON + 0xf00000, and each table
 // entry a sequence's physical address >> 4. The commit is at AON + 0x5c4000
 // on this Mac and + 0x2c4000 on T8103, which is where the first two addresses
-// come from. The SRAM's address and length come from macOS's device tree:
-// carveout-memory-map's region-id-29 and region-id-36 are both 0x292f00000,
-// 0x70000 bytes. It isn't described by any node's reg, so the read is outside
-// the ADT windows Linux and its drivers know.
+// come from. For the SRAM's address and length, macOS's device tree has
+// carveout-memory-map's region-id-29 and region-id-36, both 0x292f00000,
+// 0x70000 bytes; their names are empty, so that this carveout is the reconfig
+// SRAM is inferred, and that it's listed doesn't make it safe to read (the
+// carveout map lists MMIO too: region-id-32 is the 0x28e700000 of the
+// never-write list). No node's reg covers it, so the read is outside the ADT
+// windows Linux and its drivers know.
 //
 // It can read nothing else: there's no address argument. Each read is one
 // aligned 32-bit ldr from a /dev/mem mapping, which arm64 makes device memory
-// (nGnRnE), as pmgr-peek's are. Nothing is written. Every stage prints and
-// flushes as it goes, so if a read faults the output shows which one it was.
+// (nGnRnE), as pmgr-peek's are. Nothing is written. A line is printed and
+// flushed before each read or, in the table and the dumps, before each 16
+// KiB page of reads, so if a read faults the output shows which one or which
+// page it was.
 // An unmapped address can raise an SError and panic the kernel: that's why it
 // runs in a safe boot, and only with Corey's OK (2026-11-08).
 //
@@ -67,8 +78,26 @@
 
 static int mem_fd = -1;
 
-static uint32_t rd32(const volatile void *p)
+/* Test builds log every read's physical address (tests/recfg_peek_test.py). */
+#ifdef RECFG_TRACE
+static void trace_read(uint64_t pa)
 {
+	static FILE *t;
+
+	if (!t)
+		t = fopen(RECFG_TRACE, "a");
+	if (t) {
+		fprintf(t, "0x%" PRIx64 "\n", pa);
+		fflush(t);
+	}
+}
+#else
+#define trace_read(pa) ((void)(pa))
+#endif
+
+static uint32_t rd32(const volatile void *p, uint64_t pa)
+{
+	trace_read(pa);
 #ifdef __aarch64__
 	uint32_t v;
 
@@ -96,7 +125,7 @@ static const volatile void *map_range(uint64_t pa, size_t len)
 
 static uint32_t read_word(uint64_t pa)
 {
-	return rd32(map_range(pa, 4));
+	return rd32(map_range(pa, 4), pa);
 }
 
 static int in_sram(uint64_t pa)
@@ -125,7 +154,7 @@ static int read_table(uint64_t base, uint32_t *words, uint64_t *highest)
 	for (i = 0; i < TABLE_WORDS; i++) {
 		uint64_t pa;
 
-		words[i] = rd32(t + i * 4);
+		words[i] = rd32(t + i * 4, base + i * 4);
 		pa = (uint64_t)words[i] << 4;
 		if (in_sram(pa)) {
 			valid++;
@@ -150,7 +179,11 @@ static void dump(const char *dir, uint64_t off, uint64_t end)
 		exit(1);
 	}
 	for (i = off; i < end; i += 4) {
-		uint32_t v = rd32(m + (i - off));
+		uint32_t v;
+
+		if (i % PAGE_ROUND == 0)
+			printf("reading 0x%" PRIx64 "\n", SRAM + i);
+		v = rd32(m + (i - off), SRAM + i);
 
 		if (write(fd, &v, 4) != 4) {
 			fprintf(stderr, "recfg_peek: write %s: %s\n", path, strerror(errno));
@@ -208,6 +241,7 @@ int main(int argc, char **argv)
 		cfg = read_word(CFG_REG);
 		base = table_base(cfg, &why);
 		printf("the table's place: 0x%" PRIx64 " (%s; the register reads 0x%08x)\n", base, why, cfg);
+		printf("reading 16 words at 0x%" PRIx64 "\n", base);
 		valid = read_table(base, words, &highest);
 		for (i = 0; i < TABLE_WORDS; i++) {
 			uint64_t pa = (uint64_t)words[i] << 4;
@@ -226,6 +260,7 @@ int main(int argc, char **argv)
 	case 5:
 		cfg = read_word(CFG_REG);
 		base = table_base(cfg, &why);
+		printf("reading 16 words at 0x%" PRIx64 "\n", base);
 		valid = read_table(base, words, &highest);
 		if (valid < MIN_ENTRIES) {
 			printf("no table here (%d entries), so nothing further.\n", valid);

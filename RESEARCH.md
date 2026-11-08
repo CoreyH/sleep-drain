@@ -2353,7 +2353,9 @@ scripts or traces, and no Aura code.
   window 0x2925c0000 + 0x14000, which makes them the safer first read
   (inferred). macOS's `carveout-memory-map` lists 0x292f00000 too, twice
   (region-id-29 and region-id-36, 0x70000 bytes), which no node's `reg` covers:
-  something real sits at that address, though the ADT doesn't say what.
+  something real sits at that address, though the ADT doesn't say what (their
+  names are empty), and being listed doesn't make it safe to read: the map
+  lists MMIO too (region-id-32 is 0x28e700000, on the never-write list).
   PLAN.md has the steps (Corey's OK of 2026-11-08; `e1-hook/recfg-peek`).
 - **DJ's T8140 driver:** reading it needs Corey's OK, as Naeem's did; the
   alternative is asking DJ (a post, Corey's OK each time). Not a rung.

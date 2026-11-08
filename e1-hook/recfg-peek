@@ -2,16 +2,22 @@
 # e1-hook/recfg-peek: read the AON engine's reconfig SRAM, read-only, in a safe
 # boot, as root (Corey's OK, 2026-11-08; PLAN.md says what it's for):
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek
+#   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek          stages 1-4
+#   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek --rest   stage 5
 #
-# It runs recfg_peek's five stages in order, one word at a time at first:
-# the table-offset register's analogue and its lock, inside the ADT's AON
-# window; the SRAM's first word; the table; the first 0x10000 bytes; and as
-# much more as the table says. Each stage's output is printed as it comes,
-# appended to /var/log/sleep-drain/recfg-peek-<time>/log.txt, and saved to the
-# boot partition (sleep-drain-safe save) before the next stage reads anything,
-# so a crash keeps everything before it. The next regular boot's
-# pkexec sleep-drain-safe collect brings it to /var/log/sleep-drain.
+# It runs recfg_peek's stages in order, one word at a time at first: the
+# table-offset register's analogue and its lock, inside the ADT's AON window;
+# the SRAM's first word; the table; the first 0x10000 bytes. --rest is the
+# most exposed read, on to the table's last sequence + 0x10000, and is for
+# after stage 4's dump has been decoded: it stands alone, in any later safe boot.
+#
+# Each stage gets a directory of its own, /var/log/sleep-drain/recfg-peek-<time>-s<N>/,
+# and its output is printed as it comes and saved to the boot partition
+# (sleep-drain-safe save) before the next stage reads anything, so a crash keeps
+# everything before it. A stage's directory is never changed after its save,
+# because sleep-drain-safe collect keeps the first copy of a directory it's seen
+# and stops on one that differs. The next regular boot's collect brings them all to
+# /var/log/sleep-drain.
 #
 # It writes no register and no PMU byte. A read of an address nothing answers
 # can panic the kernel, or hang the Mac until the power key: it's a safe boot
@@ -20,34 +26,51 @@ set -u
 
 die() { echo "recfg-peek: $*" >&2; exit 1; }
 
-BIN=${RECFG_BIN:-$(dirname "$(realpath "$0")")/recfg_peek}
+HERE=$(dirname "$(realpath "$0")")
+BIN=${RECFG_BIN:-$HERE/recfg_peek}
+SRC=${RECFG_SRC:-$HERE/recfg_peek.c}
 SAFE_FLAG=${RECFG_SAFE_FLAG:-/run/sleep-drain-safe/active}
 SAVE=${RECFG_SAVE:-/usr/local/bin/sleep-drain-safe}
 LOG_ROOT=${RECFG_LOG_ROOT:-/var/log/sleep-drain}
 
+stages="1 2 3 4"
+if (($# == 1)) && [[ $1 == --rest ]]; then
+  stages=5
+elif (($# != 0)); then
+  die "usage: recfg-peek [--rest]"
+fi
+
 [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
 [[ -f $SAFE_FLAG ]] || die "this runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
-[[ -x $BIN ]] || die "no $BIN: cc -O2 -Wall -o $BIN $BIN.c"
+[[ -x $BIN ]] || die "no $BIN: cc -O2 -Wall -o $BIN $SRC"
+[[ $BIN -nt $SRC ]] || die "$BIN is older than $SRC: cc -O2 -Wall -o $BIN $SRC"
 
-out=$LOG_ROOT/recfg-peek-$(date +%Y%m%dT%H%M%S)
-mkdir -p "$out" || die "couldn't make $out"
-log=$out/log.txt
-echo "recfg-peek: saving to $out"
+now=$(date +%Y%m%dT%H%M%S)
+echo "recfg-peek: saving under $LOG_ROOT/recfg-peek-$now-s*/"
 
-for stage in 1 2 3 4 5; do
+for stage in $stages; do
+  out=$LOG_ROOT/recfg-peek-$now-s$stage
+  mkdir -p "$out" || die "couldn't make $out"
+  log=$out/log.txt
   echo "== stage $stage" | tee -a "$log"
   "$BIN" "$stage" "$out" 2>&1 | tee -a "$log"
-  rc=${PIPESTATUS[0]}
+  st=("${PIPESTATUS[@]}")
+  rc=${st[0]}
+  if ((st[1] != 0)); then
+    "$SAVE" save > /dev/null 2>&1
+    die "couldn't write $log (tee exit ${st[1]}); stage $stage's reader exited $rc; nothing further was read"
+  fi
+  if ((rc != 0 && rc != 3)); then
+    echo "stage $stage failed (exit $rc); nothing further was read" | tee -a "$log"
+    sync -f "$log"
+    "$SAVE" save > /dev/null 2>&1
+    die "stage $stage failed (exit $rc); nothing further was read"
+  fi
   sync -f "$log"
-  case $rc in
-    0)
-      "$SAVE" save > /dev/null || die "couldn't save stage $stage's results; not reading further" ;;
-    3)
-      "$SAVE" save > /dev/null || die "couldn't save stage $stage's results"
-      echo "recfg-peek: stopped at stage $stage, by what it found. That's a result: nothing else to do."
-      exit 0 ;;
-    *)
-      die "stage $stage failed (exit $rc); nothing further was read" ;;
-  esac
+  "$SAVE" save > /dev/null || die "couldn't save stage $stage's results; not reading further"
+  if ((rc == 3)); then
+    echo "recfg-peek: stopped at stage $stage, by what it found. That's a result: nothing else to do."
+    exit 0
+  fi
 done
-echo "recfg-peek: done. Go on with the next step."
+echo "recfg-peek: done (stages ${stages// /, }). Go on with the next step."

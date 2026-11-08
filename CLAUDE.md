@@ -147,8 +147,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `e1-hook/recfg-peek` (root, safe boot only, read-only; `cc -O2 -Wall -o
   e1-hook/recfg_peek e1-hook/recfg_peek.c` first) reads the AON engine's
   reconfig SRAM, in stages, saving after each: the table offset register's
-  analogue, the SRAM's first word, the table, then 0x10000 bytes and as much
-  more as the table says. The dumps stay out of the repo.
+  analogue, the SRAM's first word, the table, then 0x10000 bytes (`--rest`:
+  on to the table's last sequence + 0x10000, after that dump is decoded).
+  The dumps stay out of the repo.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake

@@ -393,8 +393,8 @@ steps, and restarting the DCP and the PMP afterwards.
       **The order after run 4 (judgment; this is the only place it's kept):**
       the PMP out (rung 3) first if Corey OKs its new RTKit message and ASC
       write, else every core held (rung 2), which needs only Corey's go; then,
-      beside the ladder, the reconfig SRAM question and DJ's T8140 driver
-      (both Corey's OK); then rungs 4-7 as numbered. Corey picks.
+      beside the ladder, the reconfig SRAM read and DJ's T8140 driver (both
+      OK'd by Corey, 2026-11-08); then rungs 4-7 as numbered. Corey picks.
       1. **M1 run 4: the PMU's RTC alarm** (ran 2026-11-08, `e1_hook alarm=1`,
          `pkexec e1-hook/run-floor --m1-alarm`: stage 0x5f, 0x6016 = 0xbd,
          the reset at about 30 s; the armed alarm survived it), written between the first
@@ -634,32 +634,31 @@ steps, and restarting the DCP and the PMP afterwards.
          writes: Corey's OK first. e1_never_write still refuses 0x28e0802d8,
          which shares a page with two of them.
       - Beside the ladder (Corey's OK of 2026-11-08; built, to run in a safe
-        boot, `pkexec e1-hook/recfg-peek`, ahead of a run with the confound
-        stated, or a safe boot of its own): the engine's reconfig SRAM,
-        read-only, the one step that could read what it waits for rather
-        than guess. Its stages, saved after each: 0x2925c0200 and its lock
-        0x2925c0214, one word of 0x292f00000, a table check (16 entries at
-        SRAM + the offset register, each an address >> 4, at least 4 inside
-        the SRAM), the first 0x10000 bytes, then on to the last sequence +
-        0x10000. New on 2026-11-08: macOS's `carveout-memory-map` has
-        region-id-29 and region-id-36 both at 0x292f00000, 0x70000 bytes
-        (no node's `reg` covers it), so the address isn't only PongoOS's
-        offset by analogy. Decoding it: PongoOS's recfg format, after a dump. Naeem dumped and decoded T8103's (0x23df00000, 128 KiB,
-        12 sequences; linux-s2r README L99-104); on T6000 the address isn't
-        known. A basis (inferred; RESEARCH.md, "After M1 run 4"): PongoOS's
-        table has T8012's and T8015's at AON + 0xf00000, as T8103's is, which
-        here would be 0x292f00000; but the AON block isn't a same-offset
-        copy of T8103's (the commit is +0x2c4000 on T8103 and +0x5c4000 here),
-        the ADT's AON windows don't reach that offset, and PongoOS's are
-        0x10000 long and read the table's offset from a config register
-        (T8103's is at SRAM + 0, Naeem's dump). So the first read would be that
-        register's analogue by the commit's shift, 0x2925c0200 (and its lock
-        at 0x2925c0214, as PongoOS's +0x2c0214), inside the ADT-declared
-        window 0x2925c0000 + 0x14000; then one word of 0x292f00000; then a
-        table check before any dump, 0x10000 first. An unmapped or unlisted
-        AON address may SError or have read side effects, and a read isn't
-        part of any run: Corey's OK first, in a safe boot of its own or with
-        the confound stated.
+        boot): the engine's reconfig SRAM, read-only, the one step that could
+        read what it waits for rather than guess. `pkexec e1-hook/recfg-peek`
+        runs stages 1-4, each saved before the next reads anything:
+        0x2925c0200 and its lock 0x2925c0214 (analogues of PongoOS's table
+        offset register and lock by the commit's shift, inside the ADT's
+        window 0x2925c0000 + 0x14000); one word of 0x292f00000; a table check
+        (16 words at SRAM + the offset register, each an address >> 4, at
+        least 4 inside the SRAM, or stop); the first 0x10000 bytes.
+        `--rest`, stage 5, reads on to the last sequence + 0x10000, capped at
+        0x70000: only after stage 4's dump is decoded, because it's the read
+        most exposed to a smaller SRAM (T8103's is 128 KiB). Naeem dumped and
+        decoded T8103's (0x23df00000, 128 KiB, 12 sequences; linux-s2r README
+        L99-104). The basis for T6000's address (inferred; RESEARCH.md, "After
+        M1 run 4"): macOS's `carveout-memory-map` has region-id-29 and
+        region-id-36 both at 0x292f00000, 0x70000 bytes (no node's `reg` covers
+        it, their names are empty, and being listed doesn't make it safe to
+        read: the map lists MMIO too), and PongoOS's table has T8012's and
+        T8015's at AON + 0xf00000, as T8103's is; but the AON block isn't a
+        same-offset copy of T8103's (the commit is +0x2c4000 on T8103 and
+        +0x5c4000 here), and PongoOS reads the table's offset from a config
+        register (T8103's table is at SRAM + 0, Naeem's dump). An unmapped or
+        unlisted AON address may SError or have read side effects, and a read
+        isn't part of any run: in a safe boot of its own, or ahead of a run
+        with the confound stated. Decoding it: PongoOS's recfg format, after a
+        dump; the dumps stay out of the repo, which is public.
       - Riding along when bytes allow, reads only: WD2's raw count and bite
         after the commit (what the commit loads), and the commit page. If an
         observer run comes back: first-read buckets in microseconds with a

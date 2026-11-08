@@ -3,11 +3,17 @@
 
 The reader is compiled with its memory device pointed at a sparse file whose
 offsets are physical addresses, so each case writes the words it wants at the
-real addresses. The launcher runs as uid 0 in a bubblewrap user namespace, with
-a stub reader and a stub sleep-drain-safe that record what they're asked.
+real addresses, and with -DRECFG_TRACE, so that every read's physical address
+is logged and checked against what that stage may touch. The launcher runs as
+uid 0 in a bubblewrap user namespace, with a stub reader and a stub
+sleep-drain-safe that record what they're asked and what the log directory
+held at each save: sleep-drain-safe collect keeps the first copy of a directory
+and stops on one that differs, so a stage's directory must not change after
+its save.
 
   python3 -I tests/recfg_peek_test.py
 """
+import hashlib
 import os
 import shutil
 import struct
@@ -19,6 +25,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 E1_HOOK = os.path.realpath(os.path.join(HERE, "..", "e1-hook"))
 
 CFG, LOCK, SRAM, SRAM_LEN = 0x2925c0200, 0x2925c0214, 0x292f00000, 0x70000
+FIRST = 0x10000
+PAGE = 0x4000
 
 failed = 0
 
@@ -55,16 +63,32 @@ def table(mem, base, targets):
         mem.word(base + 4 * i, t >> 4)
 
 
-def run(binary, stage, outdir):
-    return subprocess.run([binary, str(stage), outdir], capture_output=True, text=True)
-
-
 with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     binary = os.path.join(tmp, "recfg_peek")
     fake = os.path.join(tmp, "mem")
+    trace = os.path.join(tmp, "trace")
     subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror",
-                    '-DRECFG_MEM="%s"' % fake, "-o", binary,
+                    '-DRECFG_MEM="%s"' % fake, '-DRECFG_TRACE="%s"' % trace, "-o", binary,
                     os.path.join(E1_HOOK, "recfg_peek.c")], check=True)
+
+    def run(stage, outdir):
+        """Runs one stage; returns (result, the addresses it read, in order)."""
+        if os.path.exists(trace):
+            os.unlink(trace)
+        r = subprocess.run([binary, str(stage), outdir], capture_output=True, text=True)
+        addrs = []
+        if os.path.exists(trace):
+            with open(trace) as f:
+                addrs = [int(line, 16) for line in f.read().split()]
+        return r, addrs
+
+    def sram_only(addrs):
+        return all(SRAM <= a <= SRAM + SRAM_LEN - 4 and a % 4 == 0 for a in addrs)
+
+    def fresh(name):
+        d = os.path.join(tmp, name)
+        os.mkdir(d)
+        return d
 
     # A table at the SRAM's start, as T8103's is: 12 sequences, the last at
     # 0x1c000, and 4 entries left empty.
@@ -75,98 +99,161 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     for i in range(12, 16):
         mem.word(SRAM + 4 * i, 0)
     mem.word(CFG, 0)
-    mem.word(LOCK, 1)
-    out = os.path.join(tmp, "o1")
-    os.mkdir(out)
+    mem.word(LOCK, 0x12345678)
+    out = fresh("o1")
 
-    r = run(binary, 1, out)
+    r, a = run(1, out)
     check(r.returncode == 0, "stage 1 goes on")
     check("0x2925c0200 = 0x00000000" in r.stdout, "stage 1 prints the offset register's word", r.stdout)
-    check("0x2925c0214 = 0x00000001" in r.stdout, "stage 1 prints the lock's word", r.stdout)
-    r = run(binary, 2, out)
-    check(r.returncode == 0 and "0x292f00000 = " in r.stdout, "stage 2 prints the SRAM's first word", r.stdout)
-    r = run(binary, 3, out)
+    check("0x2925c0214 = 0x12345678" in r.stdout, "stage 1 prints the lock's word", r.stdout)
+    check(a == [CFG, LOCK], "stage 1 reads exactly the offset register and its lock", a)
+    check(r.stdout.index("reading 0x2925c0200") < r.stdout.index("= 0x00000000"), "stage 1 says what it's reading before each read", r.stdout)
+    r, a = run(2, out)
+    expected = "0x292f00000 = 0x%08x" % (targets[0] >> 4)
+    check(r.returncode == 0 and expected in r.stdout, "stage 2 prints the SRAM's actual first word", r.stdout)
+    check(a == [SRAM], "stage 2 reads exactly the SRAM's first word", a)
+    check("reading 0x292f00000" in r.stdout, "stage 2 says what it's reading before the read", r.stdout)
+    r, a = run(3, out)
     check(r.returncode == 0, "stage 3 goes on with a table", r.stdout)
     check("SRAM + the offset register" in r.stdout, "stage 3 says where it looked", r.stdout)
     check("12 of 16 entries" in r.stdout, "stage 3 counts the entries that point into the SRAM", r.stdout)
     check("in the SRAM" in r.stdout and "table[ 0]" in r.stdout, "stage 3 prints each entry", r.stdout)
     check(not os.listdir(out), "stage 3 writes no dump", os.listdir(out))
-    r = run(binary, 4, out)
+    check(r.stdout.index("reading 16 words") < r.stdout.index("table[ 0]"), "stage 3 announces the table read first", r.stdout)
+    check(a == [CFG] + [SRAM + 4 * i for i in range(16)], "stage 3 reads the offset register and the 16 words, nothing else", a)
+    r, a = run(4, out)
     first = os.path.join(out, "sram-00000.bin")
-    check(r.returncode == 0 and os.path.getsize(first) == 0x10000, "stage 4 dumps 0x10000 bytes", r.stdout + r.stderr)
+    check(r.returncode == 0 and os.path.getsize(first) == FIRST, "stage 4 dumps 0x10000 bytes", r.stdout + r.stderr)
     with open(first, "rb") as f:
         got = f.read()
     check(got[0:4] == struct.pack("<I", targets[0] >> 4), "stage 4's dump starts at the SRAM's first word")
-    r = run(binary, 5, out)
+    check(a == [SRAM + i for i in range(0, FIRST, 4)], "stage 4 reads the first 0x10000 bytes, word by word, in order", (len(a), a[:3], a[-3:]))
+    check([l for l in r.stdout.splitlines() if l.startswith("reading")] ==
+          ["reading 0x%x" % (SRAM + i) for i in range(0, FIRST, PAGE)],
+          "stage 4 says each 16 KiB page before reading it", r.stdout)
+    mem.word(SRAM + FIRST, 0xdeadbeef)
+    mem.word(SRAM + 0x2c000 - 4, 0xfeedface)
+    r, a = run(5, out)
     second = os.path.join(out, "sram-10000.bin")
     # 0x1c000 + 0x10000 = 0x2c000, already a 16 KiB boundary.
-    check(r.returncode == 0 and os.path.getsize(second) == 0x2c000 - 0x10000,
+    check(r.returncode == 0 and os.path.getsize(second) == 0x2c000 - FIRST,
           "stage 5 reads to the last sequence + 0x10000", r.stdout + r.stderr)
-    r = run(binary, 4, out)
+    with open(second, "rb") as f:
+        got = f.read()
+    check(got[:4] == struct.pack("<I", 0xdeadbeef) and got[-4:] == struct.pack("<I", 0xfeedface),
+          "stage 5's dump is the part after the first dump", got[:4])
+    dumped = a[17:]
+    check(a[:17] == [CFG] + [SRAM + 4 * i for i in range(16)] and dumped == [SRAM + i for i in range(FIRST, 0x2c000, 4)],
+          "stage 5 reads the table and then only the part it dumps", (a[:18], a[-2:]))
+    r, a = run(4, out)
     check(r.returncode == 1, "a dump refuses to overwrite an earlier one", r.stdout + r.stderr)
+
+    # The highest entry counts, in any order.
+    mem = Mem(fake)
+    table(mem, SRAM, [SRAM + 0x1c000] + [SRAM + 0x100 * (i + 1) for i in range(5)])
+    out2 = fresh("o1a")
+    r, a = run(5, out2)
+    check(r.returncode == 0 and os.path.getsize(os.path.join(out2, "sram-10000.bin")) == 0x2c000 - FIRST,
+          "stage 5 goes by the highest entry, not the last", r.stdout + r.stderr)
 
     # Rounding up, and the cap at the SRAM's end.
     mem = Mem(fake)
     table(mem, SRAM, [SRAM + 0x100 * (i + 1) for i in range(5)] + [SRAM + 0x1c010])
-    out2 = os.path.join(tmp, "o2")
-    os.mkdir(out2)
-    r = run(binary, 5, out2)
-    check(r.returncode == 0 and os.path.getsize(os.path.join(out2, "sram-10000.bin")) == 0x30000 - 0x10000,
+    out2 = fresh("o2")
+    r, a = run(5, out2)
+    check(r.returncode == 0 and os.path.getsize(os.path.join(out2, "sram-10000.bin")) == 0x30000 - FIRST,
           "stage 5 rounds up to 16 KiB", r.stdout + r.stderr)
     mem = Mem(fake)
     table(mem, SRAM, [SRAM + 0x100 * (i + 1) for i in range(5)] + [SRAM + SRAM_LEN - 0x10])
-    out3 = os.path.join(tmp, "o3")
-    os.mkdir(out3)
-    r = run(binary, 5, out3)
-    check(r.returncode == 0 and os.path.getsize(os.path.join(out3, "sram-10000.bin")) == SRAM_LEN - 0x10000,
+    out3 = fresh("o3")
+    r, a = run(5, out3)
+    check(r.returncode == 0 and os.path.getsize(os.path.join(out3, "sram-10000.bin")) == SRAM_LEN - FIRST,
           "stage 5 stops at the end of the SRAM", r.stdout + r.stderr)
+    check(sram_only(a[1:]) and max(a) == SRAM + SRAM_LEN - 4, "and its last read is the SRAM's last word", hex(max(a)))
 
-    # A table whose sequences all fit in the first dump: nothing more to read.
+    # The degenerate table, with every entry at the SRAM's start: no second dump.
     mem = Mem(fake)
     table(mem, SRAM, [SRAM] * 6)
-    out4 = os.path.join(tmp, "o4")
-    os.mkdir(out4)
-    r = run(binary, 5, out4)
+    out4 = fresh("o4")
+    r, a = run(5, out4)
     check(r.returncode == 0 and "hold it" in r.stdout and not os.listdir(out4),
-          "stage 5 reads nothing when the first dump holds it all", r.stdout + os.path.basename(out4))
+          "stage 5 has nothing further to read when every entry is at the SRAM's start", r.stdout)
 
     # An offset register inside the SRAM moves the table.
     mem = Mem(fake)
     mem.word(CFG, 0x1000)
     table(mem, SRAM + 0x1000, [SRAM + 0x2000 + 0x100 * i for i in range(8)])
-    r = run(binary, 3, os.path.join(tmp, "o4"))
+    r, a = run(3, os.path.join(tmp, "o4"))
     check(r.returncode == 0 and "0x292f01000" in r.stdout and "8 of 16" in r.stdout,
           "stage 3 honours an offset that fits", r.stdout)
+    check(a == [CFG] + [SRAM + 0x1000 + 4 * i for i in range(16)], "and reads the table there", a[:4])
+
+    # The offset register's boundary: 16 words must fit in the SRAM.
+    mem = Mem(fake)
+    mem.word(CFG, SRAM_LEN - 64)
+    table(mem, SRAM + SRAM_LEN - 64, [SRAM + 0x2000 + 0x100 * i for i in range(8)])
+    r, a = run(3, os.path.join(tmp, "o4"))
+    check(r.returncode == 0 and "SRAM + the offset register" in r.stdout and "8 of 16" in r.stdout,
+          "an offset that just fits (0x6ffc0) is used", r.stdout)
+    check(sram_only(a[1:]) and a[-1] == SRAM + SRAM_LEN - 4, "and the table's last word is the SRAM's last", hex(a[-1]))
+    mem.word(CFG, SRAM_LEN - 60)
+    r, a = run(3, os.path.join(tmp, "o4"))
+    check("doesn't fit" in r.stdout and sram_only(a[1:]), "an offset 4 bytes further (0x6ffc4) falls back to SRAM + 0", r.stdout)
 
     # An offset register that doesn't fit: SRAM + 0, said so.
     mem = Mem(fake)
     mem.word(CFG, 0x80000)
     table(mem, SRAM, [SRAM + 0x2000 + 0x100 * i for i in range(8)])
-    r = run(binary, 3, os.path.join(tmp, "o4"))
+    r, a = run(3, os.path.join(tmp, "o4"))
     check(r.returncode == 0 and "doesn't fit" in r.stdout and "8 of 16" in r.stdout,
           "stage 3 falls back to SRAM + 0 when the offset doesn't fit", r.stdout)
+    check(a == [CFG] + [SRAM + 4 * i for i in range(16)], "and reads only the SRAM's start", a[:3])
     mem.word(CFG, 3)
-    r = run(binary, 3, os.path.join(tmp, "o4"))
+    r, a = run(3, os.path.join(tmp, "o4"))
     check(r.returncode == 0 and "doesn't fit" in r.stdout, "an unaligned offset falls back too", r.stdout)
+    mem.word(CFG, 0xffffffff)
+    r, a = run(3, os.path.join(tmp, "o4"))
+    check("doesn't fit" in r.stdout and sram_only(a[1:]), "all ones in the offset register falls back too", r.stdout)
 
     # Stops, and no dump, when there's no table.
     mem = Mem(fake)
-    out5 = os.path.join(tmp, "o5")
-    os.mkdir(out5)
-    r = run(binary, 3, out5)
+    out5 = fresh("o5")
+    r, a = run(3, out5)
     check(r.returncode == 3 and "no table" in r.stdout, "all zeros aren't a table", r.stdout)
     table(mem, SRAM, [SRAM + 0x100 * (i + 1) for i in range(3)])
-    r = run(binary, 3, out5)
+    r, a = run(3, out5)
     check(r.returncode == 3 and "3 of 16" in r.stdout, "three entries aren't enough for a table", r.stdout)
-    r = run(binary, 5, out5)
+    table(mem, SRAM, [SRAM + 0x100 * (i + 1) for i in range(4)])
+    r, a = run(3, out5)
+    check(r.returncode == 0 and "4 of 16" in r.stdout, "four entries are", r.stdout)
+    mem = Mem(fake)
+    table(mem, SRAM, [SRAM + 0x100 * (i + 1) for i in range(3)])
+    r, a = run(5, out5)
     check(r.returncode == 3 and not os.listdir(out5), "stage 5 refuses without a table", r.stdout)
+    check(a == [CFG] + [SRAM + 4 * i for i in range(16)], "and reads only the table", a[:3])
     table(mem, SRAM, [SRAM + SRAM_LEN + 0x100 * i for i in range(12)])
-    r = run(binary, 3, out5)
+    r, a = run(3, out5)
     check(r.returncode == 3 and "0 of 16" in r.stdout, "entries past the SRAM's end don't count", r.stdout)
+    table(mem, SRAM, [SRAM - 0x10 - 0x100 * i for i in range(12)])
+    r, a = run(3, out5)
+    check(r.returncode == 3 and "0 of 16" in r.stdout, "entries before the SRAM's start don't count", r.stdout)
     mem = Mem(fake)
     mem.word(SRAM, 0xffffffff)
-    r = run(binary, 2, out5)
+    r, a = run(2, out5)
     check(r.returncode == 3 and "all ones" in r.stdout, "stage 2 stops at all ones", r.stdout)
+
+    # Table entries that point anywhere are never followed.
+    for i, hostile in enumerate(([0xffffffff] * 16, [0x292f7000 + j for j in range(16)],
+                                 [(SRAM + SRAM_LEN) >> 4] * 16, [0x10000000 + j * 0x100 for j in range(16)])):
+        mem = Mem(fake)
+        for j, w in enumerate(hostile):
+            mem.word(SRAM + 4 * j, w)
+        d = fresh("h%d" % i)
+        run(3, d)
+        r, a = run(4, d)
+        check(sram_only(a), "hostile table %d: stage 4's reads stay in the SRAM" % i, a[:3])
+        r, a = run(5, d)
+        check(sram_only(a[1:]) and a[0] == CFG, "hostile table %d: stage 5's stay in the SRAM" % i, a[:3])
 
     # Its arguments: no address can be asked for.
     for args in (["0", tmp], ["6", tmp], ["12", tmp], ["x", tmp], ["1"], ["0x2925c0200", tmp], []):
@@ -180,8 +267,19 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     else:
         launcher = os.path.join(E1_HOOK, "recfg-peek")
 
-        def sandbox(*, safe=True, rc_by_stage=None, save_fails=False, uid=0):
-            """Runs the launcher with stubs; returns (rc, stdout+stderr, saves, stages run)."""
+        def manifest(root):
+            """Every file under root, with its hash."""
+            res = {}
+            for d, _, fs in os.walk(root):
+                for f in fs:
+                    p = os.path.join(d, f)
+                    with open(p, "rb") as fh:
+                        res[os.path.relpath(p, root)] = hashlib.sha256(fh.read()).hexdigest()
+            return res
+
+        def sandbox(*, safe=True, rc_by_stage=None, save_fails=False, uid=0, args=(), old_binary=False,
+                    tee_fails=False):
+            """Runs the launcher with stubs; returns (rc, output, calls, the log root, manifests at each save)."""
             rc_by_stage = rc_by_stage or {}
             root = tempfile.mkdtemp(dir=tmp)
             calls = os.path.join(root, "calls")
@@ -193,52 +291,94 @@ declare -A rc=({rcs})
 echo "stage $1" >> {calls}
 echo "the reader's stage $1"
 [[ -d $2 ]] || {{ echo 'no dir' >&2; exit 9; }}
+[[ $1 == 4 ]] && echo dump > "$2/sram-00000.bin"
+if [[ ${{rc[$1]:-0}} == segv ]]; then kill -SEGV $$; fi
 exit ${{rc[$1]:-0}}
 """)
             os.chmod(stub, 0o755)
+            src = os.path.join(root, "recfg_peek.c")
+            open(src, "w").close()
+            if old_binary:
+                os.utime(stub, (1, 1))
+            else:
+                os.utime(src, (1, 1))
+            log_root = os.path.join(root, "log")
+            os.mkdir(log_root)
+            snaps = os.path.join(root, "snaps")
+            os.mkdir(snaps)
             save = os.path.join(root, "safe")
             with open(save, "w") as f:
                 f.write(f"""#!/bin/bash
 echo "save $*" >> {calls}
+n=$(ls {snaps} | wc -l)
+cp -a {log_root} {snaps}/$n
 {'exit 1' if save_fails else 'exit 0'}
 """)
             os.chmod(save, 0o755)
             flag = os.path.join(root, "active")
             if safe:
                 open(flag, "w").close()
-            log_root = os.path.join(root, "log")
-            os.mkdir(log_root)
+            env = ["env", "RECFG_BIN=" + stub, "RECFG_SRC=" + src, "RECFG_SAFE_FLAG=" + flag,
+                   "RECFG_SAVE=" + save, "RECFG_LOG_ROOT=" + log_root]
+            if tee_fails:
+                # A tee that can't write, as on a full overlay.
+                bindir = os.path.join(root, "bin")
+                os.mkdir(bindir)
+                teep = os.path.join(bindir, "tee")
+                with open(teep, "w") as f:
+                    f.write("#!/bin/bash\ncat > /dev/null\nexit 1\n")
+                os.chmod(teep, 0o755)
+                env.append("PATH=" + bindir + ":" + os.environ["PATH"])
             r = subprocess.run(
                 ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
-                 "--unshare-user", "--uid", str(uid), "--gid", "0", "--",
-                 "env", "RECFG_BIN=" + stub, "RECFG_SAFE_FLAG=" + flag,
-                 "RECFG_SAVE=" + save, "RECFG_LOG_ROOT=" + log_root, launcher],
+                 "--unshare-user", "--uid", str(uid), "--gid", "0", "--"] + env + [launcher] + list(args),
                 capture_output=True, text=True)
             lines = open(calls).read().split("\n")[:-1] if os.path.exists(calls) else []
-            return r.returncode, r.stdout + r.stderr, lines, log_root
+            manifests = [manifest(os.path.join(snaps, n)) for n in sorted(os.listdir(snaps), key=int)]
+            return r.returncode, r.stdout + r.stderr, lines, log_root, manifests
 
-        rc, out, calls, logs = sandbox()
-        check(rc == 0 and calls == ["stage 1", "save save", "stage 2", "save save", "stage 3", "save save",
-                                    "stage 4", "save save", "stage 5", "save save"],
-              "the launcher runs the five stages in order, saving after each", calls)
+        DEFAULT = ["stage 1", "save save", "stage 2", "save save", "stage 3", "save save", "stage 4", "save save"]
+
+        rc, out, calls, logs, snaps = sandbox()
+        check(rc == 0 and calls == DEFAULT, "the launcher runs stages 1-4 in order, saving after each", calls)
         check("done" in out, "and says when it's done", out)
-        logdir = os.path.join(logs, os.listdir(logs)[0])
-        text = open(os.path.join(logdir, "log.txt")).read()
-        check("the reader's stage 3" in text and "== stage 3" in text, "it logs each stage", text)
+        dirs = sorted(os.listdir(logs))
+        check([d.rsplit("-", 1)[1] for d in dirs] == ["s1", "s2", "s3", "s4"], "each stage has its own directory", dirs)
+        text = open(os.path.join(logs, dirs[2], "log.txt")).read()
+        check("the reader's stage 3" in text and "== stage 3" in text, "it logs each stage in its own directory", text)
+        check(os.path.exists(os.path.join(logs, dirs[3], "sram-00000.bin")), "stage 4's dump lands in stage 4's directory")
+        check(all(snaps[i].items() <= snaps[i + 1].items() for i in range(len(snaps) - 1)),
+              "no file changes after the save that first saw it (what collect needs)",
+              [sorted(s) for s in snaps])
 
-        rc, out, calls, logs = sandbox(safe=False)
+        rc, out, calls, logs, snaps = sandbox(args=("--rest",))
+        check(rc == 0 and calls == ["stage 5", "save save"], "--rest runs stage 5 alone, saved", calls)
+        check([d.rsplit("-", 1)[1] for d in os.listdir(logs)] == ["s5"], "--rest has its own directory", os.listdir(logs))
+        rc, out, calls, logs, snaps = sandbox(args=("--more",))
+        check(rc == 1 and "usage" in out and calls == [], "refuses an unknown argument", out)
+
+        rc, out, calls, logs, snaps = sandbox(safe=False)
         check(rc == 1 and "safe boot only" in out and calls == [], "refuses outside a safe boot", out)
-        rc, out, calls, logs = sandbox(uid=1000)
+        rc, out, calls, logs, snaps = sandbox(uid=1000)
         check(rc == 1 and "as root" in out and calls == [], "refuses to run as non-root", out)
-        rc, out, calls, logs = sandbox(rc_by_stage={3: 3})
-        check(rc == 0 and calls == ["stage 1", "save save", "stage 2", "save save", "stage 3", "save save"] and "stopped at stage 3" in out,
-              "a stage that says stop ends it, saved", calls)
-        rc, out, calls, logs = sandbox(rc_by_stage={2: 3})
-        check(calls == ["stage 1", "save save", "stage 2", "save save"], "stops at stage 2's all ones, saved", calls)
-        rc, out, calls, logs = sandbox(rc_by_stage={2: 1})
-        check(rc == 1 and calls == ["stage 1", "save save", "stage 2"] and "stage 2 failed" in out,
-              "a stage's error stops it", calls)
-        rc, out, calls, logs = sandbox(save_fails=True)
+        rc, out, calls, logs, snaps = sandbox(old_binary=True)
+        check(rc == 1 and "older than" in out and calls == [], "refuses a binary older than the source", out)
+        rc, out, calls, logs, snaps = sandbox(rc_by_stage={3: 3})
+        check(rc == 0 and calls == DEFAULT[:6] and "stopped at stage 3" in out, "a stage that says stop ends it, saved", calls)
+        rc, out, calls, logs, snaps = sandbox(rc_by_stage={2: 3})
+        check(calls == DEFAULT[:4], "stops at stage 2's all ones, saved", calls)
+        rc, out, calls, logs, snaps = sandbox(rc_by_stage={2: 1})
+        check(rc == 1 and calls == DEFAULT[:3] + ["save save"] and "stage 2 failed" in out,
+              "a stage's error stops it, after one more save", calls)
+        faillog = open(os.path.join(logs, sorted(os.listdir(logs))[1], "log.txt")).read()
+        check("failed (exit 1)" in faillog, "and the log says so", faillog)
+        rc, out, calls, logs, snaps = sandbox(rc_by_stage={2: "segv"})
+        check(rc == 1 and calls == DEFAULT[:3] + ["save save"] and "exit 139" in out,
+              "a reader killed by a signal counts as an error, saved", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(tee_fails=True)
+        check(rc == 1 and calls == ["stage 1", "save save"] and "couldn't write" in out,
+              "a log that can't be written stops it, after one more save", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(save_fails=True)
         check(rc == 1 and calls == ["stage 1", "save save"] and "not reading further" in out,
               "a failed save stops it before the next read", calls)
 
