@@ -29,7 +29,7 @@ the PR with that session's work.
   SoC about 30 s after the commit (RESEARCH.md, "M1 run 2" and "M1 run 3"). In
   run 3, with macOS's PMGR quiesce in macOS's place, only DISPLAY's and
   SIO_CPU's waits timed out. Next is M1 run 4, the RTC alarm rung (fix rung 1
-  below); its shape is Corey's pick.
+  below), built and waiting for an attended run (`run-floor --m1-alarm`).
 
 ## Picking this up
 
@@ -385,10 +385,14 @@ steps, and restarting the DCP and the PMP afterwards.
     - The fix rungs after run 3, ranked (RESEARCH.md, "After M1 run 3"): one
       per run, and each one that moves the replay toward macOS's sequence
       stays in the runs after it, unless Corey picks a cumulative rung.
-      1. **M1 run 4: the PMU's RTC alarm**, written between the first commit
-         and the other two. macOS does it on T8103 (mac27-hv README L88-91);
-         DeepIdle reports the same order from DJ's T8140 trace (worklog
-         L2585), and its decode of macOS 13.5 has T6020 re-program the alarm
+      1. **M1 run 4: the PMU's RTC alarm** (built, to run: e1_hook `alarm=1`,
+         `pkexec e1-hook/run-floor --m1-alarm`), written between the first
+         commit and the other two. macOS does it on T8103 (mac27-hv README
+         L88-91);
+         DeepIdle reports the alarm after the commit from DJ's T8140 trace
+         (worklog L2585, L2610; it doesn't say how many commit writes there
+         are, or whether any follow the alarm), and its decode of macOS 13.5
+         has T6020 re-program the alarm
          after quiesceHW (a static decode, not a trace). Every completed
          T8103 Linux entry has it. No T600x attempt has written it after the
          commit: T6020 armed it before the suspend (L2741), and this Mac's
@@ -400,18 +404,16 @@ steps, and restarting the DCP and the PMP afterwards.
            written back if set), 0x140c (now + 3600 s), 0x14c2 (0), 0x1401
            (0x41), and 0x1401 back to 0x01 at the next boot. No new MMIO, no
            SEP message, no never-write address.
-         - **Its shape is Corey's pick.** Recommended: `pmgr_late` + the
+         - **Its shape, Corey's pick of 2026-11-08:** `pmgr_late` + the
            alarm with no observer, CPU7 released before the commit as in run
-           1 (`run-floor --m1-alarm`). That is the shape of every completed
+           1. That is the shape of every completed
            T8103 *Linux* entry (cores down before the commit, CPU0 alone doing
            commit, alarm, commit twice, WFI): a lab choice, not a move toward
            macOS, whose own entries keep every core up to the commit (rung
            2). Two changes against run 3, so it's cumulative; on a reset it
            clears the alarm and CPU7's staying up as sole blockers in one
-           run. The strict way, one change at a time: `run-floor
-           --m1-late-noobs` (run 3 without the observer, no module change,
-           what "A reset with the observer up" above asks for), then the
-           alarm.
+           run. (The strict way, one change at a time, was run 3 without
+           the observer first, then the alarm.)
          - The build: `alarm=1` (with `m1=1 pmgr_late=1`, no `observe`). In
            step 9: commit once, dsb; then over raw polled SPMI, only if step
            8's RTC read worked: read 0x14c0 and, if it read non-zero, write
@@ -420,7 +422,8 @@ steps, and restarting the DCP and the PMP afterwards.
            0x41; then commit twice more, dsb, stage 0x5f, ack nub-spmi0's
            words, and step 10. The helper stops at the first failure, flushes
            the FIFO and still writes the other two commits, so a failed alarm
-           leaves a run-3-shaped run with the failure recorded. Every SPMI
+           leaves a `pmgr_late` run without the observer (not a repeat of
+           run 3, whose CPU7 stayed up), with the failure recorded. Every SPMI
            command leaves a vector to ack before the deep WFI (Naeem's
            b6b2ea1d19e0), which is why 0x5f comes before the acks.
          - Breadcrumbs, in the OK'd bytes: stage 0x59 in place of step 8's
@@ -429,22 +432,34 @@ steps, and restarting the DCP and the PMP afterwards.
            its event was set (1), its echo acked or not needed (2), 0x140c
            (3), 0x14c2 (4), 0x1401 (5). 0xbd is all acked with no event, 0xbf
            all acked with one echoed.
-         - Every `m1=1` load reads 0x1401 and refuses if bit 6 is set
-           (armed). After an alarm run that means `m1-crumbs --clear`, which
+         - Every `m1=1` load reads 0x1401 and refuses if any bit but 0 and
+           1 is set (bit 6: armed). After an alarm run that means
+           `m1-crumbs --clear`, which
            disarms it; one macOS left armed shows in `pmu-alarm status`, and
            clearing that isn't in the 11-07 OK. `m1_pmu_ok` gains exactly
            these accesses. `m1-crumbs` prints 0x1401, 0x140c, 0x14c0 and
            0x14c2 before it disarms (any value raw), says whether 0x140c is
-           the commit's second + 3600, and disarms only after a stage that
-           armed it (0x59, 0x5f).
+           the commit's second + 3600, and disarms only an alarm that's the
+           run's: stage 0x59 or 0x5f, with 0x140c the commit's second + 3600
+           (or, if that second was lost, 0x6016 saying 0x1401's write was
+           acked). An armed alarm it can't attribute stops `--clear` with the
+           breadcrumbs kept.
          - How to read it:
-           - Stage 0x5f with 0x6016 = 0xbd or 0xbf means the writes went
-             through: the run counts. A partial byte, stage 0x59 with 0x6016
-             = 0, or a wrong 0x140c at the next boot: repeat it.
-           - The next boot's 0x1401 is a separate fact. 0x41 (0x03 if it
-             fired) means the armed alarm survived the reset; 0x01 with
-             0x140c right means the reset or the boot firmware cleared it
-             (new; the run still counts).
+           - Stage 0x5f with 0x6016 = 0xbd or 0xbf means the alarm's writes
+             went through and all three commit writes were sent: the run
+             counts. Stage 0x59 with those bytes is inconclusive: the alarm's
+             commands were acked (0x140c = the commit's second + 3600
+             corroborates it), but nothing records the two commit writes
+             after them, and 0x5f comes after those. Most likely only that
+             crumb was lost; repeat the run before reading a reset as a
+             negative. A partial byte, stage 0x59 with 0x6016 = 0, or a wrong
+             0x140c at the next boot: repeat it.
+           - The next boot's 0x1401 is a separate fact, once 0x6016 says its
+             write was acked. 0x41 (0x03 if it fired) means the armed alarm
+             survived the reset. 0x01 with 0x140c right means the reset or
+             the boot firmware cleared it (new; the run still counts), or,
+             past the alarm's time, that it may have fired (T8103's fired
+             alarm reads 0x01). `m1-crumbs` says which.
            - A reset at about 30 s: the alarm written between the commits,
              with nub-spmi0's enables all 0, doesn't complete the entry,
              assuming its own commands are harmless. That doesn't test the
@@ -455,12 +470,14 @@ steps, and restarting the DCP and the PMP afterwards.
              then wake the SoC at +3600 s. The alarm stays in later runs: it
              moves toward macOS.
            - Dark past 2 minutes: a candidate; BQCC decides. Leave it at
-             least 30 minutes, and end it before about 55: the alarm's wake
-             at +3600 s would land in m1n1 with WD1 off and no resume path,
-             so the Mac would hang, at an unknown draw, until the power key.
+             least 30 minutes, and end it before about 55: if the alarm wakes
+             the SoC at +3600 s, the wake would land in m1n1 with WD1 off and
+             no resume path, and the Mac would hang, at an unknown draw,
+             until the power key.
              In the next boot: `m1-crumbs`, then `pkexec m1-crumbs --clear`
              (a PMU write can't change BQCC), then the reading. Then
-             attribute it with `--m1-late-noobs`.
+             attribute it: run 3 without the observer (`--m1-late-noobs`, to
+             build then; no module change).
            - A reset well away from 30 s: new; read everything else first.
       2. **Every core held through the commit** (XNU's global sleep on H13;
          RESEARCH.md, "After M1 run 3"). CPU0 writes each parked core's stop

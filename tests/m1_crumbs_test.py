@@ -4,10 +4,10 @@
 Each case writes a 64 KiB file shaped like the PMU's nvmem, with chosen bytes
 at 0x6000-0x601f and the RTC at 0x1406, runs the tool with a fake SoC counter
 (M1_CRUMBS_CNTVCT), and checks what it prints: run 1's stages, the
-observer's (observe=1) and run 3's (pmgr_late=1), and the reset time after a
-commit. --clear must zero
-0x6004-0x6007 and 0x6010-0x6016 and nothing else; an unknown argument changes
-nothing.
+observer's (observe=1), run 3's (pmgr_late=1), run 4's (alarm=1) and the reset
+time after a commit. --clear must zero 0x6004-0x6007 and 0x6010-0x6016, and
+only after a stage that armed the alarm also set 0x1401 back to 0x01, and
+nothing else; an unknown argument changes nothing.
 
   python3 -I tests/m1_crumbs_test.py
 """
@@ -34,10 +34,14 @@ def check(cond, what, detail=""):
             print("".join("     " + l for l in detail.splitlines(True)))
 
 
-def fake(path, scratch, rtc_secs=5000):
+def fake(path, scratch, rtc_secs=5000, alarm=(0, 0, 0, 0)):
+    """alarm: 0x1401, 0x140c (the compare value), 0x14c0, 0x14c2."""
     b = bytearray(0xffff)
     b[0x6000:0x6000 + len(scratch)] = scratch
     b[0x1406:0x140c] = bytes(2) + rtc_secs.to_bytes(4, "little")
+    b[0x1401] = alarm[0]
+    b[0x140c:0x1410] = alarm[1].to_bytes(4, "little")
+    b[0x14c0], b[0x14c2] = alarm[2], alarm[3]
     with open(path, "wb") as f:
         f.write(b)
     return bytes(b)
@@ -442,6 +446,260 @@ def main():
         check(r.returncode == 0 and "a stall in any of them leaves 0x10" in r.stdout,
               "0x10: step 5's writes and waits came next under it", r.stdout + r.stderr)
 
+        # alarm=1 (M1 run 4). 0x5f with every alarm command acked, armed at the
+        # next boot and the compare value the commit's second + 3600.
+        fake(path, scratch(0x5f, parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0xb0, isrs=0, drained=0xbd),
+             rtc_secs=121761, alarm=(0x41, 121544 + 3600, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x5f (pmgr_late=1): alarm=1: the commit x3 and the alarm's commands done" in out
+              and "after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)\n" in out
+              and "read off within 10 ms (0x6007 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
+              and "RTC second at just before the commit: 121544, 217 s before now" in out
+              and "PCPM0 off, PCPM1 off" in out and "observe=1" not in out
+              and "0x6016 = 0xbd: every alarm command was acked (no event was set)" in out and "AIC events" not in out
+              and "the SoC restarted about 31 s after the commit" in out
+              and "PMU alarm: 0x1401 = 0x41 (armed, fires in 3383 s), 0x140c = 125144, 0x14c0 event 0x00, 0x14c2 mask 0x00" in out
+              and "0x140c is the commit's second + 3600, as the run wrote it" in out
+              and "the armed alarm survived the reset\n" in out,
+              "alarm=1's 0x5f, the expected case: every field decoded", out + r.stderr)
+
+        # 0xbf: the event was set and echoed; it fired by the next boot.
+        fake(path, scratch(0x5f, parked=0xfe, left=0x00, down=0xfe, secs=121544, flags=0xb0, drained=0xbf),
+             rtc_secs=121544 + 4000, alarm=(0x03, 121544 + 3600, 1, 0))
+        r = run(path)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6016 = 0xbf: every alarm command was acked (the event was set, and echoed)" in out
+              and "0x1401 = 0x03 (fired, latched)" in out and "survived the reset and has fired" in out
+              and "0x14c0 event 0x01" in out,
+              "alarm=1: the event echoed, and the alarm fired before the read", out + r.stderr)
+
+        # The reset or the firmware cleared the enable: the compare value still
+        # says the writes landed. And a wrong one says they didn't.
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0xbd), rtc_secs=121761,
+             alarm=(0x01, 121544 + 3600, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "0x1401 = 0x01 (not armed)" in r.stdout
+              and "0x1401 reads 0x01 before the alarm's time, with 0x140c right and 0x1401's write acked: the reset or the boot firmware cleared the enable" in r.stdout
+              and "survived" not in r.stdout,
+              "alarm=1: 0x1401 back at 0x01 with 0x140c right: cleared by the reset or firmware", r.stdout + r.stderr)
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0xbd), rtc_secs=121761,
+             alarm=(0x01, 36502, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "0x140c is NOT the commit's second + 3600 (125144): the alarm wasn't tested" in r.stdout
+              and "cleared the enable" not in r.stdout,
+              "alarm=1: a stale 0x140c: not tested", r.stdout + r.stderr)
+
+        # A 0x03 or 0x41 that isn't the run's: never "survived".
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0x87), rtc_secs=121761,
+             alarm=(0x03, 36502, 1, 0))
+        r = run(path)
+        out = r.stdout
+        check(r.returncode == 0 and "survived" not in out and "0x1401 isn't shown to be this run's" in out
+              and "0x140c is NOT the commit's second + 3600" in out,
+              "alarm=1: a stale 0x03 the run never armed isn't read as surviving", out + r.stderr)
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0xbd), rtc_secs=121761,
+             alarm=(0x41, 200000, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "survived" not in r.stdout and "isn't shown to be this run's" in r.stdout,
+              "alarm=1: another 0x41 (macOS's, after the run) isn't read as surviving", r.stdout + r.stderr)
+        # A stale 0x03 with the right compare value, the helper stopped after 0x140c.
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0x9f), rtc_secs=121761,
+             alarm=(0x03, 125144, 1, 0))
+        r = run(path)
+        check(r.returncode == 0 and "survived" not in r.stdout and "isn't shown to be this run's" in r.stdout,
+              "alarm=1: 0x03 with 0x1401's write not acked isn't read as surviving", r.stdout + r.stderr)
+        # The commit's second lost: only an acked 0x1401 says it's the run's.
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=0, flags=0xb0, drained=0xbd), rtc_secs=121761,
+             alarm=(0x41, 125144, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "the commit's second isn't known" in r.stdout
+              and "the armed alarm survived the reset" in r.stdout,
+              "alarm=1: commit second unknown, 0x1401 acked: survived", r.stdout + r.stderr)
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=0, flags=0xb0, drained=0x85), rtc_secs=121761,
+             alarm=(0x03, 125144, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "can't be told" in r.stdout and "survived" not in r.stdout,
+              "alarm=1: commit second unknown, 0x1401 not acked: can't be told", r.stdout + r.stderr)
+
+        # 0x01 with 0x140c right says "cleared the enable" only if 0x1401's write was acked.
+        for v, text in ((0x9d, "0x1401's write wasn't acked"), (0x00, "0x6016 recorded no result")):
+            fake(path, scratch(0x5f if v else 0x59, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=v),
+                 rtc_secs=121761, alarm=(0x01, 125144, 0, 0))
+            r = run(path)
+            check(r.returncode == 0 and text in r.stdout and "nothing shows the enable was ever set" in r.stdout
+                  and "cleared the enable" not in r.stdout,
+                  f"alarm=1: 0x6016 = 0x{v:02x} with 0x140c right: the enable isn't said to be cleared",
+                  r.stdout + r.stderr)
+        # Past the alarm's time, 0x01 may be a fired alarm.
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0xbd),
+             rtc_secs=125144 + 100, alarm=(0x01, 125144, 1, 0))
+        r = run(path)
+        check(r.returncode == 0 and "past the alarm's time" in r.stdout and "it may have fired" in r.stdout
+              and "0x14c0 is 0x01" in r.stdout,
+              "alarm=1: 0x01 past the alarm's time: it may have fired", r.stdout + r.stderr)
+
+        # The block 0x6014 came in, lost: not read as facts.
+        lost = bytearray(scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0, isrs=0, drained=0))
+        lost[0x10:0x17] = bytes(7)
+        fake(path, bytes(lost), rtc_secs=121761)
+        r = run(path)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6014 = 0x00: bit 7 is clear, so the 7-byte command it went in" in out
+              and "PCPM0" not in out and "interrupt pending at their stop" not in out and "AIC events" not in out
+              and "the alarm's commands left no result" in out and "A repeat, not a negative" in out,
+              "alarm=1: 0x6010-0x6016 zeroed: 0x6014 and 0x6015 aren't read", out + r.stderr)
+        fake(path, bytes(lost[:4]) + bytes([0x58]) + bytes(lost[5:]), rtc_secs=121761)
+        r = run(path)
+        check(r.returncode == 0 and "bit 7 is clear" in r.stdout and "AIC events" not in r.stdout,
+              "a 0x58 run with 0x6010-0x6016 zeroed: the AIC count isn't read either", r.stdout + r.stderr)
+
+        # Any other 0x1401, raw.
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0xbd), rtc_secs=121761,
+             alarm=(0x81, 121544 + 3600, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "PMU alarm: 0x1401 = 0x81, 0x140c = 125144" in r.stdout and "survived" not in r.stdout
+              and "cleared the enable" not in r.stdout,
+              "alarm=1: an unknown 0x1401 is printed raw", r.stdout + r.stderr)
+
+        # 0x59 with no result: the alarm's commands left nothing: a repeat.
+        fake(path, scratch(0x59, parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0xb0, drained=0), rtc_secs=121761,
+             alarm=(0x01, 36502, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x59 (pmgr_late=1): 8 (alarm=1): the last SPMI command before the commit" in out
+              and "0x6016 = 0x00: the alarm's commands left no result" in out and "AIC events" not in out
+              and "A repeat, not a negative" in out
+              and "the SoC restarted about 31 s after the commit" in out
+              and "0x1401 = 0x01 (not armed)" in out,
+              "alarm=1's 0x59 with 0x6016 = 0: no result, a repeat", out + r.stderr)
+
+        # 0x59 with the alarm's commands all acked: the two commit writes after
+        # them aren't recorded.
+        fake(path, scratch(0x59, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0xbd), rtc_secs=121761,
+             alarm=(0x41, 125144, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "0x6016 = 0xbd: every alarm command was acked" in r.stdout
+              and "nothing records the two commit writes after those commands" in r.stdout,
+              "alarm=1's 0x59 with 0xbd: inconclusive about the last two commit writes", r.stdout + r.stderr)
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0xbd), rtc_secs=121761,
+             alarm=(0x41, 125144, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "nothing records the two commit writes" not in r.stdout,
+              "alarm=1's 0x5f with 0xbd: no such caveat", r.stdout + r.stderr)
+
+        # Partial results: each names the command it stopped at.
+        for v, stop in ((0x80, "0x14c0's read"), (0x83, "0x14c0's echo"), (0x85, "0x140c"), (0x8d, "0x14c2 = 0"),
+                        (0x9d, "0x1401 = 0x41")):
+            fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=v), rtc_secs=121761)
+            r = run(path)
+            out = r.stdout
+            check(r.returncode == 0 and f"0x6016 = 0x{v:02x}: the alarm's commands STOPPED at {stop} (" in out
+                  and "so the alarm wasn't tested" in out and (("the event was set" in out) == bool(v & 2))
+                  and (v not in (0x85, 0x8d, 0x9d) or ("no echo needed" in out and "0x14c0's echo" not in out)),
+                  f"alarm=1's 0x6016 = 0x{v:02x}: stopped at {stop}", out + r.stderr)
+
+        # A byte e1_hook doesn't write.
+        for v in (0xff, 0x81, 0x93):
+            fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=v), rtc_secs=121761)
+            r = run(path)
+            check(r.returncode == 0 and f"0x6016 = 0x{v:02x}: not a value e1_hook writes" in r.stdout,
+                  f"alarm=1's 0x6016 = 0x{v:02x}: not one of e1_hook's", r.stdout + r.stderr)
+
+        # A clean PMU, and runs without the alarm, still show the registers.
+        fake(path, scratch(0), alarm=(0x01, 36502, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "PMU alarm: 0x1401 = 0x01 (not armed), 0x140c = 36502" in r.stdout
+              and "the alarm wasn't tested" not in r.stdout and "0x140c is" not in r.stdout,
+              "a clean PMU: the alarm's registers, and nothing about a run", r.stdout + r.stderr)
+
+        # --clear after a run that armed the alarm: 0x1401 back to 0x01, the
+        # crumbs zeroed, the event, compare and mask left; the registers are
+        # printed before anything is written.
+        for c, what in ((0x41, "armed"), (0x03, "fired")):
+            before = fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0xbd),
+                          rtc_secs=121761, alarm=(c, 125144, 1, 0))
+            r = run(path, "--clear")
+            after = open(path, "rb").read()
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout
+                  and r.stdout.index("PMU alarm:") < r.stdout.index("disarmed") < r.stdout.index("cleared:"),
+                  f"--clear after a run that left the alarm {what}: 0x1401 to 0x01 and the crumbs zeroed, nothing else",
+                  r.stdout + r.stderr)
+
+        # The commit's second lost, 0x1401's write acked: still the run's alarm,
+        # disarmed, and the crumbs zeroed.
+        before = fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=0, flags=0xb0, drained=0xbd), rtc_secs=121761,
+                      alarm=(0x41, 125144, 0, 0))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        want = bytearray(before)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        want[0x1401] = 0x01
+        check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout
+              and "left alone" not in r.stdout,
+              "--clear with the commit's second lost and 0x1401 acked: disarmed", r.stdout + r.stderr)
+
+        # The second lost and nothing says 0x1401 was acked: nothing is written,
+        # the breadcrumbs stay, exit 2.
+        for res in (0x85, 0x00, 0xff, 0xa0):
+            before = fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=0, flags=0xb0, drained=res), rtc_secs=121761,
+                          alarm=(0x41, 125144, 0, 0))
+            r = run(path, "--clear")
+            after = open(path, "rb").read()
+            check(r.returncode == 2 and after == before and "whose alarm this is can't be told" in r.stderr
+                  and "cleared" not in r.stdout and "disarmed" not in r.stdout,
+                  f"--clear, 0x6016 = 0x{res:02x}, the second lost, 0x1401 armed: nothing written, exit 2",
+                  r.stdout + r.stderr)
+
+        # 0x59 armed too (the reset came between the alarm and 0x5f, say).
+        before = fake(path, scratch(0x59, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0), rtc_secs=121761,
+                      alarm=(0x41, 125144, 0, 0))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        check(r.returncode == 0 and after[0x1401] == 0x01 and "disarmed" in r.stdout,
+              "--clear at stage 0x59 with the alarm armed: disarmed", r.stdout + r.stderr)
+
+        # Nothing armed: 0x1401 isn't written.
+        before = fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0x85), rtc_secs=121761,
+                      alarm=(0x01, 36502, 0, 0))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        want = bytearray(before)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        check(r.returncode == 0 and after == bytes(want) and "disarmed" not in r.stdout,
+              "--clear after an alarm run that didn't arm it: 0x1401 left alone", r.stdout + r.stderr)
+
+        # After any other stage, an armed alarm is someone else's (macOS's wakes): left alone, and said so.
+        before = fake(path, scratch(0x58, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=1), rtc_secs=121761,
+                      alarm=(0x41, 125144, 0, 0))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        want = bytearray(before)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        check(r.returncode == 0 and after == bytes(want) and "disarmed" not in r.stdout and after[0x1401] == 0x41
+              and "PMU alarm: 0x1401 = 0x41" in r.stdout and "left alone" in r.stdout,
+              "--clear after a run without the alarm: an armed 0x1401 is shown and left alone", r.stdout + r.stderr)
+
+        # An alarm stage, but not the run's alarm (0x140c isn't the commit's second + 3600): left alone.
+        for stg, res, c, cmp_ in ((0x5f, 0xbd, 0x41, 200000), (0x59, 0x00, 0x03, 36502), (0x5f, 0x85, 0x03, 36502)):
+            before = fake(path, scratch(stg, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=res),
+                          rtc_secs=121761, alarm=(c, cmp_, 1, 0))
+            r = run(path, "--clear")
+            after = open(path, "rb").read()
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            check(r.returncode == 0 and after == bytes(want) and after[0x1401] == c and "disarmed" not in r.stdout,
+                  f"--clear at stage 0x{stg:02x} with 0x1401 = 0x{c:02x} and a compare value that isn't the run's: left alone",
+                  r.stdout + r.stderr)
+
         # --clear after a pmgr_late run: the same 11 bytes, nothing else.
         before = fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0xa9),
                                     flags=0x90, isrs=0x24, drained=0x95))
@@ -491,6 +749,14 @@ def main():
             ok = len(age) == 1 and float(age[0].split("its counter (CNTVCT) is ")[1].split(" s old")[0]) > up
             check(r.returncode == 0 and ok, "the real counter: read, and older than the kernel's uptime",
                   r.stdout + r.stderr)
+
+    # m1-crumbs' alarm registers, stages and its 3600 s against e1_hook.c's.
+    defs = {k: int(v, 0) for k, v in re.findall(r"#define (M1_PMU_ALARM\w*|M1_ALARM_\w+)\s+(0x[0-9a-f]+|\d+)", src)}
+    check(defs.get("M1_PMU_ALARM_CTRL") == g["ALARM_CTRL"] and defs.get("M1_PMU_ALARM") == g["ALARM"]
+          and defs.get("M1_PMU_ALARM_EVENT") == g["ALARM_EVENT"] and defs.get("M1_PMU_ALARM_MASK") == g["ALARM_MASK"]
+          and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"] and g["ALARM_STAGES"] == (0x59, 0x5f)
+          and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src,
+          "m1-crumbs' alarm registers, stages and seconds match e1_hook.c's", f"{defs}")
 
     print(f"{failed} failed" if failed else "all ok")
     return 1 if failed else 0
