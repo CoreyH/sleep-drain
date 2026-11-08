@@ -252,7 +252,7 @@ MODULE_PARM_DESC(m1_undo, "m1: on a way back after 0x50 went out, boot stage 0x3
 /* E2's M1 run 2, the observer: m1, with CPU7 kept up through the commit to watch. */
 static bool observe;
 module_param(observe, bool, 0444);
-MODULE_PARM_DESC(observe, "With m1=1 only: CPU7 isn't released before the commit; after it, CPU7 watches CPU0 and the E complex power down, reads the watchdogs, the soc clusters, SIO_CPU and the wake status, records them in the PMU's breadcrumbs, and then stops");
+MODULE_PARM_DESC(observe, "With m1=1 only: CPU7 isn't released before the commit; after it, CPU7 watches CPU0 and the E complex power down, reads the watchdogs, the soc clusters, SIO_CPU and the wake status (with pmgr_late, ps_sio and what CPU0 hands it instead), records them in the PMU's breadcrumbs, and then stops");
 static bool pmgr_late;
 module_param(pmgr_late, bool, 0444);
 MODULE_PARM_DESC(pmgr_late, "With m1=1 only: the table's PMGR quiesce goes out after slpa, in its place in the table (macOS's), with macOS's waits; only WD0's control and the four error-handler masks stay before the keys");
@@ -883,20 +883,25 @@ static void e1_after_slpa(void)
  * 75d472918995, docs/worklog.md L1866-1876, L2682, L2977), mapped here onto
  * T6000's table by what each write does, which is inferred. With pmgr_late,
  * K2 writes only entries 2-6 (e1_post_early()), and step 5 writes the other
- * 68 in table order, the commit still held back. After each entry m1_waits[]
- * names, CPU0 reads what macOS polls there, up to 10 ms, as DeepIdle's port
- * does; a wait still unmet then sets its bit in qto:
- *   bit 0   DCS's p-state, after 49 (to 7) and 50 (to 5): bit 31, T6020's
- *           busy bit, clear, and the actual [7:4] at the target [3:0], as
- *           this Mac's apple-pmgr-misc reads it
+ * 68 in table order, the commit still held back. After each of the 15
+ * entries m1_waits[] names, CPU0 reads what macOS polls there, up to 10 ms
+ * each, the bound DeepIdle's port uses; a wait still unmet then sets its bit
+ * in qto:
+ *   bit 0   DCS's p-state, after 49 (to 7) and 50 (to 5): bit 31 clear, as
+ *           macOS polls on T6020, and, stricter than macOS, the actual [7:4]
+ *           at the target [3:0], as this Mac's apple-pmgr-misc reads it
  *   1       AFR's power state (51): actual 0 (genpd has it off already)
  *   2-5     ANE0's, AFR's, DISPLAY's and AVEMSR's power-downs (55, 57, 58,
  *           60): bit 4 clear. macOS polls only the clusters above 3, so not
  *           EACC's, PACC0's or PACC1's
  *   6       SIO_CPU (61): actual == target. genpd has its parent, SIO, off by
  *           prepare_late, so it may never settle
- *   7       a ClkGen-SOC mux (62-66): bit 30 clear; or PLL-off after its last
- *           write (72): bit 31 clear
+ *   7       a ClkGen-SOC mux (62-66): bit 30 clear; or PLL-off (69, 72): bit
+ *           31 clear. T6020's setPLLOffMode sets bits 5:3 to 3, sets bit 1,
+ *           clears bit 0 and polls bit 31; entries 67-69 are that, from
+ *           Linux's 0x239, with bit 31 (busy) read back into 69, and 70-72
+ *           are what a second call writes to an unchanged 0x21a (inferred),
+ *           so CPU0 polls after 69 and after 72
  * Nothing is written that run 2 didn't write, and no PMU byte is added: the
  * waits only read, through the entries' own mappings. Nothing else reads the
  * ClkGen muxes, PLL-off or DCS's p-state; the load log reads them awake, with
@@ -925,12 +930,15 @@ static void e1_after_slpa(void)
  *           (the wait after 50): bits 0-3 the actual, bit 4 the target is 5,
  *           bit 5 bit 31 set; bit 6 SIO's actual state not off (CPU7's read)
  * CPU7 times the two while it polls CPU0 and ECPM, and then until both read
- * done or 500 ms after its ECPM poll ended: on T6020, a P cluster's
- * power-down was still pending 6 ms after its complex went off, and done
- * within 500 ms (DeepIdle, docs/worklog.md L2917, L2898). It doesn't read DCS
- * after the commit: the ClkGen park and PLL-off come first, and Naeem found
- * most registers rewritten by the engine right after the commit, so a change
- * there wouldn't say whose it was.
+ * done or 500 ms after its ECPM poll ended, all before its 0x71 command, so
+ * that a stop in that watch leaves 0x70, with qto still in 0x6006: on T6020,
+ * a P cluster's power-down was still pending about 6 ms after the cores'
+ * release, as its complex read off, and done within 500 ms (DeepIdle,
+ * docs/worklog.md L2915-2917, L2898). It doesn't read DCS after the commit:
+ * the ClkGen park and PLL-off come first, and on T8103 Naeem found most of
+ * the registers where Linux and macOS differed at the commit rewritten by the
+ * entry sequences right after it (malik-na/m1-power-lab f4d61b6, the
+ * linux-s2r README, L123-125), so a change there wouldn't say whose it was.
  *
  * Left out: Naeem's RTC alarm and his WD1 dead-man, so that a completed
  * entry stays dark for a BQCC floor (the alarm's PMU writes, OK'd on
@@ -947,7 +955,11 @@ static void e1_after_slpa(void)
  * observe=1 adds no address to what m1 writes: CPU0 writes CPU7's stop bit,
  * before the commit, instead of CPU7 in 6, and CPU7 writes breadcrumbs and
  * nub-spmi0's acks as CPU0 does. Nor does pmgr_late: it moves 26 of the
- * table's writes from K2 to step 5, and reads.
+ * table's writes from K2 to step 5, and reads. One thing it does change: DCS
+ * (49, 50) now goes out before the ClkGen park (62-66), in macOS's order, so
+ * the DRAM p-state may really change under the running PMP, which runs 1
+ * and 2, with the park before slpw, may not have seen. A hang there is dark,
+ * at stage 0x10, with no watchdog armed: the power key ends it.
  */
 #define M1_NCPUS		8
 #define M1_OTHERS		0xfe
@@ -1097,7 +1109,7 @@ static call_single_data_t m1_csd[M1_NCPUS];
 
 static void __iomem *m1_cpu_start, *m1_ps, *m1_aic, *m1_aic_event, *m1_aon, *m1_wdt, *m1_spmi_page;
 #define m1_spmi			(m1_spmi_page + (M1_SPMI & ~PAGE_MASK))
-/* observe=1 only: read, never written. */
+/* observe=1, and pmgr_late for m1_soc and m1_sio: read, never written. */
 static void __iomem *m1_soc, *m1_sio, *m1_wdx, *m1_cpm;
 #define m1_wake_status		(m1_aon + (M1_AON_WAKE_STATUS - M1_AON_WAKE))
 static unsigned int m1_aic_mask, m1_aic_words;
@@ -1339,7 +1351,8 @@ static const struct m1_wait {
 	{ 64, M1_W_CLEAR,   BIT(7), BIT(30),       0x28e038168ULL },
 	{ 65, M1_W_CLEAR,   BIT(7), BIT(30),       0x28e03815cULL },
 	{ 66, M1_W_CLEAR,   BIT(7), BIT(30),       0x28e038170ULL },
-	{ 72, M1_W_CLEAR,   BIT(7), BIT(31),       0x28e224000ULL },	/* PLL-off, after its last write */
+	{ 69, M1_W_CLEAR,   BIT(7), BIT(31),       0x28e224000ULL },	/* PLL-off: setPLLOffMode's poll */
+	{ 72, M1_W_CLEAR,   BIT(7), BIT(31),       0x28e224000ULL },	/* and after its last write */
 };
 /*
  * The fabric's p-state, read at load only, through DCS's mapping (its page;
@@ -1500,9 +1513,10 @@ static void m1_time_clusters(u8 *te, u8 *tp, u64 t_go)
  * raw SPMI to the OK'd bytes (as Naeem's run 2 and macOS's alarm talk SPMI
  * after the commit), nub-spmi0's acks, then ACC_OVRD (if P1's last), CYC_OVRD
  * and its WFI. Up to 1 s of polls, 1.5 s with pmgr_late, which times EACC's
- * and PACC0's power-downs through them and then up to 500 ms more. The
- * breadcrumbs, and the order that keeps each stage's meaning sure, are in the
- * m1 comment; pmgr_late's stages are 0x10 above run 2's.
+ * and PACC0's power-downs through them and then up to 500 ms more, before
+ * its first record. The breadcrumbs, and the order that keeps each stage's
+ * meaning sure, are in the m1 comment; pmgr_late's stages are 0x10 above run
+ * 2's.
  */
 static void __noreturn m1_observe(struct m1_core *c)
 {
@@ -1539,9 +1553,15 @@ static void __noreturn m1_observe(struct m1_core *c)
 	}
 	if (!m1_ps_state(M1_PS_ECPM))
 		off |= BIT(7);
-	if (pmgr_late)
-		t0 = m1_now();	/* ECPM's poll is over: up to 500 ms more */
 	off |= READ_ONCE(c->down) & 0x7e;
+	if (pmgr_late) {
+		/* On until both read done, or 500 ms after ECPM's poll, before 0x71 overwrites qto in 0x6006. */
+		t0 = m1_now();
+		while ((te == M1_NEVER || tp == M1_NEVER) && m1_now() - t0 < m1_tps / 2) {
+			m1_time_clusters(&te, &tp, t_go);
+			cpu_relax();
+		}
+	}
 
 	ctrl0 = readl(m1_wdt + M1_WD_CTRL(0));
 	ctrl1 = readl(m1_wdt + M1_WD_CTRL(1));
@@ -1555,11 +1575,6 @@ static void __noreturn m1_observe(struct m1_core *c)
 	       (READ_ONCE(m1_core[0].wfi_ret) ? BIT(7) : 0);
 	b[3] = min(left, 255U);
 	m1_crumb(0x6004, b, 4);
-
-	while (pmgr_late && (te == M1_NEVER || tp == M1_NEVER) && m1_now() - t0 < m1_tps / 2) {
-		m1_time_clusters(&te, &tp, t_go);
-		cpu_relax();
-	}
 
 	for (i = 0; i < ARRAY_SIZE(soc); i++) {
 		if (readl(m1_soc + 4 * soc[i]) & BIT(4))
@@ -1879,10 +1894,11 @@ static int __init m1_observe_init(void)
 
 /*
  * pmgr_late at load: what it writes where, and every word its waits read,
- * as it is now, awake, through the entries' own mappings; and two it doesn't
- * read, for the record: the fabric's p-state, in DCS's page (with the PMP
- * running, apple-pmgr-misc's suspend_noirq sets its target to 1), and ps_sio,
- * SIO_CPU's parent. Reads only.
+ * as it is now, awake, through the entries' own mappings; and two words its
+ * waits don't read: the fabric's p-state, in DCS's page (with the PMP
+ * running, apple-pmgr-misc's suspend_noirq sets its target to 1), and
+ * ps_sio, SIO_CPU's parent (CPU7 reads it after the commit, with observe).
+ * Reads only.
  */
 static void __init m1_late_init(void)
 {

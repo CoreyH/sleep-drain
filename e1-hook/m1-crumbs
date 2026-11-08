@@ -42,7 +42,8 @@ STAGES = {
     0x00: "none: no M1 run since the last clear, or the bytes didn't survive",
     0x01: "K1: the replay began (the PMU written through the kernel's SPMI path)",
     0x02: "K3: MBSE=slpa was accepted; nothing after it reached the PMU (not all 7 cores parked, or raw SPMI failed)",
-    0x10: "4: all 7 other cores parked, raw SPMI working",
+    0x10: "4: all 7 other cores parked, raw SPMI working; step 5's writes came next under this stage (with"
+          " pmgr_late, its 68 writes and 15 waits: a stall in any of them leaves 0x10)",
     0x20: "5: the 42 post-slpa writes done",
     0x30: "7: every parked core released",
     0x50: "8: the last SPMI command; next came nub-spmi0's acks, the commit x3, CPU0's deep WFI",
@@ -61,7 +62,9 @@ STAGES = {
 # The run's own variants, when 0x6005 bit 0 marks it observe=1 (CPU0 never
 # parks, so the bit is free below 0x61).
 OBSERVE_STAGES = {
-    0x10: "4: all 7 other cores parked, raw SPMI working (observe=1: CPU7 to stay up for the observer)",
+    0x10: "4: all 7 other cores parked, raw SPMI working (observe=1: CPU7 to stay up for the observer); step"
+          " 5's writes came next under this stage (with pmgr_late, its 68 writes and 15 waits: a stall in any"
+          " of them leaves 0x10)",
     0x30: "7: every parked core but CPU7 released (observe=1: CPU7 stays up through the commit)",
     0x50: "8: the last SPMI command; next came nub-spmi0's acks, the wake-status snapshot, CPU7's stop bit,"
           " the commit x3, the hand-over to CPU7 and CPU0's deep WFI. Nothing CPU7 sent after the commit"
@@ -74,12 +77,13 @@ OBSERVE_STAGES = {
 LATE = {0x28: 0x20, **{0x29 + i: 0x21 + i for i in range(7)}, 0x38: 0x30, 0x58: 0x50,
         0x70: 0x60, 0x71: 0x61, 0x72: 0x62, 0x7e: 0x6e, 0x7f: 0x6f}
 LATE_TEXT = {
-    0x28: "5: the 68 post-slpa writes done, with macOS's waits after 14 of them",
+    0x28: "5: the 68 post-slpa writes done, with macOS's waits after 15 of them",
 }
 # qto, by bit: each of macOS's waits that was still unmet 10 ms after its write.
-WAITS = ("DCS's p-state (after entries 49 and 50)", "AFR's power state (51)", "ANE0's power-down (55)",
+WAITS = ("DCS's p-state after entry 49 (to 7), after 50 (to 5), or both (its busy bit 31 clear, macOS's poll,"
+         " and actual = target, e1_hook's own)", "AFR's power state (51)", "ANE0's power-down (55)",
          "AFR's power-down (57)", "DISPLAY's power-down (58)", "AVEMSR's power-down (60)",
-         "SIO_CPU's power state (61)", "a ClkGen mux (62-66) or PLL-off (72)")
+         "SIO_CPU's power state (61)", "a ClkGen mux (62-66) or PLL-off (69, 72)")
 # 0x6013's buckets: when CPU7 first read a power-down done after the hand-over.
 BUCKETS = tuple(f"done {t} after the hand-over" for t in ("under 5 ms", "5-20 ms", "20-50 ms", "50-100 ms",
                                                          "100-200 ms", "200-500 ms", "500 ms or more")) + (
@@ -179,8 +183,8 @@ def decode(b, rtc, cnt=None):
     if s:
         out.append("  (the last breadcrumb that reached the PMU: the run got at least that far)")
     if mark:
-        out.append("  observe=1 (0x6005 bit 0): CPU7 was kept up for the observer, so it isn't in 0x6006 or 0x6007"
-                   " and PCPM1 wasn't checked")
+        out.append(f"  observe=1 (0x6005 bit 0): CPU7 was kept up for the observer, so it isn't in"
+                   f" {'0x6007' if late else '0x6006 or 0x6007'} and PCPM1 wasn't checked")
     if obs:
         off = b[5]
         out.append(f"0x6005 = 0x{off:02x}: CPU0 {'read off' if off & 1 else 'did NOT read off'} within 500 ms of the"
@@ -224,26 +228,38 @@ def decode(b, rtc, cnt=None):
                    f" WD1 {'was running (stopped)' if f & 0x40 else 'was off'};"
                    f" K3's kernel-path write after slpa {'FAILED' if f & 0x08 else 'worked'}")
     if base in FULL and late:
-        out.append(f"0x6012 = {qto(b[0x12])}")
-        t = b[0x13]
+        # CPU7 sends 0x6012-0x6013 in one command and 0x6015-0x6016 in another;
+        # each pair's second byte has bit 7 set, so a pair without it didn't
+        # survive the reset (zeroed, say), and its first byte isn't read either.
+        t, d = b[0x13], b[0x16]
+        lost = "bit 7 is clear, so this byte didn't survive the reset; don't read it"
         if not t & 0x80:
-            out.append(f"0x6013 = 0x{t:02x}: bit 7 is clear, so this byte didn't survive the reset; don't read it")
+            out.append(f"0x6012 = 0x{b[0x12]:02x}: sent in one command with 0x6013, which didn't survive the reset;"
+                       " not read as the waits that timed out")
+            out.append(f"0x6013 = 0x{t:02x}: {lost}")
         else:
+            out.append(f"0x6012 = {qto(b[0x12])}")
             out.append(f"0x6013 = 0x{t:02x}: EACC's power-down {BUCKETS[t & 7]}; PACC0's {BUCKETS[t >> 3 & 7]};"
                        f" PACC0's was {'STILL PENDING' if t & 0x40 else 'done'} just before the commit (CPU0's read)")
         cl = b[0x15]
-        busy = ",".join(n for i, n in enumerate(SOC) if cl >> i & 1) or "none"
-        out.append(f"0x6015 = 0x{cl:02x}: soc clusters still busy at the end of CPU7's watch: {busy} (PACC1"
-                   f" expected, CPU7 being up); SIO_CPU's actual state {'NOT off' if cl & 0x80 else 'off'}")
-        d = b[0x16]
         if not d & 0x80:
-            out.append(f"0x6016 = 0x{d:02x}: bit 7 is clear, so this byte didn't survive the reset; don't read it")
+            out.append(f"0x6015 = 0x{cl:02x}: sent in one command with 0x6016, which didn't survive the reset;"
+                       " not read as the soc clusters")
+            out.append(f"0x6016 = 0x{d:02x}: {lost}")
         else:
+            busy = ",".join(n for i, n in enumerate(SOC) if cl >> i & 1) or "none"
+            out.append(f"0x6015 = 0x{cl:02x}: soc clusters still busy at the end of CPU7's watch: {busy} (PACC1"
+                       f" expected, CPU7 being up); SIO_CPU's actual state {'NOT off' if cl & 0x80 else 'off'}")
             at5 = (d & 0x1f) == 0x15 and not d & 0x20
-            out.append(f"0x6016 = 0x{d:02x}: DCS's p-state at CPU0's last wait before the commit: actual {d & 0xf},"
-                       f" target {'5' if d & 0x10 else 'NOT 5'}, busy bit 31 {'SET' if d & 0x20 else 'clear'}"
-                       f" ({'settled at 5' if at5 else 'NOT settled at 5'}); SIO's actual state"
-                       f" {'NOT off' if d & 0x40 else 'off'} after the commit")
+            out.append(f"0x6016 = 0x{d:02x}: DCS's p-state at CPU0's last wait before the commit (after entry 50):"
+                       f" actual {d & 0xf}, target {'5' if d & 0x10 else 'NOT 5'}, busy bit 31"
+                       f" {'SET' if d & 0x20 else 'clear'} ({'settled at 5' if at5 else 'NOT settled at 5'}); SIO's"
+                       f" actual state {'NOT off' if d & 0x40 else 'off'} after the commit")
+            # The wait after 50 ends met or at its timeout, so a settled
+            # 0x6016 means that wait was met: a DCS timeout was 49's.
+            if at5 and t & 0x80 and b[0x12] & 1:
+                out.append("  so DCS's timed-out wait (0x6012 bit 0) was the one after entry 49: the one after 50"
+                           " settled")
     elif base in FULL:
         out.append(f"0x6012 0x6013 = {b[0x12]:02x} {b[0x13]:02x}: the low bytes of the wdt page's +0x28 and +0x40"
                    " after the commit (T8103's S2R-engine progress registers, inferred; e1_hook's load log has"

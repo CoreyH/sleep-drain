@@ -12,12 +12,15 @@ nothing.
   python3 -I tests/m1_crumbs_test.py
 """
 import os
+import re
+import runpy
 import subprocess
 import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.realpath(os.path.join(HERE, "..", "e1-hook", "m1-crumbs"))
+HOOK = os.path.realpath(os.path.join(HERE, "..", "e1-hook", "e1_hook.c"))
 
 failed = 0
 
@@ -254,7 +257,8 @@ def main():
         out = r.stdout
         check(r.returncode == 0 and "0x6004 = 0x28 (pmgr_late=1): 5: the 68 post-slpa writes done" in out
               and "0x6006 = 0x10: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58)\n" in out
-              and "observe=1 (0x6005 bit 0)" in out and "parked (0x6005 = 0xff)" in out
+              and "observe=1 (0x6005 bit 0): CPU7 was kept up for the observer, so it isn't in 0x6007 and" in out
+              and "parked (0x6005 = 0xff)" in out
               and "left their spin" not in out and "read off within" not in out
               and "RTC second at the replay's start (K1): 121500" in out,
               "pmgr_late's 0x28: qto in 0x6006, nothing in 0x6007", out + r.stderr)
@@ -351,8 +355,9 @@ def main():
         r = run(path)
         out = r.stdout
         check(r.returncode == 0 and "it likely never powered down" in out
-              and "after 10 ms: DCS's p-state (after entries 49 and 50); DISPLAY's power-down (58);"
-              " SIO_CPU's power state (61); a ClkGen mux (62-66) or PLL-off (72)\n" in out
+              and "after 10 ms: DCS's p-state after entry 49 (to 7), after 50 (to 5), or both" in out
+              and "; DISPLAY's power-down (58); SIO_CPU's power state (61); a ClkGen mux (62-66) or PLL-off"
+              " (69, 72)\n" in out and "was the one after entry 49" not in out
               and "EACC's power-down STILL PENDING at the end of CPU7's watch" in out
               and "PACC0's STILL PENDING at the end" in out and "PACC0's was STILL PENDING just before" in out
               and "EACC,PACC0,PACC1,DISPLAY (" in out and "SIO_CPU's actual state NOT off" in out
@@ -360,16 +365,81 @@ def main():
               and "(ECPM) did NOT read off" in out,
               "pmgr_late's 0x7e: every timeout and pending bit decoded", out + r.stderr)
 
-        # 0x7f with 0x6013's and 0x6016's bit 7 lost: not read.
+        # 0x7f with 0x6013's and 0x6016's bit 7 lost: neither pair is read,
+        # since each went in one command with its marked byte.
         fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0x29), flags=0x90,
                            isrs=0x04, drained=0x15), rtc_secs=121761)
         r = run(path)
         out = r.stdout
         check(r.returncode == 0 and "0x6013 = 0x29: bit 7 is clear, so this byte didn't survive" in out
               and "0x6016 = 0x15: bit 7 is clear, so this byte didn't survive" in out
+              and "0x6012 = 0x10: sent in one command with 0x6013, which didn't survive the reset; not read" in out
+              and "0x6015 = 0x04: sent in one command with 0x6016, which didn't survive the reset; not read" in out
               and "power-down done" not in out and "DCS's p-state at" not in out
-              and "0x6012 = 0x10" in out,
-              "pmgr_late's 0x7f with 0x6013 and 0x6016 lost: those two not read", out + r.stderr)
+              and "waits that timed out after" not in out and "soc clusters still busy" not in out,
+              "pmgr_late's 0x7f with 0x6013 and 0x6016 lost: neither pair read", out + r.stderr)
+
+        # Both pairs zeroed (the case the markers are for): no "every wait met",
+        # no "none busy".
+        fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0, 0), flags=0x90,
+                           isrs=0, drained=0), rtc_secs=121761)
+        r = run(path)
+        out = r.stdout
+        check(r.returncode == 0 and "every one of macOS's waits was met" not in out
+              and "still busy at the end" not in out and out.count("didn't survive the reset") == 4,
+              "pmgr_late's 0x7f with 0x6012-0x6016 zeroed: nothing read as a result", out + r.stderr)
+
+        # 0x58 marked observe: CPU7 never reported; qto and the cores read off
+        # from CPU0's command, PCPM1 not checked.
+        fake(path, scratch(0x58, parked=0xff, left=0x10, down=0x7e, secs=121544, flags=0x90, isrs=0, drained=0),
+             rtc_secs=121761)
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x58 (pmgr_late=1): 8: the last SPMI command" in out
+              and "Nothing CPU7 sent after the commit landed" in out
+              and "0x6006 = 0x10: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58)\n" in out
+              and "read off within 10 ms (0x6007 = 0x7e): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6\n" in out
+              and "PCPM1 not checked (CPU7 kept up)" in out and "isn't in 0x6007 and" in out
+              and "the SoC restarted about 31 s after the commit" in out,
+              "pmgr_late's 0x58 marked observe: CPU7 never reported", out + r.stderr)
+
+        # Every wait timed out: all eight names, in bit order.
+        fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0xff, 0x80), flags=0x90,
+                           isrs=0x04, drained=0x95), rtc_secs=121761)
+        r = run(path)
+        out = r.stdout
+        names = ["DCS's p-state after entry 49", "AFR's power state (51)", "ANE0's power-down (55)",
+                 "AFR's power-down (57)", "DISPLAY's power-down (58)", "AVEMSR's power-down (60)",
+                 "SIO_CPU's power state (61)", "a ClkGen mux (62-66) or PLL-off (69, 72)"]
+        line = [l for l in out.splitlines() if l.startswith("0x6012 = 0xff")]
+        pos = [line[0].find(n) for n in names] if line else []
+        check(r.returncode == 0 and len(line) == 1 and all(p > 0 for p in pos) and pos == sorted(pos),
+              "pmgr_late's qto 0xff: every wait named, in bit order", out + r.stderr)
+
+        # Each 0x6013 bucket, for EACC and for PACC0.
+        want = ["done under 5 ms", "done 5-20 ms", "done 20-50 ms", "done 50-100 ms", "done 100-200 ms",
+                "done 200-500 ms", "done 500 ms or more", "STILL PENDING at the end of CPU7's watch"]
+        for i, w in enumerate(want):
+            fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0, 0x80 | i << 3 | i),
+                               flags=0x90, isrs=0x04, drained=0x95), rtc_secs=121761)
+            r = run(path)
+            out = r.stdout
+            check(r.returncode == 0 and f"EACC's power-down {w}" in out and f"PACC0's {w}" in out
+                  and "PACC0's was done just before the commit" in out,
+                  f"pmgr_late's 0x6013 bucket {i}: {w}", out + r.stderr)
+
+        # DCS's wait timed out, and the one after 50 settled: it was 49's.
+        fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x01, 0x80), flags=0x90,
+                           isrs=0x04, drained=0x95), rtc_secs=121761)
+        r = run(path)
+        check(r.returncode == 0 and "settled at 5" in r.stdout and "was the one after entry 49" in r.stdout,
+              "pmgr_late's DCS timeout with 0x6016 settled: the wait after 49", r.stdout + r.stderr)
+
+        # A stall in step 5 leaves 0x10, which says so.
+        fake(path, scratch(0x10, parked=0xff))
+        r = run(path)
+        check(r.returncode == 0 and "a stall in any of them leaves 0x10" in r.stdout,
+              "0x10: step 5's writes and waits came next under it", r.stdout + r.stderr)
 
         # --clear after a pmgr_late run: the same 11 bytes, nothing else.
         before = fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0xa9),
@@ -381,6 +451,31 @@ def main():
         want[0x6010:0x6017] = bytes(7)
         check(r.returncode == 0 and after == bytes(want) and "cleared" in r.stdout and "0x7f" in r.stdout,
               "--clear after a pmgr_late run: 0x6004-0x6007 and 0x6010-0x6016 only", r.stdout + r.stderr)
+
+    # m1-crumbs' tables against e1_hook.c's: each qto bit names the entries
+    # its waits follow, and the buckets' edges are m1_bucket_ms[].
+    g = runpy.run_path(TOOL, run_name="m1_crumbs")
+    src = open(HOOK).read()
+    block = src[src.index("} m1_waits[] = {"):]
+    block = block[:block.index("};")]
+    waits = [(int(i), int(bit)) for i, bit in re.findall(r"\{\s*(\d+),\s*M1_W_\w+,\s*BIT\((\d)\)", block)]
+    by_bit = {}
+    for idx, bit in waits:
+        by_bit.setdefault(bit, []).append(idx)
+    def entries(text):
+        """The entry numbers a WAITS text names, ranges ("62-66") expanded."""
+        return {n for a, b in re.findall(r"(\d+)(?:-(\d+))?", text) for n in range(int(a), int(b or a) + 1)}
+
+    named = all(i in entries(g["WAITS"][bit]) for bit, ids in by_bit.items() for i in ids)
+    ms = [int(x) for x in re.search(r"m1_bucket_ms\[\] = \{([^}]*)\}", src).group(1).split(",")]
+    edges = ["under 5 ms"] + [f"{a}-{b} ms" for a, b in zip(ms, ms[1:])] + [f"{ms[-1]} ms or more"]
+    nwaits = re.search(r"after (\d+) of them", g["LATE_TEXT"][0x28])
+    check(len(waits) == 15 and sorted(by_bit) == list(range(8)) and len(g["WAITS"]) == 8 and named
+          and ms[0] == 5 and len(g["BUCKETS"]) == len(ms) + 2
+          and all(e in g["BUCKETS"][i] for i, e in enumerate(edges)) and "PENDING" in g["BUCKETS"][-1]
+          and nwaits and int(nwaits.group(1)) == len(waits),
+          "m1-crumbs' WAITS, BUCKETS and wait count match e1_hook.c's m1_waits[] and m1_bucket_ms[]",
+          f"waits {waits}\nms {ms}\nWAITS {g['WAITS']}\nBUCKETS {g['BUCKETS']}")
 
     # The real counter, on this machine: older than the kernel's uptime.
     if os.uname().machine == "aarch64":
