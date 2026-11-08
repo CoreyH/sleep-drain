@@ -646,7 +646,7 @@ def main():
 
         # The second lost and nothing says 0x1401 was acked: nothing is written,
         # the breadcrumbs stay, exit 2.
-        for res in (0x85, 0x00):
+        for res in (0x85, 0x00, 0xff, 0xa0):
             before = fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=0, flags=0xb0, drained=res), rtc_secs=121761,
                           alarm=(0x41, 125144, 0, 0))
             r = run(path, "--clear")

@@ -46,6 +46,7 @@ CRUMBS = ((0x6004, 4), (0x6010, 7))  # the bytes --clear zeroes
 ALARM_CTRL, ALARM, ALARM_EVENT, ALARM_MASK = 0x1401, 0x140c, 0x14c0, 0x14c2
 ALARM_STAGES = (0x59, 0x5f)  # alarm=1: 0x6016 is the alarm's byte, and the alarm may be armed
 ALARM_SECS = 3600  # e1_hook's M1_ALARM_SECS
+ALARM_ACKED = (0xbd, 0xbf)  # 0x6016 when every alarm command was acked, 0x1401's write among them
 
 # Each stage is the last breadcrumb that reached the PMU: the run got at least
 # that far. Raw SPMI stops at its first error and CPU0 goes on without it, so
@@ -181,7 +182,7 @@ def alarm_byte(v):
     if not v & 0x80:
         return (f"0x6016 = 0x{v:02x}: the alarm's commands left no result (bit 7 clear): they didn't run, or the"
                 " byte didn't land or survive; so the alarm wasn't tested. A repeat, not a negative")
-    if v in (0xbd, 0xbf):
+    if v in ALARM_ACKED:
         ev = "the event was set, and echoed" if v == 0xbf else "no event was set"
         return f"0x6016 = 0x{v:02x}: every alarm command was acked ({ev}): 0x140c, 0x14c2 = 0, then 0x1401 = 0x41"
     if v not in (0x80, 0x83, 0x85, 0x87, 0x8d, 0x8f, 0x9d, 0x9f):
@@ -206,7 +207,7 @@ def alarm_lines(s, commit, alarm, now, res):
     if s not in ALARM_STAGES:
         return out
     right = commit is not None and when == commit + ALARM_SECS
-    recorded, acked = bool(res & 0x80), bool(res & 0x80 and res & 0x20)
+    recorded, acked = bool(res & 0x80), res in ALARM_ACKED
     if commit is None:
         out.append("  the commit's second isn't known, so 0x140c can't be checked")
     elif right:
@@ -365,7 +366,7 @@ def decode(b, rtc, cnt=None, alarm=None):
             out.append(f"0x6015 = 0x{b[0x15]:02x}: cores with an interrupt pending at their stop: {cpus(b[0x15])}")
         if s in ALARM_STAGES:
             out.append(alarm_byte(b[0x16]))
-            if s == 0x59 and b[0x16] in (0xbd, 0xbf):
+            if s == 0x59 and b[0x16] in ALARM_ACKED:
                 out.append("  stage 0x59, so nothing records the two commit writes after those commands (0x5f comes after"
                            " them): inconclusive about the rest of the entry")
         elif b[0x14] & 0x80:
@@ -404,8 +405,7 @@ def main():
         # The run's own alarm: its compare value is the commit's second +
         # 3600, or, with that second lost, 0x6016 says 0x1401's write was acked.
         secs = int.from_bytes(b[0x10:0x14], "little")
-        acked = bool(b[0x16] & 0x80 and b[0x16] & 0x20)
-        mine = b[4] in ALARM_STAGES and (alarm[1] == secs + ALARM_SECS if secs else acked)
+        mine = b[4] in ALARM_STAGES and (alarm[1] == secs + ALARM_SECS if secs else b[0x16] in ALARM_ACKED)
         try:
             # Before the crumbs, so that a failed disarm keeps the stage for another try.
             if mine and alarm[0] & 0x42:
