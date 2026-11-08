@@ -27,7 +27,7 @@ the PR with that session's work.
   replay with Naeem's M1 recipe takes every core down and commits the entry,
   but the entry never completes: the engine's own watchdog, WD2, resets the
   SoC about 30 s after the commit (RESEARCH.md, "M1 run 2"). Next is M1 run
-  3.
+  3, built and waiting for an attended run (`run-floor --m1-late`).
 
 ## Picking this up
 
@@ -312,8 +312,9 @@ steps, and restarting the DCP and the PMP afterwards.
         nothing to clear), and the prepared answer to "SIO_CPU not off"
         (macOS's read-modify-write would leave it off, which isn't macOS's
         state either).
-    - [ ] **M1 run 3: the PMGR quiesce in macOS's place** (to build:
-      e1_hook `pmgr_late=1`, `pkexec e1-hook/run-floor --m1-late`). Run 2's
+    - [ ] **M1 run 3: the PMGR quiesce in macOS's place** (built, to run:
+      e1_hook `pmgr_late=1`, `pkexec e1-hook/run-floor --m1-late`; e1_hook.c's
+      m1 comment has its breadcrumbs, and `m1-crumbs` decodes them). Run 2's
       recipe, the observer included, with one change: where the table's
       PMGR quiesce goes, and macOS's waits after it. No new write and no
       new PMU byte. Its value is mostly the readout: T6020 ran the same
@@ -323,17 +324,25 @@ steps, and restarting the DCP and the PMP afterwards.
         move them. The other 26 go out in step 5 at their places in the
         table, after `slpa`, with the other cores parked awake.
       - CPU0 then waits as macOS does, up to 10 ms each, and records which
-        waits time out: DCS (entries 49-50: its busy bit clear and actual
-        = target), AFR's power state (51), ANE0, AFR, DISPLAY and AVEMSR
-        (55, 57, 58, 60), SIO_CPU (61), the ClkGen muxes (62-66) and
-        PLL-off (72). It also reads PACC0's bit 4 just before the commit.
+        waits time out: DCS (entries 49-50: its busy bit clear, macOS's
+        poll, and, stricter, actual = target), AFR's power state (51),
+        ANE0, AFR, DISPLAY and AVEMSR (55, 57, 58, 60), SIO_CPU (61), the
+        ClkGen muxes (62-66) and PLL-off (69 and 72: entries 67-69 are one
+        setPLLOffMode, and 70-72 look like a second). It also reads PACC0's
+        bit 4 just before the commit.
       - CPU7 times EACC's and PACC0's power-downs from the hand-over,
-        stopping about 500 ms after ECPM reads off, and reads DCS's p-state
-        last, after its other crumbs are out. It gives up run 2's wdt-page
-        and wake-status bytes, which read nothing new.
+        stopping about 500 ms after ECPM reads off. It records DCS's
+        p-state as CPU0 last read it, at the end of its wait after entry 50
+        (before the ClkGen park, PLL-off and the commit); nothing reads DCS
+        after the commit. It gives up run 2's wdt-page and wake-status
+        bytes, which read nothing new.
       - New reads, all of registers macOS polls, or for the load log's
         baseline: the ClkGen muxes, PLL-off, DCS, the fabric's p-state and
         ps_sio.
+      - One new risk: DCS now changes before the ClkGen park, in macOS's
+        order (runs 1-2 parked the clocks first), so the DRAM p-state may
+        really change under the running PMP. A hang there is dark at stage
+        0x10, with no watchdog armed: the power key ends it.
       - How to read it:
         - The expected case: a reset at ~30 s with only DISPLAY's wait
           timed out (AFR's power state is already off, so its wait passes),
@@ -343,20 +352,23 @@ steps, and restarting the DCP and the PMP afterwards.
         - EACC or PACC0 still pending ~500 ms after their complexes read
           off: a CPU cluster doesn't finish even in macOS's place. Fix rung
           4 comes up; first rule out CPU7's own PACC1.
-        - DCS's wait times out, or DCS isn't at 5 before the commit: the
-          DRAM p-state doesn't settle with the PMP running, and fix rung 2
-          (the PMP) moves up. A DCS changed after the commit could be the
-          engine's doing or the PMP's: Naeem found most registers rewritten
-          by the engine right after the commit.
+        - DCS's wait times out, or DCS isn't settled at 5 at the end of its
+          wait after entry 50: the DRAM p-state doesn't settle with the PMP
+          running, and fix rung 2 (the PMP) moves up. There is no reading
+          after the commit, on purpose: the ClkGen park and PLL-off come
+          first, and on T8103 Naeem found most of the registers where Linux
+          and macOS differed at the commit rewritten right after it.
         - SIO_CPU's wait times out: most likely its off parent. ClkGen's or
           PLL-off's: a new lead.
         - Dark past 2 minutes: a candidate. Leave it 30+ minutes, then the
           power key, `m1-crumbs` and a BQCC reading.
-        - Dark with a stage before the commit: a write or a wait in step 5
-          stalled, and the stage says where.
+        - Dark at stage 0x10: one of step 5's writes or waits stalled, and
+          no breadcrumb says which; or raw SPMI failed after 0x10 and the
+          entry went on, which the BQCC reading tells apart. Dark at
+          0x28-0x58: the stop came in the step that stage names (6-9).
       - A reset with the observer up doesn't rule a change out: CPU7 stays
-        up about 2 s after the commit. Any rung whose readout comes back
-        clean gets a run without it.
+        up to about 1.5 s after the commit. Any rung whose readout comes
+        back clean gets a run without it.
     - The fix rungs after run 3, ranked: one per run, and each one that
       moves the replay toward macOS's sequence stays in the runs after it,
       unless Corey picks a cumulative rung.

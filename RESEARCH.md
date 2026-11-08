@@ -1836,8 +1836,9 @@ it `error-handler[2]+0x18000`):
 - On T6020, with only the targets written, idle ANE0 and AVEMSR went from
   0x2f to 0x00. PACC0 and PACC1 (cores parked) and DISPLAY (DCP running)
   stopped at 0x10, and DISPLAY's 10 ms poll timed out (L2214-2226). With the
-  cores down, a P cluster still had bit 4 set 6 ms after its complex went
-  off, and not 500 ms after (R13 and R12, L2917 and L2898).
+  cores down, a P cluster still had bit 4 set about 6 ms after the cores'
+  release, as its complex read off, and not 500 ms after (R13 and R12,
+  L2915-2917 and L2898).
 - So bits 3:0 are the target and bits 5:4 the cluster's state: 2 up, 1
   changing, 0 down or never cycled (EACC reads 0x0f awake, here and on
   T6020). Bit 4 set means a power change was asked for and hasn't finished:
