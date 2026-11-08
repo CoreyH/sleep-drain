@@ -1,0 +1,11 @@
+# Boots around M1 run 5 (journalctl --list-boots), and this boot's start
+ -4 909642e7cabb48998e60b668d3fb1044 Sat 2026-11-07 19:45:34 CET  Sat 2026-11-07 23:02:59 CET
+ -3 0712d45e7296415fb9411d9c293bd174 Sat 2026-11-07 23:02:59 CET  Sun 2026-11-08 10:03:42 CET
+ -2 e98d1065d8e44b2faca7ed86c5fa61cb Sun 2026-11-08 10:03:42 CET  Sun 2026-11-08 13:21:58 CET
+ -1 c1e734605cc84079aa7703cada8b85b3 Sun 2026-11-08 13:21:59 CET  Sun 2026-11-08 19:55:09 CET
+  0 cdc031f4820c49288d44c94c89c2ddb4 Sun 2026-11-08 19:55:09 CET  Sun 2026-11-08 20:15:13 CET
+uptime -s: 2026-11-08 20:08:04
+safe boot journal: /var/log/sleep-drain/safe-journal-20261108T200707.txt (collected); the reading: /var/log/sleep-drain/reading-20261108T195706/
+m1-crumbs read at 20:09, about 2 minutes into the boot after the reset (CNTVCT 106.0 s old): restart 30.0-32.0 s after the commit
+m1-crumbs read again by --clear (CNTVCT 215.7 s old): restart 29.3-31.3 s after the commit; the two together: 30.0-31.3 s
+--clear: 0x1401 read 0x41 (armed, 0x140c = 212143 = the commit's second 208543 + 3600), then disarmed: 0x1401 = 0x01; breadcrumbs zeroed

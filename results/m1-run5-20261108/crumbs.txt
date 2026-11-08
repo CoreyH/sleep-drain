@@ -1,0 +1,20 @@
+Sun Nov  8 08:09:49 PM CET 2026
+2026-11-08 20:08:04
+0x6000: 00 30 00 50 5e fe 50 fe  00 00 00 00 00 00 00 00
+0x6010: 9f 2e fe 00 b0 00 bd 00  00 00 00 00 00 00 00 00
+boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (the stage the last unclean end found; sticky, so it says nothing about this boot by itself; this boot's journal says, macsmc-reboot's "PMU logged N boot error(s)")
+stage 0x6004 = 0x5e (pmgr_late=1): hold=1: everything recorded, CPU0 had nothing pending just before its acks and its own deep WFI (it goes down last, by design)
+  (the last breadcrumb that reached the PMU: the run got at least that far)
+read off after the release (0x6005 = 0xfe, up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+0x6006 = 0x50: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)
+wrote their stop bit and held (0x6007 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+RTC second just before the commit, from its low two bytes and the run's alarm: 208543, 159 s before now (208702)
+0x6014 = 0xb0: CPU0 had nothing pending before the commit; PCPM0 off after the release, PCPM1 off after the release; WD1 was off; K3's kernel-path write after slpa worked
+0x6012 = 0xfe: the cores that took the release: CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+0x6013 = 0x00: of those, the ones with an interrupt pending just before their deep WFI: none
+0x6015 = 0x00: cores with an interrupt pending at their stop request (hold=1): none
+0x6016 = 0xbd: every alarm command was acked (no event was set): 0x140c, 0x14c2 = 0, then 0x1401 = 0x41
+the SoC restarted about 31 s after the commit (29.6 to 31.6 s: the PMU's RTC counts whole seconds); its counter (CNTVCT) is 128.4 s old. Right only in the first boot after the run
+PMU alarm: 0x1401 = 0x41 (armed, fires in 3441 s), 0x140c = 212143, 0x14c0 event 0x00, 0x14c2 mask 0x00
+  0x140c is the commit's second + 3600, as the run wrote it
+  the armed alarm survived the reset
