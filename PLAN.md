@@ -478,7 +478,7 @@ steps, and restarting the DCP and the PMP afterwards.
         up: 16 bits per sample, no room for raw words. A layout that fits, to be
         settled at the build. Byte A: `PHASE` bits 3:0, `HS_A` bits 31 and 24, and
         the state word's class (0xa03, 1, 0xa02, other). Byte B: SIO_CPU's word as a
-        3-bit class (its 27:24 as entry 61 left them; f with actual not f; f with
+        3-bit class (27:24 not f; f with actual not f; f with
         actual f; target 0 with bit 11 set; target 0 with bit 11 clear; other),
         WD2's RESET_EN, WD2's count within 0.25 s of CPU0's own time since the first
         commit write (the preamble ran at the commit, at 24 MHz, with no re-arm
@@ -521,11 +521,16 @@ steps, and restarting the DCP and the PMP afterwards.
           0x290400910.
         - `PHASE` 4, `HS_A` bit 31 up, bit 24 clear: A2 at its first handshake, B2 in
           its opening segment or not running at all. The samples' gate bits say how
-          far: 0x2922c0044 bit 2 clear: B2's first poll isn't met (if bit 2 read 1
-          awake with every core running, this poll isn't the cores' idle state; if
-          it read 0, it may be); 0x2922c0040 bit 1 clear where it read 1 awake: B2 got
-          past its own write of it (ops 1-6) and stopped before raising `HS_B`;
-          neither: B2 hasn't started. Nothing else about the pair is reachable yet,
+          far it got, if it's running, not whether it is: 0x2922c0044 bit 2 clear:
+          B2's first poll isn't met (if bit 2 read 1 awake with every core running,
+          this poll isn't the cores' idle state; if it read 0, it may be); bit 2 set
+          and bit 3 set: at its second poll, which waits for bit 3 to clear (0xf114);
+          0x2922c0040 bit 1 clear where it read 1 awake: B2 got past its own write of
+          it (ops 1-6) and stopped before raising `HS_B` (if it read 0 awake, this bit
+          says nothing). Bit 2 set, bit 3 clear and 0x2922c0040 bit 1 unchanged: B2
+          hasn't started, or is in its opening delay or just before its first write;
+          these bytes can't tell those apart, and an unchanged word doesn't prove B2
+          never ran. Nothing else about the pair is reachable yet,
           and no rung on the ladder addresses this row: first rule out the read
           itself (the limits bullet, the reset's time), then Corey's call. What sets
           the gate is a desk question, and if it proves a rollup of the cores or
@@ -538,9 +543,13 @@ steps, and restarting the DCP and the PMP afterwards.
           somewhere in ops 33-229. SIO_CPU's word places it only as far as op 91,
           read against the word at entry 61's wait (the awake value won't do: bits
           27:24 went from 4 to f across an off SIO with no B2,
-          `safe-journal-20261106T201952.txt` L5650, L6262). 27:24 as entry 61 left them: B2 is
-          before op 49. Changed to f with actual not f: B2 wrote op 49 and op 50 isn't
-          met (SIO next). f with actual f: op 50 passed, and B2 is at op 51, SIO's ASC
+          `safe-journal-20261106T201952.txt` L5650, L6262). If 27:24 weren't f at
+          entry 61's wait (0x6005 bit 0 clear, the expected case, since entry 61
+          writes 4 there): not f, B2 is before op 49; changed to f with actual not f,
+          B2 wrote op 49 and op 50 isn't met (SIO next). If they already read f there
+          (0x6005 bit 0 set), f with actual not f can't tell before op 49 from
+          waiting at op 50, so it places nothing and picks no rung. Either way, f
+          with actual f: op 50 passed, and B2 is at op 51, SIO's ASC
           word, or later: not the SIO rung. Target 0 with bit 11 set: B2 is at op 91,
           SIO_CPU's own power-down from its half-on state (SIO next, not the PMP).
           Target 0 with bit 11 clear: past op 91, op 50 met or its count expired
