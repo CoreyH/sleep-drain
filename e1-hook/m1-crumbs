@@ -15,10 +15,11 @@ the stage an unclean end found. The PMU is reached through the kernel's nvmem
 interface for the pmic@f node, as pmu-alarm does. --clear writes zeros to the
 breadcrumb bytes, so that the next run starts clean and no stale byte stays in
 state that iBoot and macOS share. After an alarm=1 run that armed the RTC alarm
-(stages 0x59 and 0x5f), it first sets the alarm's control, 0x1401, back to
-0x01, so that the alarm can't power the Mac on an hour later. It writes nothing
-else; in particular not 0x14c0, and not 0x1401 after any other stage (macOS's
-own wakes arm that alarm).
+(stage 0x59 or 0x5f, and 0x140c the commit's second + 3600, so that the alarm
+is the run's), it first sets the alarm's control, 0x1401, back to 0x01, so
+that the alarm can't power the Mac on an hour later. It writes nothing else;
+in particular not 0x14c0, and not 0x1401 for an alarm that isn't the run's
+(macOS's own wakes arm it).
 
 After a run that reached the commit, it also says when the SoC restarted: the
 SoC's counter (CNTVCT) restarts with it, so the PMU's RTC now, less the
@@ -179,22 +180,23 @@ def alarm_byte(v):
     """alarm=1's 0x6016: how far the alarm's commands got."""
     if not v & 0x80:
         return (f"0x6016 = 0x{v:02x}: the alarm's commands left no result (bit 7 clear): they didn't run, or the"
-                " byte didn't land or survive")
+                " byte didn't land or survive; so the alarm wasn't tested. A repeat, not a negative")
     if v in (0xbd, 0xbf):
         ev = "the event was set, and echoed" if v == 0xbf else "no event was set"
         return f"0x6016 = 0x{v:02x}: every alarm command was acked ({ev}): 0x140c, 0x14c2 = 0, then 0x1401 = 0x41"
-    steps = ((0, "0x14c0's read"), (2, "0x14c0's echo"), (3, "0x140c"), (4, "0x14c2 = 0"), (5, "0x1401 = 0x41"))
-    done = [n for bit, n in steps if v >> bit & 1]
-    stop = next((n for bit, n in steps if not v >> bit & 1), None)
-    if stop is None or v & 0x40:
+    if v not in (0x80, 0x83, 0x85, 0x87, 0x8d, 0x8f, 0x9d, 0x9f):
         return f"0x6016 = 0x{v:02x}: not a value e1_hook writes; don't read it"
+    steps = ((0, "0x14c0's read"), (2, "0x14c0's echo" if v & 2 else "no echo needed"), (3, "0x140c"),
+             (4, "0x14c2 = 0"), (5, "0x1401 = 0x41"))
+    done = [n for bit, n in steps if v >> bit & 1]
+    stop = next(n for bit, n in steps if not v >> bit & 1)
     return (f"0x6016 = 0x{v:02x}: the alarm's commands STOPPED at {stop} (before it: {', '.join(done) or 'nothing'}"
             f"{'; the event was set' if v & 2 else ''}): so the alarm wasn't tested. A repeat, not a negative")
 
 
-def alarm_lines(s, commit, alarm, now):
+def alarm_lines(s, commit, alarm, now, res):
     """The alarm's registers at this boot, always; for an alarm=1 stage, what they say. alarm: 0x1401, the
-    compare value, 0x14c0, 0x14c2."""
+    compare value, 0x14c0, 0x14c2; res: 0x6016."""
     c, when, ev, mask = alarm
     state = {0x01: "not armed", 0x03: "fired, latched"}.get(c)
     if c == 0x41:
@@ -204,6 +206,7 @@ def alarm_lines(s, commit, alarm, now):
     if s not in ALARM_STAGES:
         return out
     right = commit is not None and when == commit + ALARM_SECS
+    recorded, acked = bool(res & 0x80), bool(res & 0x80 and res & 0x20)
     if commit is None:
         out.append("  the commit's second isn't known, so 0x140c can't be checked")
     elif right:
@@ -211,10 +214,24 @@ def alarm_lines(s, commit, alarm, now):
     else:
         out.append(f"  0x140c is NOT the commit's second + {ALARM_SECS} ({commit + ALARM_SECS}): the alarm wasn't tested")
     if c in (0x41, 0x03):
-        out.append(f"  the armed alarm survived the reset{' and has fired' if c == 0x03 else ''}")
+        if (right and (acked or not recorded)) or (commit is None and acked):
+            out.append(f"  the armed alarm survived the reset{' and has fired' if c == 0x03 else ''}")
+        elif commit is None:
+            out.append("  whether 0x1401 is this run's can't be told: the commit's second isn't known, and 0x6016 doesn't"
+                       " say its write was acked")
+        else:
+            out.append("  0x1401 isn't shown to be this run's: a value from before the run, or macOS's")
     elif c == 0x01 and right:
-        out.append("  0x1401 reads 0x01 with 0x140c right: the reset or the boot firmware cleared the enable (new; the"
-                   " writes went through if 0x6016 says so)")
+        if not acked:
+            out.append("  0x140c landed, but " + ("0x1401's write wasn't acked" if recorded else "0x6016 recorded no result")
+                       + ": nothing shows the enable was ever set")
+        elif now < when:
+            out.append("  0x1401 reads 0x01 before the alarm's time, with 0x140c right and 0x1401's write acked: the reset"
+                       " or the boot firmware cleared the enable (new)")
+        else:
+            out.append("  0x1401 reads 0x01 past the alarm's time, with 0x140c right and 0x1401's write acked: it may have"
+                       " fired (on T8103 a fired alarm reads 0x01), or the reset or the boot firmware cleared the enable;"
+                       f" 0x14c0 is 0x{ev:02x}")
     return out
 
 
@@ -282,12 +299,16 @@ def decode(b, rtc, cnt=None, alarm=None):
                 commit = secs
     if base >= 0x50:
         f = b[0x14]
-        pend = "".join(n for bit, n in ((2, "A"), (1, "I"), (0, "F")) if f >> bit & 1) or "nothing"
-        pcpm1 = "not checked (CPU7 kept up)" if base >= 0x60 or mark else "off" if f & 0x20 else "NOT off"
-        out.append(f"0x6014 = 0x{f:02x}: CPU0 had {pend} pending before the commit;"
-                   f" PCPM0 {'off' if f & 0x10 else 'NOT off'}, PCPM1 {pcpm1};"
-                   f" WD1 {'was running (stopped)' if f & 0x40 else 'was off'};"
-                   f" K3's kernel-path write after slpa {'FAILED' if f & 0x08 else 'worked'}")
+        if f & 0x80:
+            pend = "".join(n for bit, n in ((2, "A"), (1, "I"), (0, "F")) if f >> bit & 1) or "nothing"
+            pcpm1 = "not checked (CPU7 kept up)" if base >= 0x60 or mark else "off" if f & 0x20 else "NOT off"
+            out.append(f"0x6014 = 0x{f:02x}: CPU0 had {pend} pending before the commit;"
+                       f" PCPM0 {'off' if f & 0x10 else 'NOT off'}, PCPM1 {pcpm1};"
+                       f" WD1 {'was running (stopped)' if f & 0x40 else 'was off'};"
+                       f" K3's kernel-path write after slpa {'FAILED' if f & 0x08 else 'worked'}")
+        else:
+            out.append(f"0x6014 = 0x{f:02x}: bit 7 is clear, so the 7-byte command it went in (0x6010-0x6016) didn't"
+                       " survive the reset; don't read it")
     if base in FULL and late:
         # CPU7 sends 0x6012-0x6013 in one command and 0x6015-0x6016 in another;
         # each pair's second byte has bit 7 set, so a pair without it didn't
@@ -340,9 +361,12 @@ def decode(b, rtc, cnt=None, alarm=None):
         out.append(f"0x6012 0x6013 = {b[0x12]:02x} {b[0x13]:02x}, 0x6015 0x6016 = {b[0x15]:02x} {b[0x16]:02x}: CPU0's"
                    " or CPU7's (it was rewriting them): not decoded")
     elif base >= 0x50:
-        out.append(f"0x6015 = 0x{b[0x15]:02x}: cores with an interrupt pending at their stop: {cpus(b[0x15])}")
-        out.append(alarm_byte(b[0x16]) if s in ALARM_STAGES else
-                   f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
+        if b[0x14] & 0x80:
+            out.append(f"0x6015 = 0x{b[0x15]:02x}: cores with an interrupt pending at their stop: {cpus(b[0x15])}")
+        if s in ALARM_STAGES:
+            out.append(alarm_byte(b[0x16]))
+        elif b[0x14] & 0x80:
+            out.append(f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
     if commit is not None and cnt and cnt[1]:
         age = cnt[0] / cnt[1]
         x = now - age - commit
@@ -350,7 +374,7 @@ def decode(b, rtc, cnt=None, alarm=None):
                    f" counts whole seconds); its counter (CNTVCT) is {age:.1f} s old. Right only in the first boot"
                    " after the run")
     if alarm:
-        out += alarm_lines(s, commit, alarm, now)
+        out += alarm_lines(s, commit, alarm, now, b[0x16])
     return out
 
 
@@ -374,14 +398,19 @@ def main():
     for line in decode(b, rtc, counter(), alarm):
         print(line)
     if clear:
+        secs = int.from_bytes(b[0x10:0x14], "little")
+        mine = b[4] in ALARM_STAGES and secs and alarm[1] == secs + ALARM_SECS
         try:
             # Before the crumbs, so that a failed disarm keeps the stage for another try.
-            if b[4] in ALARM_STAGES and alarm[0] & 0x42:
+            if mine and alarm[0] & 0x42:
                 if os.pwrite(fd, b"\x01", ALARM_CTRL) != 1:
                     die("short write at 0x1401")
-                if os.pread(fd, 1, ALARM_CTRL) != b"\x01":
-                    die("0x1401 didn't read back as 0x01; the breadcrumbs stay, so this can run again")
-                print("disarmed: 0x1401 = 0x01")
+                back = os.pread(fd, 1, ALARM_CTRL)
+                if len(back) != 1 or back[0] & 0x40:
+                    die("0x1401 still reads armed; the breadcrumbs stay, so this can run again")
+                print(f"disarmed: 0x1401 = 0x{back[0]:02x}")
+            elif alarm[0] & 0x40:
+                print(f"0x1401 reads armed (0x{alarm[0]:02x}) and was left alone: nothing shows this run armed it")
             for off, n in CRUMBS:
                 if os.pwrite(fd, bytes(n), off) != n:
                     die(f"short write at {off:#x}")

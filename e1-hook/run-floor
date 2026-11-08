@@ -42,9 +42,9 @@
 #     After --m1, also, before anything else touches the PMU:
 #       /home/corey/src/sleep-drain/e1-hook/m1-crumbs, for a photo or a copy,
 #       then pkexec /home/corey/src/sleep-drain/e1-hook/m1-crumbs --clear
-#       (after --m1-alarm, --clear also disarms the alarm, 0x1401 back to 0x01,
-#       so that it can't power the Mac on an hour later; every m1 run refuses
-#       to load while it reads armed).
+#       (after --m1-alarm, --clear also disarms the alarm the run armed, 0x1401
+#       back to 0x01, so that it can't power the Mac on an hour later; every
+#       m1 run refuses to load while it reads armed).
 #   - Dark for good: the screen goes dark, if it isn't already, and it and
 #     the keyboard (dark since the reading began) stay dark past 2 minutes.
 #     Nothing wakes the Mac from it. If that's new (it's a candidate for a

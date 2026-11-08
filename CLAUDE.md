@@ -120,8 +120,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   PACC0 finished powering down. `alarm=1` (`run-floor --m1-alarm`, with
   `m1=1 pmgr_late=1` and no `observe=1`) is its run 4: the PMU's RTC alarm,
   an hour after the commit, written between the commit's first write and the
-  other two, with no observer; `m1-crumbs --clear` disarms it at the next
-  boot. `13` is the floor with the CPUs left up. `13`
+  other two, with no observer; `m1-crumbs --clear` disarms the alarm the run
+  armed at the next boot. `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
   (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s

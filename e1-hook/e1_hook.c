@@ -963,7 +963,8 @@ static void e1_after_slpa(void)
  * down in 6, as in run 1, so nothing is up after the commit but CPU0. The
  * helper stops at its first failure, flushes the FIFO as m1_raw_start() does
  * and leaves m1_raw alone, so the other two commits and the last crumbs still
- * go out: a failure leaves a run-3-shaped run, recorded. The bytes:
+ * go out: a failure leaves a pmgr_late run without the observer (not a repeat
+ * of run 3, whose CPU7 stayed up), recorded. The bytes:
  *   0x6004  0x59 in place of 0x58 (8: it says 0x6016 is the result below);
  *           0x5f after the third commit write
  *   0x6010  step 8's RTC second, all four bytes, as in run 1
@@ -978,8 +979,9 @@ static void e1_after_slpa(void)
  * wake at + 3600 s would land in m1n1 with WD1 off and no way back, and hang
  * until the power key: run-floor's header says to end a dark candidate
  * before then. m1-crumbs --clear sets 0x1401 back to 0x01 at the next boot,
- * after a stage that armed it (0x59, 0x5f), and every m1=1 load refuses while
- * 0x1401 reads armed.
+ * after a stage that armed it (0x59 or 0x5f, with 0x140c the commit's second
+ * + 3600, so the alarm is the run's), and every m1=1 load refuses while 0x1401
+ * reads armed.
  *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle

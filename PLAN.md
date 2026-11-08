@@ -389,8 +389,10 @@ steps, and restarting the DCP and the PMP afterwards.
          `pkexec e1-hook/run-floor --m1-alarm`), written between the first
          commit and the other two. macOS does it on T8103 (mac27-hv README
          L88-91);
-         DeepIdle reports the same order from DJ's T8140 trace (worklog
-         L2585), and its decode of macOS 13.5 has T6020 re-program the alarm
+         DeepIdle reports the alarm after the commit from DJ's T8140 trace
+         (worklog L2585, L2610; it doesn't say how many commit writes there
+         are, or whether any follow the alarm), and its decode of macOS 13.5
+         has T6020 re-program the alarm
          after quiesceHW (a static decode, not a trace). Every completed
          T8103 Linux entry has it. No T600x attempt has written it after the
          commit: T6020 armed it before the suspend (L2741), and this Mac's
@@ -420,7 +422,8 @@ steps, and restarting the DCP and the PMP afterwards.
            0x41; then commit twice more, dsb, stage 0x5f, ack nub-spmi0's
            words, and step 10. The helper stops at the first failure, flushes
            the FIFO and still writes the other two commits, so a failed alarm
-           leaves a run-3-shaped run with the failure recorded. Every SPMI
+           leaves a `pmgr_late` run without the observer (not a repeat of
+           run 3, whose CPU7 stayed up), with the failure recorded. Every SPMI
            command leaves a vector to ack before the deep WFI (Naeem's
            b6b2ea1d19e0), which is why 0x5f comes before the acks.
          - Breadcrumbs, in the OK'd bytes: stage 0x59 in place of step 8's
@@ -436,16 +439,20 @@ steps, and restarting the DCP and the PMP afterwards.
            clearing that isn't in the 11-07 OK. `m1_pmu_ok` gains exactly
            these accesses. `m1-crumbs` prints 0x1401, 0x140c, 0x14c0 and
            0x14c2 before it disarms (any value raw), says whether 0x140c is
-           the commit's second + 3600, and disarms only after a stage that
-           armed it (0x59, 0x5f).
+           the commit's second + 3600, and disarms only an alarm that's the
+           run's: stage 0x59 or 0x5f, with 0x140c the commit's second + 3600.
          - How to read it:
            - Stage 0x5f with 0x6016 = 0xbd or 0xbf means the writes went
-             through: the run counts. A partial byte, stage 0x59 with 0x6016
-             = 0, or a wrong 0x140c at the next boot: repeat it.
-           - The next boot's 0x1401 is a separate fact. 0x41 (0x03 if it
-             fired) means the armed alarm survived the reset; 0x01 with
-             0x140c right means the reset or the boot firmware cleared it
-             (new; the run still counts).
+             through: the run counts. So does stage 0x59 with those bytes
+             (only the 0x5f crumb after the commits was lost; 0x140c = the
+             commit's second + 3600 confirms it). A partial byte, stage 0x59
+             with 0x6016 = 0, or a wrong 0x140c at the next boot: repeat it.
+           - The next boot's 0x1401 is a separate fact, once 0x6016 says its
+             write was acked. 0x41 (0x03 if it fired) means the armed alarm
+             survived the reset. 0x01 with 0x140c right means the reset or
+             the boot firmware cleared it (new; the run still counts), or,
+             past the alarm's time, that it may have fired (T8103's fired
+             alarm reads 0x01). `m1-crumbs` says which.
            - A reset at about 30 s: the alarm written between the commits,
              with nub-spmi0's enables all 0, doesn't complete the entry,
              assuming its own commands are harmless. That doesn't test the
@@ -456,9 +463,10 @@ steps, and restarting the DCP and the PMP afterwards.
              then wake the SoC at +3600 s. The alarm stays in later runs: it
              moves toward macOS.
            - Dark past 2 minutes: a candidate; BQCC decides. Leave it at
-             least 30 minutes, and end it before about 55: the alarm's wake
-             at +3600 s would land in m1n1 with WD1 off and no resume path,
-             so the Mac would hang, at an unknown draw, until the power key.
+             least 30 minutes, and end it before about 55: if the alarm wakes
+             the SoC at +3600 s, the wake would land in m1n1 with WD1 off and
+             no resume path, and the Mac would hang, at an unknown draw,
+             until the power key.
              In the next boot: `m1-crumbs`, then `pkexec m1-crumbs --clear`
              (a PMU write can't change BQCC), then the reading. Then
              attribute it: run 3 without the observer (`--m1-late-noobs`, to
