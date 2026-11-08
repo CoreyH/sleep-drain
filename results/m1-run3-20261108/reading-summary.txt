@@ -1,0 +1,1 @@
+time=2026-11-08T10:15:55+01:00 ts=1794129355 label=floor-m1-late boot=safe then=suspend boot_id=c9c9034c-2134-40b6-b752-805115686b7c minutes=10 samples=61 window=1794129295-1794129355 charge_now_uah=4435000 voltage_uv=12145000 current_ua=-529000 charge_counter=-405510 capacity=87 uptime_s=708.84 ac=0

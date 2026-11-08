@@ -1,0 +1,9 @@
+# Boots around M1 run 3 (journalctl --list-boots), and this boot's start
+ -3 8d655b2e5f464c7aa0cbef329419ad5a Sat 2026-11-07 14:05:08 CET  Sat 2026-11-07 19:45:34 CET
+ -2 909642e7cabb48998e60b668d3fb1044 Sat 2026-11-07 19:45:34 CET  Sat 2026-11-07 23:02:59 CET
+ -1 0712d45e7296415fb9411d9c293bd174 Sat 2026-11-07 23:02:59 CET  Sun 2026-11-08 10:03:42 CET
+  0 e98d1065d8e44b2faca7ed86c5fa61cb Sun 2026-11-08 10:03:42 CET  Sun 2026-11-08 10:25:53 CET
+uptime -s: 2026-11-08 10:16:53
+safe boot journal: /var/log/sleep-drain/safe-journal-20261108T101556.txt (collected); the reading: /var/log/sleep-drain/reading-20261108T100555/
+m1-crumbs read at 2026-11-08 10:17:59, about a minute into the boot after the reset (CNTVCT 90.0 s old): restart 30.0-32.0 s after the commit
+m1-crumbs read again by --clear (CNTVCT 465.4 s old): restart 29.6-31.6 s after the commit; the two together: 30.0-31.6 s

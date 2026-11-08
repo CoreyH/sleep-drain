@@ -1,0 +1,15 @@
+0x6000: 00 30 00 50 7f ff 04 1e  00 00 00 00 00 00 00 00
+0x6010: 10 a4 50 c0 90 a4 95 00  00 00 00 00 00 00 00 00
+boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (0x50: an unclean end after the replay began)
+stage 0x6004 = 0x7f (pmgr_late=1): observe: CPU7 recorded everything, with nothing pending; next came nub-spmi0's acks and its own deep WFI
+  (the last breadcrumb that reached the PMU: the run got at least that far)
+0x6005 = 0xff: CPU0 read off within 500 ms of the hand-over; the E complex (ECPM) read off within 500 ms more; read off at their release: CPU1,CPU2,CPU3,CPU4,CPU5,CPU6
+0x6006 = 0x04: after the commit, WD2 control 4 (RESET_EN); WD1 control 0 (off); WD0 not armed to reset; CPU0's last WFI had not returned
+0x6007 = 30: 30 s until the first armed watchdog's reset, as CPU7 read it
+RTC second just before the commit, from its low two bytes: 173072, 121 s before now (173193); right if this read comes within 18 h of the commit
+0x6014 = 0x90: CPU0 had nothing pending before the commit; PCPM0 off, PCPM1 not checked (CPU7 kept up); WD1 was off; K3's kernel-path write after slpa worked
+0x6012 = 0x50: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)
+0x6013 = 0xc0: EACC's power-down done under 5 ms after the hand-over; PACC0's done under 5 ms after the hand-over; PACC0's was STILL PENDING just before the commit (CPU0's read)
+0x6015 = 0xa4: soc clusters still busy at the end of CPU7's watch: PACC1,DISPLAY (PACC1 expected, CPU7 being up); SIO_CPU's actual state NOT off
+0x6016 = 0x95: DCS's p-state at CPU0's last wait before the commit (after entry 50): actual 5, target 5, busy bit 31 clear (settled at 5); SIO's actual state off after the commit
+the SoC restarted about 31 s after the commit (30.0 to 32.0 s: the PMU's RTC counts whole seconds); its counter (CNTVCT) is 90.0 s old. Right only in the first boot after the run

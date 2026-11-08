@@ -29,7 +29,8 @@
 #     itself into the regular boot. That's most likely the S2R entry's
 #     watchdog, WD2 (RESEARCH.md, "The floor"): the entry didn't complete.
 #     After --m1-observe and --m1-late, m1-crumbs says which watchdogs were
-#     armed a second or so after the commit and when the first would bite;
+#     armed at CPU7's read after its polls (at most about 1.5 s after the
+#     commit, likely a few ms) and when the first would bite;
 #     if it was WD1, armed again, the entry may have completed before it.
 #     In the regular boot, pkexec /usr/local/bin/sleep-drain-safe collect;
 #     BACC dates it.

@@ -921,7 +921,9 @@ static void e1_after_slpa(void)
  * 2):
  *   0x6012  qto
  *   0x6013  bit 7 set; bits 0-2 EACC's power-down and bits 3-5 PACC0's, by
- *           when CPU7 first read it done (bit 4 clear) after the hand-over: 0
+ *           when CPU7 first read bit 4 clear after the hand-over (its first
+ *           read is at the hand-over itself, so bucket 0 can't say the bit
+ *           was ever set, and bit 5 isn't recorded): 0
  *           under 5 ms, 1 under 20, 2 under 50, 3 under 100, 4 under 200, 5
  *           under 500, 6 later, 7 not by the end of its watch; bit 6 PACC0's
  *           was still pending at CPU0's read just before the commit
