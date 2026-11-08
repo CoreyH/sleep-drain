@@ -633,9 +633,18 @@ steps, and restarting the DCP and the PMP afterwards.
          0x28e080320 (APCIE_GP_SYS), after entry 61 and before 62. New PMGR
          writes: Corey's OK first. e1_never_write still refuses 0x28e0802d8,
          which shares a page with two of them.
-      - A question for Corey, beside the ladder: the engine's reconfig SRAM,
+      - Beside the ladder (Corey's OK of 2026-11-08; built, to run in a safe
+        boot, `pkexec e1-hook/recfg-peek`, ahead of a run with the confound
+        stated, or a safe boot of its own): the engine's reconfig SRAM,
         read-only, the one step that could read what it waits for rather
-        than guess. Naeem dumped and decoded T8103's (0x23df00000, 128 KiB,
+        than guess. Its stages, saved after each: 0x2925c0200 and its lock
+        0x2925c0214, one word of 0x292f00000, a table check (16 entries at
+        SRAM + the offset register, each an address >> 4, at least 4 inside
+        the SRAM), the first 0x10000 bytes, then on to the last sequence +
+        0x10000. New on 2026-11-08: macOS's `carveout-memory-map` has
+        region-id-29 and region-id-36 both at 0x292f00000, 0x70000 bytes
+        (no node's `reg` covers it), so the address isn't only PongoOS's
+        offset by analogy. Decoding it: PongoOS's recfg format, after a dump. Naeem dumped and decoded T8103's (0x23df00000, 128 KiB,
         12 sequences; linux-s2r README L99-104); on T6000 the address isn't
         known. A basis (inferred; RESEARCH.md, "After M1 run 4"): PongoOS's
         table has T8012's and T8015's at AON + 0xf00000, as T8103's is, which

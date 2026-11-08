@@ -6,3 +6,4 @@
 Module.symvers
 modules.order
 .module-common.o
+recfg_peek

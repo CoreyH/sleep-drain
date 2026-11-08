@@ -2351,6 +2351,9 @@ scripts or traces, and no Aura code.
   at AON + 0x2c0200 on those SoCs, and the lock at +0x2c0214; by the commit's
   shift those would be 0x2925c0200 and 0x2925c0214, inside the ADT-declared
   window 0x2925c0000 + 0x14000, which makes them the safer first read
-  (inferred). PLAN.md has the question for Corey.
+  (inferred). macOS's `carveout-memory-map` lists 0x292f00000 too, twice
+  (region-id-29 and region-id-36, 0x70000 bytes), which no node's `reg` covers:
+  something real sits at that address, though the ADT doesn't say what.
+  PLAN.md has the steps (Corey's OK of 2026-11-08; `e1-hook/recfg-peek`).
 - **DJ's T8140 driver:** reading it needs Corey's OK, as Naeem's did; the
   alternative is asking DJ (a post, Corey's OK each time). Not a rung.
