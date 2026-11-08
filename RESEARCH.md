@@ -2394,9 +2394,11 @@ What it adds, for T6000:
   (t8140-sleep.c:761-772). PLAN.md's rung 3 has what this repo builds and what
   would need a new OK.
 - **The display.** "The engine waits for DISP_CPU with no timeout"
-  (t8140-sleep.c:1423, :1466; comments) and a complex not off at the commit puts
-  "that sequence, with its untimed wait, right before the CPU complexes'"
-  (:2614-2618). T8140 stops the display firmware and powers its CPU domain off
+  (t8140-sleep.c:1423, :1466; comments), and of AVE its comment says that turning
+  it off at the commit would put "that sequence, with its untimed wait, right
+  before the CPU complexes'" (:2614-2618; extending that to other complexes,
+  such as this Mac's DISPLAY, is this notebook's inference). T8140 stops the
+  display firmware and powers its CPU domain off
   first. DISPLAY's entry 58 is one of the two waits this Mac never meets (qto
   0x50). T6020's display-off runs still reset, so not sufficient alone; rung
   6 is the way to test it here.

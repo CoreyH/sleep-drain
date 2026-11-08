@@ -78,7 +78,8 @@
 #          After --m1: m1-crumbs first, as above, then the same with --label
 #          floor-m1 (floor-m1-observe after --m1-observe, floor-m1-late
 #          after --m1-late, floor-m1-alarm after --m1-alarm, floor-m1-hold
-#          and floor-m1-hold-nowatch after those: --clear before
+#          and floor-m1-hold-nowatch after those, floor-m1-pmp and
+#          floor-m1-pmp-idle after --m1-pmp and --m1-pmp-idle: --clear before
 #          the reading, since a PMU write can't change BQCC). --m1 can also hang
 #          dark without completing the entry: DeepIdle's R20 did, on an M2
 #          Pro, and its S2R watchdog never reset it. Only that reading's BQCC tells the two apart, and m1-crumbs

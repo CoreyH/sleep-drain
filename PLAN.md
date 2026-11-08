@@ -615,13 +615,18 @@ steps, and restarting the DCP and the PMP afterwards.
            the PMP's RTKit, reached through its mailbox's drvdata (once:
            SetAPPower 0x201, then SetIOPPower 0x201, acks awaited, 1 s each);
            then, unless `pmp_stop=0`, CPU_STATUS (0x28ec00048) polled up to 10
-           ms for macOS's idle mask (`status & 3`), and only if that's seen,
-           one read-modify-write of CPU_CONTROL (0x28ec00044) clearing RUN (bit
-           4), read back. The load refuses if the PMP's driver isn't bound or
-           its RTKit isn't running, and logs CPU_CONTROL and CPU_STATUS awake.
-           The acks come through RTKit's own workqueue, which no run has used
-           after noirq: if they don't come, each times out at 1 s, the byte says
-           -ETIME, and the replay goes on with the PMP's state unknown.
+           ms for macOS's idle mask (`status & 3`; the source is DeepIdle's
+           notes on T6020's AppleASCWrapV4::_isIdle, deep-idle-research.md
+           L982-984 and worklog L425-426, and this PMP is iop,ascwrap-v4 in the
+           ADT too, but nothing has read this word on T6000 yet), and only if
+           that's seen, one read-modify-write of CPU_CONTROL (0x28ec00044)
+           clearing RUN (bit 4), read back. The load refuses if the PMP's
+           driver isn't bound or its RTKit isn't running, and samples
+           CPU_STATUS awake for 10 ms, logging its AND and OR. The acks come
+           through RTKit's own workqueue, which no run has used after noirq:
+           if the first ack doesn't come it times out at 1 s and ends the pair
+           (so SetIOPPower may not have gone out), the byte says -ETIME, and
+           the replay goes on with the PMP's state unknown.
          - Breadcrumbs: every stage byte from K4 on has bit 7 set, which says
            0x6015 is the PMP's byte (0x83 is K4 done): bit 7 K4 ran, bit 6 a core
            had an interrupt pending at its stop (the byte's old meaning, reduced
@@ -629,20 +634,40 @@ steps, and restarting the DCP and the PMP afterwards.
            firmware crashed, 3 another error), bit 3 RUN read 0 after the
            write, bit 2 RUN read 1 before it, bits 1-0 CPU_STATUS's low two bits
            when the poll ended. No new PMU byte.
-         - How to read it: the expected case is stage 0xde (0x5e with bit 7), the
+         - How to read it, first the load log (it's in the journal saved
+           before the suspend): the AND and OR of CPU_STATUS's reads awake. If
+           the AND's low two bits are non-zero (`pmp_out: ... AND`, and a warning
+           is logged), the word read idle by macOS's mask while the firmware ran,
+           so 0x6015's bits 1-0 don't show the firmware went idle: the byte shows
+           only RUN read 1 then 0. The expected case is stage 0xde (0x5e with bit 7), the
            hold run's bytes, and 0x6015 = 0x8d, 0x8e or 0x8f (acks came, idle seen,
            RUN read 1 then 0). If the reset still comes at about 30 s, the PMP's
            running isn't the sole blocker, and T6020's result (idled, reset)
-           is repeated with its CPU stopped as well. 0x6015's bits 5-4 non-zero:
-           the idle pair failed, so the run hasn't tested a stopped PMP
-           (bit 4 alone, -ETIME: an ack never came and the PMP's state is
-           unknown; bit 5 alone, the firmware crashed). Bits 1-0 zero: never read idle by
-           macOS's mask, so RUN wasn't cleared: the run idled the PMP
-           and didn't stop it. Stage 0x02, K3's, with nothing after it: CPU0
-           stalled in K4, or raw SPMI failed. Dark past 2 minutes: a
-           candidate, at least 30 minutes and end before about 55, then
-           `m1-crumbs`, `--clear` and BQCC, as for the hold run; then attribute
-           it (without the PMP, without hold).
+           is repeated with its CPU stopped as well.
+           - `--m1-pmp-idle`'s normal byte is 0x81-0x83: the pair acked and
+             RUN left alone.
+           - 0x85-0x87: RUN read 1 before the write and still 1 after it: not
+             stopped. 0x89-0x8b: RUN was already 0 before the write, which
+             nothing predicted.
+           - 0x6015's bits 5-4 non-zero: the idle pair failed, so the run
+             hasn't tested a stopped PMP (bit 4 alone, -ETIME: the first ack not
+             to come ended the pair, the PMP's state unknown; bit 5 alone,
+             the firmware had crashed by then; both, another error).
+           - Bits 1-0 zero: never read idle by macOS's mask, so RUN wasn't
+             cleared: the run idled the PMP and didn't stop it.
+           - `qto` bit 0 newly set (0x51): DCS didn't settle with the PMP
+             stopped, a new fact and not a failed run (the PMP owns DCS here,
+             and step 5 lowers it after K4). A dark stall in step 5 reads 0x90.
+             `--m1-hold`'s result is the comparison, so the hold run comes first.
+           - Stage 0x02 with nothing after it: K4 didn't finish (CPU0 stalled or
+             faulted in it; a fault restarts the Mac about 10 s later) or its
+             kernel-path write of 0x83 failed; with 0x6015's bit 7 set, K4
+             finished and only that write was lost. Stage 0x83 with nothing
+             after it: K4 finished (0x6015 says how), then not all 7 cores
+             parked or raw SPMI failed.
+           - Dark past 2 minutes: a candidate, at least 30 minutes and end before
+             about 55, then `m1-crumbs`, `--clear` and BQCC, as for the hold run;
+             then attribute it (without the PMP, without hold).
          - What Corey's OK doesn't cover, from DJ's driver (a new OK if wanted):
            RUN cleared twice and with no idle gate (t8140-sleep.c:761-772,
            pmp-export.c:148-150; it ignores the status poll), a different status

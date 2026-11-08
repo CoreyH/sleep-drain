@@ -1,7 +1,8 @@
 #!/usr/bin/python3 -I
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
---m1-observe, --m1-late, --m1-alarm, --m1-hold or --m1-hold-nowatch; e1_hook
-m1=1, observe=1, pmgr_late=1, alarm=1, hold=1) leaves in the PMU, read and decoded, and cleared again.
+--m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp or
+--m1-pmp-idle; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1, hold=1, pmp_out=1)
+leaves in the PMU, read and decoded, and cleared again.
 
   e1-hook/m1-crumbs               read them (no root needed)
   pkexec e1-hook/m1-crumbs --clear   zero them, after reading (root)
@@ -15,7 +16,8 @@ the stage an unclean end found. The PMU is reached through the kernel's nvmem
 interface for the pmic@f node, as pmu-alarm does. --clear writes zeros to the
 breadcrumb bytes, so that the next run starts clean and no stale byte stays in
 state that iBoot and macOS share. After an alarm=1 run that armed the RTC alarm
-(stage 0x59 or 0x5f, hold=1's 0x5a-0x5e, and 0x140c the commit's second + 3600,
+(stage 0x59 or 0x5f, hold=1's 0x5a-0x5e, pmp_out=1's the same with bit 7 set, and
+0x140c the commit's second + 3600,
 so that the alarm is the run's), it first sets the alarm's control, 0x1401, back to 0x01, so
 that the alarm can't power the Mac on an hour later. It writes nothing else;
 in particular not 0x14c0, and not 0x1401 for an alarm that isn't the run's
@@ -57,7 +59,8 @@ STAGES = {
     0x00: "none: no M1 run since the last clear, or the bytes didn't survive",
     0x01: "K1: the replay began (the PMU written through the kernel's SPMI path)",
     0x02: "K3: MBSE=slpa was accepted; nothing after it reached the PMU (not all 7 cores parked, or raw SPMI failed;"
-          " with pmp_out=1, or CPU0 stalled in K4)",
+          " in a pmp_out=1 run, instead: K4 didn't finish, CPU0 stalled or faulted in it, a fault restarting the"
+          " Mac about 10 s later, or its kernel-path stage write failed)",
     0x03: "K4 (pmp_out=1): the PMP's idle pair and its stop are over (0x6015 says how); nothing after it reached the"
           " PMU (not all 7 cores parked, or raw SPMI failed)",
     0x10: "4: all 7 other cores parked, raw SPMI working; step 5's writes came next under this stage (with"
@@ -147,28 +150,34 @@ HOLD_TEXT = {
 def pmp_byte(p):
     """0x6015 in a pmp_out=1 run: K4's byte; bit 7 says it landed."""
     if not p & 0x80:
-        return (f"0x6015 = 0x{p:02x}: bit 7 is clear, so the PMP's byte didn't survive the reset; the PMP's state at the"
-                " commit is unknown")
+        return (f"0x6015 = 0x{p:02x}: bit 7 is clear, so the PMP's byte didn't land or didn't survive the reset; the PMP's"
+                " state at the commit is unknown")
     res = p >> 4 & 3
     st = p & 3
     pend = "; some core had an interrupt pending at its stop" if p & 0x40 else ""
     if res == 1:
-        what = "the idle pair TIMED OUT (-ETIME): an ack never came within 1 s; the PMP's state is unknown, RUN wasn't touched"
+        what = ("the idle pair TIMED OUT (-ETIME): an ack never came within 1 s (so SetIOPPower may not have gone out);"
+                " the PMP's state is unknown, RUN wasn't touched")
     elif res == 2:
-        what = "the PMP's firmware CRASHED during the idle pair; RUN wasn't touched"
+        what = "the PMP's firmware had CRASHED by the idle pair (the pair may not have been sent); RUN wasn't touched"
     elif res == 3:
         what = "the idle pair FAILED with another error; the PMP's state is unknown, RUN wasn't touched"
     elif not st:
         what = ("the idle pair returned 0, but CPU_STATUS's low two bits read 0 for the whole 10 ms (not idle by macOS's"
                 " mask), so RUN wasn't cleared: the PMP is idled, its CPU not stopped")
     elif not p & 0x0c:
-        what = (f"the idle pair returned 0 and CPU_STATUS read idle (low bits {st:02b}); RUN wasn't touched (pmp_stop=0):"
-                " the PMP is idled, its CPU not stopped")
+        what = (f"the idle pair returned 0 and CPU_STATUS read non-zero by macOS's mask (low bits {st:02b}; the load log"
+                " has the awake value); RUN wasn't touched (pmp_stop=0): the PMP is idled, its CPU not stopped")
+    elif not p & 0x04:
+        what = (f"the idle pair returned 0, CPU_STATUS read non-zero by macOS's mask (low bits {st:02b}; the load log has"
+                " the awake value), and RUN was already 0 before the write, which nothing predicted"
+                f"{'; it reads 0 after' if p & 0x08 else ''}")
+    elif p & 0x08:
+        what = (f"the idle pair returned 0, CPU_STATUS read non-zero by macOS's mask (low bits {st:02b}; the load log has"
+                " the awake value), and RUN read 1 before its clear and reads 0 after the write: the PMP's CPU is stopped")
     else:
-        before = "1" if p & 0x04 else "0"
-        after = "0: the PMP's CPU is STOPPED" if p & 0x08 else "1 after the write: NOT stopped"
-        what = (f"the idle pair returned 0, CPU_STATUS read idle (low bits {st:02b}), RUN read {before} before its"
-                f" clear and {after}")
+        what = (f"the idle pair returned 0, CPU_STATUS read non-zero by macOS's mask (low bits {st:02b}; the load log has"
+                " the awake value), and RUN read 1 before its clear and 1 after the write: NOT stopped")
     return f"0x6015 = 0x{p:02x}: K4 ran: {what}{pend}"
 
 
@@ -333,6 +342,9 @@ def decode(b, rtc, cnt=None, alarm=None):
         out.append("  (the last breadcrumb that reached the PMU: the run got at least that far)")
     if pmp:
         out.append(pmp_byte(b[0x15]))
+    elif s == 2 and b[0x15] & 0x80:
+        # K1 zeroes these and step 8 can't have run: this can only be K4's.
+        out.append(pmp_byte(b[0x15]) + "; K4 finished, its stage write didn't land")
     if mark:
         out.append(f"  observe=1 (0x6005 bit 0): CPU7 was kept up for the observer, so it isn't in"
                    f" {'0x6007' if late else '0x6006 or 0x6007'} and PCPM1 wasn't checked")
