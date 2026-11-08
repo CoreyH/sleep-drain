@@ -74,6 +74,7 @@
  *   pkexec e1-hook/run-e1a, pkexec e1-hook/run-floor   (the same)
  *   pkexec e1-hook/run-floor --m1                 (E2's M1 recipe: m1=1, below)
  *   pkexec e1-hook/run-floor --m1-observe         (its run 2: m1=1 observe=1)
+ *   pkexec e1-hook/run-floor --m1-late            (its run 3: those and pmgr_late=1)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -252,6 +253,9 @@ MODULE_PARM_DESC(m1_undo, "m1: on a way back after 0x50 went out, boot stage 0x3
 static bool observe;
 module_param(observe, bool, 0444);
 MODULE_PARM_DESC(observe, "With m1=1 only: CPU7 isn't released before the commit; after it, CPU7 watches CPU0 and the E complex power down, reads the watchdogs, the soc clusters, SIO_CPU and the wake status, records them in the PMU's breadcrumbs, and then stops");
+static bool pmgr_late;
+module_param(pmgr_late, bool, 0444);
+MODULE_PARM_DESC(pmgr_late, "With m1=1 only: the table's PMGR quiesce goes out after slpa, in its place in the table (macOS's), with macOS's waits; only WD0's control and the four error-handler masks stay before the keys");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -424,13 +428,15 @@ static unsigned int afnc[4];
 static int afnc_n = 4;
 module_param_array(afnc, uint, &afnc_n, 0444);
 MODULE_PARM_DESC(afnc, "Bit 3: AFNC2's and AFNC3's power states 100 ms after the post-slpa writes, then 500 ms after; readable with 13 only");
-/* How many of the table's entries e1_post_is_eh() picks, counted at load. */
+/* How many of the table's entries e1_post_early() picks, counted at load. */
 static unsigned int post_eh;
 
 /*
  * maralcbr's lab_post_is_eh() (L333-339): the watchdog (WD0's control) and
  * error-handler entries, which their default writes before the keys. Its
- * range also takes in 0x28e0801e8, AFR's power state.
+ * range also takes in 0x28e0801e8, AFR's power state, and with it 25 more of
+ * the table's PMGR words (m1's pmgr_late, below): the ADT's error-handler
+ * node maps whole PMGR windows.
  */
 static bool e1_post_is_eh(const struct e1_mmio_write *w)
 {
@@ -438,6 +444,19 @@ static bool e1_post_is_eh(const struct e1_mmio_write *w)
 
 	return a == 0x2922b000cULL || (a & 0xfff) == 0xa00 ||
 	       (a >= 0x28e030000ULL && a < 0x28e100000ULL);
+}
+
+/*
+ * The entries written before the keys: e1_post_is_eh()'s 31, or with
+ * pmgr_late only the true watchdog and error-handler masks, WD0's control and
+ * the four + 0xa00 words (entries 2-6). Those five stay early on purpose, as
+ * maralcbr's default has them, though macOS writes them after slpa too.
+ */
+static bool e1_post_early(const struct e1_mmio_write *w)
+{
+	if (pmgr_late)
+		return w->addr == 0x2922b000cULL || (w->addr & 0xfff) == 0xa00;
+	return e1_post_is_eh(w);
 }
 
 static unsigned long long late_t_ns, late_read_ns;
@@ -594,14 +613,15 @@ static void e1_post_slpa_eh(void)
 {
 	unsigned int i, n = 0;
 
-	pr_emerg("replay: fast: %u watchdog and error-handler writes now; from MBSE=slpa on, no output: the other %zu writes%s%s\n",
+	pr_emerg("replay: fast: %u watchdog and error-handler writes now; from MBSE=slpa on, no output: the other %zu writes%s%s%s\n",
 		 post_eh, ARRAY_SIZE(e1_post_slpa) - post_eh,
+		 pmgr_late ? ", the PMGR quiesce among them with macOS's waits" : "",
 		 m1 ? ", the other CPUs parked through them and stopped one by one, the commit last" :
 		 quiet ? ", the commit last" : ", 500 ms",
 		 observe ? ", then CPU0's power-down, watched by CPU7" :
 		 m1 ? ", then CPU0's power-down" : (replay & 2) ? ", then every CPU's power-down" : "");
 	for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
-		if (!e1_post_is_eh(&e1_post_slpa[i]))
+		if (!e1_post_early(&e1_post_slpa[i]))
 			continue;
 		writel(e1_post_slpa[i].val, post_map[i]);
 		n++;
@@ -663,7 +683,7 @@ static void e1_after_slpa(void)
 	for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
 		const struct e1_mmio_write *w = &e1_post_slpa[i];
 
-		if (e1_post_is_eh(w))
+		if (e1_post_early(w))
 			continue;
 		if (w->width == 8)
 			writeq_relaxed(w->val, post_map[i]);
@@ -851,6 +871,67 @@ static void e1_after_slpa(void)
  *           wasn't just before the commit; bit 7 always set (a 0 here at
  *           0x6e or 0x6f means the byte didn't survive the reset)
  *
+ * pmgr_late=1 (run-floor --m1-late, E2's M1 run 3; PLAN.md): run 2 found
+ * DISPLAY's power-down still pending after the commit, and the replay out of
+ * macOS's order. K2 sends 26 of the table's PMGR words before slpw with the
+ * watchdog and error-handler masks, since maralcbr's range takes them in
+ * (e1_post_is_eh()): the counter blocks (entries 7-14, 39-42), AFR's power
+ * state (51), the soc-cluster targets (52-55, 57, 58, 60, and the word at 59
+ * between them) and the ClkGen park (62-66). macOS writes them after slpa,
+ * in the table's order, and waits after some of them: T6020's quiesceHW and
+ * quiescePerfState, as DeepIdle decoded them (JJRPF/Aurora-DeepIdle
+ * 75d472918995, docs/worklog.md L1866-1876, L2682, L2977), mapped here onto
+ * T6000's table by what each write does, which is inferred. With pmgr_late,
+ * K2 writes only entries 2-6 (e1_post_early()), and step 5 writes the other
+ * 68 in table order, the commit still held back. After each entry m1_waits[]
+ * names, CPU0 reads what macOS polls there, up to 10 ms, as DeepIdle's port
+ * does; a wait still unmet then sets its bit in qto:
+ *   bit 0   DCS's p-state, after 49 (to 7) and 50 (to 5): bit 31, T6020's
+ *           busy bit, clear, and the actual [7:4] at the target [3:0], as
+ *           this Mac's apple-pmgr-misc reads it
+ *   1       AFR's power state (51): actual 0 (genpd has it off already)
+ *   2-5     ANE0's, AFR's, DISPLAY's and AVEMSR's power-downs (55, 57, 58,
+ *           60): bit 4 clear. macOS polls only the clusters above 3, so not
+ *           EACC's, PACC0's or PACC1's
+ *   6       SIO_CPU (61): actual == target. genpd has its parent, SIO, off by
+ *           prepare_late, so it may never settle
+ *   7       a ClkGen-SOC mux (62-66): bit 30 clear; or PLL-off after its last
+ *           write (72): bit 31 clear
+ * Nothing is written that run 2 didn't write, and no PMU byte is added: the
+ * waits only read, through the entries' own mappings. Nothing else reads the
+ * ClkGen muxes, PLL-off or DCS's p-state; the load log reads them awake, with
+ * the fabric's p-state and ps_sio, as a baseline and a first test that they
+ * read at all. The breadcrumbs it changes:
+ *   0x6004  0x28 the table and its waits done (5), in one command with
+ *           0x6005 (parked, bit 0 observe's mark) and 0x6006 (qto);
+ *           0x29-0x2f releasing the order's first to last core; 0x38
+ *           released (7) and 0x58 the last before the commit (8), each in
+ *           one command with 0x6005, 0x6006 = qto and 0x6007 = the cores whose
+ *           power state read off (the cores that left their spin give way);
+ *           0x58 comes after step 8's 7 bytes at 0x6010, as 0x50 does
+ * With observe=1 as well, CPU0 reads PACC0's bit 4 just before the commit,
+ * and hands CPU7 that, qto and the DCS p-state of its last wait. CPU7's
+ * stages are 0x70-0x7f in place of 0x60-0x6f, and these bytes take the place
+ * of the wdt page's and the wake status's (neither read anything new in run
+ * 2):
+ *   0x6012  qto
+ *   0x6013  bit 7 set; bits 0-2 EACC's power-down and bits 3-5 PACC0's, by
+ *           when CPU7 first read it done (bit 4 clear) after the hand-over: 0
+ *           under 5 ms, 1 under 20, 2 under 50, 3 under 100, 4 under 200, 5
+ *           under 500, 6 later, 7 not by the end of its watch; bit 6 PACC0's
+ *           was still pending at CPU0's read just before the commit
+ *   0x6015  as run 2's: the soc clusters still busy at the end, and SIO_CPU
+ *   0x6016  bit 7 set; DCS's p-state at CPU0's last read before the commit
+ *           (the wait after 50): bits 0-3 the actual, bit 4 the target is 5,
+ *           bit 5 bit 31 set; bit 6 SIO's actual state not off (CPU7's read)
+ * CPU7 times the two while it polls CPU0 and ECPM, and then until both read
+ * done or 500 ms after its ECPM poll ended: on T6020, a P cluster's
+ * power-down was still pending 6 ms after its complex went off, and done
+ * within 500 ms (DeepIdle, docs/worklog.md L2917, L2898). It doesn't read DCS
+ * after the commit: the ClkGen park and PLL-off come first, and Naeem found
+ * most registers rewritten by the engine right after the commit, so a change
+ * there wouldn't say whose it was.
+ *
  * Left out: Naeem's RTC alarm and his WD1 dead-man, so that a completed
  * entry stays dark for a BQCC floor (the alarm's PMU writes, OK'd on
  * 2026-11-07, wait for their own rung, PLAN.md, and its wake would land in
@@ -861,11 +942,12 @@ static void e1_after_slpa(void)
  * watchdog block's + 0x8008 and + 0x800c, whose T6000 forms and roles are
  * unknown; his L1 clean by set and way, since nothing comes back; his clkgen
  * park and counter blocks, which the table already writes (its own forms,
- * before the keys). Never written:
+ * before the keys, or after slpa with pmgr_late). Never written:
  * MBSe, ps_pmp (0x28e0802d8), 0x28e700000, WD2, nub-spmi1, the SEP.
  * observe=1 adds no address to what m1 writes: CPU0 writes CPU7's stop bit,
  * before the commit, instead of CPU7 in 6, and CPU7 writes breadcrumbs and
- * nub-spmi0's acks as CPU0 does.
+ * nub-spmi0's acks as CPU0 does. Nor does pmgr_late: it moves 26 of the
+ * table's writes from K2 to step 5, and reads.
  */
 #define M1_NCPUS		8
 #define M1_OTHERS		0xfe
@@ -923,6 +1005,8 @@ static void e1_after_slpa(void)
 #define M1_PS_ECPM		0x60
 /* PMGR reg[0] + 0x18000: the soc-cluster words, 4 * n (the ADT's soc-clusters, first byte), bit 4 busy. */
 #define M1_SOC_CLUSTERS		0x28e098000ULL
+#define M1_SOC_EACC		0x0
+#define M1_SOC_PACC0		0x4
 /* PMGR reg[2] + 0x180 and + 0x188: SIO's and SIO_CPU's power states, [7:4] the actual one. */
 #define M1_PS_SIO_PAGE		0x28e580000ULL
 #define M1_PS_SIO		0x180
@@ -1000,6 +1084,9 @@ struct m1_core {
 	u32 observe;	/* CPU0, CPU7's only: watch, then stop (observe=1) */
 	u32 raw;	/* CPU0, for CPU7: raw SPMI works (m1_raw at the commit) */
 	u32 down;	/* CPU0, for CPU7: the cores whose power state read off at release */
+	u32 qto;	/* CPU0, for CPU7, pmgr_late: the waits that timed out */
+	u32 dcs;	/* CPU0, for CPU7, pmgr_late: DCS's p-state at its last wait */
+	u32 pacc0;	/* CPU0, for CPU7, pmgr_late: PACC0's bit 4 just before the commit */
 	u32 wfi_ret;	/* CPU0's own, observe=1: how often its last WFI returned */
 } __aligned(128);
 static_assert(sizeof(struct m1_core) <= 128 && offsetof(struct m1_core, wfi_ret) + sizeof(u32) <= 64);
@@ -1222,6 +1309,78 @@ static bool m1_wait_off(unsigned int off)
 	return true;
 }
 
+/*
+ * pmgr_late: macOS's waits in the PMGR quiesce (the m1 comment says whose,
+ * and the bits), each after the table entry idx, at the entry's own address
+ * (checked at load). Kinds: CLEAR, every bit of mask clear; SETTLED, the
+ * actual state [7:4] at the target [3:0]; PSTATE, both bit 31 clear and
+ * SETTLED.
+ */
+#define M1_W_CLEAR		0
+#define M1_W_SETTLED		1
+#define M1_W_PSTATE		2
+static const struct m1_wait {
+	u8 idx;
+	u8 kind;
+	u8 qto;
+	u32 mask;
+	u64 addr;
+} m1_waits[] = {
+	{ 49, M1_W_PSTATE,  BIT(0), BIT(31),       0x28e20c800ULL },	/* dcs-ps 0x557: DCS 7 */
+	{ 50, M1_W_PSTATE,  BIT(0), BIT(31),       0x28e20c800ULL },	/* dcs-ps 0x775: DCS 5 */
+	{ 51, M1_W_CLEAR,   BIT(1), GENMASK(7, 4), 0x28e0801e8ULL },	/* AFR's power state 0: actual 0 */
+	{ 55, M1_W_CLEAR,   BIT(2), BIT(4),        0x28e09800cULL },	/* ANE0, logical cluster 6 */
+	{ 57, M1_W_CLEAR,   BIT(3), BIT(4),        0x28e098014ULL },	/* AFR, 7 */
+	{ 58, M1_W_CLEAR,   BIT(4), BIT(4),        0x28e098018ULL },	/* DISPLAY, 8 */
+	{ 60, M1_W_CLEAR,   BIT(5), BIT(4),        0x28e098020ULL },	/* AVEMSR, 9 */
+	{ 61, M1_W_SETTLED, BIT(6), 0,             0x28e580188ULL },	/* SIO_CPU, AUTO_ENABLE off */
+	{ 62, M1_W_CLEAR,   BIT(7), BIT(30),       0x28e038164ULL },	/* the ClkGen-SOC muxes */
+	{ 63, M1_W_CLEAR,   BIT(7), BIT(30),       0x28e03816cULL },
+	{ 64, M1_W_CLEAR,   BIT(7), BIT(30),       0x28e038168ULL },
+	{ 65, M1_W_CLEAR,   BIT(7), BIT(30),       0x28e03815cULL },
+	{ 66, M1_W_CLEAR,   BIT(7), BIT(30),       0x28e038170ULL },
+	{ 72, M1_W_CLEAR,   BIT(7), BIT(31),       0x28e224000ULL },	/* PLL-off, after its last write */
+};
+/*
+ * The fabric's p-state, read at load only, through DCS's mapping (its page;
+ * m1_waits[0] is DCS's first wait, checked at load). aurora's apple-pmgr-misc
+ * names both (fabric-ps, dcs-ps).
+ */
+#define M1_FABRIC_PS		0x28e20c000ULL
+static_assert((M1_FABRIC_PS & PAGE_MASK) == (0x28e20c800ULL & PAGE_MASK));
+
+static bool m1_wait_met(const struct m1_wait *w, u32 v)
+{
+	bool settled = ((v >> 4) & 0xf) == (v & 0xf);
+
+	switch (w->kind) {
+	case M1_W_SETTLED:
+		return settled;
+	case M1_W_PSTATE:
+		return settled && !(v & w->mask);
+	}
+	return !(v & w->mask);
+}
+
+/* pmgr_late: up to 10 ms for one of macOS's waits; *last gets the last value read. Reads only. */
+static bool m1_wait_done(const struct m1_wait *w, u32 *last)
+{
+	void __iomem *p = post_map[w->idx];
+	u64 t0 = m1_now();
+	bool met;
+	u32 v;
+
+	for (;;) {
+		v = readl(p);
+		met = m1_wait_met(w, v);
+		if (met || m1_now() - t0 > m1_tps / 100)
+			break;
+		cpu_relax();
+	}
+	*last = v;
+	return met;
+}
+
 static void m1_aic_mask_all(void)
 {
 	unsigned int i;
@@ -1306,6 +1465,33 @@ static u32 m1_wd_left(unsigned int n)
 	return bite > cur ? DIV_ROUND_CLOSEST_ULL((u64)(bite - cur), m1_tps) : 0;
 }
 
+/* pmgr_late, observe=1: 0x6013's buckets, by when CPU7 first read a power-down done. */
+static const u16 m1_bucket_ms[] = { 5, 20, 50, 100, 200, 500 };
+#define M1_LATER		6	/* 500 ms or more */
+#define M1_NEVER		7	/* not by the end of CPU7's watch */
+
+static u8 m1_bucket(u64 dt)
+{
+	u8 i;
+
+	for (i = 0; i < ARRAY_SIZE(m1_bucket_ms); i++) {
+		if (dt < m1_tps * m1_bucket_ms[i] / 1000)
+			return i;
+	}
+	return M1_LATER;
+}
+
+/* CPU7, pmgr_late: EACC's and PACC0's power-downs, each timed from t_go the first time its bit 4 reads clear. */
+static void m1_time_clusters(u8 *te, u8 *tp, u64 t_go)
+{
+	u64 dt = m1_now() - t_go;
+
+	if (*te == M1_NEVER && !(readl(m1_soc + M1_SOC_EACC) & BIT(4)))
+		*te = m1_bucket(dt);
+	if (*tp == M1_NEVER && !(readl(m1_soc + M1_SOC_PACC0) & BIT(4)))
+		*tp = m1_bucket(dt);
+}
+
 /*
  * observe=1, on CPU7 from the commit on (CPU0 wrote CPU7's stop bit before
  * it, and is in its own deep WFI by now): watch, record, stop. Every
@@ -1313,33 +1499,48 @@ static u32 m1_wd_left(unsigned int n)
  * it touches nothing behind a clock the table parked: PMGR and AON reads,
  * raw SPMI to the OK'd bytes (as Naeem's run 2 and macOS's alarm talk SPMI
  * after the commit), nub-spmi0's acks, then ACC_OVRD (if P1's last), CYC_OVRD
- * and its WFI. Up to 1 s of polls. The breadcrumbs, and the order that keeps
- * each stage's meaning sure, are in the m1 comment.
+ * and its WFI. Up to 1 s of polls, 1.5 s with pmgr_late, which times EACC's
+ * and PACC0's power-downs through them and then up to 500 ms more. The
+ * breadcrumbs, and the order that keeps each stage's meaning sure, are in the
+ * m1 comment; pmgr_late's stages are 0x10 above run 2's.
  */
 static void __noreturn m1_observe(struct m1_core *c)
 {
 	static const u8 soc[7] = { 0, 1, 2, 3, 5, 6, 8 };	/* EACC PACC0 PACC1 ANE0 AFR DISPLAY AVEMSR */
-	u32 left = U32_MAX, ctrl0, ctrl1, ctrl2, wake;
-	u8 b[4], off = 0, cl = 0, wk = BIT(7), isr;
+	const u8 s = pmgr_late ? 0x70 : 0x60;
+	u32 left = U32_MAX, ctrl0, ctrl1, ctrl2, wake, dcs;
+	u8 b[4], off = 0, cl = 0, wk = BIT(7), isr, te = M1_NEVER, tp = M1_NEVER;
 	unsigned int i;
-	u64 t0;
+	u64 t_go = 0, t0;
 
+	if (pmgr_late) {
+		t_go = m1_now();
+		m1_time_clusters(&te, &tp, t_go);
+	}
 	write_sysreg_s(M1_IPI_SR_PENDING, M1_IPI_SR_EL1);
 	isb();
 	m1_drain_aic();
 	m1_raw = READ_ONCE(c->raw);
-	m1_stage(0x60);
+	m1_stage(s);
 
 	t0 = m1_now();
-	while (m1_ps_state(M1_PS_CPU0) && m1_now() - t0 < m1_tps / 2)
+	while (m1_ps_state(M1_PS_CPU0) && m1_now() - t0 < m1_tps / 2) {
+		if (pmgr_late)
+			m1_time_clusters(&te, &tp, t_go);
 		cpu_relax();
+	}
 	if (!m1_ps_state(M1_PS_CPU0))
 		off |= BIT(0);
 	t0 = m1_now();
-	while (m1_ps_state(M1_PS_ECPM) && m1_now() - t0 < m1_tps / 2)
+	while (m1_ps_state(M1_PS_ECPM) && m1_now() - t0 < m1_tps / 2) {
+		if (pmgr_late)
+			m1_time_clusters(&te, &tp, t_go);
 		cpu_relax();
+	}
 	if (!m1_ps_state(M1_PS_ECPM))
 		off |= BIT(7);
+	if (pmgr_late)
+		t0 = m1_now();	/* ECPM's poll is over: up to 500 ms more */
 	off |= READ_ONCE(c->down) & 0x7e;
 
 	ctrl0 = readl(m1_wdt + M1_WD_CTRL(0));
@@ -1348,12 +1549,17 @@ static void __noreturn m1_observe(struct m1_core *c)
 	for (i = 0; i < 3; i++)
 		left = min(left, m1_wd_left(i));
 	/* The stage with its bytes, in one command, as step 7 sends 0x30. */
-	b[0] = 0x61;
+	b[0] = s + 1;
 	b[1] = off;
 	b[2] = (ctrl2 & 7) | (ctrl0 & M1_WD_RESET_EN ? BIT(3) : 0) | (ctrl1 & 7) << 4 |
 	       (READ_ONCE(m1_core[0].wfi_ret) ? BIT(7) : 0);
 	b[3] = min(left, 255U);
 	m1_crumb(0x6004, b, 4);
+
+	while (pmgr_late && (te == M1_NEVER || tp == M1_NEVER) && m1_now() - t0 < m1_tps / 2) {
+		m1_time_clusters(&te, &tp, t_go);
+		cpu_relax();
+	}
 
 	for (i = 0; i < ARRAY_SIZE(soc); i++) {
 		if (readl(m1_soc + 4 * soc[i]) & BIT(4))
@@ -1361,19 +1567,33 @@ static void __noreturn m1_observe(struct m1_core *c)
 	}
 	if ((readl(m1_sio + M1_PS_SIO_CPU) >> 4) & 0xf)
 		cl |= BIT(7);
-	for (i = 0; i < ARRAY_SIZE(m1_wake_pre); i++) {
-		wake = readl(m1_wake_status + 4 * i);
-		if (wake & ~READ_ONCE(m1_wake_pre[i]))
-			wk |= BIT(i);
+	if (pmgr_late) {
+		dcs = READ_ONCE(c->dcs);
+		b[0] = READ_ONCE(c->qto);
+		b[1] = BIT(7) | (READ_ONCE(c->pacc0) ? BIT(6) : 0) | tp << 3 | te;
+		b[2] = cl;
+		b[3] = BIT(7) | ((dcs >> 4) & 0xf) | ((dcs & 0xf) == 5 ? BIT(4) : 0) |
+		       (dcs & BIT(31) ? BIT(5) : 0) | ((readl(m1_sio + M1_PS_SIO) >> 4) & 0xf ? BIT(6) : 0);
+	} else {
+		for (i = 0; i < ARRAY_SIZE(m1_wake_pre); i++) {
+			wake = readl(m1_wake_status + 4 * i);
+			if (wake & ~READ_ONCE(m1_wake_pre[i]))
+				wk |= BIT(i);
+		}
 	}
 	/* 0x6012-0x6016 change meaning from here: say so before the first byte does. */
-	m1_stage(0x62);
-	b[0] = readl(m1_wdx + M1_WDX_PROG0);
-	b[1] = readl(m1_wdx + M1_WDX_PROG1);
-	m1_crumb(0x6012, b, 2);
-	b[0] = cl;
-	b[1] = wk;
-	m1_crumb(0x6015, b, 2);
+	m1_stage(s + 2);
+	if (pmgr_late) {
+		m1_crumb(0x6012, b, 2);
+		m1_crumb(0x6015, b + 2, 2);
+	} else {
+		b[0] = readl(m1_wdx + M1_WDX_PROG0);
+		b[1] = readl(m1_wdx + M1_WDX_PROG1);
+		m1_crumb(0x6012, b, 2);
+		b[0] = cl;
+		b[1] = wk;
+		m1_crumb(0x6015, b, 2);
+	}
 
 	/* What m1_park records at a stop: anything pending would end its WFI. */
 	write_sysreg_s(M1_IPI_SR_PENDING, M1_IPI_SR_EL1);
@@ -1382,7 +1602,7 @@ static void __noreturn m1_observe(struct m1_core *c)
 	dsb(sy);
 	isb();
 	isr = (read_sysreg(isr_el1) >> 6) & 7;
-	m1_stage(isr ? 0x6e : 0x6f);
+	m1_stage(isr ? s + 0xe : s + 0xf);
 
 	for (i = 0; i < M1_SPMI_WORDS; i++)
 		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
@@ -1434,9 +1654,10 @@ static void __noreturn m1_after_slpa(void)
 {
 	static const u8 two = 0x02;
 	void __iomem *commit = post_map[ARRAY_SIZE(e1_post_slpa) - 1];
-	u8 parked = 0, left = 0, down = 0, isrs = 0, flags = BIT(7), b[7], rtc[6] = {};
+	u8 parked = 0, left = 0, down = 0, isrs = 0, flags = BIT(7), qto = 0, b[7], rtc[6] = {};
 	struct m1_core *o = &m1_core[7];
-	unsigned int i, cpu, drained = 0;
+	unsigned int i, k, cpu, drained = 0;
+	u32 v, dcs = 0, pacc0 = 0;
 	bool obs;
 	u64 t0;
 
@@ -1474,19 +1695,33 @@ static void __noreturn m1_after_slpa(void)
 	b[1] = parked | (obs ? BIT(0) : 0);	/* CPU0 never parks: bit 0 marks observe */
 	m1_crumb(0x6004, b, 2);
 
-	/* 5: the table's other entries, the commit held back */
-	for (i = 0; i < ARRAY_SIZE(e1_post_slpa) - 1; i++) {
+	/* 5: the table's other entries, the commit held back; with pmgr_late, macOS's waits among them */
+	for (i = 0, k = 0; i < ARRAY_SIZE(e1_post_slpa) - 1; i++) {
 		const struct e1_mmio_write *w = &e1_post_slpa[i];
 
-		if (e1_post_is_eh(w))
+		if (e1_post_early(w))
 			continue;
 		if (w->width == 8)
 			writeq_relaxed(w->val, post_map[i]);
 		else
 			writel_relaxed(w->val, post_map[i]);
+		for (; pmgr_late && k < ARRAY_SIZE(m1_waits) && m1_waits[k].idx == i; k++) {
+			dsb(sy);
+			if (!m1_wait_done(&m1_waits[k], &v))
+				qto |= m1_waits[k].qto;
+			if (m1_waits[k].kind == M1_W_PSTATE)
+				dcs = v;
+		}
 	}
 	dsb(sy);
-	m1_stage(0x20);
+	if (pmgr_late) {
+		b[0] = 0x28;
+		b[1] = parked | (obs ? BIT(0) : 0);
+		b[2] = qto;
+		m1_crumb(0x6004, b, 3);
+	} else {
+		m1_stage(0x20);
+	}
 
 	/* 6: release */
 	for (i = 0; i < ARRAY_SIZE(m1_order); i++) {
@@ -1496,7 +1731,7 @@ static void __noreturn m1_after_slpa(void)
 		c = &m1_core[cpu];
 		if (!(parked & BIT(cpu)) || (obs && cpu == 7))
 			continue;
-		m1_stage(0x21 + i);
+		m1_stage((pmgr_late ? 0x29 : 0x21) + i);
 		if ((cpu == 4 && (parked & M1_P0) == M1_P0) || (cpu == 7 && (parked & M1_P1) == M1_P1))
 			WRITE_ONCE(c->arm, 1);
 		smp_store_release(&c->go, 1);
@@ -1516,9 +1751,9 @@ static void __noreturn m1_after_slpa(void)
 	}
 
 	/* 7 */
-	b[0] = 0x30;
+	b[0] = pmgr_late ? 0x38 : 0x30;
 	b[1] = parked | (obs ? BIT(0) : 0);
-	b[2] = left;
+	b[2] = pmgr_late ? qto : left;
 	b[3] = down;
 	m1_crumb(0x6004, b, 4);
 	for (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)
@@ -1537,7 +1772,15 @@ static void __noreturn m1_after_slpa(void)
 	b[5] = isrs;
 	b[6] = min(drained, 255U);
 	m1_crumb(0x6010, b, 7);
-	m1_stage(0x50);
+	if (pmgr_late) {
+		b[0] = 0x58;
+		b[1] = parked | (obs ? BIT(0) : 0);
+		b[2] = qto;
+		b[3] = down;
+		m1_crumb(0x6004, b, 4);
+	} else {
+		m1_stage(0x50);
+	}
 
 	/* 9 */
 	for (i = 0; i < M1_SPMI_WORDS; i++)
@@ -1553,6 +1796,8 @@ static void __noreturn m1_after_slpa(void)
 			WRITE_ONCE(o->arm, 1);
 		writel_relaxed(m1_cpus[7].stop, m1_cpu_start);
 		dsb(sy);
+		if (pmgr_late)
+			pacc0 = readl(m1_soc + M1_SOC_PACC0) & BIT(4);
 	}
 	writel_relaxed(1, commit);
 	writel_relaxed(1, commit);
@@ -1561,6 +1806,9 @@ static void __noreturn m1_after_slpa(void)
 	if (obs) {
 		o->raw = m1_raw;
 		o->down = down;
+		o->qto = qto;
+		o->dcs = dcs;
+		o->pacc0 = pacc0;
 		WRITE_ONCE(o->observe, 1);
 		smp_store_release(&o->go, 1);
 		m1_clean(o);
@@ -1603,11 +1851,9 @@ static int __init m1_observe_init(void)
 	static const char * const soc[9] = { "EACC", "PACC0", "PACC1", "ANE0", "4", "AFR", "DISPLAY", "7", "AVEMSR" };
 	unsigned int i;
 
-	m1_soc = ioremap_np(M1_SOC_CLUSTERS, PAGE_SIZE);
-	m1_sio = ioremap_np(M1_PS_SIO_PAGE, PAGE_SIZE);
 	m1_wdx = ioremap_np(M1_WDX, PAGE_SIZE);
 	m1_cpm = ioremap_np(M1_CPM_GATE, PAGE_SIZE);
-	if (!m1_soc || !m1_sio || !m1_wdx || !m1_cpm) {
+	if (!m1_wdx || !m1_cpm) {
 		pr_err("m1: observe: a mapping failed; refusing\n");
 		return -ENOMEM;
 	}
@@ -1629,6 +1875,34 @@ static int __init m1_observe_init(void)
 		readl(m1_cpm + 0x30), readl(m1_cpm + 0x34), readl(m1_cpm + 0x38), readl(m1_cpm + 0x80),
 		readl(m1_cpm + 0x88));
 	return 0;
+}
+
+/*
+ * pmgr_late at load: what it writes where, and every word its waits read,
+ * as it is now, awake, through the entries' own mappings; and two it doesn't
+ * read, for the record: the fabric's p-state, in DCS's page (with the PMP
+ * running, apple-pmgr-misc's suspend_noirq sets its target to 1), and ps_sio,
+ * SIO_CPU's parent. Reads only.
+ */
+static void __init m1_late_init(void)
+{
+	unsigned int i;
+
+	pr_info("m1: pmgr_late: before the keys %u writes, in step 5 %zu, with %zu waits after entries",
+		post_eh, ARRAY_SIZE(e1_post_slpa) - 1 - post_eh, ARRAY_SIZE(m1_waits));
+	for (i = 0; i < ARRAY_SIZE(m1_waits); i++)
+		pr_cont(" %u", m1_waits[i].idx);
+	pr_cont("\n");
+	for (i = 0; i < ARRAY_SIZE(m1_waits); i++) {
+		const struct m1_wait *w = &m1_waits[i];
+		u32 v = readl(post_map[w->idx]);
+
+		pr_info("m1: pmgr_late: wait %u, after entry %u: 0x%llx reads %08x, %s now\n", i, w->idx, w->addr,
+			v, m1_wait_met(w, v) ? "met" : "unmet");
+	}
+	pr_info("m1: pmgr_late: fabric-ps 0x%llx %08x; SIO 0x%llx %08x\n", M1_FABRIC_PS,
+		readl(post_map[m1_waits[0].idx] - (m1_waits[0].addr - M1_FABRIC_PS)), M1_PS_SIO_PAGE + M1_PS_SIO,
+		readl(m1_sio + M1_PS_SIO));
 }
 
 /*
@@ -1752,7 +2026,25 @@ static int __init m1_init(void)
 	for (cpu = 1; cpu < M1_NCPUS; cpu++)
 		pr_info("m1: CPU%u: stop bit 0x%03x, power state %08x\n", cpu, m1_cpus[cpu].stop,
 			readl(m1_ps + m1_cpus[cpu].ps));
-	return observe ? m1_observe_init() : 0;
+
+	/* observe and pmgr_late read the soc clusters and SIO's power states: read only. */
+	if (observe || pmgr_late) {
+		m1_soc = ioremap_np(M1_SOC_CLUSTERS, PAGE_SIZE);
+		m1_sio = ioremap_np(M1_PS_SIO_PAGE, PAGE_SIZE);
+		if (!m1_soc || !m1_sio) {
+			pr_err("m1: a mapping failed; refusing\n");
+			return -ENOMEM;
+		}
+	}
+	if (observe) {
+		int ret = m1_observe_init();
+
+		if (ret)
+			return ret;
+	}
+	if (pmgr_late)
+		m1_late_init();
+	return 0;
 }
 
 static void m1_unmap(void)
@@ -1988,13 +2280,35 @@ static int __init e1_check_params(void)
 		}
 		if ((w->width != 4 && w->width != 8) || !IS_ALIGNED(w->addr, w->width) ||
 		    (w->width == 4 && w->val > U32_MAX) ||
-		    (e1_post_is_eh(w) && w->width != 4)) {
+		    (e1_post_early(w) && w->width != 4)) {
 			pr_err("post-slpa write %u (0x%llx, %u bytes) isn't one this port writes as maralcbr does; refusing\n",
 			       i, w->addr, w->width);
 			return -EINVAL;
 		}
-		if (e1_post_is_eh(w))
+		if (e1_post_early(w))
 			post_eh++;
+	}
+	/*
+	 * pmgr_late's waits: in table order, each after an entry of step 5 (not
+	 * the commit), 4 bytes wide, at its own address; DCS's first, in the
+	 * fabric's page. And with pmgr_late, only entries 2-6 before the keys.
+	 */
+	for (i = 0; i < ARRAY_SIZE(m1_waits); i++) {
+		const struct m1_wait *m = &m1_waits[i];
+		const struct e1_mmio_write *w;
+
+		if (m->idx >= ARRAY_SIZE(e1_post_slpa) - 1 || (i && m->idx <= m1_waits[i - 1].idx))
+			goto bad_wait;
+		w = &e1_post_slpa[m->idx];
+		if (w->addr != m->addr || w->width != 4 || (pmgr_late && e1_post_early(w)) ||
+		    m->kind > M1_W_PSTATE || !m->qto ||
+		    (!i && (m->kind != M1_W_PSTATE || (m->addr & PAGE_MASK) != (M1_FABRIC_PS & PAGE_MASK))))
+			goto bad_wait;
+	}
+	if (pmgr_late && post_eh != 5) {
+		pr_err("pmgr_late=1: %u of the post-slpa table's entries go before the keys, not 5; refusing\n",
+		       post_eh);
+		return -EINVAL;
 	}
 
 	if (replay != 0 && replay != 5 && replay != 13 && replay != 15) {
@@ -2008,7 +2322,7 @@ static int __init e1_check_params(void)
 	}
 	last = &e1_post_slpa[ARRAY_SIZE(e1_post_slpa) - 1];
 	if (quiet && (last->addr != E1_S2R_COMMIT || last->width != 4 || last->val != 1 ||
-		      e1_post_is_eh(last))) {
+		      e1_post_early(last))) {
 		pr_err("quiet=1: the post-slpa table doesn't end with the commit (1 to 0x%llx); refusing\n",
 		       E1_S2R_COMMIT);
 		return -EINVAL;
@@ -2019,6 +2333,10 @@ static int __init e1_check_params(void)
 	}
 	if (observe && !m1) {
 		pr_err("observe=1 is part of the M1 recipe: it needs m1=1 (and replay=15 oneway=1 quiet=1)\n");
+		return -EINVAL;
+	}
+	if (pmgr_late && !m1) {
+		pr_err("pmgr_late=1 is part of the M1 recipe: it needs m1=1 (and replay=15 oneway=1 quiet=1)\n");
 		return -EINVAL;
 	}
 	if ((replay & (2 | 8)) && !oneway) {
@@ -2036,6 +2354,11 @@ static int __init e1_check_params(void)
 		return -ENODEV;
 	}
 	return 0;
+
+bad_wait:
+	pr_err("pmgr_late's wait %u (after entry %u, 0x%llx) doesn't match the post-slpa table; refusing\n",
+	       i, m1_waits[i].idx, m1_waits[i].addr);
+	return -EINVAL;
 }
 
 /* Every mapping made at load; each pointer is NULL if it wasn't made. */
@@ -2176,8 +2499,9 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s\n",
-		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "");
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s\n",
+		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
+		pmgr_late ? " pmgr_late=1" : "");
 	return 0;
 
 unmap:

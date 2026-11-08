@@ -113,7 +113,11 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `observe=1` (`run-floor --m1-observe`, with `m1=1` only) is its run 2:
   CPU7 stays up through the commit, watches CPU0 and the E complex power
   down, reads the watchdogs and other state, and records them in the same
-  breadcrumbs. `13` is the floor with the CPUs left up. `13`
+  breadcrumbs. `pmgr_late=1` (`run-floor --m1-late`, which adds it to
+  `--m1-observe`'s; with `m1=1` only) is its run 3: the table's PMGR
+  quiesce goes out after `slpa`, in its place in the table, with macOS's
+  waits, and the breadcrumbs say which waits timed out and when EACC and
+  PACC0 finished powering down. `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
   (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s

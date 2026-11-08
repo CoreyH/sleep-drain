@@ -27,7 +27,7 @@ the PR with that session's work.
   replay with Naeem's M1 recipe takes every core down and commits the entry,
   but the entry never completes: the engine's own watchdog, WD2, resets the
   SoC about 30 s after the commit (RESEARCH.md, "M1 run 2"). Next is M1 run
-  3.
+  3, built and waiting for an attended run (`run-floor --m1-late`).
 
 ## Picking this up
 
@@ -312,8 +312,9 @@ steps, and restarting the DCP and the PMP afterwards.
         nothing to clear), and the prepared answer to "SIO_CPU not off"
         (macOS's read-modify-write would leave it off, which isn't macOS's
         state either).
-    - [ ] **M1 run 3: the PMGR quiesce in macOS's place** (to build:
-      e1_hook `pmgr_late=1`, `pkexec e1-hook/run-floor --m1-late`). Run 2's
+    - [ ] **M1 run 3: the PMGR quiesce in macOS's place** (built, to run:
+      e1_hook `pmgr_late=1`, `pkexec e1-hook/run-floor --m1-late`; e1_hook.c's
+      m1 comment has its breadcrumbs, and `m1-crumbs` decodes them). Run 2's
       recipe, the observer included, with one change: where the table's
       PMGR quiesce goes, and macOS's waits after it. No new write and no
       new PMU byte. Its value is mostly the readout: T6020 ran the same

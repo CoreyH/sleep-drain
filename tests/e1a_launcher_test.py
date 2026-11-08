@@ -11,7 +11,8 @@ Both launchers get the same cases, but for the hand-off. run-floor's own: it
 sets kernel.panic and panic_on_oops (in a fake /proc/sys) before the load,
 refuses with pm_test set, an older build or an unknown argument, and unloads
 a build that ignored its parameters; --quiet adds quiet=1 and its own label,
---m1 quiet=1 and m1=1 and its own, --m1-observe those and observe=1 and its own.
+--m1 quiet=1 and m1=1 and its own, --m1-observe those and observe=1 and its own,
+--m1-late those and pmgr_late=1 and its own.
 And after the hand-off it stays and watches a fake
 /sys/power/suspend_stats: a floor leaves it waiting with the replay armed; a
 suspend that fails (before any PM notifier, too) or comes back, no suspend at
@@ -40,6 +41,7 @@ LAUNCHERS = (
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1", "floor-quiet", ("--quiet",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1", "floor-m1", ("--m1",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 observe=1", "floor-m1-observe", ("--m1-observe",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 observe=1 pmgr_late=1", "floor-m1-late", ("--m1-late",)),
 )
 
 failed = 0
@@ -50,8 +52,8 @@ def name(launcher):
 
 
 def is_m1(launcher):
-    """--m1 and --m1-observe: both load m1=1."""
-    return any(a in ("--m1", "--m1-observe") for a in launcher[4])
+    """--m1, --m1-observe and --m1-late: all load m1=1."""
+    return any(a in ("--m1", "--m1-observe", "--m1-late") for a in launcher[4])
 
 
 def check(cond, what, detail=""):
@@ -73,13 +75,17 @@ def write(path, text, mode=None):
 
 PM_TEST = "[none] core processors platform devices freezer\n"
 # modinfo -F parm, as for the floor's build; the floor's first build had no
-# cancel, the next no quiet, the next no m1, the next no observe, and E1a's no
-# oneway either.
+# cancel, the next no quiet, the next no m1, the next no observe, the next no
+# pmgr_late, and E1a's no oneway either.
 PARMS = {
     "floor": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
              "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
              "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
-             "observe:With m1=1 only (bool)\nreplay:LAB ONLY (uint)\n",
+             "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\nreplay:LAB ONLY (uint)\n",
+    "floor-nolate": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
+                    "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
+                    "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\n"
+                    "m1_undo:m1: 0x30 (int)\nobserve:With m1=1 only (bool)\nreplay:LAB ONLY (uint)\n",
     "floor-noobserve": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                        "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
                        "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\n"
@@ -99,7 +105,7 @@ def sysctl(tmp):
 
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
-          takes=True, takes_quiet=True, takes_m1=True, takes_observe=True):
+          takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -122,11 +128,12 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
         os.makedirs(moddir)
     stubs = os.path.join(tmp, "stubs")
     # The module's directory and its parameters, as the kernel shows them; a
-    # build that doesn't know replay and oneway (or quiet, m1 or observe)
-    # ignores them.
+    # build that doesn't know replay and oneway (or quiet, m1, observe or
+    # pmgr_late) ignores them.
     quiet = f' quiet=1) echo Y > {moddir}/parameters/quiet ;;' if takes_quiet else ""
     quiet += f' m1=1) echo Y > {moddir}/parameters/m1 ;;' if takes_m1 else ""
     quiet += f' observe=1) echo Y > {moddir}/parameters/observe ;;' if takes_observe else ""
+    quiet += f' pmgr_late=1) echo Y > {moddir}/parameters/pmgr_late ;;' if takes_late else ""
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
               f' oneway=1) echo Y > {moddir}/parameters/oneway ;;{quiet} esac; done\n') if takes else ""
     # The rest of the floor's parameters, as before any suspend; cancel is
@@ -385,7 +392,8 @@ def test_refusals(launcher):
 def test_floor_refusals(launcher):
     quiet = "--quiet" in launcher[4]
     m1 = is_m1(launcher)
-    observe = "--m1-observe" in launcher[4]
+    late = "--m1-late" in launcher[4]
+    observe = "--m1-observe" in launcher[4] or late
     plain = not quiet and not m1
     cases = [("with pm_test set", dict(pm_test="none core processors [platform] devices freezer\n"), None,
               "pm_test isn't none"),
@@ -398,14 +406,18 @@ def test_floor_refusals(launcher):
                   ("a build without m1", dict(build="floor-nom1"), None, "without m1")]
     if observe:
         cases.append(("a build without observe", dict(build="floor-noobserve"), None, "without observe"))
+    if late:
+        cases.append(("a build without pmgr_late", dict(build="floor-nolate"), None, "without pmgr_late"))
     if plain:
         # The floor's build before quiet still runs the floor itself.
-        usage = "usage: run-floor [--quiet | --m1 | --m1-observe]"
+        usage = "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late]"
         cases += [("an unknown argument", {}, ["--loud"], usage),
                   ("a second argument", {}, ["--quiet", "--quiet"], usage),
                   ("--quiet and --m1 together", {}, ["--quiet", "--m1"], usage),
                   ("--m1 and --m1-observe together", {}, ["--m1", "--m1-observe"], usage),
-                  ("--observe alone", {}, ["--observe"], usage)]
+                  ("--m1-observe and --m1-late together", {}, ["--m1-observe", "--m1-late"], usage),
+                  ("--observe alone", {}, ["--observe"], usage),
+                  ("--late alone", {}, ["--late"], usage)]
     for what, kw, argv, msg in cases:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)
@@ -421,6 +433,8 @@ def test_floor_refusals(launcher):
         ignored.append(("m1", dict(takes_m1=False)))
     if observe:
         ignored.append(("observe", dict(takes_observe=False)))
+    if late:
+        ignored.append(("pmgr_late", dict(takes_late=False)))
     for what, kw in ignored:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)

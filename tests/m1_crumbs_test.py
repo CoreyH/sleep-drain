@@ -3,8 +3,9 @@
 
 Each case writes a 64 KiB file shaped like the PMU's nvmem, with chosen bytes
 at 0x6000-0x601f and the RTC at 0x1406, runs the tool with a fake SoC counter
-(M1_CRUMBS_CNTVCT), and checks what it prints: run 1's stages and the
-observer's (observe=1), and the reset time after a commit. --clear must zero
+(M1_CRUMBS_CNTVCT), and checks what it prints: run 1's stages, the
+observer's (observe=1) and run 3's (pmgr_late=1), and the reset time after a
+commit. --clear must zero
 0x6004-0x6007 and 0x6010-0x6016 and nothing else; an unknown argument changes
 nothing.
 
@@ -245,6 +246,141 @@ def main():
               and "soc clusters still busy: DISPLAY (" in out and "SIO_CPU's actual state NOT off" in out,
               "the observer's 0x6f: a lost 0x6016, a 16-bit wrap, WD1 armed again, DISPLAY and SIO_CPU on",
               out + r.stderr)
+
+        # pmgr_late=1 (M1 run 3). 0x28: step 5 and its waits done, with qto in
+        # 0x6006 (DISPLAY's), marked observe; 0x6007 isn't written yet.
+        fake(path, scratch(0x28, parked=0xff, left=0x10, secs=121500), rtc_secs=121761)
+        r = run(path)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x28 (pmgr_late=1): 5: the 68 post-slpa writes done" in out
+              and "0x6006 = 0x10: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58)\n" in out
+              and "observe=1 (0x6005 bit 0)" in out and "parked (0x6005 = 0xff)" in out
+              and "left their spin" not in out and "read off within" not in out
+              and "RTC second at the replay's start (K1): 121500" in out,
+              "pmgr_late's 0x28: qto in 0x6006, nothing in 0x6007", out + r.stderr)
+
+        # 0x2b: releasing CPU3, the order's third, with qto still in 0x6006.
+        fake(path, scratch(0x2b, parked=0xfe, left=0x00))
+        r = run(path)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x2b (pmgr_late=1): 6: releasing CPU3, the order's 3 of 7" in out
+              and "0x6006 = 0x00: every one of macOS's waits was met within 10 ms" in out
+              and "observe=1" not in out and "left their spin" not in out,
+              "pmgr_late's 0x2b: releasing CPU3, every wait met", out + r.stderr)
+
+        # 0x38: released, observe; qto AFR's power state and DISPLAY's; 0x6007
+        # the cores that read off (no "left" byte).
+        fake(path, scratch(0x38, parked=0xff, left=0x12, down=0x7e, secs=121500), rtc_secs=121761)
+        r = run(path)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x38 (pmgr_late=1): 7: every parked core but CPU7 released" in out
+              and "after 10 ms: AFR's power state (51); DISPLAY's power-down (58)\n" in out
+              and "read off within 10 ms (0x6007 = 0x7e): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6\n" in out
+              and "left their spin" not in out and "restarted" not in out,
+              "pmgr_late's 0x38, observe: qto and the cores read off", out + r.stderr)
+
+        # 0x58 without the observer: the commit's whole second, every wait met,
+        # the reset time; PCPM1 checked.
+        fake(path, scratch(0x58, parked=0xfe, left=0x00, down=0xfe, secs=121544, flags=0xb0, isrs=0, drained=1),
+             rtc_secs=121761)
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x58 (pmgr_late=1): 8: the last SPMI command" in out
+              and "every one of macOS's waits was met within 10 ms" in out
+              and "read off within 10 ms (0x6007 = 0xfe)" in out
+              and "RTC second at just before the commit: 121544, 217 s before now" in out
+              and "PCPM0 off, PCPM1 off" in out and "0x6016 = 1: AIC events" in out
+              and "the SoC restarted about 31 s after the commit" in out and "observe=1" not in out,
+              "pmgr_late's 0x58 without the observer: decoded as 0x50, with qto", out + r.stderr)
+
+        # 0x70: CPU7 began; 0x6005-0x6007 still CPU0's 0x58 bytes, marked.
+        fake(path, scratch(0x70, parked=0xff, left=0x50, down=0x7e, secs=121544, flags=0x90), rtc_secs=121761)
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x70 (pmgr_late=1): observe: CPU7 began" in out
+              and "after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)\n" in out
+              and "observe=1 (0x6005 bit 0)" in out and "PCPM1 not checked" in out
+              and "the SoC restarted about 31 s after the commit" in out,
+              "pmgr_late's 0x70: CPU0's 0x58 bytes, marked observe", out + r.stderr)
+
+        # 0x71: CPU7's three bytes, as 0x61; the rest still CPU0's.
+        fake(path, scratch(0x71, parked=0xff, left=0x04, down=30, secs=121544, flags=0x90, isrs=0, drained=2),
+             rtc_secs=121761)
+        r = run(path)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x71 (pmgr_late=1): observe: CPU7 recorded CPU0's" in out
+              and "CPU0 read off within 500 ms" in out and "WD2 control 4 (RESET_EN)" in out
+              and "0x6007 = 30: 30 s" in out and "RTC second at just before the commit: 121544" in out
+              and "0x6016 = 2: AIC events" in out and "qto" not in out and "waits" not in out,
+              "pmgr_late's 0x71: CPU7's three bytes, CPU0's others", out + r.stderr)
+
+        # 0x72: CPU7 was rewriting 0x6012-0x6016: not decoded.
+        fake(path, scratch(0x72, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0xa9), flags=0x90,
+                           isrs=0x24, drained=0x95), rtc_secs=121761)
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x72 (pmgr_late=1): observe: CPU7 was rewriting" in out
+              and "0x6012 0x6013 = 10 a9, 0x6015 0x6016 = 24 95: CPU0's or CPU7's" in out
+              and "from its low two bytes: 121544, 217 s before now" in out
+              and "waits" not in out and "soc clusters" not in out,
+              "pmgr_late's 0x72: 0x6012-0x6016 left undecoded", out + r.stderr)
+
+        # 0x7f, the expected case: DISPLAY's wait timed out; EACC done in 5-20
+        # ms, PACC0 in 200-500 ms and done before the commit; PACC1 and DISPLAY
+        # busy at the end; DCS settled at 5; SIO off.
+        fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0x80 | 5 << 3 | 1),
+                           flags=0x90, isrs=0x24, drained=0x95), rtc_secs=121761)
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x7f (pmgr_late=1): observe: CPU7 recorded everything" in out
+              and "0x6012 = 0x10: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58)\n" in out
+              and "EACC's power-down done 5-20 ms after the hand-over; PACC0's done 200-500 ms after the hand-over;"
+              " PACC0's was done just before the commit" in out
+              and "still busy at the end of CPU7's watch: PACC1,DISPLAY (" in out
+              and "SIO_CPU's actual state off" in out
+              and "actual 5, target 5, busy bit 31 clear (settled at 5); SIO's actual state off after the commit" in out
+              and "from its low two bytes: 121544" in out and "the SoC restarted about 31 s after the commit" in out
+              and "wdt page" not in out and "wake-status" not in out,
+              "pmgr_late's 0x7f, the expected case: qto, the buckets, the clusters and DCS decoded", out + r.stderr)
+
+        # 0x7e: everything wrong: four waits timed out, EACC and PACC0 still
+        # pending at the end and PACC0 before the commit, DCS at 7 and busy,
+        # SIO and SIO_CPU on.
+        fake(path, scratch(0x7e, parked=0x7f, left=0x04, down=29, secs=121544, prog=(0xd1, 0x80 | 0x40 | 7 << 3 | 7),
+                           flags=0x90, isrs=0xa7, drained=0x80 | 0x40 | 0x20 | 0x10 | 7), rtc_secs=121761)
+        r = run(path)
+        out = r.stdout
+        check(r.returncode == 0 and "it likely never powered down" in out
+              and "after 10 ms: DCS's p-state (after entries 49 and 50); DISPLAY's power-down (58);"
+              " SIO_CPU's power state (61); a ClkGen mux (62-66) or PLL-off (72)\n" in out
+              and "EACC's power-down STILL PENDING at the end of CPU7's watch" in out
+              and "PACC0's STILL PENDING at the end" in out and "PACC0's was STILL PENDING just before" in out
+              and "EACC,PACC0,PACC1,DISPLAY (" in out and "SIO_CPU's actual state NOT off" in out
+              and "actual 7, target 5, busy bit 31 SET (NOT settled at 5); SIO's actual state NOT off" in out
+              and "(ECPM) did NOT read off" in out,
+              "pmgr_late's 0x7e: every timeout and pending bit decoded", out + r.stderr)
+
+        # 0x7f with 0x6013's and 0x6016's bit 7 lost: not read.
+        fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0x29), flags=0x90,
+                           isrs=0x04, drained=0x15), rtc_secs=121761)
+        r = run(path)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6013 = 0x29: bit 7 is clear, so this byte didn't survive" in out
+              and "0x6016 = 0x15: bit 7 is clear, so this byte didn't survive" in out
+              and "power-down done" not in out and "DCS's p-state at" not in out
+              and "0x6012 = 0x10" in out,
+              "pmgr_late's 0x7f with 0x6013 and 0x6016 lost: those two not read", out + r.stderr)
+
+        # --clear after a pmgr_late run: the same 11 bytes, nothing else.
+        before = fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0xa9),
+                                    flags=0x90, isrs=0x24, drained=0x95))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        want = bytearray(before)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        check(r.returncode == 0 and after == bytes(want) and "cleared" in r.stdout and "0x7f" in r.stdout,
+              "--clear after a pmgr_late run: 0x6004-0x6007 and 0x6010-0x6016 only", r.stdout + r.stderr)
 
     # The real counter, on this machine: older than the kernel's uptime.
     if os.uname().machine == "aarch64":
