@@ -31,9 +31,10 @@
 # commit's first write and the other two; its label is floor-m1-alarm, and
 # what's said of --m1 below holds for it too. --m1-hold (E2's hold rung,
 # PLAN.md) is --m1-alarm with hold=1: each other CPU writes its own stop bit
-# in step 6 and holds, awake and spinning, through the commit, as XNU does on
-# H13; after the third commit CPU0 lets go, they power down, and CPU0 reads
-# them off and records that, then takes its own deep WFI last; its label is
+# in step 6 and holds, awake and spinning, through the commit (modeled on
+# XNU's H13 global sleep, whose secondaries stall in WFE); after the third
+# commit CPU0 lets go, they power down, and CPU0 reads them off and records
+# that, then takes its own deep WFI last; its label is
 # floor-m1-hold. --m1-hold-nowatch adds hold_nowatch=1: CPU0 doesn't read
 # them, the run to make once a watched one comes back clean; its label is
 # floor-m1-hold-nowatch. What's said of --m1 and --m1-alarm below holds for

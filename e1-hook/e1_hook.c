@@ -265,7 +265,7 @@ MODULE_PARM_DESC(alarm, "With m1=1 and pmgr_late=1, without observe=1: the PMU's
 /* E2's hold rung: every core held through the commit (PLAN.md). */
 static bool hold;
 module_param(hold, bool, 0444);
-MODULE_PARM_DESC(hold, "With m1=1, pmgr_late=1 and alarm=1, without observe=1: XNU's global sleep on H13: each other CPU writes its own stop bit in step 6 and holds, awake, spinning, through the commit; after the third commit CPU0 clears the hold, every CPU arms its deep sleep and takes its deep WFI, and CPU0 reads the others down, records that and goes down last");
+MODULE_PARM_DESC(hold, "With m1=1, pmgr_late=1 and alarm=1, without observe=1: modeled on XNU's global sleep on H13, whose secondaries stall in WFE: each other CPU writes its own stop bit in step 6 and holds, awake, spinning, through the commit; after the third commit CPU0 clears the hold, every CPU arms its deep sleep and takes its deep WFI, and CPU0 reads the others down, records that and goes down last");
 static bool hold_nowatch;
 module_param(hold_nowatch, bool, 0444);
 MODULE_PARM_DESC(hold_nowatch, "With hold=1 only: CPU0 doesn't read the others down after the release; it takes its deep WFI at once");
@@ -1011,9 +1011,16 @@ static void e1_after_slpa(void)
  * go, clears its fast IPI and AIC events, records ISR_EL1, writes its own
  * stop bit (the word and bits of runs 1-4), says so (held), and spins,
  * awake, every exception masked, on m1_release: the spin runs 2 and 3 held
- * CPU7 in through the commit (a WFE would need a SEV, and spinning needs no
- * wake, so a core here is never asleep when a stop bit is written, as in
- * DeepIdle's R13-R15). CPU0 waits up to 10 ms for each (a core that doesn't
+ * CPU7 in through the commit (XNU's and Naeem's holds are WFE, which needs a
+ * SEV; a spin needs no wake, so a core here is never asleep when its stop bit
+ * goes out, unlike DeepIdle's R13-R14, where the boot core wrote the bit of a
+ * core parked in WFI and cpu3 never woke; R15 dropped the stop request and
+ * every core slept. On T6000 only CPU7 has been held awake with a stop bit
+ * so far, runs 2 and 3). The stop bits go out here after step 5's PMGR
+ * quiesce, as in run 4 (one change): T8103's macOS writes them before that
+ * quiesce (mac27-hv README L87-88), and T6000's order isn't traced, so a
+ * later variant could write them at the park, before step 5, with no new
+ * register or PMU byte. CPU0 waits up to 10 ms for each (a core that doesn't
  * say held is recorded and left out, not waited for). After the third commit,
  * stage 0x5b and the acks, m1_hold_release() sets m1_release, a flag in
  * memory, no IPI; each core clears its fast IPI and AIC events again, records
@@ -1021,9 +1028,11 @@ static void e1_after_slpa(void)
  * c->arm is set for every core here, as arm64_prepare_for_sleep() does and
  * Naeem's global path does; the last-of-a-cluster rule was for cores going
  * down under running siblings, and no ordinary WFI is left to mind now),
- * sets CYC_OVRD and takes its deep WFI. CPU0 then reads them down (each
- * one's power state up to 10 ms in the park's order, then PCPM0's and PCPM1's;
- * hold_nowatch=1 skips that and goes straight to its deep WFI), records it,
+ * sets CYC_OVRD and takes its deep WFI. CPU0 then reads them down, this
+ * module's own reading (XNU's boot CPU and Naeem's finisher go straight on to
+ * their deep WFI): each one's power state up to 10 ms in the park's order,
+ * then PCPM0's and PCPM1's (hold_nowatch=1 skips that and goes straight to its
+ * deep WFI), records it,
  * acks and goes down last, so nothing reads its own power-down or the E
  * complex's (runs 2 and 3 did). No address is written that m1 doesn't write.
  * The breadcrumbs:
@@ -1869,7 +1878,7 @@ static void m1_hold_release(u8 held, u8 qto, u8 flags)
 	unsigned int i, cpu;
 
 	smp_store_release(&m1_release, 1);
-	dsb(sy);
+	m1_clean(&m1_release);	/* store + clean + dsb: the form CPU7's go took after the commit in runs 2 and 3 */
 	if (hold_nowatch)
 		return;
 	for (i = 0; i < ARRAY_SIZE(m1_order); i++) {

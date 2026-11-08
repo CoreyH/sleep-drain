@@ -722,10 +722,10 @@ def main():
               and "read off after the release (0x6005 = 0xfe, up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
               and "0x6006 = 0x50: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)\n" in out
               and "wrote their stop bit and held (0x6007 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
-              and "RTC second just before the commit, from its low two bytes: 121544, 217 s before now (121761)" in out
+              and "RTC second just before the commit, from its low two bytes and the run's alarm: 121544, 217 s before now (121761)" in out
               and "PCPM0 off after the release, PCPM1 off after the release" in out
               and "0x6012 = 0xfe: the cores that took the release: CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
-              and "0x6013 = 0x00: the cores with an interrupt pending just before their deep WFI: none\n" in out
+              and "0x6013 = 0x00: of those, the ones with an interrupt pending just before their deep WFI: none\n" in out
               and "0x6015 = 0x00: cores with an interrupt pending at their stop request (hold=1): none\n" in out
               and "0x6016 = 0xbd: every alarm command was acked" in out
               and "the SoC restarted about" in out
@@ -744,26 +744,33 @@ def main():
               and "wrote their stop bit and held (0x6007 = 0xfe)" in out
               and "PCPM0 off after the release, PCPM1 NOT off after the release" in out
               and "the cores that took the release: CPU1,CPU2,CPU3,CPU4,CPU5,CPU6\n" in out
-              and "before their deep WFI: CPU6\n" in out and "at their stop request (hold=1): CPU4\n" in out,
+              and "deep WFI: CPU6\n" in out and "at their stop request (hold=1): CPU4\n" in out,
               "hold=1: CPU7 held and not read off, P1 not off", out + r.stderr)
 
         # 0x5d: CPU0 had something pending before its own WFI.
         fake(path, scratch(0x5d, **rec), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
         r = run(path, cnt=run1)
         check(r.returncode == 0 and "0x5d (pmgr_late=1): hold=1: everything recorded, but CPU0 had an interrupt or SError pending" in r.stdout
-              and "it likely never went down" in r.stdout,
+              and "it likely never went down" in r.stdout
+              and "0x6012 = 0xfe: the cores that took the release: CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in r.stdout
+              and "0x6013 = 0x00: of those, the ones with an interrupt pending just before their deep WFI: none\n" in r.stdout,
               "hold=1's 0x5d: CPU0 had something pending", r.stdout + r.stderr)
 
-        # 0x5c: the watch's stage: 0x6012-0x6014 aren't read as facts yet.
-        fake(path, scratch(0x5c, parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0x80, isrs=0, drained=0xbd),
-             rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
-        r = run(path, cnt=run1)
-        out = r.stdout
-        check(r.returncode == 0 and "0x5c (pmgr_late=1): hold=1: the release went out and CPU0's watch ended" in out
-              and "read off after the release" in out and "being rewritten" in out
-              and "the cores that took the release" not in out and "before their deep WFI" not in out
-              and "PCPM0 being rewritten: not decoded" in out,
-              "hold=1's 0x5c: 0x6012-0x6014 not read as facts", out + r.stderr)
+        # 0x5c: the watch's stage: 0x6012-0x6014 aren't read as facts yet, whether
+        # the 3-byte command landed or not; the second's low two bytes are still good.
+        for kw, what in ((dict(flags=0x80, prog=None), "before the 3-byte command"),
+                         (dict(flags=0xb0, prog=(0xfe, 0x00)), "with the 3-byte command landed")):
+            fake(path, scratch(0x5c, parked=0xfe, left=0x50, down=0xfe, secs=121544, isrs=0, drained=0xbd, **kw),
+                 rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+            r = run(path, cnt=run1)
+            out = r.stdout
+            check(r.returncode == 0 and "0x5c (pmgr_late=1): hold=1: the release went out and CPU0's watch ended" in out
+                  and "read off after the release" in out and "being rewritten" in out
+                  and "the cores that took the release" not in out and "deep WFI: " not in out
+                  and "PCPM0 being rewritten: not decoded" in out
+                  and "from its low two bytes and the run's alarm: 121544, 217 s before now (121761)" in out
+                  and "0x6015 = 0x00: cores with an interrupt pending at their stop request (hold=1): none\n" in out,
+                  f"hold=1's 0x5c {what}: 0x6012-0x6014 not read as facts, and the second's low two bytes good", out + r.stderr)
 
         # 0x5b: the commit x3 done, nothing after it; 0x6005 still the parked mask.
         fake(path, scratch(0x5b, parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0x80, isrs=0x04, drained=0xbd),
@@ -804,9 +811,97 @@ def main():
             check(r.returncode == 0 and f"6 (hold=1): requesting CPU{c}'s stop, the order's {i + 1} of 7" in r.stdout,
                   f"hold=1's 0x{0x31 + i:02x}: CPU{c}'s stop request", r.stdout + r.stderr)
 
+        # The low two bytes lost, at 0x5e: no made-up second, and --clear goes by 0x6016's acks, or refuses.
+        lost = bytearray(scratch(0x5e, **rec))
+        lost[0x10:0x12] = bytes(2)
+        fake(path, bytes(lost), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6010-0x6011 read 0: the commit's second was lost" in out
+              and "RTC second just before" not in out and "the SoC restarted about" not in out
+              and "the commit's second isn't known, so 0x140c can't be checked" in out,
+              "hold=1's 0x5e with the low two bytes lost: no made-up second, no reset time", out + r.stderr)
+        for res, ok in ((0xbd, True), (0xbf, True), (0x85, False), (0x00, False)):
+            lost = bytearray(scratch(0x5e, **dict(rec, drained=res)))
+            lost[0x10:0x12] = bytes(2)
+            before = fake(path, bytes(lost), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+            r = run(path, "--clear")
+            after = open(path, "rb").read()
+            if ok:
+                want = bytearray(before)
+                want[0x6004:0x6008] = bytes(4)
+                want[0x6010:0x6017] = bytes(7)
+                want[0x1401] = 0x01
+                check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                      f"--clear at 0x5e, the low two bytes lost, 0x6016 = 0x{res:02x}: disarmed by the acks", r.stdout + r.stderr)
+            else:
+                check(r.returncode == 2 and after == before and "the commit's second was lost" in r.stderr,
+                      f"--clear at 0x5e, the low two bytes lost, 0x6016 = 0x{res:02x}: refuses, nothing written", r.stdout + r.stderr)
+
+        # 0x6012-0x6014 lost at 0x5e: their masks aren't facts, 0x6015's command survived.
+        lost = bytearray(scratch(0x5e, **dict(rec, isrs=0x10)))
+        lost[0x12:0x15] = bytes(3)
+        for s in (0x5e, 0x5d):
+            lost[4] = s
+            fake(path, bytes(lost), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+            r = run(path, cnt=run1)
+            out = r.stdout
+            check(r.returncode == 0 and "bit 7 is clear, so the 3-byte command it went in (0x6012-0x6014) didn't survive" in out
+                  and "0x6012 0x6013: went in one command with 0x6014, whose bit 7 is clear: not decoded" in out
+                  and "the cores that took the release" not in out
+                  and "at their stop request (hold=1): CPU4\n" in out,
+                  f"hold=1's 0x{s:02x} with 0x6012-0x6014 lost: the masks aren't read, 0x6015 is", out + r.stderr)
+        # The whole step-8 command lost too (0x6010-0x6016 zero): nothing read as a fact.
+        lost = bytearray(scratch(0x5e, parked=0xfe, left=0x50, down=0xfe))
+        lost[0x10:0x17] = bytes(7)
+        fake(path, bytes(lost), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6015: step 8's command, whose second's low two bytes read 0: not decoded" in out
+              and "the cores that took the release" not in out and "cores with an interrupt pending" not in out,
+              "hold=1's 0x5e with 0x6010-0x6016 lost: nothing read as facts", out + r.stderr)
+
+        # The low-two-bytes second across a 16-bit wrap, with and without the run's alarm.
+        wrap = dict(parked=0xfe, left=0x50, down=0xfe, secs=0x2fff0, flags=0xb0, isrs=0, drained=0xbd, prog=(0xfe, 0x00))
+        fake(path, scratch(0x5e, **wrap), rtc_secs=0x30005)
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and f"from its low two bytes: {0x2fff0}, 21 s before now ({0x30005})" in r.stdout,
+              "hold=1's second across a 16-bit wrap, no alarm: the 18 h form", r.stdout + r.stderr)
+        before = fake(path, scratch(0x5e, **wrap), rtc_secs=0x30005, alarm=(0x41, 0x2fff0 + 3600, 0, 0))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        want = bytearray(before)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        want[0x1401] = 0x01
+        check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout
+              and f"from its low two bytes and the run's alarm: {0x2fff0}" in r.stdout,
+              "--clear across a 16-bit wrap: the run's alarm disarmed", r.stdout + r.stderr)
+
+        # A read past 18 h: the run's own alarm still pins the second; a stale one isn't taken for it.
+        fake(path, scratch(0x5e, **rec), rtc_secs=121544 + 72000, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and f"from its low two bytes and the run's alarm: 121544, {72000} s before now" in out
+              and "0x140c is the commit's second + 3600, as the run wrote it" in out,
+              "hold=1's 0x5e, read 20 h later: the run's alarm pins the second", out + r.stderr)
+        before = fake(path, scratch(0x5e, **rec), rtc_secs=121544 + 72000, alarm=(0x41, 125144, 0, 0))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        check(r.returncode == 0 and after[0x1401] == 0x01 and "disarmed: 0x1401 = 0x01" in r.stdout,
+              "--clear, read 20 h later: still the run's alarm, disarmed", r.stdout + r.stderr)
+
+        # The observer's short stages share the formula: low 0 means lost there too.
+        fake(path, scratch(0x6f, parked=0xff, left=0x04, down=29, secs=0, prog=(0x12, 0x34), flags=0x90, isrs=0x33, drained=0x85),
+             rtc_secs=121761)
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and "0x6010-0x6011 read 0: the commit's second was lost" in r.stdout
+              and "from its low two bytes" not in r.stdout,
+              "the observer's 0x6f with the low two bytes lost: no made-up second", r.stdout + r.stderr)
+
         # --clear after hold=1's stages: 0x5e's second comes from its low two bytes.
-        for s, kw in ((0x5e, rec), (0x5d, rec), (0x5c, dict(rec, prog=None)), (0x5b, dict(rec, prog=None, flags=0x80)),
-                      (0x5a, dict(rec, prog=None, flags=0x80))):
+        for s, kw in ((0x5e, rec), (0x5d, rec), (0x5c, rec), (0x5c, dict(rec, prog=None, flags=0x80)),
+                      (0x5b, dict(rec, prog=None, flags=0x80)), (0x5a, dict(rec, prog=None, flags=0x80))):
             before = fake(path, scratch(s, **kw), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
             r = run(path, "--clear")
             after = open(path, "rb").read()
@@ -836,10 +931,11 @@ def main():
               "--clear after hold=1's 0x39: an armed alarm isn't the run's", r.stdout + r.stderr)
 
         # A clean run keeps the old stages' meaning: 0x38 and 0x58 still read as pmgr_late's.
-        fake(path, scratch(0x38, parked=0xfe, left=0x50, down=0xfe), rtc_secs=121761)
-        r = run(path, cnt=run1)
-        check(r.returncode == 0 and "0x38 (pmgr_late=1)" in r.stdout and "hold=1" not in r.stdout,
-              "stage 0x38 stays pmgr_late's, not hold's", r.stdout + r.stderr)
+        for st in (0x38, 0x58):
+            fake(path, scratch(st, parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0xb0), rtc_secs=121761)
+            r = run(path, cnt=run1)
+            check(r.returncode == 0 and f"0x{st:02x} (pmgr_late=1)" in r.stdout and "hold=1" not in r.stdout,
+                  f"stage 0x{st:02x} stays pmgr_late's, not hold's", r.stdout + r.stderr)
 
     # m1-crumbs' tables against e1_hook.c's: each qto bit names the entries
     # its waits follow, and the buckets' edges are m1_bucket_ms[].
@@ -890,10 +986,11 @@ def main():
           and "hold ? 0x31 :" in src,
           "m1-crumbs' alarm registers, stages and seconds match e1_hook.c's", f"{defs}")
 
-    # The stage tables must not collide: each stage means one thing.
-    pool = [("HOLD", k) for k in g["HOLD"]] + [("LATE", k) for k in g["LATE"]]
-    keys = [k for _, k in pool]
-    check(len(keys) == len(set(keys)), "hold=1's stages collide with no other run's", f"{sorted(keys)}")
+    # hold=1's stages mean one thing: none is another run's stage. (STAGES and
+    # OBSERVE_STAGES share 0x10, 0x30 and 0x50 by design, so only HOLD is checked.)
+    others = set(g["STAGES"]) | set(g["OBSERVE_STAGES"]) | set(g["LATE"]) | set(range(0x21, 0x28))
+    check(not set(g["HOLD"]) & others, "hold=1's stages collide with no other run's",
+          f"{sorted(set(g['HOLD']) & others)}")
 
     print(f"{failed} failed" if failed else "all ok")
     return 1 if failed else 0

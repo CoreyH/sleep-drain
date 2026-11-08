@@ -203,6 +203,13 @@ def qto(q):
                             "macOS's waits that timed out after 10 ms: " + "; ".join(timed))
 
 
+def run_second(low, compare, now):
+    """hold=1 from 0x5c on: the commit's whole second, if the alarm's compare value is the run's (its second
+    + 3600, not later than now, with these low two bytes); else None. low 0 counts as lost."""
+    whole = compare - ALARM_SECS
+    return whole if low and 0 < whole <= now and whole & 0xffff == low else None
+
+
 def alarm_byte(v):
     """alarm=1's 0x6016: how far the alarm's commands got."""
     if not v & 0x80:
@@ -322,9 +329,18 @@ def decode(b, rtc, cnt=None, alarm=None):
     commit = None
     if base in SHORT or s in HOLD_AFTER:
         low = int.from_bytes(b[0x10:0x12], "little")
-        commit = now - ((now - low) & 0xffff)
-        out.append(f"RTC second just before the commit, from its low two bytes: {commit}, {now - commit} s before"
-                   f" now ({now}); right if this read comes within 18 h of the commit")
+        whole = run_second(low, alarm[1], now) if s in HOLD_AFTER and alarm else None
+        if whole is not None:
+            commit = whole
+            out.append(f"RTC second just before the commit, from its low two bytes and the run's alarm: {commit},"
+                       f" {now - commit} s before now ({now})")
+        elif low:
+            commit = now - ((now - low) & 0xffff)
+            out.append(f"RTC second just before the commit, from its low two bytes: {commit}, {now - commit} s before"
+                       f" now ({now}); right if this read comes within 18 h of the commit")
+        else:
+            out.append("0x6010-0x6011 read 0: the commit's second was lost (or, 1 run in 65536, really ends in 0000);"
+                       " no reset time")
     else:
         secs = int.from_bytes(b[0x10:0x14], "little")
         if base >= 0x01 and secs:
@@ -350,8 +366,10 @@ def decode(b, rtc, cnt=None, alarm=None):
                        f" WD1 {'was running (stopped)' if f & 0x40 else 'was off'};"
                        f" K3's kernel-path write after slpa {'FAILED' if f & 0x08 else 'worked'}")
         else:
-            out.append(f"0x6014 = 0x{f:02x}: bit 7 is clear, so the 7-byte command it went in (0x6010-0x6016) didn't"
-                       " survive the reset; don't read it")
+            cmd = ("the 3-byte command it went in (0x6012-0x6014)" if s in (0x5d, 0x5e) else
+                   "whichever command wrote it last (0x6010-0x6016 or 0x6012-0x6014)" if s == 0x5c else
+                   "the 7-byte command it went in (0x6010-0x6016)")
+            out.append(f"0x6014 = 0x{f:02x}: bit 7 is clear, so {cmd} didn't survive the reset; don't read it")
     if base in FULL and late:
         # CPU7 sends 0x6012-0x6013 in one command and 0x6015-0x6016 in another;
         # each pair's second byte has bit 7 set, so a pair without it didn't
@@ -405,15 +423,20 @@ def decode(b, rtc, cnt=None, alarm=None):
                    " or CPU7's (it was rewriting them): not decoded")
     elif base >= 0x50:
         if hold and s in HOLD_AFTER:
-            if s != 0x5c:
-                out.append(f"0x6012 = 0x{b[0x12]:02x}: the cores that took the release: {cpus(b[0x12])}")
-                out.append(f"0x6013 = 0x{b[0x13]:02x}: the cores with an interrupt pending just before their deep WFI:"
-                           f" {cpus(b[0x13])}")
-            else:
+            if s == 0x5c:
                 out.append("0x6012-0x6014: being rewritten when the breadcrumbs stopped: not decoded")
-        if b[0x14] & 0x80:
+            elif b[0x14] & 0x80:
+                out.append(f"0x6012 = 0x{b[0x12]:02x}: the cores that took the release: {cpus(b[0x12])}")
+                out.append(f"0x6013 = 0x{b[0x13]:02x}: of those, the ones with an interrupt pending just before their"
+                           f" deep WFI: {cpus(b[0x13])}")
+            else:
+                out.append("0x6012 0x6013: went in one command with 0x6014, whose bit 7 is clear: not decoded")
+        # From 0x5c on, 0x6015 still comes from step 8's command; its marker there is the second's low bytes.
+        if s in HOLD_AFTER and not b[0x10:0x12] == bytes(2) or s not in HOLD_AFTER and b[0x14] & 0x80:
             at = "at their stop request (hold=1)" if hold else "at their stop"
             out.append(f"0x6015 = 0x{b[0x15]:02x}: cores with an interrupt pending {at}: {cpus(b[0x15])}")
+        elif s in HOLD_AFTER:
+            out.append("0x6015: step 8's command, whose second's low two bytes read 0: not decoded")
         if s in ALARM_STAGES:
             out.append(alarm_byte(b[0x16]))
             if s in (0x59, 0x5a) and b[0x16] in ALARM_ACKED:
@@ -457,7 +480,8 @@ def main():
         secs = int.from_bytes(b[0x10:0x14], "little")
         if b[4] in HOLD_AFTER:  # hold=1: the second's upper bytes are rewritten; its low two bytes stay
             now_s = int.from_bytes(rtc[2:6], "little")
-            secs = now_s - ((now_s - int.from_bytes(b[0x10:0x12], "little")) & 0xffff)
+            low = int.from_bytes(b[0x10:0x12], "little")
+            secs = run_second(low, alarm[1], now_s) or (now_s - ((now_s - low) & 0xffff) if low else 0)
         mine = b[4] in ALARM_STAGES and (alarm[1] == secs + ALARM_SECS if secs else b[0x16] in ALARM_ACKED)
         try:
             # Before the crumbs, so that a failed disarm keeps the stage for another try.
