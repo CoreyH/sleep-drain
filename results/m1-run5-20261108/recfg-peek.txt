@@ -1,0 +1,28 @@
+# recfg-peek (read-only), 2026-11-08, in the safe boot, at 19:56:26: 40 s before run-floor loaded the module, about 11 minutes before the commit. The dump (sram-00000.bin, 64 KiB) stays out of this repo.
+== stage 1
+reading 0x2925c0200
+0x2925c0200 = 0x00001000  the table offset register's analogue
+reading 0x2925c0214
+0x2925c0214 = 0x00000000  its lock's analogue
+== stage 2
+reading 0x292f00000
+0x292f00000 = 0x10001000  the SRAM's first word
+== stage 3
+the table's place: 0x292f01000 (SRAM + the offset register; the register reads 0x00001000)
+reading 16 words at 0x292f01000
+  table[ 0] = 0x292f01a0 -> 0x292f01a00  in the SRAM
+  table[ 1] = 0x00000000 -> 0x0
+  table[ 2] = 0x292f01ce -> 0x292f01ce0  in the SRAM
+  table[ 3] = 0x00000000 -> 0x0
+  table[ 4] = 0x292f0200 -> 0x292f02000  in the SRAM
+  table[ 5] = 0x00000000 -> 0x0
+  table[ 6] = 0x292f021a -> 0x292f021a0  in the SRAM
+  table[ 7] = 0x00000000 -> 0x0
+  table[ 8..15]: not pointers into the SRAM (those words stay out of this repo)
+4 of 16 entries point into the SRAM (need 4)
+== stage 4
+reading 0x292f00000
+reading 0x292f04000
+reading 0x292f08000
+reading 0x292f0c000
+0x292f00000-0x292f0ffff read, /var/log/sleep-drain/recfg-peek-20261108T195626-s4/sram-00000.bin

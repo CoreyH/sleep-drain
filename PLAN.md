@@ -25,15 +25,26 @@ the PR with that session's work.
   - The likely S2R timer is 0x2925c4000, which already reads 1 under Linux.
 - **In progress: E2, making the S2R entry complete** (A5). maralcbr's
   replay with Naeem's M1 recipe takes every core down and commits the entry,
-  but the entry never completes: the engine's own watchdog, WD2, resets the
-  SoC about 30 s after the commit (RESEARCH.md, "M1 run 2", "M1 run 3" and
-  "M1 run 4"). In run 3, with macOS's PMGR quiesce in macOS's place, only
-  DISPLAY's and SIO_CPU's waits timed out. Run 4 (2026-11-08: that quiesce,
-  the PMU's RTC alarm between the commit's first write and the other two, no
-  observer) ended the same way, the reset 29.6-31.3 s after the commit, with
-  CPU1-7 and both P complexes off before it; the armed alarm survived the
-  reset. Next is Corey's pick from the rungs below (their order is at the
-  top of that list).
+  but the SoC still resets about 30 s after the commit (RESEARCH.md, "M1 run 2"
+  to "M1 run 5"): the engine's own watchdog, WD2 (read in runs 2 and 3, strongly
+  inferred in the others). That the entry itself never finishes is inferred; a
+  completed entry with a wake stalled right after it would look the same
+  (RESEARCH.md, "The engine's reconfig SRAM"). In
+  run 3, with macOS's PMGR quiesce in macOS's place, only DISPLAY's and
+  SIO_CPU's waits timed out. Run 4 (2026-11-08: that quiesce, the PMU's RTC
+  alarm between the commit's first write and the other two, no observer) ended
+  the same way, the reset 29.6-31.3 s after the commit, with CPU1-7 and both P
+  complexes off before it; the armed alarm survived the reset. Run 5 (the same
+  day: every other core held through the commit, then released) reset at
+  30.0-31.3 s, with all seven read off after the release. The first 64 KiB of
+  the engine's reconfig SRAM have now been read and decoded (RESEARCH.md, "The
+  engine's reconfig SRAM"): the 30 s is a timeout the engine's own sequences arm
+  (that it's what resets the SoC is inferred), and the pair of sequences that
+  looks like the entry polls device power domains, the DCS and fabric p-states
+  and, first, an unidentified AON status word. It accesses no address known to
+  be a CPU or display register; a wait below the sequences isn't excluded. Next,
+  if Corey OKs its new addresses and gives its run a go, is the position read
+  below (the order is at the top of that list).
 
 ## Picking this up
 
@@ -59,7 +70,15 @@ State that lives on the MacBook, not in git:
   kernel didn't change). m1n1-aurora and uboot-asahi are held back in
   pacman.conf (IgnorePkg). GRUB isn't, but the installed 2:2.16-3 is newer than
   the repo's 2:2.16-1, so pacman leaves it alone.
-- `/etc/sleep-drain/radios-off` is set. `install.sh` last ran at 3b79df2.
+- `/etc/sleep-drain/radios-off` is set. `install.sh` last ran at 4f2da37.
+- The reconfig SRAM's dump and its decode, on this MacBook only:
+  `/var/log/sleep-drain/recfg-peek-20261108T195626-s4/sram-00000.bin` (64 KiB) and
+  `~/.local/share/sleep-drain/recfg-decode-20261108/` (the workflow's result at
+  its top, its paths still the old scratchpad's; under `run5/decode/`, the walkers
+  and listings: `final/logic.txt` defines the B2 op numbers this file and
+  RESEARCH.md use). Both stay out of this repo, which is public. On another
+  computer, RESEARCH.md's SRAM section is what there is; for the listings, ask
+  Corey.
 - The alarm needs the test drivers after every boot:
   `make -C rtc-alarm-test && pkexec rtc-alarm-test/load`.
 - The RTC was set to the real time on 2026-11-02. It had counted from 1970
@@ -390,16 +409,184 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after DJ's T8140 driver (read 2026-11-08; judgment; this is
-      the only place it's kept):** every core held (rung 2) first, as Corey is
-      running it; then the PMP out on top of it (rung 3, OK'd 2026-11-08,
-      `--m1-pmp`, the highest prior of the named rungs: about 1 in 3 as at least one blocker); then the display
-      chain (rung 6, Corey told first; DJ's driver says the engine waits for it
-      with no timeout). Earlier, **after run 4:**
-      the PMP out (rung 3) first if Corey OKs its new RTKit message and ASC
-      write, else every core held (rung 2), which needs only Corey's go; then,
-      beside the ladder, the reconfig SRAM read and DJ's T8140 driver (both
-      OK'd by Corey, 2026-11-08); then rungs 4-7 as numbered. Corey picks.
+      **The order after the hold run and the decode of the engine's SRAM
+      (2026-11-08; judgment; this is the only place it's kept):** first the
+      position read (below; read-only, needs Corey's OK for its new addresses),
+      then whichever rung it points at; `--m1-hold-nowatch` comes after it.
+      Expected, not established: SIO to macOS's state (rung 5, Corey told first)
+      if the engine sits at SIO_CPU's wait, then the PMP out (rung 3, OK'd
+      2026-11-08, `--m1-pmp`) on top of it; the PMP out first if the engine sits
+      in the entry's p-state step at DCS or fabric, which the PMP owns on this
+      Mac. The display chain (rung 6) moves behind these, not out of the ladder:
+      the pair that looks like the entry doesn't poll it, whatever T8140's do,
+      but its first poll is an unidentified status word and a wait below the
+      sequences isn't excluded; it comes back if the position read stops at
+      B2's opening gate. Earlier, **after DJ's T8140 driver:** every
+      core held (rung 2), then the PMP out, then the display chain. Earlier still,
+      **after run 4:** the PMP out (rung 3) first if Corey OKs its new RTKit
+      message and ASC write, else every core held (rung 2), which needs only
+      Corey's go; then, beside the ladder, the reconfig SRAM read and DJ's T8140
+      driver (both OK'd by Corey, 2026-11-08); then rungs 4-7 as numbered. Corey
+      picks.
+
+      **Next, proposed (read-only; not built): where the engine stops, the
+      position read.** RESEARCH.md's SRAM section names the registers that say
+      which sequence and which round the engine is in; nothing has read them.
+      This needs Corey's OK for the new read-only addresses below, and Corey's go
+      for the run. It adds no new write and no new PMU byte. The B2 op numbers are
+      the decode's per-register count (RESEARCH.md).
+      - The new addresses: `PHASE` 0x2922c0110, `HS_B` 0x2922c010c and the gate
+        words 0x2922c0044 and 0x2922c0040 (page 0x2922c0000, new to the hook),
+        `HS_A` 0x2925c4004 (the commit's own page), the state word 0x2922b801c (a
+        new word on page 0x2922b8000, which only `observe=1` has mapped so far),
+        and 0x28e20c400 (the DCS p-state page, already mapped). WD2's control
+        0x2922b002c and count 0x2922b0020 and SIO_CPU 0x28e580188 aren't new: runs
+        2 and 3 read them after the commit. Not new, and left out: 0x2922b8028 and
+        0x2922b8040 (T8103's progress-register offsets, Naeem's linux-s2r README):
+        run 2 read them as 0 awake and their low bytes as 0 after the commit
+        (RESEARCH.md, "M1 run 2"), and no T6000 sequence read so far touches them.
+        Also left out: the three ASC words B2 polls at +0x8000 (live mailbox blocks,
+        nothing documents offset 0): awake, one per boot, once something needs them.
+        No run has read DCS or the fabric after the commit, and this one doesn't.
+      - Awake first, in the same safe boot, each read saved before the next, as
+        `recfg-peek` does: the baseline of every word, and a bad address faults
+        there, not after the commit (it doesn't show the words read after the
+        commit: the guide says what a lost sample looks like). Then the same pass
+        again in the first boot after the run's reset, after `m1-crumbs`: if
+        `PHASE`, the `HS` words and the state word survive WD2's reset, that is the
+        engine's position with every core down, which nothing else can show, at no
+        new byte. They may not (T8103's progress registers don't survive a WD1
+        reset), and a value equal to the awake baseline says nothing. That second
+        pass runs in a regular boot, which `recfg-peek` refuses today, so the OK has
+        to cover it, read-only, for addresses the safe-boot pass read without a
+        fault.
+      - The run: `--m1-hold`'s recipe and one change. CPU0, having read the others
+        down and sent stage 0x5c's bytes, stays up, every exception still masked,
+        and samples these words twice, about 1 s and about 25 s after the third
+        commit. Two samples, so a stop can be told from slow progress, since the
+        unit of B2's early delays isn't known; the second is late because op 50's
+        count field, 0xff, may expire, and only the state near the bite is a stop.
+        Each sample's bytes go out right after it's taken, before the wait for the
+        next (the first SPMI error stops every later crumb, and these are the run's
+        only record). Then as now: 0x5e, the acks, its deep WFI. Reads only. If the
+        sequences started at the commit, WD2's reset ends the run at about 30 s;
+        that isn't shown with CPU0 up, so a reset later than that, or dark past 2
+        minutes, goes by the guide below and run-floor's steps.
+      - Bytes (the OK'd range, no new PMU byte): the hold run read 0x6007, 0x6012,
+        0x6013 and 0x6015 as 0xfe, 0xfe, 0, 0 (held, took the release, pending
+        before the WFI, pending at the stop request), so this rung gives those four
+        up: 16 bits per sample, no room for raw words. A layout that fits, to be
+        settled at the build. Byte A: `PHASE` bits 3:0, `HS_A` bits 31 and 24, and
+        the state word's class (0xa03, 1, 0xa02, other). Byte B: SIO_CPU's word as a
+        3-bit class, tested in this order so the classes don't overlap (all ones,
+        a failed read; target 0 with bit 11 set; target 0 with bit 11 clear; then,
+        with any other target, 27:24 not f; f with actual not f; f with actual f),
+        WD2's RESET_EN, WD2's count within 0.25 s of CPU0's own time since the first
+        commit write (the preamble ran at the commit, at 24 MHz, with no re-arm
+        between samples), and the gate's three bits (0x2922c0044 bits 2 and 3,
+        0x2922c0040 bit 1). Sample 1 goes to 0x6012-0x6013 in one command, sample 2
+        to 0x6007 and 0x6015. 0x6005 bit 0, unused in hold's stages, says whether
+        SIO_CPU's 27:24 read f at entry 61's wait, the reference for its class. `HS_B`
+        and 0x28e20c400 don't fit: they stay in the awake passes. A stage byte
+        before each sample says which it got to; `m1-crumbs`' `ALARM_STAGES` and
+        `HOLD_AFTER` take them, or `--clear` leaves the run's alarm armed. `--m1-pmp`
+        keeps 0x6015, so the position bytes and the PMP's byte can't share one run
+        unless another moves.
+      - How to read it. `PHASE`: 4, 5, 7 is the entry pair's, A2's; 6, 9 pair 3's; 0
+        pair 0's; 2, 8, c, d, a, b, 3 pair 1's; only table A writes it, and it keeps
+        its last value; another value isn't from the sequences read so far. The B2
+        positions below are inferred: that `HS_A` bit 24 follows `HS_B` bit 1 and
+        `HS_B` bit 0 follows `HS_A` bit 31 is the decode's reading, and no sequence
+        reads `HS_A` bit 31, so that it reads back isn't shown (if a sample's bit 31
+        reads low at `PHASE` 4-7, go by `PHASE` and bit 24 alone). The same values in
+        both samples mean the engine didn't move between them (a count-bounded poll
+        that hasn't run out looks like that, which is why the second sample is
+        late), and none of these words changes between B2's ops 53 and 229 either;
+        a change means it was still moving at the first, and the second is the
+        nearer place. Anything no row lists, or a value the awake pass makes
+        implausible (a failed read stays pending, masked, and only stage 0x5d shows
+        it): the run didn't answer, so don't pick a rung from it. Then the next-boot
+        pass, and Corey's call between repeating with other sample times and reading
+        from CPU7 (runs 2 and 3's arrangement, where WD2 read armed with CPU0 down).
+        Rows, in this order, each checked against the awake baseline first (`PHASE`'s
+        awake value is unknown and could be 0 or 3, A1's last, and WD2's control
+        reads 0 awake, so a word still at its awake value says nothing, whichever
+        row it matches):
+        - `PHASE`, the `HS` words, the state word and WD2's control all as awake: the
+          commit started no sequence these registers show, or the sequences wait for
+          CPU0 (a reset about 30 s after CPU0's deep WFI, not after the commit, says
+          which; the next reader is then CPU7).
+        - State word 0xa03 and WD2 armed with `PHASE` as awake: an A sequence ran its
+          preamble and hasn't written a phase: A0's opening rounds, or a stall
+          before A2's first phase write, at its read-back or the SMC doorbell
+          0x290400910.
+        - `PHASE` 4, `HS_A` bit 31 up, bit 24 clear: A2 at its first handshake, B2 in
+          its opening segment or not running at all. The samples' gate bits say how
+          far it got, if it's running, not whether it is: 0x2922c0044 bit 2 clear:
+          B2's first poll isn't met (if bit 2 read 1 awake with every core running,
+          this poll isn't the cores' idle state; if it read 0, it may be); bit 2 set
+          and bit 3 set: at its second poll, which waits for bit 3 to clear (0xf114);
+          0x2922c0040 bit 1 clear where it read 1 awake: B2 got past its own write of
+          it (ops 1-6) and stopped before raising `HS_B` (if it read 0 awake, this bit
+          says nothing). Bit 2 set, bit 3 clear and 0x2922c0040 bit 1 unchanged: B2
+          hasn't started, or is in its opening delay or just before its first write;
+          these bytes can't tell those apart, and an unchanged word doesn't prove B2
+          never ran. Nothing else about the pair is reachable yet,
+          and no rung on the ladder addresses this row: first rule out the read
+          itself (the limits bullet, the reset's time), then Corey's call. What sets
+          the gate is a desk question, and if it proves a rollup of the cores or
+          DISPLAY, the core and display rungs come back.
+        - `PHASE` 4, `HS_A` bits 31 and 24 up: A2 is inside its p-state step, with
+          DCS, the fabric or 0x28e20c400 not yet at A2's target (these bytes can't
+          say which). The PMP owns DCS and the fabric here, so the PMP rung is the
+          natural next step for those two; 0x28e20c400's role isn't shown.
+        - `PHASE` 5, `HS_A` bit 31 up, bit 24 clear: A2 at its second handshake, B2
+          somewhere in ops 33-229. SIO_CPU's word places it only as far as op 91,
+          read against the word at entry 61's wait (the awake value won't do: bits
+          27:24 went from 4 to f across an off SIO with no B2,
+          `safe-journal-20261106T201952.txt` L5650, L6262). Target 0 is tested first
+          (the last two cases below): the others are for a target that isn't 0, so
+          0x0400024f is the early state, and 0x00000800 and 0x00000000 are target 0.
+          If 27:24 weren't f at
+          entry 61's wait (0x6005 bit 0 clear, the expected case, since entry 61
+          writes 4 there): not f, B2 is before op 49; changed to f with actual not f,
+          B2 wrote op 49 and op 50 isn't met (SIO next). If they already read f there
+          (0x6005 bit 0 set), f with actual not f can't tell before op 49 from
+          waiting at op 50, so it places nothing and picks no rung. Either way, f
+          with actual f: op 50 passed, and B2 is at op 51, SIO's ASC
+          word, or later: not the SIO rung. Target 0 with bit 11 set: B2 is at op 91,
+          SIO_CPU's own power-down from its half-on state (SIO next, not the PMP).
+          Target 0 with bit 11 clear: past op 91, op 50 met or its count expired
+          (the format doesn't say): the stop is anywhere in ops 92-229 (the rest of
+          SIO's subtree, PCIe, ANS or the PMP). These bytes can't say which, so the
+          PMP rung on top is a judgment.
+        - `PHASE` 7, `HS_A` bit 31 up, bit 24 clear: B2's last segment, the PMU
+          command. (Bit 31 down and bit 24 clear: A2 is past its last handshake; see
+          the next row.)
+        - State word 1 with WD2's control 0 and `PHASE` 7: the pair finished (A2's
+          close); the stop is later. State word 1 with WD2's control 4: A2 is past
+          B2's End, at its read-back or closing SMC doorbell.
+        - `PHASE` 6, 9, 0 or one of pair 1's, and not its awake value: a later
+          sequence ran, so the entry pair finished, or the commit selects something
+          else.
+      - Its limits: CPU0 is up while it reads, for up to 25 s where run 5 had it up
+        at most about 100 ms after the commit, so the read measures the engine with
+        CPU0 up. T8140's author says the engine waits for the last WFI
+        (t8140-sleep.c:2471) and that a core left awake holds it until WD2
+        (:807-809); T8103's entries completed only once every core, the last
+        included, reached its deep WFI (Naeem's mac27-hv try26-32, e1_hook.c
+        L856-858). None of this is shown on T6000, where no run has read the engine
+        with CPU0 up. A stop in this read can be the read's own, above all one at
+        B2's opening gate, whose word is unidentified. A run without the samples
+        can't settle that: it reads nothing, and run 5 already is that run
+        (30.0-31.3 s). What can: the reset's time against run 5's (the sequences
+        started at the commit if it's still about 30 s after the commit; they
+        waited for CPU0 if it comes about 30 s after CPU0's deep WFI), WD2's control
+        and count in the samples, and the next-boot pass, the only reading with
+        every core down. If a sample's bytes never land, that's no reading, not a
+        result: CPU0 can die in its wait, up to 25 s under the E complex CPU1 armed,
+        or raw SPMI can fail.
+
       1. **M1 run 4: the PMU's RTC alarm** (ran 2026-11-08, `e1_hook alarm=1`,
          `pkexec e1-hook/run-floor --m1-alarm`: stage 0x5f, 0x6016 = 0xbd,
          the reset at about 30 s; the armed alarm survived it), written between the first
@@ -508,8 +695,11 @@ steps, and restarting the DCP and the PMP afterwards.
              attribute it: run 3 without the observer (`--m1-late-noobs`, to
              build then; no module change).
            - A reset well away from 30 s: new; read everything else first.
-      2. **Every core held through the commit** (XNU's global sleep on H13;
-         RESEARCH.md, "After M1 run 3" and "After M1 run 4"). Each parked
+      2. **Every core held through the commit** (ran 2026-11-08, M1 run 5,
+         `e1_hook hold=1`, `pkexec e1-hook/run-floor --m1-hold`: stage 0x5e and
+         the bytes of "the expected case" below, the reset at 30.0-31.3 s; XNU's
+         global sleep on H13; RESEARCH.md, "After M1 run 3", "After M1 run 4" and
+         "M1 run 5"). Each parked
          core writes its own stop bit, as in runs 1 and 4 (CPU1-6 in runs 2
          and 3), and holds, spinning, until CPU0 lets go after the third
          commit write (Naeem's
@@ -525,7 +715,7 @@ steps, and restarting the DCP and the PMP afterwards.
          the release and goes last, since CPU7 as the observer would stay up
          through the commit in a way the rung is about (and `alarm=1` refuses
          the observer); a run without that readout comes after a clean one.
-         Built, to run (`e1_hook hold=1`, `pkexec e1-hook/run-floor --m1-hold`):
+         Built and run (`e1_hook hold=1`, `pkexec e1-hook/run-floor --m1-hold`):
          the same recipe as run 4 (`m1=1 pmgr_late=1 alarm=1`, no observer) and
          this one change, plus CPU0's reading after the release (`hold_nowatch`
          removes it).
@@ -568,7 +758,8 @@ steps, and restarting the DCP and the PMP afterwards.
              new register or byte). CPU0's own last step and the E complex's
              power-down stay unobserved. Then `--m1-hold-nowatch`, to rule
              out CPU0's reads after the release; its last stage is 0x5b by
-             design, with 0x6016 = 0xbd and parked and held 0xfe.
+             design, with 0x6016 = 0xbd and parked and held 0xfe. (Run 5: this
+             case.)
            - A core held but not read off: the hold broke its power-down
              (0x6013 says if it had something pending). A core in 0x6007
              but not 0x6012 never took the release; 0x6013 says nothing
@@ -602,10 +793,15 @@ steps, and restarting the DCP and the PMP afterwards.
          (malik-na/linux-aurora `m1power/s2r-pmp`), while macOS's T6020 trace
          sends the pair right after `slpa`; interrupts are off from step 1,
          so here it goes before step 1 or over a polled path. On T6000 the
-         PMP owns DCS, which the table lowers. The highest prior of the
-         rungs that need a new OK (judgment), but T6020 idled the PMP and
+         PMP owns DCS, which the table lowers. Before the SRAM decode, the
+         highest prior of the rungs that need a new OK (judgment; rung 5 leads
+         now), but T6020 idled the PMP and
          still reset, and no R-run stopped its CPU. A new PMP message and an
          ASC write: Corey's OK first. ps_pmp stays on the never-write list.
+         After the SRAM decode: the entry pair handles the PMP at ops 157-164,
+         107 ops after SIO_CPU's wait, so if the engine stops at or before op
+         50, a reset from this rung says almost nothing about the PMP. Where it
+         goes: the order at the top of this list.
          OK'd by Corey on 2026-11-08, as asked: the idle pair, once each, and one
          write of 0x28ec00044 that clears RUN, only after the ASC reads idle.
          Built, to run (`e1_hook pmp_out=1`, on `hold=1`; `pkexec
@@ -687,9 +883,21 @@ steps, and restarting the DCP and the PMP afterwards.
       5. **SIO to macOS's state** (Corey told first): `ps_sio` (0x28e580180)
          on with genpd's own power-on word (0x0f00000f) just before entry 61,
          polled to actual f, then entry 61 and its wait as the table has
-         them. A new PMGR write outside macOS's T6000 table. T6020 had this
-         state and still reset; expect no change. A hang here is dark at
-         stage 0x10 (power key).
+         them. A new PMGR write outside macOS's T6000 table. A hang here is
+         dark at stage 0x10 (power key). After the SRAM decode this is the
+         leading fix candidate (about 4 in 10 that SIO_CPU's wait, B2 op 50, is
+         where the engine stops; judgment; RESEARCH.md), but T6020 had SIO on
+         as far as its records go and still reset, so SIO on may be needed and
+         isn't shown sufficient. `qto` bit 6 tells whether SIO alone meets
+         entry 61's wait on the table's word (not whether B2 passes op 50, which
+         asks for 0x0f00024f after the commit); this rung's run keeps the
+         position read's samples, so that a reset says how far B2 got. If bit 6
+         stays set, UART_P and SPI_P are next (Linux's device tree gives
+         ps_sio_cpu four parents, and B1 raises those two with SIO): a further
+         new PMGR write, Corey's OK. A possible way with no new MMIO, untested
+         for this subtree: a wakeup-enabled device in SIO's subtree keeps it on
+         through noirq (`GENPD_FLAG_ACTIVE_WAKEUP`, RESEARCH.md's Finding 3), or
+         a one-boot test kernel with ps_sio always-on.
       6. **DISPLAY settled at the commit**, with Corey told first: on a test
          kernel, for one safe boot, the DCP firmware shut down and disp0's and
          dispext0's domains off at noirq (DeepIdle S6's design,
@@ -707,9 +915,17 @@ steps, and restarting the DCP and the PMP afterwards.
          0x28e080320 (APCIE_GP_SYS), after entry 61 and before 62. New PMGR
          writes: Corey's OK first. e1_never_write still refuses 0x28e0802d8,
          which shares a page with two of them.
-      - Beside the ladder (Corey's OK of 2026-11-08; built, to run in a safe
-        boot): the engine's reconfig SRAM, read-only, the one step that could
-        read what it waits for rather than guess. `pkexec e1-hook/recfg-peek`
+      - Beside the ladder (Corey's OK of 2026-11-08; **done 2026-11-08**, the
+        first 64 KiB, stages 1-4, in run 5's safe boot: RESEARCH.md, "The
+        engine's reconfig SRAM"): the engine's reconfig SRAM, read-only, the
+        one step that could read what it waits for rather than guess. `--rest`
+        (stage 5) as built reads only 0x10000-0x13fff: its end comes from the
+        16 table-A words, so it should cover B3's end (inferred: no End word by
+        0xffff, and the next pointer target is 0x102e0) and covers 9 of the 37
+        pointer targets past 64 KiB, not the other 28 (0x140c0-0x33160). Reading
+        those needs a
+        code change to its bound first. It isn't needed for the position
+        read. `pkexec e1-hook/recfg-peek`
         runs stages 1-4, each saved before the next reads anything:
         0x2925c0200 and its lock 0x2925c0214 (analogues of PongoOS's table
         offset register and lock by the commit's shift, inside the ADT's
@@ -740,14 +956,23 @@ steps, and restarting the DCP and the PMP afterwards.
         the fabric's p-state before the ClkGen park. AON perf group 0's
         state counters (0x2922b4000: AWAKE, SLP_S2R, DEEP_WAIT...; T6020 read
         them after an enable, worklog L1698-1712) are the only engine-side
-        reading planned, and retiring the observer gives them up, but
+        reading planned besides the position read (top of this list), and
+        retiring the observer gives them up, but
         enabling them is a new AON write (Corey's OK) and CPU7 can't see past
         its own stop, so they may only ever show AWAKE.
       - After DJ's T8140 driver (read 2026-11-08), a free variant: the stop bits
         written at the park, before step 5, as T8140 and T8103's macOS do (no new
         register or byte), and `--m1-hold-nowatch`, since DJ's comment gives the
         cores about 33 ms from the complex words to the WFI (t8140-sleep.c:2381-2382)
-        and this replay's waits and CPU0's watch are longer. Neither is built.
+        and this replay's waits and CPU0's watch are longer. `--m1-hold-nowatch` is
+        built (rung 2) and unrun; the stop bits at the park aren't built.
+      - After the SRAM decode, a free variant: one commit write. macOS's T6000
+        table writes the commit once (entry 73); this replay writes it three
+        times, Naeem's T8103 recipe (e1_hook.c L2199-2205). What a second write
+        of 1 does while the sequence is running isn't shown, and the position read
+        can't show it: the three writes are at most about 0.4 ms apart, so a
+        restart reads the same a second later as a first pass (`PHASE` 4, `HS_A`
+        bit 31 up). This variant is the test. No new register. Not built.
       - Later, each with Corey's OK: SetAPPower 0x201 to the SMC right after
         `slpa` (T8103 completes with and without it, and T6020 sent it and
         still reset); the SEP's SLEEP message (it touches state the SEP
