@@ -440,13 +440,20 @@ steps, and restarting the DCP and the PMP afterwards.
            these accesses. `m1-crumbs` prints 0x1401, 0x140c, 0x14c0 and
            0x14c2 before it disarms (any value raw), says whether 0x140c is
            the commit's second + 3600, and disarms only an alarm that's the
-           run's: stage 0x59 or 0x5f, with 0x140c the commit's second + 3600.
+           run's: stage 0x59 or 0x5f, with 0x140c the commit's second + 3600
+           (or, if that second was lost, 0x6016 saying 0x1401's write was
+           acked). An armed alarm it can't attribute stops `--clear` with the
+           breadcrumbs kept.
          - How to read it:
-           - Stage 0x5f with 0x6016 = 0xbd or 0xbf means the writes went
-             through: the run counts. So does stage 0x59 with those bytes
-             (only the 0x5f crumb after the commits was lost; 0x140c = the
-             commit's second + 3600 confirms it). A partial byte, stage 0x59
-             with 0x6016 = 0, or a wrong 0x140c at the next boot: repeat it.
+           - Stage 0x5f with 0x6016 = 0xbd or 0xbf means the alarm's writes
+             went through and all three commit writes were sent: the run
+             counts. Stage 0x59 with those bytes is inconclusive: the alarm's
+             commands were acked (0x140c = the commit's second + 3600
+             corroborates it), but nothing records the two commit writes
+             after them, and 0x5f comes after those. Most likely only that
+             crumb was lost; repeat the run before reading a reset as a
+             negative. A partial byte, stage 0x59 with 0x6016 = 0, or a wrong
+             0x140c at the next boot: repeat it.
            - The next boot's 0x1401 is a separate fact, once 0x6016 says its
              write was acked. 0x41 (0x03 if it fired) means the armed alarm
              survived the reset. 0x01 with 0x140c right means the reset or

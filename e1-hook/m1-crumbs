@@ -365,6 +365,9 @@ def decode(b, rtc, cnt=None, alarm=None):
             out.append(f"0x6015 = 0x{b[0x15]:02x}: cores with an interrupt pending at their stop: {cpus(b[0x15])}")
         if s in ALARM_STAGES:
             out.append(alarm_byte(b[0x16]))
+            if s == 0x59 and b[0x16] in (0xbd, 0xbf):
+                out.append("  stage 0x59, so nothing records the two commit writes after those commands (0x5f comes after"
+                           " them): inconclusive about the rest of the entry")
         elif b[0x14] & 0x80:
             out.append(f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
     if commit is not None and cnt and cnt[1]:
@@ -398,8 +401,11 @@ def main():
     for line in decode(b, rtc, counter(), alarm):
         print(line)
     if clear:
+        # The run's own alarm: its compare value is the commit's second +
+        # 3600, or, with that second lost, 0x6016 says 0x1401's write was acked.
         secs = int.from_bytes(b[0x10:0x14], "little")
-        mine = b[4] in ALARM_STAGES and secs and alarm[1] == secs + ALARM_SECS
+        acked = bool(b[0x16] & 0x80 and b[0x16] & 0x20)
+        mine = b[4] in ALARM_STAGES and (alarm[1] == secs + ALARM_SECS if secs else acked)
         try:
             # Before the crumbs, so that a failed disarm keeps the stage for another try.
             if mine and alarm[0] & 0x42:
@@ -409,6 +415,10 @@ def main():
                 if len(back) != 1 or back[0] & 0x40:
                     die("0x1401 still reads armed; the breadcrumbs stay, so this can run again")
                 print(f"disarmed: 0x1401 = 0x{back[0]:02x}")
+            elif b[4] in ALARM_STAGES and not secs and alarm[0] & 0x40:
+                die(f"0x1401 reads armed (0x{alarm[0]:02x}) after an alarm stage, but the commit's second was lost and"
+                    " 0x6016 doesn't say 0x1401's write was acked, so whose alarm this is can't be told. Nothing is"
+                    " written: the breadcrumbs stay, and clearing it needs Corey's word")
             elif alarm[0] & 0x40:
                 print(f"0x1401 reads armed (0x{alarm[0]:02x}) and was left alone: nothing shows this run armed it")
             for off, n in CRUMBS:

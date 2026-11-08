@@ -574,6 +574,20 @@ def main():
               and "0x1401 = 0x01 (not armed)" in out,
               "alarm=1's 0x59 with 0x6016 = 0: no result, a repeat", out + r.stderr)
 
+        # 0x59 with the alarm's commands all acked: the two commit writes after
+        # them aren't recorded.
+        fake(path, scratch(0x59, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0xbd), rtc_secs=121761,
+             alarm=(0x41, 125144, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "0x6016 = 0xbd: every alarm command was acked" in r.stdout
+              and "nothing records the two commit writes after those commands" in r.stdout,
+              "alarm=1's 0x59 with 0xbd: inconclusive about the last two commit writes", r.stdout + r.stderr)
+        fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=121544, flags=0xb0, drained=0xbd), rtc_secs=121761,
+             alarm=(0x41, 125144, 0, 0))
+        r = run(path)
+        check(r.returncode == 0 and "nothing records the two commit writes" not in r.stdout,
+              "alarm=1's 0x5f with 0xbd: no such caveat", r.stdout + r.stderr)
+
         # Partial results: each names the command it stopped at.
         for v, stop in ((0x80, "0x14c0's read"), (0x83, "0x14c0's echo"), (0x85, "0x140c"), (0x8d, "0x14c2 = 0"),
                         (0x9d, "0x1401 = 0x41")):
@@ -614,6 +628,32 @@ def main():
             check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout
                   and r.stdout.index("PMU alarm:") < r.stdout.index("disarmed") < r.stdout.index("cleared:"),
                   f"--clear after a run that left the alarm {what}: 0x1401 to 0x01 and the crumbs zeroed, nothing else",
+                  r.stdout + r.stderr)
+
+        # The commit's second lost, 0x1401's write acked: still the run's alarm,
+        # disarmed, and the crumbs zeroed.
+        before = fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=0, flags=0xb0, drained=0xbd), rtc_secs=121761,
+                      alarm=(0x41, 125144, 0, 0))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        want = bytearray(before)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        want[0x1401] = 0x01
+        check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout
+              and "left alone" not in r.stdout,
+              "--clear with the commit's second lost and 0x1401 acked: disarmed", r.stdout + r.stderr)
+
+        # The second lost and nothing says 0x1401 was acked: nothing is written,
+        # the breadcrumbs stay, exit 2.
+        for res in (0x85, 0x00):
+            before = fake(path, scratch(0x5f, parked=0xfe, down=0xfe, secs=0, flags=0xb0, drained=res), rtc_secs=121761,
+                          alarm=(0x41, 125144, 0, 0))
+            r = run(path, "--clear")
+            after = open(path, "rb").read()
+            check(r.returncode == 2 and after == before and "whose alarm this is can't be told" in r.stderr
+                  and "cleared" not in r.stdout and "disarmed" not in r.stdout,
+                  f"--clear, 0x6016 = 0x{res:02x}, the second lost, 0x1401 armed: nothing written, exit 2",
                   r.stdout + r.stderr)
 
         # 0x59 armed too (the reset came between the alarm and 0x5f, say).
