@@ -84,8 +84,10 @@ WAITS = ("DCS's p-state after entry 49 (to 7), after 50 (to 5), or both (its bus
          " and actual = target, e1_hook's own)", "AFR's power state (51)", "ANE0's power-down (55)",
          "AFR's power-down (57)", "DISPLAY's power-down (58)", "AVEMSR's power-down (60)",
          "SIO_CPU's power state (61)", "a ClkGen mux (62-66) or PLL-off (69, 72)")
-# 0x6013's buckets: when CPU7 first read a power-down done after the hand-over.
-BUCKETS = tuple(f"done {t} after the hand-over" for t in ("under 5 ms", "5-20 ms", "20-50 ms", "50-100 ms",
+# 0x6013's buckets: when CPU7 first read a power-down's bit 4 clear after the
+# hand-over. Its first read is at the hand-over itself, so bucket 0 can't say
+# the bit was ever set, and bit 5 isn't recorded: clear isn't "down".
+BUCKETS = tuple(f"first read clear {t} after the hand-over" for t in ("under 5 ms", "5-20 ms", "20-50 ms", "50-100 ms",
                                                          "100-200 ms", "200-500 ms", "500 ms or more")) + (
     "STILL PENDING at the end of CPU7's watch, about 500 ms after its ECPM poll ended",)
 OBSERVED = (0x61, 0x62, 0x6e, 0x6f)  # 0x6005-0x6007 are CPU7's

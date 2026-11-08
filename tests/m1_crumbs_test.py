@@ -338,7 +338,7 @@ def main():
         out = r.stdout
         check(r.returncode == 0 and "0x6004 = 0x7f (pmgr_late=1): observe: CPU7 recorded everything" in out
               and "0x6012 = 0x10: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58)\n" in out
-              and "EACC's power-down done 5-20 ms after the hand-over; PACC0's done 200-500 ms after the hand-over;"
+              and "EACC's power-down first read clear 5-20 ms after the hand-over; PACC0's first read clear 200-500 ms after the hand-over;"
               " PACC0's was done just before the commit" in out
               and "still busy at the end of CPU7's watch: PACC1,DISPLAY (" in out
               and "SIO_CPU's actual state off" in out
@@ -417,8 +417,9 @@ def main():
               "pmgr_late's qto 0xff: every wait named, in bit order", out + r.stderr)
 
         # Each 0x6013 bucket, for EACC and for PACC0.
-        want = ["done under 5 ms", "done 5-20 ms", "done 20-50 ms", "done 50-100 ms", "done 100-200 ms",
-                "done 200-500 ms", "done 500 ms or more", "STILL PENDING at the end of CPU7's watch"]
+        want = ["first read clear under 5 ms", "first read clear 5-20 ms", "first read clear 20-50 ms",
+                "first read clear 50-100 ms", "first read clear 100-200 ms", "first read clear 200-500 ms",
+                "first read clear 500 ms or more", "STILL PENDING at the end of CPU7's watch"]
         for i, w in enumerate(want):
             fake(path, scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0, 0x80 | i << 3 | i),
                                flags=0x90, isrs=0x04, drained=0x95), rtc_secs=121761)

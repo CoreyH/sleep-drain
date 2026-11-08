@@ -1775,15 +1775,19 @@ at 84%. Raw data: `results/m1-run2-20261107/`. Its load log
   - CPU7 had nothing pending just before its own deep WFI. Its own
     power-down isn't observed: nothing was left awake to see it.
 - **The reset is WD2's.**
-  - About a second after the commit, WD2's control was 4 (RESET_EN), with
-    about 30 s to go. WD1 and WD0 were off.
+  - At CPU7's read right after its two polls, WD2's control was 4 (RESET_EN),
+    with about 30 s to go. WD1 and WD0 were off. That read came at most about
+    a second after the commit, since each 500 ms poll ended as soon as CPU0 or
+    ECPM read off; likely a few ms (inferred: in run 3, CPU1-6 and PCPM0 read
+    off within their 10 ms polls).
   - Awake at load, WD2's control was 0, with a 90 s bite and its count at
     71.8 s. WD1 had apple_wdt's 30 s, and apple_wdt's suspend had stopped
     it by step 4.
   - So the commit arms WD2 with about 30 s.
   - The SoC restarted about 30 s after the commit (28.6-30.6 s), as in run
     1.
-- **What differed from awake, about a second after the commit:**
+- **What differed from awake, at CPU7's reads after its polls (at most about
+  a second after the commit):**
   - Bit 4 was set in the soc-cluster words of EACC, PACC0, PACC1 and
     DISPLAY, and clear in ANE0's, AFR's and AVEMSR's. Awake, no soc
     cluster had bit 4 set (EACC 0x0f, the others 0x2f).
@@ -1810,8 +1814,9 @@ at 84%. Raw data: `results/m1-run2-20261107/`. Its load log
 So with every core down, the E complex and P complex 0 off, nothing
 pending and no new wake-status bit, the engine still doesn't complete its
 entry, and WD2, armed at the commit, resets the SoC about 30 s later. CPU7
-saw two things differ from awake: the four soc clusters' bit 4, and SIO_CPU
-still on.
+saw two things differ from awake: the four soc clusters' bit 4, and SIO_CPU's
+actual state not off (run 3: its actual state wasn't f either, 10 ms after
+the write, and CPU7 read it not 0 after the commit; no byte records its value).
 
 ### After M1 run 2: DISPLAY can't finish powering down, and the replay runs macOS's PMGR quiesce early and without its waits (2026-11-08)
 
@@ -1876,8 +1881,8 @@ it `error-handler[2]+0x18000`):
   (`safe-journal-20261106T201952.txt` L5650, L5722 and L5738, before
   `op=prepare_late` at L5776).
   - So the table's AFR write (entry 51, 0) changes nothing.
-  - Its SIO_CPU write (0x400024f: target f, AUTO_ENABLE off) turns SIO_CPU
-    back on under an off parent. macOS has both on, and T6020's quiesceHW
+  - Its SIO_CPU write (0x400024f: target f, AUTO_ENABLE off) asks SIO_CPU
+    back on under an off parent (run 3: its actual state wasn't f 10 ms later). macOS has both on, and T6020's quiesceHW
     waits on both; Linux has both off. The replay leaves a state that is
     neither. That write is run 2's "SIO_CPU not off".
   - PLAN.md's prepared answer to "SIO_CPU not off" was macOS's
@@ -1903,19 +1908,23 @@ it `error-handler[2]+0x18000`):
   writes them 0, not 0x20, so it already had them down. Under the replay
   they most likely powered down at its write; bit 5 wasn't recorded, so that
   isn't shown.
-- **DISPLAY: pending** from its write, before `slpw`, to CPU7's read about a
-  second after the commit. With disp0's domains on, its power-down can't
+- **DISPLAY: pending** from its write, before `slpw`, to CPU7's read after its
+  polls (at most about a second after the commit, likely a few ms, inferred). With disp0's domains on, its power-down can't
   finish, as on T6020 with the DCP running. macOS waits for it (logical 8),
   so at macOS's commit DISPLAY's power-down has finished. That is the
   clearest difference from macOS's state at the commit that run 2 shows.
   That the engine needs it isn't shown: T6020 had every display domain off
   from its run R6 on and still reset, though whether its DISPLAY cluster
   settled wasn't recorded (worklog L2534-2536, L2991).
-- **EACC and PACC0: not shown stuck.** CPU7 read EACC milliseconds after
-  ECPM read off. PCPM0 read off in step 6, before the commit, and CPU7's
-  PACC0 read came a few milliseconds to about a second later (the SPMI
-  commands of steps 7-9, the hand-over, CPU0's and ECPM's polls). T6020's
-  window, still pending at 6 ms and clear by 500 ms, covers that whole range.
+- **EACC and PACC0: not shown stuck.** CPU7 read EACC about 20-50 us after its
+  ECPM poll ended (inferred from the code: 13 MMIO reads and one SPMI
+  command), and PACC0 at least about 0.15 ms after PCPM0 read off in step 6
+  and at most about a second later (the polls' bounds; run 2's code, b3f664e).
+  T6020's window, still pending at 6 ms and clear by 500 ms of the release,
+  overlaps that range; it doesn't cover its top. Run 3 (below) shows PACC0
+  pending just before the commit and first read clear under 5 ms after the
+  hand-over, so run 2's read was likely before it cleared (inferred); run 2
+  and run 3 can't be told apart from "the moved writes changed it".
   PACC1 holds CPU7, so its bit 4 says nothing.
 - **The early batch isn't shown to matter.** macOS also writes the cluster
   targets with every core up, and T8103's entry completes with them written
@@ -1951,3 +1960,181 @@ with 10 ms waits, with every display domain off, the PMP idled and macOS's
 SMC messages sent, and still reset (worklog L2991). The next rung, M1 run 3,
 puts the quiesce in macOS's place, makes its waits, and records which ones
 fail (PLAN.md).
+
+### M1 run 3: the PMGR quiesce in macOS's place: only DISPLAY's and SIO_CPU's waits time out, DCS settles, and the SoC still resets at about 30 s (2026-11-08)
+
+`e1-hook/run-floor --m1-late` (`replay=15 oneway=1 quiet=1 m1=1 observe=1
+pmgr_late=1`, #39 at 2ccc7c6; flag `radios-off`), in a safe boot, on battery
+at 87%. It is run 2's recipe with one change: the 26 PMGR quiesce writes that
+maralcbr's range sent before `slpw` go out after `slpa`, at their places in
+the table, with macOS's waits. The observer stayed up. Raw data:
+`results/m1-run3-20261108/`; its load log is the awake baseline.
+
+- The reading ended at 10:15:55 and was saved. The Mac suspended, went dark
+  and restarted by itself 30.0-31.6 s after the commit (two `m1-crumbs`
+  reads, `boots.txt`), the ending of runs 1 and 2 (29.6-31.6 and 28.6-30.6
+  s). If the delay is the same each time, the three windows meet at
+  30.0-30.6 s (inferred). That it is WD2's reset is a strong inference
+  (control 4, 30 s left, the timing); the PMU doesn't record the cause.
+
+**The facts (each byte re-derived from e1_hook.c at 2ccc7c6, not from the
+decoder):**
+- **Stage 0x7f.** Every breadcrumb of CPU7's landed, and it had nothing
+  pending just before its acks and its own WFI. Its own power-down is
+  unobserved, as in run 2.
+- **The cores.** CPU1-6 read off at their release, PCPM0 before the commit,
+  CPU0 within 500 ms of the hand-over and ECPM within 500 ms more (0x6005 =
+  0xff, 0x6014 = 0x90). CPU0's last WFI hadn't returned (0x6006 bit 7). When
+  CPU0 and ECPM read off isn't recorded; PCPM1 wasn't checked, and no run has
+  seen all eight cores down at once.
+- **The watchdogs.** At CPU7's read WD2's control was 4 (RESET_EN) with 30 s
+  to its bite (0x6007, rounded), WD1 off, WD0 not armed (0x6006 = 0x04).
+  Awake at load WD2 read control 0, bite 90.0 s, count 127.7 s: past its
+  bite, with no reset while RESET_EN is off.
+- **macOS's 15 waits** (qto = 0x50; up to 10 ms each, on CPU0 in step 5).
+  - Two timed out: DISPLAY's power-down (entry 58, bit 4 of 0x28e098018) and
+    SIO_CPU (entry 61, 0x28e580188, actual != target).
+  - The other 13 read met within 10 ms: DCS after 49 and 50 (bit 31 clear and
+    actual == target), AFR's power state (51), ANE0's, AFR's and AVEMSR's
+    power-downs (55, 57, 60), the five ClkGen-SOC muxes (62-66, bit 30
+    clear) and PLL-off after 69 and 72 (bit 31 clear).
+  - Only DCS's two show a state change: all but AFR's power state and SIO_CPU
+    already read met awake at load (the load log), and AFR's power state was
+    already off by genpd. A met wait may have been met at its first read,
+    and bit 5 isn't recorded.
+  - That these 15 are macOS's T6000 waits is T6020's decode mapped by what
+    each write does (inferred, e1_hook.c L881-884).
+- **DCS** read actual 5, target 5, bit 31 clear at CPU0's last wait before
+  the commit (0x6016 = 0x95), against 0x666 awake (load log), with the PMP
+  running. Only that end value is recorded: not the intermediate 7, and
+  nothing after entry 50. The ClkGen park, PLL-off and the commit followed
+  with no hang: the risk PLAN.md named did not come true this time.
+- **EACC and PACC0.** CPU0 read PACC0's bit 4 still set just before the
+  commit, about 0.05-0.15 ms after PCPM0 read off (inferred from the SPMI
+  commands between). CPU7 first read both bits clear under 5 ms after the
+  hand-over (0x6013 = 0xc0). At the end of its watch bit 4 was clear on
+  EACC, PACC0, ANE0, AFR and AVEMSR, and set on PACC1 (CPU7's own cluster:
+  expected) and DISPLAY (0x6015 = 0xa4).
+- **SIO.** CPU7 read SIO_CPU's actual state not off and SIO's actual state
+  off (0x6015 bit 7, 0x6016 bit 6).
+- **Awake baselines worth keeping** (load log): fabric-ps 0x28e20c000 =
+  0x333; ClkGen 0x28e038164/16c/168/170 = 0x85100000 and 0x28e03815c =
+  0x87100000, against the table's 0x80100000; PLL-off 0x239; AFR's power
+  state 0x1f0003ff; SIO 0x1f0000ff; SIO_CPU 0x1400024f.
+
+**What they show:**
+1. Moving the quiesce to macOS's place, with macOS's waits, doesn't complete
+   the entry with the observer up: the same reset at about 30 s.
+2. The two waits that fail are the two PLAN.md named beforehand. Nothing else
+   macOS waits for fails here (with the mapping caveat above). Neither is
+   shown to block the entry.
+3. The DRAM p-state settles at 5 under a running PMP, so the rung-2 trigger
+   (DCS not settling) did not fire. Not shown: DCS at the commit (nothing
+   reads it after entry 50, on purpose), or that DCS matters to the entry.
+4. EACC and PACC0 are not stuck, so rung 4's trigger did not fire. For
+   PACC0, the transition straddles the commit: pending just before it, clear
+   within 5 ms of the hand-over. A natural millisecond-scale power-down is
+   enough to explain that (T6020: 6 ms still pending, clear by 500 ms,
+   worklog L2915-2917, L2898), but the 5 ms bucket can't place it either
+   side of the commit (inferred).
+5. CPU7 read 30 s left in both runs although WD2's count at load differed
+   (71.8 s in run 2, 127.7 s here): that supports "the commit loads WD2"
+   (inferred; the free-running arithmetic assumes a 32-bit counter at 24 MHz).
+
+**Inferred causes:**
+- DISPLAY can't finish because disp0's domains stay on through s2idle
+  (Finding 3), as on T6020 with the DCP running (worklog L2214-2225).
+- SIO_CPU: entry 61 is macOS's read-back of an on domain with AUTO_ENABLE
+  cleared. Under genpd's off SIO it asks for target f, and SIO_CPU's actual
+  state wasn't f 10 ms later and wasn't 0 at CPU7's read. That limbo is the
+  replay's own artefact. Its actual value is most likely 4 (actual only ever
+  reads 0, 4 or f in this Mac's dumps), but no byte records it.
+
+**What the data can't tell apart:**
+- Whether DISPLAY's unfinished power-down, SIO_CPU's limbo, or something else
+  holds the engine: both were unfinished, and no byte reads the engine.
+  T6020 was left with neither as far as its records go (display domains off,
+  SIO on), but it recorded neither DISPLAY's bit nor SIO_CPU's state.
+- Whether `pmgr_late` matters without the observer: no run has `pmgr_late`
+  and no observer. Run 1 had no observer and no `pmgr_late`.
+- EACC: CPU7's first read is at the hand-over itself (e1_hook.c L1530-1533)
+  and bucket 0 is any read under 5 ms. EACC has no earlier read, so "never
+  pending in this run" (its awake state is bit 4 clear) can't be told from
+  "pending, then clear". T6020's R17 and run 2 favour the second (inferred).
+  Bit 5 wasn't recorded, so "bit 4 clear" means "not changing", not "down".
+- Run 2 against run 3 for EACC and PACC0: "read too soon" and "behaves
+  differently because the writes moved" both fit; too-soon is only the
+  simpler story. Run 2's "about a second after the commit" was the two
+  polls' upper bound; it was likely a few ms (inferred).
+- DCS after entry 50, the fabric's p-state at the commit (Linux's
+  suspend_noirq sets its target to 1, "set 0 ps to pstate 1" in the Nov 6
+  boot; the table never writes it; T6020's macOS ends it at 3, worklog L2682), and anything
+  behind the parked clocks: not read.
+- Whether CPU7 staying up matters: it was up at most about 1.5 s after the
+  commit, likely milliseconds; nothing here says, either way.
+
+**So:** with the quiesce in macOS's place and every wait but DISPLAY's and
+SIO_CPU's reading met within 10 ms, the entry still ends in the reset. The
+clearest differences left at the commit are DISPLAY's unfinished power-down
+and SIO_CPU's half-on state, both facts of this replay on T6000, and neither
+is shown to matter. What's common to T6000 and T6020 and untested is listed
+in the next section and in PLAN.md's rungs.
+
+### After M1 run 3: what's new, and what's left to try (2026-11-08)
+
+Desk work, no hardware: five research tracks (run 3's bytes re-derived from
+the code, new sources, the two unmet waits, the alarm rung and the observer,
+what still differs at the commit), a synthesis, and an adversarial check of
+every claim the next rung rests on. Sources, heads rechecked 2026-11-08 at
+about 10:50 UTC: JJRPF/Aurora-DeepIdle cc38b1c535cf (docs and worklog),
+malik-na/m1-power-lab a2d5e147f0dc (READMEs, unchanged since f4d61b647072),
+malik-na/linux-aurora `m1power/s2r-mem` 148c72964eaa and `m1power/s2r-pmp`
+b6b2ea1d19e0 (his Linux driver and deep stop, GPL-2.0-only), maralcbr/linux
+37be2668, aurora-silicon/aura PRs #112 and #117 (the PR text only),
+xnu-12377.121.6 and macOS's ADT. No m1n1 code, scripts or traces, and no Aura
+code. One track also fetched DeepIdle's `data/psmap.txt`; nothing here rests
+on it.
+
+**New since run 2:**
+- No public source shows an S2R entry completed from Linux on T600x. T6020
+  still ends in its 86 s reset (DeepIdle's worklog at cc38b1c535cf).
+- **DeepIdle's R18 (T6020):** the SEP answered SLEEP (reply tag 0x11, data
+  0) and the run still reset at about 86 s, its PMU scratch byte for byte
+  R17's. Their conclusion: "the SEP SLEEP message alone was not what the
+  entry waited for" (L3175). R18B (the SEP's PMGR hand-off) and R21 (three
+  fabric lanes' PS_AUTO floor to 0, macOS's value at sleep entry) are built
+  and not run. Against R21's table this Mac has the same gap on AFNC1_LW2,
+  AFNC2_LW1 and APCIE_GP_SYS, but its SEP word (0x28e580c00) already reads
+  macOS's 0x1000030f (`results/sleep-peek-20261104T120619/`), and AFNC2_LW1
+  did gain its was-gated bits across an s2idle at PS_AUTO f ("PMGR power
+  states on this Mac", above), which cuts against "never gated".
+- **Naeem's global sleep (T8103, no result published yet):**
+  `m1power/s2r-pmp` bd01a988d309 and b6b2ea1d19e0 (2026-11-08), default on.
+  Each secondary requests its stop, holds in WFE through the commit, and
+  only after CPU0's release arms ACC_OVRD's deep sleep and takes its deep
+  WFI, "as XNU does on H13": XNU stalls H13's secondaries until the boot CPU
+  clears `arm64_stall_sleep` (xnu-12377.121.6 cpu.c L1074-1077, L1127-1141),
+  and his macOS traces have every core's deep WFI after the commits
+  (mac27-hv README L87-91). So "cores down before the commit" is his Linux
+  entries' shape, not macOS's. His earlier T8103 Linux entries complete
+  without global sleep; T6020's R11-R15 released their secondaries after the
+  commit and R16-R17 before it, and all reset.
+- **DJ's T8140 (MacBook Neo, J700), the PR text only:** "hundreds of sleep
+  and wake cycles, including an 8/8 soak" on Linux since 2026-11-06, with no
+  power figure; the author's claim, read as prose. The driver it names
+  (`drivers/soc/apple/t8140-sleep.c`) wasn't found publicly and has no OK of
+  Corey's to read.
+
+**What the three SoCs still say (inferred):** T8103's Linux entry completes
+with almost nothing: no SMC handshake in one run, no PMP firmware or an
+idled PMP, no AOP, GPU and ATC domains on; it always has the alarm after the
+first commit and three commits. T6020 resets despite macOS's order and
+waits, every driver-held domain off, the PMP idled, SMC, AOP, SIO and SEP
+messages and macOS's wake mask. T6000 and T6020 fail at the same point with
+very different device state, so a common cause is favoured over a
+T6000-only anomaly, and the common untested set is short: the alarm after
+the commit, the PMP's CPU stopped or absent, the fabric lanes' PS_AUTO, the
+PCIe ports, the SMC deadline word, the MCC quiesce. Nothing here shows what
+the AON engine's completion condition is, on any SoC.
+
+**The ladder from here** is in PLAN.md (M1 run 4 and the rungs after it).
