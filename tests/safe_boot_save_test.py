@@ -50,7 +50,9 @@ def stubs(tmp):
     for name, body in {
         "mount": 'echo "mount $*" >> /calls/log; [ ! -e /calls/fail-mount ]',
         "umount": 'echo "umount $*" >> /calls/log',
-        "journalctl": 'echo "journal line"',
+        # A journal that grows: each call prints one line more, as a real one does.
+        "journalctl": 'echo line >> /calls/journal; cat /calls/journal',
+        "date": 'if [ -e /calls/same-second ]; then echo 20261108T195626; else exec /usr/bin/date "$@"; fi',
         "grep": 'if [ -e /calls/fail-grep ]; then exit 2; fi; exec /usr/bin/grep "$@"',
     }.items():
         write(os.path.join(d, name), "#!/bin/sh\n" + body + "\n")
@@ -189,6 +191,36 @@ def main():
         check(open(os.path.join(disk, "sleep-drain/2/pre/x")).read() == "new\n"
               and open(os.path.join(disk, "sleep-drain/4/pre/x")).read() == "newer\n",
               "both sleeps' snapshots in place", d)
+    finally:
+        shutil.rmtree(tmp)
+
+    print("== saves in the same second, then collect")
+    tmp = tempfile.mkdtemp()
+    try:
+        rc, out = run_save(tmp, [])
+        check(rc == 0, "the first save", out)
+        os.remove(os.path.join(tmp, "bootpart/sleep-drain-safe/saved", os.listdir(os.path.join(tmp, "bootpart/sleep-drain-safe/saved"))[0]))
+        for f in os.listdir(os.path.join(tmp, "varlog/sleep-drain")):
+            if f.startswith("safe-journal-"):
+                os.remove(os.path.join(tmp, "varlog/sleep-drain", f))
+        write(os.path.join(tmp, "calls/same-second"), "")
+        for i in range(3):
+            rc, out = run_save(tmp, [], setup=False)
+            check(rc == 0, f"save {i + 1} in the same second", out)
+        journals = sorted(f for f in os.listdir(os.path.join(tmp, "varlog/sleep-drain")) if f.startswith("safe-journal-"))
+        tars = sorted(os.listdir(os.path.join(tmp, "bootpart/sleep-drain-safe/saved")))
+        check(journals == ["safe-journal-20261108T195626-2.txt", "safe-journal-20261108T195626-3.txt", "safe-journal-20261108T195626.txt"],
+              "each save has a journal of its own", journals)
+        check(tars == ["20261108T195626-2.tar", "20261108T195626-3.tar", "20261108T195626.tar"], "and a tar of its own", tars)
+        with open(os.path.join(tmp, "varlog/sleep-drain/safe-journal-20261108T195626.txt")) as f:
+            first = f.read()
+        rc, out = run_collect(tmp, OLD_LOG)
+        left = os.listdir(os.path.join(tmp, "boot/sleep-drain-safe/saved"))
+        check(rc == 0 and "differs" not in out and left == [], "collect takes all three and leaves no tar", f"exit {rc}\n{out}\n{left}")
+        with open(os.path.join(tmp, "disklog/sleep-drain/safe-journal-20261108T195626.txt")) as f:
+            check(f.read() == first, "the first journal is unchanged by the later saves")
+        with open(os.path.join(tmp, "disklog/sleep-drain/safe-journal-20261108T195626-3.txt")) as f:
+            check(f.read().count("line") == 4, "the last journal has the most lines")
     finally:
         shutil.rmtree(tmp)
 
