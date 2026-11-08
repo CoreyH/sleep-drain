@@ -519,7 +519,51 @@ steps, and restarting the DCP and the PMP afterwards.
          the release and goes last, since CPU7 as the observer would stay up
          through the commit in a way the rung is about (and `alarm=1` refuses
          the observer); a run without that readout comes after a clean one.
-         To build next, unless Corey OKs rung 3 first.
+         Built, to run (`e1_hook hold=1`, `pkexec e1-hook/run-floor --m1-hold`):
+         the same recipe as run 4 (`m1=1 pmgr_late=1 alarm=1`, no observer) and
+         this one change.
+         - In step 6, CPU0 asks each core in turn (stage 0x31-0x37 by its place
+           in the order) and waits up to 10 ms for it to say held: the core
+           clears its fast IPI and AIC events, records ISR_EL1, writes its own
+           stop bit, says held and spins, every exception masked, on a flag in
+           memory. After the third commit write, stage 0x5b and the acks, CPU0
+           sets the flag; each core clears its IPI and AIC events again,
+           records ISR_EL1, says out, arms ACC_OVRD's deep sleep (every core,
+           as XNU's `arm64_prepare_for_sleep()` does: the last-of-a-cluster
+           rule was for cores going down under running siblings) and takes its
+           deep WFI. CPU0 then reads each one's power state (up to 10 ms each,
+           in the park's order) and PCPM0's and PCPM1's, records that, and
+           takes its own deep WFI last. `--m1-hold-nowatch` skips the
+           reading, the run to make once a watched one comes back clean. No
+           new MMIO address and no new PMU byte.
+         - Breadcrumbs, in the OK'd bytes: 0x6004 0x31-0x37 and 0x39, then
+           0x5a (in place of 0x58) before the commit with the held mask in
+           0x6007, 0x5b after the third commit, then 0x5c with 0x6005 = the
+           cores read off after the release, 0x6012 = those that took the
+           release, 0x6013 = those with an interrupt pending just before their
+           deep WFI, 0x6014 as before with PCPM0's and PCPM1's bits read after
+           the release, and 0x5e (0x5d: CPU0 had something pending just before
+           its own WFI). The alarm's 0x6016 as in run 4. Only the commit
+           second's low two bytes stay from 0x5c on, which is enough for the
+           reset's time and `m1-crumbs --clear`.
+         - How to read it: the expected case is a reset at about 30 s with
+           stage 0x5e, off 0xfe, held 0xfe, 0x6012 0xfe, 0x6013 0, the PCPM
+           bits set, `qto` 0x50, 0x6016 0xbd and the alarm armed at the next
+           boot: every other core held through the commit, took the release
+           and read off after it, and the entry still doesn't complete. CPU0's
+           own last step and the E complex's power-down stay unobserved. Then
+           `--m1-hold-nowatch`, to rule out CPU0's reads after the release.
+           A core held but not read off, or not out: the hold broke its power-down
+           (0x6013 says if it had something pending). Not held at 0x39 or
+           0x5a: it never finished its stop request; the run still goes on to
+           the reset. PCPM bits clear with every core off: a P complex didn't go
+           down. A stop at 0x31-0x37, 0x39, 0x5a or 0x5b says where the breadcrumbs
+           stopped (0x5a with 0x6016 = 0xbd is the same inconclusive case as
+           0x59 was). Dark past 2 minutes: a candidate; at least 30 minutes,
+           end before about 55 because of the armed alarm, `m1-crumbs`,
+           `--clear`, then the BQCC reading: only a low BQCC shows a completed
+           entry, and a stop at 0x31-0x5b isn't one. A reset well away from
+           30 s: new; read everything else first.
          - Could ride along: entries 2-6 (WD0's control and the four +0xa00
            masks), which `pmgr_late` still sends before the keys in
            maralcbr's lab order. Toward macOS, no new write, low prior.

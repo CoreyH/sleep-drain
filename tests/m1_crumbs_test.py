@@ -5,7 +5,8 @@ Each case writes a 64 KiB file shaped like the PMU's nvmem, with chosen bytes
 at 0x6000-0x601f and the RTC at 0x1406, runs the tool with a fake SoC counter
 (M1_CRUMBS_CNTVCT), and checks what it prints: run 1's stages, the
 observer's (observe=1), run 3's (pmgr_late=1), run 4's (alarm=1) and the reset
-time after a commit. --clear must zero 0x6004-0x6007 and 0x6010-0x6016, and
+time after a commit, hold=1's stages (0x31-0x37, 0x39, 0x5a-0x5e) and their
+bytes. --clear must zero 0x6004-0x6007 and 0x6010-0x6016, and
 only after a stage that armed the alarm also set 0x1401 back to 0x01, and
 nothing else; an unknown argument changes nothing.
 
@@ -711,6 +712,135 @@ def main():
         check(r.returncode == 0 and after == bytes(want) and "cleared" in r.stdout and "0x7f" in r.stdout,
               "--clear after a pmgr_late run: 0x6004-0x6007 and 0x6010-0x6016 only", r.stdout + r.stderr)
 
+        # hold=1, the expected reset: every core held, took the release and read
+        # off; 0x6005 the cores read off, 0x6012-0x6013 out and pending, the second from its low bytes.
+        rec = dict(parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0xb0, isrs=0, drained=0xbd, prog=[0xfe, 0x00])
+        fake(path, scratch(0x5e, **rec), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x6004 = 0x5e (pmgr_late=1): hold=1: everything recorded, CPU0 had nothing pending" in out
+              and "read off after the release (0x6005 = 0xfe, up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
+              and "0x6006 = 0x50: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)\n" in out
+              and "wrote their stop bit and held (0x6007 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
+              and "RTC second just before the commit, from its low two bytes: 121544, 217 s before now (121761)" in out
+              and "PCPM0 off after the release, PCPM1 off after the release" in out
+              and "0x6012 = 0xfe: the cores that took the release: CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
+              and "0x6013 = 0x00: the cores with an interrupt pending just before their deep WFI: none\n" in out
+              and "0x6015 = 0x00: cores with an interrupt pending at their stop request (hold=1): none\n" in out
+              and "0x6016 = 0xbd: every alarm command was acked" in out
+              and "the SoC restarted about" in out
+              and "0x140c is the commit's second + 3600, as the run wrote it" in out
+              and "parked (0x6005" not in out and "observe=1" not in out and "boot error" in out,
+              "hold=1's 0x5e, the expected reset: every field decoded", out + r.stderr)
+
+        # A core that held but wasn't read off, and one that took the release late.
+        fake(path, scratch(0x5e, parked=0x7e, left=0x40, down=0xfe, secs=121544, flags=0x90, isrs=0x10, drained=0xbf,
+                           prog=[0x7e, 0x40]),
+             rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "read off after the release (0x6005 = 0x7e, up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6\n" in out
+              and "SIO_CPU's power state (61)\n" in out and "DISPLAY" not in out.split("0x6006")[1].split("\n")[0]
+              and "wrote their stop bit and held (0x6007 = 0xfe)" in out
+              and "PCPM0 off after the release, PCPM1 NOT off after the release" in out
+              and "the cores that took the release: CPU1,CPU2,CPU3,CPU4,CPU5,CPU6\n" in out
+              and "before their deep WFI: CPU6\n" in out and "at their stop request (hold=1): CPU4\n" in out,
+              "hold=1: CPU7 held and not read off, P1 not off", out + r.stderr)
+
+        # 0x5d: CPU0 had something pending before its own WFI.
+        fake(path, scratch(0x5d, **rec), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and "0x5d (pmgr_late=1): hold=1: everything recorded, but CPU0 had an interrupt or SError pending" in r.stdout
+              and "it likely never went down" in r.stdout,
+              "hold=1's 0x5d: CPU0 had something pending", r.stdout + r.stderr)
+
+        # 0x5c: the watch's stage: 0x6012-0x6014 aren't read as facts yet.
+        fake(path, scratch(0x5c, parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0x80, isrs=0, drained=0xbd),
+             rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x5c (pmgr_late=1): hold=1: the release went out and CPU0's watch ended" in out
+              and "read off after the release" in out and "being rewritten" in out
+              and "the cores that took the release" not in out and "before their deep WFI" not in out
+              and "PCPM0 being rewritten: not decoded" in out,
+              "hold=1's 0x5c: 0x6012-0x6014 not read as facts", out + r.stderr)
+
+        # 0x5b: the commit x3 done, nothing after it; 0x6005 still the parked mask.
+        fake(path, scratch(0x5b, parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0x80, isrs=0x04, drained=0xbd),
+             rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        out = r.stdout
+        check(r.returncode == 0 and "0x5b (pmgr_late=1): 9 (hold=1): the commit x3 and the alarm's commands done" in out
+              and "parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
+              and "wrote their stop bit and held (0x6007 = 0xfe)" in out
+              and "RTC second at just before the commit: 121544" in out
+              and "PCPM0 not read yet (hold=1: nothing goes down before the commit)" in out
+              and "at their stop request (hold=1): CPU2\n" in out
+              and "the cores that took the release" not in out and "read off after the release" not in out,
+              "hold=1's 0x5b: decoded as before the release", out + r.stderr)
+
+        # 0x5a with the alarm acked: the same caveat as 0x59, naming 0x5b.
+        fake(path, scratch(0x5a, parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0x80, isrs=0, drained=0xbd),
+             rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and "0x5a (pmgr_late=1): 8 (hold=1): the last SPMI command before the commit" in r.stdout
+              and "stage 0x5a, so nothing records the two commit writes after those commands (0x5b comes after them)" in r.stdout,
+              "hold=1's 0x5a with 0xbd: inconclusive, as 0x59's", r.stdout + r.stderr)
+
+        # 0x5a, no alarm result; 0x39, held mask; 0x33, a core's stop request.
+        fake(path, scratch(0x5a, parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0x80, isrs=0, drained=0),
+             rtc_secs=121761, alarm=(0x01, 36502, 0, 0))
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and "the alarm's commands left no result" in r.stdout and "0x140c is NOT" in r.stdout,
+              "hold=1's 0x5a with no alarm result: no alarm tested", r.stdout + r.stderr)
+        fake(path, scratch(0x39, parked=0xfe, left=0x50, down=0xfc), rtc_secs=121761)
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and "0x39 (pmgr_late=1): 7 (hold=1): every core's stop requested" in r.stdout
+              and "wrote their stop bit and held (0x6007 = 0xfc): CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in r.stdout,
+              "hold=1's 0x39: the cores that held", r.stdout + r.stderr)
+        for i, c in enumerate((1, 2, 3, 5, 6, 4, 7)):
+            fake(path, scratch(0x31 + i, parked=0xfe, left=0x50), rtc_secs=121761)
+            r = run(path, cnt=run1)
+            check(r.returncode == 0 and f"6 (hold=1): requesting CPU{c}'s stop, the order's {i + 1} of 7" in r.stdout,
+                  f"hold=1's 0x{0x31 + i:02x}: CPU{c}'s stop request", r.stdout + r.stderr)
+
+        # --clear after hold=1's stages: 0x5e's second comes from its low two bytes.
+        for s, kw in ((0x5e, rec), (0x5d, rec), (0x5c, dict(rec, prog=None)), (0x5b, dict(rec, prog=None, flags=0x80)),
+                      (0x5a, dict(rec, prog=None, flags=0x80))):
+            before = fake(path, scratch(s, **kw), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+            r = run(path, "--clear")
+            after = open(path, "rb").read()
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                  f"--clear after hold=1's 0x{s:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
+        # An alarm that isn't the run's: left alone, even at 0x5e.
+        before = fake(path, scratch(0x5e, **rec), rtc_secs=121761, alarm=(0x41, 200000, 0, 0))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        want = bytearray(before)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        check(r.returncode == 0 and after == bytes(want) and "disarmed" not in r.stdout and "left alone" in r.stdout,
+              "--clear after hold=1's 0x5e with another armed alarm: left alone, the crumbs zeroed", r.stdout + r.stderr)
+        # Stage 0x39: no alarm yet; an armed one isn't the run's.
+        before = fake(path, scratch(0x39, parked=0xfe, left=0x50, down=0xfe), rtc_secs=121761, alarm=(0x41, 125144, 0, 0))
+        r = run(path, "--clear")
+        after = open(path, "rb").read()
+        want = bytearray(before)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        check(r.returncode == 0 and after == bytes(want) and "disarmed" not in r.stdout and "left alone" in r.stdout,
+              "--clear after hold=1's 0x39: an armed alarm isn't the run's", r.stdout + r.stderr)
+
+        # A clean run keeps the old stages' meaning: 0x38 and 0x58 still read as pmgr_late's.
+        fake(path, scratch(0x38, parked=0xfe, left=0x50, down=0xfe), rtc_secs=121761)
+        r = run(path, cnt=run1)
+        check(r.returncode == 0 and "0x38 (pmgr_late=1)" in r.stdout and "hold=1" not in r.stdout,
+              "stage 0x38 stays pmgr_late's, not hold's", r.stdout + r.stderr)
+
     # m1-crumbs' tables against e1_hook.c's: each qto bit names the entries
     # its waits follow, and the buckets' edges are m1_bucket_ms[].
     g = runpy.run_path(TOOL, run_name="m1_crumbs")
@@ -754,9 +884,16 @@ def main():
     defs = {k: int(v, 0) for k, v in re.findall(r"#define (M1_PMU_ALARM\w*|M1_ALARM_\w+)\s+(0x[0-9a-f]+|\d+)", src)}
     check(defs.get("M1_PMU_ALARM_CTRL") == g["ALARM_CTRL"] and defs.get("M1_PMU_ALARM") == g["ALARM"]
           and defs.get("M1_PMU_ALARM_EVENT") == g["ALARM_EVENT"] and defs.get("M1_PMU_ALARM_MASK") == g["ALARM_MASK"]
-          and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"] and g["ALARM_STAGES"] == (0x59, 0x5f)
-          and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src,
+          and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"] and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e)
+          and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src and "hold ? 0x5a : alarm ? 0x59 : 0x58" in src
+          and "m1_stage(0x5b)" in src and "b[0] = 0x5c" in src and "? 0x5d : 0x5e" in src and "hold ? 0x39 :" in src
+          and "hold ? 0x31 :" in src,
           "m1-crumbs' alarm registers, stages and seconds match e1_hook.c's", f"{defs}")
+
+    # The stage tables must not collide: each stage means one thing.
+    pool = [("HOLD", k) for k in g["HOLD"]] + [("LATE", k) for k in g["LATE"]]
+    keys = [k for _, k in pool]
+    check(len(keys) == len(set(keys)), "hold=1's stages collide with no other run's", f"{sorted(keys)}")
 
     print(f"{failed} failed" if failed else "all ok")
     return 1 if failed else 0
