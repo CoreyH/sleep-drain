@@ -2028,10 +2028,11 @@ decoder):**
 2. The two waits that fail are the two PLAN.md named beforehand. Nothing else
    macOS waits for fails here (with the mapping caveat above). Neither is
    shown to block the entry.
-3. The DRAM p-state settles at 5 under a running PMP, so the rung-2 trigger
-   (DCS not settling) did not fire. Not shown: DCS at the commit (nothing
+3. The DRAM p-state settles at 5 under a running PMP, so the trigger for
+   moving the PMP rung up (DCS not settling) did not fire. Not shown: DCS at the commit (nothing
    reads it after entry 50, on purpose), or that DCS matters to the entry.
-4. EACC and PACC0 are not stuck, so rung 4's trigger did not fire. For
+4. EACC and PACC0 are not stuck, so the trigger for writing the CPU-cluster
+   targets last did not fire. For
    PACC0, the transition straddles the commit: pending just before it, clear
    within 5 ms of the hand-over. A natural millisecond-scale power-down is
    enough to explain that (T6020: 6 ms still pending, clear by 500 ms,

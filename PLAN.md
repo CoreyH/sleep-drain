@@ -353,19 +353,21 @@ steps, and restarting the DCP and the PMP afterwards.
       - How to read it:
         - Result (2026-11-08): the expected case, except that SIO_CPU's
           wait timed out too (a case pre-registered below). DCS settled, so
-          the rung-2 trigger didn't fire, and EACC and PACC0 weren't stuck, so
-          rung 4's trigger didn't either.
+          the trigger for moving the PMP rung up didn't fire, and EACC and
+          PACC0 weren't stuck, so the trigger for writing the CPU-cluster
+          targets last (since dropped) didn't either.
         - The expected case: a reset at ~30 s with only DISPLAY's wait
           timed out (AFR's power state is already off, so its wait passes),
           and EACC and PACC0 settled. DISPLAY is then the only one of
           macOS's PMGR waits that fails. Next are the alarm, then DISPLAY
-          (fix rungs 1 and 3 below).
+          (among the fix rungs below).
         - EACC or PACC0 still pending ~500 ms after their complexes read
-          off: a CPU cluster doesn't finish even in macOS's place. Fix rung
-          4 comes up; first rule out CPU7's own PACC1.
+          off: a CPU cluster doesn't finish even in macOS's place. Writing
+          the CPU-cluster targets last comes up (since dropped: this didn't
+          happen); first rule out CPU7's own PACC1.
         - DCS's wait times out, or DCS isn't settled at 5 at the end of its
           wait after entry 50: the DRAM p-state doesn't settle with the PMP
-          running, and fix rung 2 (the PMP) moves up. There is no reading
+          running, and the PMP rung moves up. There is no reading
           after the commit, on purpose: the ClkGen park and PLL-off come
           first, and on T8103 Naeem found most of the registers where Linux
           and macOS differed at the commit rewritten right after it.
