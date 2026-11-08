@@ -189,8 +189,17 @@ boot_source() {
 cmd_save() {
   need_root
   is_safe || die "this isn't a safe boot; nothing to save"
-  local now stage lower n d p src mnt=$RUN/boot tar
+  local now base stage lower n d p src mnt=$RUN/boot tar
   now=$(date +%Y%m%dT%H%M%S)
+  # More than one save in a second (recfg-peek saves after each stage): a
+  # journal of its own for each, or collect would find one name with different
+  # contents, keep the first and leave the later tars on the boot partition.
+  base=$now
+  n=1
+  while [[ -e /var/log/sleep-drain/safe-journal-$now.txt ]]; do
+    n=$((n + 1))
+    now=$base-$n
+  done
   stage=$RUN/rw/save-$now
   for p in "$@"; do
     [[ $p == /* && -e $p ]] || die "$p: give existing absolute paths"
