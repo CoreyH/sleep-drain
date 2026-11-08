@@ -2303,8 +2303,10 @@ scripts or traces, and no Aura code.
   without which "the sleep engine never started" (a 5 s reset there). It says
   nothing of a device-side condition, though its driver refuses a sleep unless
   both DCPs, the PMP and SIO have stopped; its text says the PMP's "idle and
-  stop" are the sleep's last step. T8140's order starts with WD2, which T6000's
-  table never writes, so the order itself doesn't transfer.
+  stop" are the sleep's last step. Its text starts T8140's order with WD2, which
+  T6000's table never writes; the code, read since (below), puts the PMU's boot
+  stage and the power-word match first and WD2 after the stop bits. Either way
+  the order doesn't transfer.
 - **Naeem's global sleep:** no result published. b6b2ea1d19e0's message says
   "Found by review of bd01a988d before the hardware run", and bd01a988d309's
   names this repo's T6000 port as the lead, so that support isn't independent
@@ -2319,10 +2321,14 @@ scripts or traces, and no Aura code.
   matches (the control's ARM bit clears itself) but the alarm never reaches the
   AP's SPMI interrupt, and the event register "keeps the same value". This Mac's
   own result is the opposite: the alarm wakes s2idle through the SPMI interrupt
-  ("The alarm wakes J314s from s2idle"). "Keeps the same value" fits this
-  repo's note that a set 0x14c0 blocks the edge ("Awake test: the alarm fires,
-  and how its event clears"), but their board or setup could differ; not told
-  apart.
+  ("The alarm wakes J314s from s2idle"). Their driver acks 0x14c0 before arming,
+  so a stale 0x14c0 alone doesn't explain "keeps the same value". It does keep
+  bit 1 of 0x1401 across its read-modify-write on Maverick, and this J314s found
+  that bit latched from a wake macOS had scheduled ("Awake test"), with the
+  firing here setting both. So a bit 1 left set could be what they see, if the
+  event latches only on that bit's 0-to-1 edge, which nobody has tested. Posted
+  as a hypothesis on #1225, with the check that tells it apart (Corey's OK,
+  2026-11-08); their board or setup could still differ.
 
 **Where the candidates stand** (the order is in PLAN.md, and only there):
 - **The PMP out** (idle pair, then its CPU stopped). Every completed T8103 Linux
@@ -2357,5 +2363,70 @@ scripts or traces, and no Aura code.
   names are empty), and being listed doesn't make it safe to read: the map
   lists MMIO too (region-id-32 is 0x28e700000, on the never-write list).
   PLAN.md has the steps (Corey's OK of 2026-11-08; `e1-hook/recfg-peek`).
-- **DJ's T8140 driver:** reading it needs Corey's OK, as Naeem's did; the
-  alternative is asking DJ (a post, Corey's OK each time). Not a rung.
+- **DJ's T8140 driver:** read, with Corey's OK of 2026-11-08 ("DJ's T8140
+  driver, read", below). Not a rung.
+
+### DJ's T8140 driver, read (2026-11-08)
+
+Desk work, no hardware. Corey's OK of 2026-11-08 to read aurora-silicon/linux#1208
+(head cd27afb6ccd0; DJ, DjDeveloperr; GPL Linux code), crediting them:
+`drivers/soc/apple/t8140-sleep.c` and its CPU, PMP, RTKit, SPMI and MCC
+pieces, read by three readers, then a synthesis and two adversarial checks of
+every claim. No m1n1 and no Aura. The SIO, DCP, GPU, ANS, SMC and SEP drivers
+weren't in the download. No T8140 code reads the engine, so what it says the
+engine waits for is the author's statement or measurement, not something
+this code shows.
+
+What it adds, for T6000:
+- **Coprocessors stopped before the commit.** The driver refuses a sleep
+  unless DCP, DCPEXT, the PMP and SIO have stopped or are ready to
+  (t8140-sleep.c:1239-1246, :1317-1325). Its comments and commit messages say
+  a commit with the PMP and SIO still running "reset the SoC 5.5 s later"
+  (:1229, d43118bcb473) and that a commit with the PMP running reset the SoC
+  (pmp-export.c:153-155, 4f7e92c1fbe1): this Mac's symptom. Two passages pair
+  them and two name the PMP alone; none describes a test with only one
+  running. On this Mac the PMP has run un-idled through all four runs.
+- **How it stops the PMP**, before its whole last mile (t8140-sleep.c:2575):
+  report requests withdrawn first (pmp-report.c:456-481), SetAPPower 0x201 then
+  SetIOPPower 0x201, once each, acks awaited (rtkit.c:2291-2295), then a poll
+  of up to 5 ms for ASC status bits 1 and 5 whose result it ignores, the
+  mailbox's receive off, and RUN cleared twice from fresh reads
+  (t8140-sleep.c:761-772). PLAN.md's rung 3 has what this repo builds and what
+  would need a new OK.
+- **The display.** "The engine waits for DISP_CPU with no timeout"
+  (t8140-sleep.c:1423, :1466; comments), and of AVE its comment says that turning
+  it off at the commit would put "that sequence, with its untimed wait, right
+  before the CPU complexes'" (:2614-2618; extending that to other complexes,
+  such as this Mac's DISPLAY, is this notebook's inference). T8140 stops the
+  display firmware and powers its CPU domain off
+  first. DISPLAY's entry 58 is one of the two waits this Mac never meets (qto
+  0x50). T6020's display-off runs still reset, so not sufficient alone; rung
+  6 is the way to test it here.
+- **The cores' shape:** awake through the commit, stop bits written first in
+  the last mile, deep WFI after the one commit write (:2399-2400, :2469-2476),
+  as hold=1 is, except that hold=1 writes them after the PMGR quiesce, not first,
+  and spins where T8140 waits in WFE. A core that misses its stop holds the
+  engine until WD2 resets the SoC (932de6dc2b1f, a measurement with a test
+  switch not in the series). That doesn't explain runs 1 and 4, where CPU1-7
+  read off before the commit.
+- **The cluster power-gate word** (bit 31 set at boot, 3bd4bd1bf835: without it
+  the boot CPU only clock-gates and the engine "never starts", a 5 s reset). Not
+  this Mac's problem: CPU0's power word reads `was_pwrgated` at load (0x100 in
+  run 2, 0x1f0 in run 3) and CPU0 read off after the commit in runs 2 and 3. 
+- **Ranked low or not carrying over** (judgment): one commit write here against
+  T6000's three; no SPMI near the commit, the alarm armed before the suspend;
+  the AIC masked after the commit; WD2 armed by the driver with control 1
+  (T8140 has an ADT property for it that T6000's lacks); the MCC step-down,
+  the voters and CLLT, which aren't in T6000's table, whose coverage can't be
+  checked; a list of 10 domains raised and 49 lowered to macOS's measured state.
+  The SLC writeback (mcc.c:243-257) is for the return path, which a completed
+  entry would need later.
+
+Corey's next run stays the hold rung, as it was (its one-variable argument and
+the fact that it was built and reviewed are unchanged). The analysis's judgment
+for what's blocking T6000: the PMP running at the commit about 1 in 3 as at
+least one blocker (raised from 1 in 5 by the author's statements, not by anything
+the code shows), about 1 in 8 that stopping it alone completes the entry; the
+display chain about 1 in 5; every core held about 1 in 12. Something no list
+names, about 1 in 4, which is what the reconfig SRAM read is for. PLAN.md has
+the order.

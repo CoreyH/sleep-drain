@@ -78,6 +78,8 @@
  *   pkexec e1-hook/run-floor --m1-alarm           (its run 4: m1=1 pmgr_late=1 alarm=1)
  *   pkexec e1-hook/run-floor --m1-hold            (its hold rung: those and hold=1)
  *   pkexec e1-hook/run-floor --m1-hold-nowatch    (the same and hold_nowatch=1)
+ *   pkexec e1-hook/run-floor --m1-pmp             (--m1-hold's and pmp_out=1: PLAN.md, rung 3)
+ *   pkexec e1-hook/run-floor --m1-pmp-idle        (the same and pmp_stop=0: the idle pair alone)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -100,6 +102,8 @@
 #include <linux/preempt.h>
 #include <linux/sched.h>
 #include <linux/smp.h>
+#include <linux/soc/apple/mailbox.h>
+#include <linux/soc/apple/rtkit.h>
 #include <linux/string.h>
 #include <linux/suspend.h>
 #include <linux/time64.h>
@@ -269,6 +273,13 @@ MODULE_PARM_DESC(hold, "With m1=1, pmgr_late=1 and alarm=1, without observe=1: m
 static bool hold_nowatch;
 module_param(hold_nowatch, bool, 0444);
 MODULE_PARM_DESC(hold_nowatch, "With hold=1 only: CPU0 doesn't read the others down after the release; it takes its deep WFI at once");
+/* E2's PMP rung: the PMP idled and its CPU stopped before the quiesce (PLAN.md, rung 3). */
+static bool pmp_out;
+module_param(pmp_out, bool, 0444);
+MODULE_PARM_DESC(pmp_out, "With m1=1 pmgr_late=1 alarm=1, without observe=1: right after slpa (step K4, before step 1), the PMP's RTKit idle pair (SetAPPower 0x201, then SetIOPPower 0x201, once each, through apple_rtkit_idle) and, if its ASC then reads idle, its CPU stopped with one write (RUN, bit 4 of 0x28ec00044, read-modify-write), as macOS's AppleA7IOP::stopCPU; never ps_pmp; Corey's OK of 2026-11-08");
+static bool pmp_stop = true;
+module_param(pmp_stop, bool, 0444);
+MODULE_PARM_DESC(pmp_stop, "With pmp_out=1: 0 leaves out the write that stops the PMP's CPU (the idle pair only)");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -1055,6 +1066,37 @@ static void e1_after_slpa(void)
  *   0x6015  the cores with an interrupt pending at their stop request (0x6013
  *           is the last check before the WFI)
  *   0x6016  the alarm's byte, as in run 4
+ * pmp_out=1 (run-floor --m1-pmp, with alarm=1, on hold=1 unless told otherwise;
+ * PLAN.md, rung 3): in K4, right after K3 and with interrupts still on, the
+ * PMP's idle pair (SetAPPower 0x201, then SetIOPPower 0x201, through
+ * apple_rtkit_idle, exactly once: a doubled SetAPPower crashed T6020's PMP),
+ * then, unless pmp_stop=0, its CPU stopped: CPU_STATUS (0x28ec00048) polled
+ * up to 10 ms for macOS's idle mask (AppleASCWrapV4::_isIdle, status & 3,
+ * from DeepIdle's written notes on T6020; this Mac's PMP is iop,ascwrap-v4 in
+ * the ADT, the same class, but nothing has read the word on T6000 yet: the load
+ * samples it awake for that), and only if that's seen, one read-modify-write
+ * of CPU_CONTROL (0x28ec00044) clearing RUN (bit 4), read back. Never ps_pmp.
+ * Those are the two messages and the one write Corey OK'd on 2026-11-08; DJ's
+ * T8140 driver (credit below) clears RUN twice and doesn't gate it, which
+ * would need a new OK. A stall in step 5 reads 0x90 on this rung (0x10's text).
+ * Breadcrumbs: from K4 on, every stage byte has bit 7 set (0x83 is K4 done),
+ * which says 0x6015 is the PMP's byte, not the cores' interrupts:
+ *   0x6015  (bit 7 set) K4 ran; bit 6 some core had an interrupt pending at
+ *           its stop (the byte's old meaning, reduced to a bit); bits 5-4 the
+ *           idle pair: 0 returned 0, 1 -ETIME (the first ack not to come ends
+ *           the pair at 1 s, so this doesn't say whether SetIOPPower went
+ *           out), 2 the firmware had crashed by then (the pair may not have
+ *           been sent), 3 another error (a full mailbox FIFO, 500 ms, or a
+ *           mismatched ack state); bit 3 RUN read 0 after the
+ *           write; bit 2 RUN read 1 before it; bits 1-0 CPU_STATUS's low two
+ *           bits when the poll ended (non-zero is idle by macOS's mask, and only
+ *           then is RUN cleared). K4's kernel write sets it (bit 6 clear); step
+ *           8's raw command writes it again with bit 6.
+ * The rest is as hold=1 or as alarm=1 has it. The T8140 basis (PLAN.md, RESEARCH.md,
+ * "DJ's T8140 driver"): aurora-silicon/linux#1208, DJ's driver, says a
+ * commit with the PMP and SIO still running reset the SoC 5.5 s later, and
+ * idles the same pair and clears the same bit before its last mile.
+ *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
  * clusters to the
@@ -1120,6 +1162,14 @@ static void e1_after_slpa(void)
 #define M1_PMU_ALARM_MASK	0x14c2	/* 0 unmasks */
 #define M1_ALARM_ON		0x41
 #define M1_ALARM_SECS		3600
+/* pmp_out=1: the PMP's nodes, and its ASC's control and status words (pmp@28e700000's reg[1]). */
+#define M1_PMP_NODE		"/soc/pmp@28e700000"
+#define M1_PMP_MBOX_NODE	"/soc/mbox@28ec08000"
+#define M1_PMP_ASC		0x28ec00000ULL
+#define M1_ASC_CPU_CONTROL	0x44
+#define M1_ASC_CPU_RUN		BIT(4)
+#define M1_ASC_CPU_STATUS	0x48
+#define M1_ASC_IDLE		3	/* CPU_STATUS & 3 non-zero: idle (macOS's AppleASCWrapV4::_isIdle) */
 /* Each core's own interrupt sources, as irq-apple-aic.c names them. */
 #define M1_IPI_SR_EL1		sys_reg(3, 5, 15, 1, 1)
 #define M1_IPI_SR_PENDING	BIT(0)
@@ -1243,6 +1293,11 @@ static struct nvmem_device *m1_nvmem;
 static struct module *m1_spmi_owner;
 static u64 m1_tps;
 static bool m1_sent_50, m1_raw;
+/* pmp_out=1: the PMP's RTKit (reached through its mailbox's device, which is what's referenced) and its ASC. */
+static struct platform_device *m1_pmp_mbox_pdev;
+static struct apple_rtkit *m1_pmp_rtk;
+static void __iomem *m1_pmp_asc;
+static u8 m1_pmp_tag;	/* bit 7 from K4 on: the stage byte says 0x6015 is the PMP's */
 
 static __always_inline u64 m1_now(void)
 {
@@ -1427,6 +1482,14 @@ static bool m1_raw_start(void)
 /* A breadcrumb, raw; the first error stops them all. */
 static void m1_crumb(unsigned int addr, const u8 *b, unsigned int n)
 {
+	u8 t[4];
+
+	/* pmp_out=1: the stage byte, the first of a command at 0x6004, carries bit 7 from K4 on. */
+	if (addr == 0x6004 && m1_pmp_tag && n <= sizeof(t)) {
+		memcpy(t, b, n);
+		t[0] |= m1_pmp_tag;
+		b = t;
+	}
 	if (m1_raw && m1_spmi_raw(true, addr, (u8 *)b, n))
 		m1_raw = false;
 }
@@ -1920,12 +1983,63 @@ static void m1_hold_release(u8 held, u8 qto, u8 flags)
 	isb();
 }
 
-/* Steps K3 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
+/*
+ * pmp_out=1, step K4: the PMP's idle pair, then its CPU stopped, as macOS does
+ * before quiesceHW (the m1 comment says whose order and what Corey OK'd).
+ * Interrupts are on and this task can sleep, as at K3. The acks to these
+ * management messages come in through the mailbox's IRQF_NO_SUSPEND interrupt
+ * and RTKit's own workqueue (rtk->wq), which isn't freezable: the kernel path,
+ * but one no run has exercised after noirq. If it doesn't work there, the
+ * first ack not to come times out at 1 s and ends the pair, and the byte says
+ * -ETIME; the replay goes on, the PMP's state then unknown (about 3 s at worst
+ * with a full mailbox FIFO). apple_rtkit_idle sends SetAPPower 0x201, then
+ * SetIOPPower 0x201, once each, and waits for each ack: a doubled SetAPPower
+ * crashed T6020's PMP, so this is called exactly once. Returns the byte for
+ * 0x6015 (the m1 comment has its bits; step 8 adds bit 6). Never touches ps_pmp.
+ */
+static u8 m1_pmp_out(void)
+{
+	static const u8 stage = 0x83;
+	u8 res = BIT(7);
+	u32 ctrl, st;
+	u64 t0;
+	int ret;
+
+	ret = apple_rtkit_is_running(m1_pmp_rtk) ? apple_rtkit_idle(m1_pmp_rtk) : -ENODEV;
+	if (ret) {
+		res |= (apple_rtkit_is_crashed(m1_pmp_rtk) ? 2 : ret == -ETIME ? 1 : 3) << 4;
+	} else {
+		t0 = m1_now();
+		do {
+			st = readl(m1_pmp_asc + M1_ASC_CPU_STATUS);
+		} while (!(st & M1_ASC_IDLE) && m1_now() - t0 < m1_tps / 100);
+		/* Preemptible here: a last read, so that a long preemption can't end the poll on a stale value. */
+		if (!(st & M1_ASC_IDLE))
+			st = readl(m1_pmp_asc + M1_ASC_CPU_STATUS);
+		res |= st & M1_ASC_IDLE;
+		if (pmp_stop && (st & M1_ASC_IDLE)) {
+			ctrl = readl(m1_pmp_asc + M1_ASC_CPU_CONTROL);
+			if (ctrl & M1_ASC_CPU_RUN)
+				res |= BIT(2);
+			writel(ctrl & ~M1_ASC_CPU_RUN, m1_pmp_asc + M1_ASC_CPU_CONTROL);
+			dsb(sy);
+			if (!(readl(m1_pmp_asc + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN))
+				res |= BIT(3);
+		}
+	}
+	/* Through the kernel's path, K3's; step 8 sends 0x6015 again, raw, with bit 6. */
+	m1_kwrite(0x6015, &res, 1);
+	m1_kwrite(0x6004, &stage, 1);
+	m1_pmp_tag = BIT(7);
+	return res;
+}
+
+/* Steps K3, K4 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
 {
 	static const u8 two = 0x02;
 	void __iomem *commit = post_map[ARRAY_SIZE(e1_post_slpa) - 1];
-	u8 parked = 0, left = 0, down = 0, held = 0, isrs = 0, flags = BIT(7), qto = 0, b[7], rtc[6] = {};
+	u8 parked = 0, left = 0, down = 0, held = 0, isrs = 0, flags = BIT(7), qto = 0, b[7], rtc[6] = {}, pmpb = 0;
 	struct m1_core *o = &m1_core[7];
 	unsigned int i, k, cpu, drained = 0;
 	u32 v, dcs = 0, pacc0 = 0;
@@ -1935,6 +2049,10 @@ static void __noreturn m1_after_slpa(void)
 	/* K3 */
 	if (m1_kwrite(0x6004, &two, 1))
 		flags |= BIT(3);
+
+	/* K4 (pmp_out=1): the PMP's idle pair and its CPU stopped */
+	if (pmp_out)
+		pmpb = m1_pmp_out();
 
 	/* 1, 2 */
 	preempt_disable();
@@ -2048,7 +2166,7 @@ static void __noreturn m1_after_slpa(void)
 		m1_raw = false;
 	memcpy(b, rtc + 2, 4);
 	b[4] = flags;
-	b[5] = isrs;
+	b[5] = pmp_out ? pmpb | (isrs ? BIT(6) : 0) : isrs;
 	b[6] = alarm ? 0 : min(drained, 255U);	/* alarm=1: 0x6016 is m1_alarm_arm()'s */
 	m1_crumb(0x6010, b, 7);
 	if (pmgr_late) {
@@ -2135,6 +2253,73 @@ static bool __init m1_never(u64 pa, unsigned int n)
 			return true;
 	}
 	return false;
+}
+
+/*
+ * pmp_out=1 at load, read-only: the PMP's driver bound and its RTKit running
+ * (reached through its mailbox's drvdata: apple_rtkit_claim_rx() leaves the
+ * RTKit pointer in the public mbox->cookie), and the ASC mapped, its control
+ * and status words logged as the awake baseline. Refuses the module
+ * otherwise. The mailbox's device stays referenced until unload (m1_unmap()).
+ */
+static int __init m1_pmp_init(void)
+{
+	struct device_node *np;
+	struct platform_device *pdev;
+	struct apple_mbox *mbox;
+	bool bound = false;
+	u32 st, all_and = U32_MAX, all_or = 0, reads = 0;
+	u64 t0;
+
+	np = of_find_node_by_path(M1_PMP_NODE);
+	pdev = np ? of_find_device_by_node(np) : NULL;
+	of_node_put(np);
+	if (pdev) {
+		device_lock(&pdev->dev);
+		bound = pdev->dev.driver && !strcmp(pdev->dev.driver->name, "apple_pmp");
+		device_unlock(&pdev->dev);
+		put_device(&pdev->dev);
+	}
+	if (!bound) {
+		pr_err("m1: pmp_out: %s isn't bound to apple_pmp; refusing\n", M1_PMP_NODE);
+		return -ENODEV;
+	}
+	np = of_find_node_by_path(M1_PMP_MBOX_NODE);
+	m1_pmp_mbox_pdev = np ? of_find_device_by_node(np) : NULL;
+	of_node_put(np);
+	mbox = m1_pmp_mbox_pdev ? platform_get_drvdata(m1_pmp_mbox_pdev) : NULL;
+	m1_pmp_rtk = mbox ? READ_ONCE(mbox->cookie) : NULL;
+	if (!m1_pmp_rtk || !apple_rtkit_is_running(m1_pmp_rtk)) {
+		pr_err("m1: pmp_out: the PMP's RTKit (through %s) isn't running; refusing\n", M1_PMP_MBOX_NODE);
+		return -ENODEV;
+	}
+	if (m1_never(M1_PMP_ASC + M1_ASC_CPU_CONTROL, 1)) {
+		pr_err("m1: pmp_out: the RUN bit's word would touch the never-write list; refusing\n");
+		return -EPERM;
+	}
+	m1_pmp_asc = ioremap_np(M1_PMP_ASC, 0x4000);
+	if (!m1_pmp_asc) {
+		pr_err("m1: pmp_out: a mapping failed; refusing\n");
+		return -ENOMEM;
+	}
+	/*
+	 * The gate's word, sampled awake for 10 ms: a running PMP should read
+	 * idle only some of the time, if at all. If every read does, the
+	 * gate can't tell running from idle: the reading guide (PLAN.md) says
+	 * what that means for this run's byte. Reads only.
+	 */
+	t0 = m1_now();
+	do {
+		st = readl(m1_pmp_asc + M1_ASC_CPU_STATUS);
+		all_and &= st;
+		all_or |= st;
+		reads++;
+	} while (m1_now() - t0 < m1_tps / 100);
+	pr_info("m1: pmp_out: the PMP's RTKit is running; ASC CPU_CONTROL %08x CPU_STATUS %08x; over 10 ms awake (%u reads) AND %08x OR %08x\n",
+		readl(m1_pmp_asc + M1_ASC_CPU_CONTROL), st, reads, all_and, all_or);
+	if (all_and & M1_ASC_IDLE)
+		pr_warn("m1: pmp_out: CPU_STATUS's low two bits were set on every read awake: the idle gate may not tell running from idle (PLAN.md, rung 3)\n");
+	return 0;
 }
 
 /*
@@ -2363,6 +2548,12 @@ static int __init m1_init(void)
 	}
 	if (pmgr_late)
 		m1_late_init();
+	if (pmp_out) {
+		int ret = m1_pmp_init();
+
+		if (ret)
+			return ret;
+	}
 	return 0;
 }
 
@@ -2390,6 +2581,10 @@ static void m1_unmap(void)
 		iounmap(m1_wdx);
 	if (m1_cpm)
 		iounmap(m1_cpm);
+	if (m1_pmp_asc)
+		iounmap(m1_pmp_asc);
+	if (m1_pmp_mbox_pdev)
+		put_device(&m1_pmp_mbox_pdev->dev);
 	if (m1_nvmem)
 		nvmem_device_put(m1_nvmem);
 	if (m1_spmi_owner)
@@ -2666,6 +2861,14 @@ static int __init e1_check_params(void)
 		pr_err("hold=1 needs m1=1 pmgr_late=1 alarm=1 and no observe=1 (CPU0 reads the others down itself)\n");
 		return -EINVAL;
 	}
+	if (pmp_out && (!m1 || !pmgr_late || !alarm || observe)) {
+		pr_err("pmp_out=1 needs m1=1 pmgr_late=1 alarm=1 and no observe=1 (0x6015 becomes its byte)\n");
+		return -EINVAL;
+	}
+	if (!pmp_stop && !pmp_out) {
+		pr_err("pmp_stop=0 only changes pmp_out=1\n");
+		return -EINVAL;
+	}
 	if (hold_nowatch && !hold) {
 		pr_err("hold_nowatch=1 only changes hold=1\n");
 		return -EINVAL;
@@ -2830,10 +3033,11 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
-		hold_nowatch ? " hold_nowatch=1" : "");
+		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
+		pmp_out && !pmp_stop ? " pmp_stop=0" : "");
 	return 0;
 
 unmap:
