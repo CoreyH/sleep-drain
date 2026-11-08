@@ -121,7 +121,12 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `m1=1 pmgr_late=1` and no `observe=1`) is its run 4: the PMU's RTC alarm,
   an hour after the commit, written between the commit's first write and the
   other two, with no observer; `m1-crumbs --clear` disarms the alarm the run
-  armed at the next boot. `13` is the floor with the CPUs left up. `13`
+  armed at the next boot. `hold=1` (`run-floor --m1-hold`, with `alarm=1` and
+  no `observe=1`) is its hold rung: every other CPU writes its own stop bit
+  and holds, spinning, through the commit, CPU0 lets go after the third
+  commit write, and each then arms deep sleep and takes its deep WFI, CPU0
+  reading them down and going last (`hold_nowatch=1`, `run-floor
+  --m1-hold-nowatch`: no such reading). `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
   (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s

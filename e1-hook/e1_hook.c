@@ -76,6 +76,8 @@
  *   pkexec e1-hook/run-floor --m1-observe         (its run 2: m1=1 observe=1)
  *   pkexec e1-hook/run-floor --m1-late            (its run 3: those and pmgr_late=1)
  *   pkexec e1-hook/run-floor --m1-alarm           (its run 4: m1=1 pmgr_late=1 alarm=1)
+ *   pkexec e1-hook/run-floor --m1-hold            (its hold rung: those and hold=1)
+ *   pkexec e1-hook/run-floor --m1-hold-nowatch    (the same and hold_nowatch=1)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -260,6 +262,13 @@ MODULE_PARM_DESC(pmgr_late, "With m1=1 only: the table's PMGR quiesce goes out a
 static bool alarm;
 module_param(alarm, bool, 0444);
 MODULE_PARM_DESC(alarm, "With m1=1 and pmgr_late=1, without observe=1: the PMU's RTC alarm (now + 3600 s) between the commit's first write and the other two, as macOS does on T8103; m1-crumbs --clear disarms it");
+/* E2's hold rung: every core held through the commit (PLAN.md). */
+static bool hold;
+module_param(hold, bool, 0444);
+MODULE_PARM_DESC(hold, "With m1=1, pmgr_late=1 and alarm=1, without observe=1: modeled on XNU's global sleep on H13, whose secondaries stall in WFE: each other CPU writes its own stop bit in step 6 and holds, awake, spinning, through the commit; after the third commit CPU0 clears the hold, every CPU arms its deep sleep and takes its deep WFI, and CPU0 reads the others down, records that and goes down last");
+static bool hold_nowatch;
+module_param(hold_nowatch, bool, 0444);
+MODULE_PARM_DESC(hold_nowatch, "With hold=1 only: CPU0 doesn't read the others down after the release; it takes its deep WFI at once");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -620,9 +629,11 @@ static void e1_post_slpa_eh(void)
 	pr_emerg("replay: fast: %u watchdog and error-handler writes now; from MBSE=slpa on, no output: the other %zu writes%s%s%s\n",
 		 post_eh, ARRAY_SIZE(e1_post_slpa) - post_eh,
 		 pmgr_late ? ", the PMGR quiesce among them with macOS's waits" : "",
+		 hold ? ", the other CPUs parked through them, each then writing its stop bit and holding through the commit, the commit last" :
 		 m1 ? ", the other CPUs parked through them and stopped one by one, the commit last" :
 		 quiet ? ", the commit last" : ", 500 ms",
 		 observe ? ", then CPU0's power-down, watched by CPU7" :
+		 hold ? ", then the release and every CPU's power-down, CPU0's last" :
 		 m1 ? ", then CPU0's power-down" : (replay & 2) ? ", then every CPU's power-down" : "");
 	for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++) {
 		if (!e1_post_early(&e1_post_slpa[i]))
@@ -784,8 +795,10 @@ static void e1_after_slpa(void)
  *
  * The stop bits: Naeem's deep stop writes its core's bit, and only its own,
  * to CPU-start + 0x0 just before ACC_OVRD, CYC_OVRD and the WFI
- * (smp_apple_asm.S), and macOS writes the other cores' bits after slpa on
- * T8103 and T6020 (Naeem's and DeepIdle's trace notes). On T6000 the block is
+ * (smp_apple_asm.S); on T8103 macOS's secondaries write their own bits, about
+ * 40 ms before the commit (Naeem's reading of the traces, malik-na/linux-aurora
+ * bd01a988d309; on T6020 DeepIdle's trace note doesn't say which CPU writes
+ * them, and T6000's order isn't traced). On T6000 the block is
  * at PMGR reg[0] + 0x54000, Asahi's docs/hw/cpu/smp.md offset for the M1
  * series, which linux-aurora PR #170 also uses on a J314s; + 0x0's role is
  * Naeem's. Each core's bit is 1 << (4 * cluster + core): + 0x4 reads 0x880
@@ -836,8 +849,8 @@ static void e1_after_slpa(void)
  * CPU0 doesn't wait for PCPM1), and 0x6005's bit 0, never a parked core,
  * marks the run as observe=1 in the crumbs of 4 and 7. In 9, before the
  * commit, CPU0 reads the AP wake status for CPU7 and writes CPU7's stop bit
- * while CPU7 still spins, as macOS writes the other cores' bits while they
- * stall in WFE; after the commit it hands over (go, with observe set, all of
+ * while CPU7 still spins (the observer's own choice: on T8103 macOS's
+ * secondaries write their own stop bits); after the commit it hands over (go, with observe set, all of
  * it cleaned) and goes to 10, counting any WFI that returns. CPU7
  * (m1_observe()) then polls CPU0's power state for up to 500 ms, then the E
  * complex's (ECPM) for up to 500 ms more, reads the three watchdogs, the soc
@@ -983,6 +996,65 @@ static void e1_after_slpa(void)
  * + 3600, so the alarm is the run's), and every m1=1 load refuses while 0x1401
  * reads armed.
  *
+ * hold=1 (run-floor --m1-hold, E2's hold rung; PLAN.md; with pmgr_late=1 and
+ * alarm=1, never with observe=1, since CPU0 is its reader): XNU's
+ * global sleep on H13, this recipe's family: each secondary stalls in WFE,
+ * its CPU-start stop request already written, until the boot CPU clears
+ * arm64_stall_sleep in ml_arm_sleep(), and only then does every core arm
+ * ACC_OVRD's deep sleep and take its deep WFI (xnu-12377.121.6 osfmk/arm64/
+ * cpu.c L1074-1077, L1127-1141; H13.h __ARM_GLOBAL_SLEEP_BIT__; Naeem Malik's
+ * macOS traces, malik-na/m1-power-lab's mac27-hv README L87-91; Naeem's global
+ * sleep on T8103, malik-na/linux-aurora m1power/s2r-pmp bd01a988d309 and
+ * b6b2ea1d19e0, GPL-2.0-only, credited, no result published yet). Runs 1 and
+ * 4 took every other core down before the commit, as Naeem's completed
+ * T8103 Linux entries do; runs 2 and 3 all but CPU7. In 6, each core, on its
+ * go, clears its fast IPI and AIC events, records ISR_EL1, writes its own
+ * stop bit (the word and bits of runs 1-4), says so (held), and spins,
+ * awake, every exception masked, on m1_release: the spin runs 2 and 3 held
+ * CPU7 in through the commit (XNU's and Naeem's holds are WFE, which needs a
+ * SEV; a spin needs no wake, so a core here is never asleep when its stop bit
+ * goes out, unlike DeepIdle's R13-R14, where the boot core wrote the bit of a
+ * core parked in WFI and cpu3 never woke; R15 dropped the stop request and
+ * every core slept. On T6000 only CPU7 has been held awake with a stop bit
+ * so far, runs 2 and 3). The stop bits go out here after step 5's PMGR
+ * quiesce, as in run 4 (one change): T8103's macOS writes them before that
+ * quiesce (mac27-hv README L87-88), and T6000's order isn't traced, so a
+ * later variant could write them at the park, before step 5, with no new
+ * register or PMU byte. CPU0 waits up to 10 ms for each (a core that doesn't
+ * say held is recorded and left out, not waited for). After the third commit,
+ * stage 0x5b and the acks, m1_hold_release() sets m1_release, a flag in
+ * memory, no IPI; each core clears its fast IPI and AIC events again, records
+ * ISR_EL1 (what would end its WFI), says out, arms deep sleep (all seven:
+ * c->arm is set for every core here, as arm64_prepare_for_sleep() does and
+ * Naeem's global path does; the last-of-a-cluster rule was for cores going
+ * down under running siblings, and no ordinary WFI is left to mind now),
+ * sets CYC_OVRD and takes its deep WFI. CPU0 then reads them down, this
+ * module's own reading (XNU's boot CPU and Naeem's finisher go straight on to
+ * their deep WFI): each one's power state up to 10 ms in the park's order,
+ * then PCPM0's and PCPM1's (hold_nowatch=1 skips that and goes straight to its
+ * deep WFI), records it,
+ * acks and goes down last, so nothing reads its own power-down or the E
+ * complex's (runs 2 and 3 did). No address is written that m1 doesn't write.
+ * The breadcrumbs:
+ *   0x6004  0x31-0x37 requesting the order's first to last core's stop (6);
+ *           0x39 every stop requested (7), in one command with 0x6005 (the
+ *           cores parked), 0x6006 (qto) and 0x6007 (those that said held);
+ *           0x5a the last before the commit (8), with the same three bytes;
+ *           0x5b after the third commit (the alarm's 0x6016 as in run 4);
+ *           0x5c the release made and the watch over, in one command with
+ *           0x6005 (the cores that read off after the release), 0x6006 and
+ *           0x6007 again, and it announces that 0x6012-0x6014 change meaning;
+ *           0x5e every byte landed and CPU0 had nothing pending just before
+ *           its own acks and WFI (0x5d: it had)
+ *   0x6010  step 8's RTC second as ever, its low two bytes only from 0x5c on
+ *   0x6012  (0x5d, 0x5e) the cores that took the release (said out)
+ *   0x6013  (0x5d, 0x5e) those with an interrupt pending just before their
+ *           deep WFI
+ *   0x6014  bits 4 and 5, PCPM0 and PCPM1, stay clear below 0x5c (nothing
+ *           is down before the commit); from 0x5d read off after the release
+ *   0x6015  the cores with an interrupt pending at their stop request (0x6013
+ *           is the last check before the WFI)
+ *   0x6016  the alarm's byte, as in run 4
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
  * clusters to the
@@ -1138,7 +1210,7 @@ static const u32 m1_wake_mask[7] = {
 struct m1_core {
 	u32 parked;	/* it quieted itself and spins */
 	u32 arm;	/* CPU0: arm its cluster's deep sleep before the WFI */
-	u32 go;		/* CPU0: stop now */
+	u32 go;		/* CPU0: stop now (hold=1: write your stop bit and hold) */
 	u32 left;	/* it left its spin; isr and drained are written */
 	u32 isr;	/* ISR_EL1 [8:6] just before its stop bit */
 	u32 drained;	/* AIC events it took off */
@@ -1148,10 +1220,14 @@ struct m1_core {
 	u32 qto;	/* CPU0, for CPU7, pmgr_late: the waits that timed out */
 	u32 dcs;	/* CPU0, for CPU7, pmgr_late: DCS's p-state at its last wait */
 	u32 pacc0;	/* CPU0, for CPU7, pmgr_late: PACC0's bit 4 just before the commit */
+	u32 held;	/* hold=1: it wrote its stop bit and holds */
+	u32 out;	/* hold=1: it took the release; isr is the last check before its WFI */
 	u32 wfi_ret;	/* CPU0's own, observe=1: how often its last WFI returned */
 } __aligned(128);
 static_assert(sizeof(struct m1_core) <= 128 && offsetof(struct m1_core, wfi_ret) + sizeof(u32) <= 64);
 static struct m1_core m1_core[M1_NCPUS];
+/* hold=1: each other core spins on this through the commit; CPU0 sets it after the third write. */
+static u32 m1_release __aligned(128);
 /* observe=1: the AP wake status just before the commit, CPU0's for CPU7, in a line of its own. */
 static u32 m1_wake_pre[7] __aligned(128);
 static call_single_data_t m1_csd[M1_NCPUS];
@@ -1722,6 +1798,21 @@ static void m1_park(void *data)
 	writel_relaxed(m1_cpus[cpu].stop, m1_cpu_start);
 	dsb(sy);
 	isb();
+	if (hold) {
+		/* Global sleep: its stop bit written, it stays up until CPU0 lets go, after the commit. */
+		smp_store_release(&c->held, 1);
+		m1_clean(c);
+		while (!smp_load_acquire(&m1_release))
+			cpu_relax();
+		write_sysreg_s(M1_IPI_SR_PENDING, M1_IPI_SR_EL1);
+		isb();
+		m1_drain_aic();
+		dsb(sy);
+		isb();
+		c->isr = (read_sysreg(isr_el1) >> 6) & 7;
+		smp_store_release(&c->out, 1);
+		m1_clean(c);
+	}
 	if (READ_ONCE(c->arm))
 		m1_arm_deep_sleep();
 	m1_deep_wfi(NULL);
@@ -1774,12 +1865,67 @@ done:
 	m1_crumb(0x6016, &res, 1);
 }
 
+/*
+ * hold=1, CPU0 after the third commit: the release, a flag in memory, then,
+ * unless hold_nowatch, the others read down and recorded (the m1 comment has
+ * the bytes). Every core leaves its hold at once, so each one's power state
+ * gets up to 10 ms of its own, in the park's order, then the P complexes'.
+ * CPU0 goes down last: nothing reads its own power-down or the E complex's.
+ */
+static void m1_hold_release(u8 held, u8 qto, u8 flags)
+{
+	u8 b[4], off = 0, out = 0, pend = 0;
+	unsigned int i, cpu;
+
+	smp_store_release(&m1_release, 1);
+	m1_clean(&m1_release);	/* store + clean + dsb: the form CPU7's go took after the commit in runs 2 and 3 */
+	if (hold_nowatch)
+		return;
+	for (i = 0; i < ARRAY_SIZE(m1_order); i++) {
+		cpu = m1_order[i];
+		if (!(held & BIT(cpu)))
+			continue;
+		if (m1_wait_off(m1_cpus[cpu].ps))
+			off |= BIT(cpu);
+		if (smp_load_acquire(&m1_core[cpu].out)) {
+			out |= BIT(cpu);
+			if (READ_ONCE(m1_core[cpu].isr))
+				pend |= BIT(cpu);
+		}
+	}
+	if (m1_wait_off(M1_PS_PCPM0))
+		flags |= BIT(4);
+	if (m1_wait_off(M1_PS_PCPM1))
+		flags |= BIT(5);
+	/* The stage with its bytes; 0x6012-0x6014 change meaning next, as it says. */
+	b[0] = 0x5c;
+	b[1] = off;
+	b[2] = qto;
+	b[3] = held;
+	m1_crumb(0x6004, b, 4);
+	b[0] = out;
+	b[1] = pend;
+	b[2] = flags;
+	m1_crumb(0x6012, b, 3);
+	/* CPU0's own last check, as the observer makes it, then the last acks. */
+	write_sysreg_s(M1_IPI_SR_PENDING, M1_IPI_SR_EL1);
+	isb();
+	m1_drain_aic();
+	dsb(sy);
+	isb();
+	m1_stage(((read_sysreg(isr_el1) >> 6) & 7) ? 0x5d : 0x5e);
+	for (i = 0; i < M1_SPMI_WORDS; i++)
+		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
+	dsb(sy);
+	isb();
+}
+
 /* Steps K3 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
 {
 	static const u8 two = 0x02;
 	void __iomem *commit = post_map[ARRAY_SIZE(e1_post_slpa) - 1];
-	u8 parked = 0, left = 0, down = 0, isrs = 0, flags = BIT(7), qto = 0, b[7], rtc[6] = {};
+	u8 parked = 0, left = 0, down = 0, held = 0, isrs = 0, flags = BIT(7), qto = 0, b[7], rtc[6] = {};
 	struct m1_core *o = &m1_core[7];
 	unsigned int i, k, cpu, drained = 0;
 	u32 v, dcs = 0, pacc0 = 0;
@@ -1848,7 +1994,7 @@ static void __noreturn m1_after_slpa(void)
 		m1_stage(0x20);
 	}
 
-	/* 6: release */
+	/* 6: release (hold=1: each core's stop request; they stay up through the commit) */
 	for (i = 0; i < ARRAY_SIZE(m1_order); i++) {
 		struct m1_core *c;
 
@@ -1856,30 +2002,38 @@ static void __noreturn m1_after_slpa(void)
 		c = &m1_core[cpu];
 		if (!(parked & BIT(cpu)) || (obs && cpu == 7))
 			continue;
-		m1_stage((pmgr_late ? 0x29 : 0x21) + i);
-		if ((cpu == 4 && (parked & M1_P0) == M1_P0) || (cpu == 7 && (parked & M1_P1) == M1_P1))
+		m1_stage((hold ? 0x31 : pmgr_late ? 0x29 : 0x21) + i);
+		if (hold || (cpu == 4 && (parked & M1_P0) == M1_P0) || (cpu == 7 && (parked & M1_P1) == M1_P1))
 			WRITE_ONCE(c->arm, 1);
 		smp_store_release(&c->go, 1);
 		dsb(sy);
-		if (m1_wait_off(m1_cpus[cpu].ps))
+		if (hold) {
+			/* Up to 10 ms for it to say its stop bit is written and it holds. */
+			t0 = m1_now();
+			while (!smp_load_acquire(&c->held) && m1_now() - t0 < m1_tps / 100)
+				cpu_relax();
+			if (smp_load_acquire(&c->held))
+				held |= BIT(cpu);
+		} else if (m1_wait_off(m1_cpus[cpu].ps)) {
 			down |= BIT(cpu);
+		}
 		if (smp_load_acquire(&c->left)) {
 			left |= BIT(cpu);
 			if (c->isr)
 				isrs |= BIT(cpu);
 			drained += c->drained;
 		}
-		if (cpu == 4 && m1_wait_off(M1_PS_PCPM0))
+		if (!hold && cpu == 4 && m1_wait_off(M1_PS_PCPM0))
 			flags |= BIT(4);
-		if (cpu == 7 && m1_wait_off(M1_PS_PCPM1))
+		if (!hold && cpu == 7 && m1_wait_off(M1_PS_PCPM1))
 			flags |= BIT(5);
 	}
 
 	/* 7 */
-	b[0] = pmgr_late ? 0x38 : 0x30;
+	b[0] = hold ? 0x39 : pmgr_late ? 0x38 : 0x30;
 	b[1] = parked | (obs ? BIT(0) : 0);
 	b[2] = pmgr_late ? qto : left;
-	b[3] = down;
+	b[3] = hold ? held : down;
 	m1_crumb(0x6004, b, 4);
 	for (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)
 		writel(m1_wake_mask[i], m1_aon + 4 * i);
@@ -1898,10 +2052,10 @@ static void __noreturn m1_after_slpa(void)
 	b[6] = alarm ? 0 : min(drained, 255U);	/* alarm=1: 0x6016 is m1_alarm_arm()'s */
 	m1_crumb(0x6010, b, 7);
 	if (pmgr_late) {
-		b[0] = alarm ? 0x59 : 0x58;
+		b[0] = hold ? 0x5a : alarm ? 0x59 : 0x58;
 		b[1] = parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
-		b[3] = down;
+		b[3] = hold ? held : down;
 		m1_crumb(0x6004, b, 4);
 	} else {
 		m1_stage(0x50);
@@ -1933,13 +2087,18 @@ static void __noreturn m1_after_slpa(void)
 	writel_relaxed(1, commit);
 	dsb(sy);
 	if (alarm) {
-		/* The last SPMI command: every one leaves a vector to ack before the deep WFI. */
-		m1_stage(0x5f);
+		/* The last SPMI command before the release (hold=1) or the deep WFI: every one leaves a vector to ack before that WFI. */
+		if (hold)
+			m1_stage(0x5b);
+		else
+			m1_stage(0x5f);
 		for (i = 0; i < M1_SPMI_WORDS; i++)
 			writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
 		dsb(sy);
 		isb();
 	}
+	if (hold)
+		m1_hold_release(held, qto, flags);
 	if (obs) {
 		o->raw = m1_raw;
 		o->down = down;
@@ -2503,6 +2662,14 @@ static int __init e1_check_params(void)
 		pr_err("alarm=1 needs m1=1 pmgr_late=1 and no observe=1 (CPU7's record would take 0x6016)\n");
 		return -EINVAL;
 	}
+	if (hold && (!m1 || !pmgr_late || !alarm || observe)) {
+		pr_err("hold=1 needs m1=1 pmgr_late=1 alarm=1 and no observe=1 (CPU0 reads the others down itself)\n");
+		return -EINVAL;
+	}
+	if (hold_nowatch && !hold) {
+		pr_err("hold_nowatch=1 only changes hold=1\n");
+		return -EINVAL;
+	}
 	if ((replay & (2 | 8)) && !oneway) {
 		pr_err("replay=%u can't be undone: it writes the post-slpa table%s. Load it with oneway=1 as well\n",
 		       replay, (replay & 2) ? " and powers every CPU down for good" : "");
@@ -2663,9 +2830,10 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
-		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "");
+		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
+		hold_nowatch ? " hold_nowatch=1" : "");
 	return 0;
 
 unmap:

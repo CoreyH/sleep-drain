@@ -13,7 +13,8 @@ refuses with pm_test set, an older build or an unknown argument, and unloads
 a build that ignored its parameters; --quiet adds quiet=1 and its own label,
 --m1 quiet=1 and m1=1 and its own, --m1-observe those and observe=1 and its own,
 --m1-late those and pmgr_late=1 and its own, --m1-alarm quiet=1, m1=1, pmgr_late=1
-and alarm=1 and its own.
+and alarm=1 and its own, and --m1-hold those and hold=1 and its own (and
+--m1-hold-nowatch with hold_nowatch=1).
 And after the hand-off it stays and watches a fake
 /sys/power/suspend_stats: a floor leaves it waiting with the replay armed; a
 suspend that fails (before any PM notifier, too) or comes back, no suspend at
@@ -44,6 +45,9 @@ LAUNCHERS = (
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 observe=1", "floor-m1-observe", ("--m1-observe",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 observe=1 pmgr_late=1", "floor-m1-late", ("--m1-late",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1", "floor-m1-alarm", ("--m1-alarm",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1", "floor-m1-hold", ("--m1-hold",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1",
+     "floor-m1-hold-nowatch", ("--m1-hold-nowatch",)),
 )
 
 failed = 0
@@ -54,8 +58,8 @@ def name(launcher):
 
 
 def is_m1(launcher):
-    """--m1, --m1-observe, --m1-late and --m1-alarm: all load m1=1."""
-    return any(a in ("--m1", "--m1-observe", "--m1-late", "--m1-alarm") for a in launcher[4])
+    """--m1, --m1-observe, --m1-late, --m1-alarm and the two --m1-hold: all load m1=1."""
+    return any(a in ("--m1", "--m1-observe", "--m1-late", "--m1-alarm", "--m1-hold", "--m1-hold-nowatch") for a in launcher[4])
 
 
 def check(cond, what, detail=""):
@@ -84,7 +88,12 @@ PARMS = {
              "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
              "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
              "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
-             "alarm:With m1=1 and pmgr_late=1 (bool)\nreplay:LAB ONLY (uint)\n",
+             "alarm:With m1=1 and pmgr_late=1 (bool)\nhold:With alarm=1 (bool)\nhold_nowatch:With hold=1 only (bool)\nreplay:LAB ONLY (uint)\n",
+    "floor-nohold": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
+                    "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
+                    "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
+                    "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
+                    "alarm:With m1=1 and pmgr_late=1 (bool)\nreplay:LAB ONLY (uint)\n",
     "floor-noalarm": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                      "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
                      "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\n"
@@ -113,7 +122,8 @@ def sysctl(tmp):
 
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
-          takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True):
+          takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
+          takes_nowatch=True):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -143,6 +153,8 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     quiet += f' observe=1) echo Y > {moddir}/parameters/observe ;;' if takes_observe else ""
     quiet += f' pmgr_late=1) echo Y > {moddir}/parameters/pmgr_late ;;' if takes_late else ""
     quiet += f' alarm=1) echo Y > {moddir}/parameters/alarm ;;' if takes_alarm else ""
+    quiet += f' hold=1) echo Y > {moddir}/parameters/hold ;;' if takes_hold else ""
+    quiet += f' hold_nowatch=1) echo Y > {moddir}/parameters/hold_nowatch ;;' if takes_nowatch else ""
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
               f' oneway=1) echo Y > {moddir}/parameters/oneway ;;{quiet} esac; done\n') if takes else ""
     # The rest of the floor's parameters, as before any suspend; cancel is
@@ -401,7 +413,9 @@ def test_refusals(launcher):
 def test_floor_refusals(launcher):
     quiet = "--quiet" in launcher[4]
     m1 = is_m1(launcher)
-    alarm = "--m1-alarm" in launcher[4]
+    hold = "--m1-hold" in launcher[4] or "--m1-hold-nowatch" in launcher[4]
+    nowatch = "--m1-hold-nowatch" in launcher[4]
+    alarm = "--m1-alarm" in launcher[4] or hold
     late = "--m1-late" in launcher[4] or alarm
     observe = "--m1-observe" in launcher[4] or "--m1-late" in launcher[4]
     plain = not quiet and not m1
@@ -420,15 +434,20 @@ def test_floor_refusals(launcher):
         cases.append(("a build without pmgr_late", dict(build="floor-nolate"), None, "without pmgr_late"))
     if alarm:
         cases.append(("a build without alarm", dict(build="floor-noalarm"), None, "without alarm"))
+    if hold:
+        cases.append(("a build without hold", dict(build="floor-nohold"), None, "without hold"))
     if plain:
         # The floor's build before quiet still runs the floor itself.
-        usage = "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm]"
+        usage = "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch]"
         cases += [("an unknown argument", {}, ["--loud"], usage),
                   ("a second argument", {}, ["--quiet", "--quiet"], usage),
                   ("--quiet and --m1 together", {}, ["--quiet", "--m1"], usage),
                   ("--m1 and --m1-observe together", {}, ["--m1", "--m1-observe"], usage),
                   ("--m1-observe and --m1-late together", {}, ["--m1-observe", "--m1-late"], usage),
                   ("--m1-late and --m1-alarm together", {}, ["--m1-late", "--m1-alarm"], usage),
+                  ("--m1-alarm and --m1-hold together", {}, ["--m1-alarm", "--m1-hold"], usage),
+                  ("--m1-hold and --m1-hold-nowatch together", {}, ["--m1-hold", "--m1-hold-nowatch"], usage),
+                  ("--hold alone", {}, ["--hold"], usage),
                   ("--alarm alone", {}, ["--alarm"], usage),
                   ("--observe alone", {}, ["--observe"], usage),
                   ("--late alone", {}, ["--late"], usage)]
@@ -451,6 +470,10 @@ def test_floor_refusals(launcher):
         ignored.append(("pmgr_late", dict(takes_late=False)))
     if alarm:
         ignored.append(("alarm", dict(takes_alarm=False)))
+    if hold:
+        ignored.append(("hold", dict(takes_hold=False)))
+    if nowatch:
+        ignored.append(("hold_nowatch", dict(takes_nowatch=False)))
     for what, kw in ignored:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)
