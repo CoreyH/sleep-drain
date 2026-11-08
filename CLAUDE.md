@@ -144,6 +144,12 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `e1-hook/e1a-platform` runs E1a's replay under `pm_test=platform` instead
   and prints what each key write returned, for a photo, since the NVMe is
   gone after `slpa`. Not installed by `install.sh`.
+  `e1-hook/recfg-peek` (root, safe boot only, read-only; `cc -O2 -Wall -o
+  e1-hook/recfg_peek e1-hook/recfg_peek.c` first) reads the AON engine's
+  reconfig SRAM, in stages, saving after each: the table offset register's
+  analogue, the SRAM's first word, the table, then 0x10000 bytes (`--rest`:
+  on to the table's last sequence + 0x10000, after that dump is decoded).
+  The dumps stay out of the repo.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake
@@ -160,7 +166,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   sandbox with stub mount and blockdev, one failure per case;
   `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe
   boot and `collect` in a fake next boot; `tests/m1_crumbs_test.py` runs
-  `e1-hook/m1-crumbs` on a fake PMU nvmem file; `tests/sleep_drain_reading_test.py`
+  `e1-hook/m1-crumbs` on a fake PMU nvmem file; `tests/recfg_peek_test.py` runs
+  `e1-hook/recfg_peek` on a sparse file standing in for /dev/mem and its
+  launcher with stubs; `tests/sleep_drain_reading_test.py`
   runs `sleep-drain-reading` as uid 0 in a bubblewrap user namespace against
   a fake battery, with stub `sleep-drain-safe` and `systemctl`.
 - `patches/`: patch series for upstream, kept here for review before they're
