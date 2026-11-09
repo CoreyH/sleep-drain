@@ -426,6 +426,49 @@ steps, and restarting the DCP and the PMP afterwards.
       the engine still having about 29 s, which also detects the 1-in-3 branch. A
       different ending: subtract one at a time. The same reset: the display chain
       (rung 6) goes on top. `--m1-hold-nowatch` stays behind these.
+
+      **Next (built, not run): the combined rung, `pkexec e1-hook/run-floor
+      --m1-sio-pmp`** (`e1_hook sio_on=1`, on `--m1-pmp`'s recipe with `position=1`).
+      Corey's OK and picks of 2026-11-09, "let's be ambitious":
+      - Three new PMGR writes, in step 5 just before entry 61, each with genpd's own
+        resume word (`safe-journal-20261106T201952.txt` L6172-L6260): `ps_sio`
+        (0x28e580180) := 0x0f00000f, UART_P (0x28e580230) := 0xf, SPI_P
+        (0x28e5801e8) := 0xf, each polled up to 10 ms for actual f, and the run goes on
+        either way. B1 raises the three before SIO_CPU, and B2's op 50 waits for
+        SIO_CPU's actual f. A raise that stalls is dark at stage 0x90 (the power key).
+      - The launcher withdraws the PMP's display report requests first
+        (`sleep-drain-pmp release 0xc 0xd`, the module used on earlier nights; a
+        reboot undoes it), as T8140's driver does before it idles the PMP.
+      - The PMP's K4, as OK'd on 2026-11-08 (rung 3).
+      - One position sample at about 1 s, and CPU0 then goes down at once, leaving the
+        engine about 29 s. There's no second sample, since 0x6015 stays K4's byte. No
+        `recfg-peek --position` pass: run 6 read every one of these addresses after
+        the commit, and the load log has them awake.
+      - Several variables at once on purpose: each blocker hides the next and nothing
+        senses past the first.
+      - Bytes: the position stages with bit 7 set from K4 on, 0xc0, 0xc1, 0xc2, 0xc4
+        and 0xc5 (no 0xc3). 0x6007's bits 7:1 are the cores that held, and its bit 0
+        says all three raises read on (at 0xc0 and up; below that a clear bit can be
+        a plain `--m1-pmp` run). 0x6015 is K4's byte, as in rung 3. `m1-crumbs` decodes
+        them, and `--clear` disarms the alarm at each.
+      - How to read it, in this order:
+        - Stage 0x90, dark: one of the raises stalled. The power key, then `m1-crumbs`.
+        - 0x6007 bit 0 clear at 0xc0-0xc5: a raise didn't read on within 10 ms, so the
+          SIO half of this run wasn't tested.
+        - `qto` (0x6006) bit 6: clear for the first time on this Mac means SIO_CPU
+          settled at entry 61's wait with its parents up. Still set with 0x6007 bit 0
+          set: its parents are up and it still doesn't settle (AUDIO_P, or a state
+          nothing names): new.
+        - 0x6015: as in rung 3 (0x8d-0x8f: the pair acked, idle seen, RUN read 1
+          then 0). Bits 5-4 non-zero: the PMP half wasn't tested.
+        - The sample against run 6's bytes (0x14 0xdc): the same means the gate
+          didn't open with CPU0 up, which is what about 2 in 3 expects and says nothing
+          about the rest. `PHASE` past 4, `HS_A` bit 24 up, or 0x2922c0040 bit 1 clear:
+          the gate opened with CPU0 up, the 1-in-3 branch, and the bytes say how far B2 got.
+        - The ending: a reset 30-32 s after the commit is the same ending, and the
+          next rung goes on top. A reset well away from 30 s, or dark past 2 minutes, is
+          new: leave it at least 30 minutes, end it before about 55 (the armed alarm),
+          then `m1-crumbs`, `--clear` and the BQCC reading.
       **Earlier, the order after the hold run and the decode of the engine's SRAM
       (2026-11-08; judgment):** first the
       position read (below; read-only, its addresses OK'd on 2026-11-09), then
@@ -941,7 +984,8 @@ steps, and restarting the DCP and the PMP afterwards.
          a stuck transition holds the engine (bisect with single skips, then
          make the state finish the way macOS does); a reset says only that
          the pending bits as such aren't the sole blocker.
-      5. **SIO to macOS's state** (Corey told first): `ps_sio` (0x28e580180)
+      5. **SIO to macOS's state** (built into the combined rung above, with UART_P and
+         SPI_P; Corey's OK of 2026-11-09): `ps_sio` (0x28e580180)
          on with genpd's own power-on word (0x0f00000f) just before entry 61,
          polled to actual f, then entry 61 and its wait as the table has
          them. A new PMGR write outside macOS's T6000 table. A hang here is

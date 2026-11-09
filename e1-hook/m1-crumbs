@@ -1,8 +1,8 @@
 #!/usr/bin/python3 -I
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
---m1-pmp-idle or --m1-position; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1,
-hold=1, pmp_out=1, position=1) leaves in the PMU, read and decoded, and cleared
+--m1-pmp-idle, --m1-position or --m1-sio-pmp; e1_hook m1=1, observe=1, pmgr_late=1,
+alarm=1, hold=1, pmp_out=1, position=1, sio_on=1) leaves in the PMU, read and decoded, and cleared
 again.
 
   e1-hook/m1-crumbs               read them (no root needed)
@@ -48,7 +48,9 @@ CRUMBS = ((0x6004, 4), (0x6010, 7))  # the bytes --clear zeroes
 # compare value (4 bytes LE, the RTC's seconds), event, mask (pmu-alarm).
 ALARM_CTRL, ALARM, ALARM_EVENT, ALARM_MASK = 0x1401, 0x140c, 0x14c0, 0x14c2
 # position=1 (run-floor --m1-position): the stages after the commit. 0x6012-0x6013 hold
-# sample 1 from 0x42 on, 0x6007 and 0x6015 sample 2 from 0x44 on.
+# sample 1 from 0x42 on, 0x6007 and 0x6015 sample 2 from 0x44 on. With pmp_out=1 (sio_on=1's run: the stages with
+# bit 7), sample 1 alone: 0x6007 stays the cores that held, its bit 0 saying ps_sio, UART_P and SPI_P read on, and
+# 0x6015 stays K4's byte.
 POSITION = (0x40, 0x41, 0x42, 0x43, 0x44, 0x45)
 POS_S1 = (0x42, 0x43, 0x44, 0x45)
 POS_S2 = (0x44, 0x45)
@@ -156,13 +158,14 @@ HOLD_TEXT = {
           " later breadcrumb failed",
     0x41: "position=1: about 1 s after the third commit, CPU0 began sample 1's reads, and the stage after its bytes"
           " didn't follow: a read that hung, or a reset or a failed SPMI command there",
-    0x42: "position=1: sample 1's bytes landed; CPU0 waiting for sample 2, about 25 s after the third commit. It"
-          " stopped there, or a later breadcrumb failed",
+    0x42: "position=1: sample 1's bytes landed; CPU0 waiting for sample 2, about 25 s after the third commit (with"
+          " pmp_out=1, there's no sample 2, and it went straight on to its last check). It stopped there, or a later"
+          " breadcrumb failed",
     0x43: "position=1: about 25 s after the third commit, CPU0 began sample 2's reads, and the stage after its bytes"
           " didn't follow: a read that hung, or a reset or a failed SPMI command there",
-    0x44: "position=1: both samples recorded, but CPU0 had an interrupt or SError pending just before its acks and its"
+    0x44: "position=1: the samples recorded, but CPU0 had an interrupt or SError pending just before its acks and its"
           " deep WFI: that would end its WFI, and a read that failed after the commit would leave one pending (masked)",
-    0x45: "position=1: both samples recorded, CPU0 had nothing pending just before its acks and its deep WFI",
+    0x45: "position=1: the samples recorded, CPU0 had nothing pending just before its acks and its deep WFI",
 }
 
 
@@ -223,8 +226,8 @@ def sample_lines(n, addr_a, a, addr_b, b):
             f" 0x2922c0040 bit 1 {'set' if b & 0x80 else 'clear'}"]
 
 
-def position_lines(s, b):
-    """position=1, stages 0x40-0x45: which samples these bytes are, and what they say."""
+def position_lines(s, b, pmp=False):
+    """position=1, stages 0x40-0x45: which samples these bytes are, and what they say. pmp: sio_on=1's layout, one sample."""
     out = []
     if s in POS_S1:
         out += sample_lines(1, 0x6012, b[0x12], 0x6013, b[0x13])
@@ -233,12 +236,16 @@ def position_lines(s, b):
                    " bytes' stage didn't follow: not decoded")
     else:
         out.append("no sample recorded yet")
-    if s in POS_S2:
+    if pmp:
+        if s in POS_S1:
+            out.append("  one sample by design (pmp_out=1 keeps 0x6015), about 1 s after the commit: it can't tell a stop from"
+                       " slow progress" + ("" if s in POS_S2 else ", and only stages 0x44 and 0x45 say whether a read failed"))
+    elif s in POS_S2:
         out += sample_lines(2, 0x6007, b[0x07], 0x6015, b[0x15])
     elif s == 0x43:
         out.append(f"0x6007 0x6015 = {b[0x07]:02x} {b[0x15]:02x}: held and step 8's byte, or sample 2's, the stage after"
                    " them didn't follow: not decoded")
-    if s in (0x42, 0x43):
+    if not pmp and s in (0x42, 0x43):
         out.append("  sample 1 alone, about 1 s after the commit: only stages 0x44 and 0x45 say whether a read failed, and one"
                    " sample can't tell a stop from slow progress, so no rung from it")
     if s in POS_S1:
@@ -431,7 +438,7 @@ def decode(b, rtc, cnt=None, alarm=None):
             out.append(f"read off after the release (0x6005 = 0x{b[5]:02x}, up to 10 ms each): {cpus(b[5] & 0xfe)}")
             if s in POSITION:
                 out.append(f"0x6005 bit 0: SIO_CPU's bits 27:24 {'read f' if b[5] & 1 else 'did not read f'} at entry 61's"
-                           f" wait, the reference for its class{'' if b[5] & 1 else ' (the expected case)'}")
+                           " wait, the reference for its class")
         else:
             out.append(f"parked (0x6005 = 0x{b[5]:02x}): {cpus(b[5] & 0xfe)}")
         if late and base >= 0x20:
@@ -439,10 +446,14 @@ def decode(b, rtc, cnt=None, alarm=None):
         if base >= 0x30:
             if not late:
                 out.append(f"left their spin to stop (0x6006 = 0x{b[6]:02x}): {cpus(b[6])}")
-            if s in POS_S2 or s == 0x43:
+            if not pmp and (s in POS_S2 or s == 0x43):
                 pass  # sample 2's, or not decoded: position_lines()
             elif hold:
-                out.append(f"wrote their stop bit and held (0x6007 = 0x{b[7]:02x}): {cpus(b[7])}")
+                out.append(f"wrote their stop bit and held (0x6007 = 0x{b[7]:02x}): {cpus(b[7] & 0xfe)}")
+                # sio_on=1's bit, which only its own stages can read when clear: a plain pmp_out=1 run leaves it clear too.
+                if pmp and (b[7] & 1 or s in POSITION):
+                    out.append(f"0x6007 bit 0 (sio_on=1): ps_sio, UART_P and SPI_P "
+                               f"{'all read actual f within 10 ms' if b[7] & 1 else 'did NOT all read actual f within 10 ms'}")
             else:
                 out.append(f"read off within 10 ms (0x6007 = 0x{b[7]:02x}): {cpus(b[7])}")
     now = int.from_bytes(rtc[2:6], "little")
@@ -544,7 +555,7 @@ def decode(b, rtc, cnt=None, alarm=None):
                    " or CPU7's (it was rewriting them): not decoded")
     elif base >= 0x50:
         if s in POSITION:
-            out += position_lines(s, b)
+            out += position_lines(s, b, pmp)
         elif hold and s in HOLD_AFTER:
             if s == 0x5c:
                 out.append("0x6012-0x6014: being rewritten when the breadcrumbs stopped: not decoded")
