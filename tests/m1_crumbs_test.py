@@ -1446,7 +1446,8 @@ def position_tests(g, src):
                             "state = readl(m1_wdx + M1_WDX_STATE);", "sio = readl(m1_sio + M1_PS_SIO_CPU);", "ctrl = readl(m1_wdt + M1_WD_CTRL(2));",
                             "count = readl(m1_wdt + M1_WD_CUR(2));", "now = m1_now();", "gate44 = readl(m1_pos + M1_POS_GATE44);",
                             "gate40 = readl(m1_pos + M1_POS_GATE40);", "s[0] = m1_pos_byte_a(phase, hs, state);",
-                            "s[1] = m1_pos_byte_b(sio, ctrl, m1_pos_count_near(count, now - m1_t_first, m1_tps), gate44, gate40);"]),
+                            "s[1] = disp_off ? m1_pos_byte_d(m1_disp_bits, gate44, gate40) :",
+                            "m1_pos_byte_b(sio, ctrl, m1_pos_count_near(count, now - m1_t_first, m1_tps), gate44, gate40);"]),
           "m1_pos_sample() reads each word into its own name, and byte A goes to s[0], byte B to s[1]", sample)
     check(pos.count("writel(") == 1 and "writel_relaxed" not in pos and "write" not in re.sub(r"writel\(U32_MAX, m1_spmi|write_sysreg_s", "", pos)
           and "write" not in sample,
