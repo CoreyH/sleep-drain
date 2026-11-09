@@ -6,8 +6,9 @@ at 0x6000-0x601f and the RTC at 0x1406, runs the tool with a fake SoC counter
 (M1_CRUMBS_CNTVCT), and checks what it prints: run 1's stages, the
 observer's (observe=1), run 3's (pmgr_late=1), run 4's (alarm=1) and the reset
 time after a commit, hold=1's stages (0x31-0x37, 0x39, 0x5a-0x5e) and their
-bytes, and pmp_out=1's tagged stages and its byte in 0x6015, checked against
-e1_hook.c's source too. --clear must zero 0x6004-0x6007 and 0x6010-0x6016, and
+bytes, pmp_out=1's tagged stages and its byte in 0x6015, and position=1's stages
+(0x40-0x45) and samples, the samples' bytes made by e1-hook/m1_position.h itself,
+all checked against e1_hook.c's source too. --clear must zero 0x6004-0x6007 and 0x6010-0x6016, and
 only after a stage that armed the alarm also set 0x1401 back to 0x01, and
 nothing else; an unknown argument changes nothing.
 
@@ -1107,7 +1108,8 @@ def main():
     defs = {k: int(v, 0) for k, v in re.findall(r"#define (M1_PMU_ALARM\w*|M1_ALARM_\w+)\s+(0x[0-9a-f]+|\d+)", src)}
     check(defs.get("M1_PMU_ALARM_CTRL") == g["ALARM_CTRL"] and defs.get("M1_PMU_ALARM") == g["ALARM"]
           and defs.get("M1_PMU_ALARM_EVENT") == g["ALARM_EVENT"] and defs.get("M1_PMU_ALARM_MASK") == g["ALARM_MASK"]
-          and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"] and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e)
+          and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"]
+          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45)
           and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src and "hold ? 0x5a : alarm ? 0x59 : 0x58" in src
           and "m1_stage(0x5b)" in src and "b[0] = 0x5c" in src and "? 0x5d : 0x5e" in src and "hold ? 0x39 :" in src
           and "hold ? 0x31 :" in src,
@@ -1119,8 +1121,256 @@ def main():
     check(not set(g["HOLD"]) & others, "hold=1's stages collide with no other run's",
           f"{sorted(set(g['HOLD']) & others)}")
 
+    position_tests(g, src)
+
     print(f"{failed} failed" if failed else "all ok")
     return 1 if failed else 0
+
+
+def position_tests(g, src):
+    """position=1: the encoder itself, compiled from m1_position.h, against an independent reading of the layout; then
+    its bytes through the decoder; then e1_hook.c's side."""
+    with tempfile.TemporaryDirectory() as tmp:
+        harness = os.path.join(tmp, "harness.c")
+        with open(harness, "w") as f:
+            f.write(HARNESS)
+        exe = os.path.join(tmp, "harness")
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", exe, harness],
+                       check=True)
+
+        def enc(rows):
+            """rows: (phase, hs_a, state, sio, ctrl, count, gate44, gate40, elapsed, tps); returns [(a, b)]."""
+            text = "".join(" ".join(f"{v:x}" for v in row) + "\n" for row in rows)
+            r = subprocess.run([exe], input=text, capture_output=True, text=True, timeout=60)
+            return [tuple(int(x, 16) for x in line.split()) for line in r.stdout.splitlines()]
+
+        def sio_class(v):
+            if v == 0xffffffff:
+                return 0
+            if v & 0xf == 0:
+                return 1 if v & 0x800 else 2
+            if (v >> 24) & 0xf != 0xf:
+                return 3
+            return 5 if (v >> 4) & 0xf == 0xf else 4
+
+        # Every combination of the fields the class looks at, with the other bits varied.
+        words = [0xffffffff]
+        for top, bit11, actual, target in ((t, b, a, g2) for t in range(16) for b in (0, 1) for a in range(16) for g2 in range(16)):
+            words.append(top << 24 | bit11 << 11 | actual << 4 | target)
+            words.append(top << 24 | 0xf00000 | bit11 << 11 | 0x600 | actual << 4 | target)
+        got = enc([(0, 0, 0, w, 0, 0, 0, 0, 0, 24000000) for w in words])
+        bad = [hex(w) for w, (_, b) in zip(words, got) if b & 7 != sio_class(w)]
+        check(len(got) == len(words) and not bad, f"SIO_CPU's class over {len(words)} words: as the layout says, none overlapping", str(bad[:8]))
+
+        def row(phase=0, hs=0, state=0, sio=0, ctrl=0, count=0, g44=0, g40=0, el=0, tps=24000000):
+            return (phase, hs, state, sio, ctrl, count, g44, g40, el, tps)
+
+        a = enc([row(phase=p) for p in range(16)])
+        check([x[0] & 0xf for x in a] == list(range(16)), "byte A: bits 3:0 are PHASE's low four bits")
+        a = enc([row(phase=0x7f4), row(hs=0x80000000), row(hs=0x01000000), row(hs=0x81000000), row(hs=0x7effffff)])
+        check([x[0] & 0x3f for x in a] == [4, 0x10, 0x20, 0x30, 0], "byte A: bit 4 is HS_A bit 31, bit 5 bit 24, nothing else of HS_A", str(a))
+        a = enc([row(state=v) for v in (0xa03, 1, 0xa02, 0, 2, 0xa01, 0x1a03, 0xffffffff)])
+        check([x[0] >> 6 for x in a] == [0, 1, 2, 3, 3, 3, 3, 3], "byte A: the state word's classes", str(a))
+        b = enc([row(ctrl=4), row(ctrl=3), row(ctrl=0xfffffffb), row(ctrl=0xffffffff)])
+        check([bool(x[1] & 8) for x in b] == [True, False, False, True], "byte B: bit 3 is RESET_EN (bit 2) alone", str(b))
+        b = enc([row(g44=4), row(g44=8), row(g44=0xfffffff3), row(g40=2), row(g40=0xfffffffd)])
+        check([x[1] & 0xe0 for x in b] == [0x20, 0x40, 0, 0x80, 0], "byte B: bits 5-7 are the gate words' bits", str(b))
+        tps = 24000000
+        q = tps // 4
+        b = enc([row(count=1000000, el=1000000), row(count=1000000 + q, el=1000000), row(count=1000000 + q + 1, el=1000000),
+                 row(count=q + 5000, el=5000), row(count=q + 5001, el=5000), row(count=0, el=q), row(count=0, el=q + 1),
+                 row(count=720000000, el=25 * tps), row(count=2000, el=25 * tps)])
+        check([bool(x[1] & 0x10) for x in b] == [True, True, False, True, False, True, False, False, False],
+              "byte B: bit 4 says WD2's count is within 0.25 s of the time since the first commit, on either side", str(b))
+
+        # The bytes, through the decoder, every stage.
+        path = os.path.join(tmp, "nvmem")
+        cnt = "4800000000 24000000"
+        alarm = (0x41, 125144, 0, 0)
+        (s1a, s1b), (s2a, s2b) = enc([
+            row(phase=4, hs=0x81010000, state=0xa03, sio=0x0400024f, ctrl=4, count=1 * tps, g44=4, g40=0, el=1 * tps),
+            row(phase=5, hs=0x80010000, state=0xa03, sio=0x0f00024f, ctrl=4, count=25 * tps, g44=8, g40=2, el=25 * tps)])
+        rec = dict(parked=0xfe, left=0x50, down=0xfe, secs=121544, flags=0xb0, isrs=0, drained=0xbd)
+        both = dict(rec, down=s2a, isrs=s2b, prog=(s1a, s1b))
+
+        def decoded(stage, kw, **more):
+            fake(path, scratch(stage, **kw), rtc_secs=121761, alarm=alarm, **more)
+            r = run(path, cnt=cnt)
+            return r.returncode, r.stdout, r.stderr
+
+        LONE = "sample 1 alone, about 1 s after the commit: only stages 0x44 and 0x45 say whether a read failed"
+        rc, out, err = decoded(0x45, both)
+        check(rc == 0 and "0x6004 = 0x45 (pmgr_late=1): position=1: both samples recorded, CPU0 had nothing pending" in out
+              and "read off after the release (0x6005 = 0xfe, up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
+              and "0x6005 bit 0: SIO_CPU's bits 27:24 did not read f at entry 61's wait, the reference for its class (the expected case)\n" in out
+              and "macOS's waits that timed out after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)\n" in out
+              and f"position sample 1 (0x6012 = 0x{s1a:02x}, 0x6013 = 0x{s1b:02x}):\n" in out
+              and "  PHASE 0x4 (the entry pair's first (A2)); HS_A bit 31 up, bit 24 up; state word 0xa03 (a sequence's start)\n" in out
+              and "  SIO_CPU: another target, bits 27:24 not f; WD2 RESET_EN set; WD2's count within 0.25 s of CPU0's time since the first commit write\n" in out
+              and "  gate words: 0x2922c0044 bit 2 set, bit 3 clear; 0x2922c0040 bit 1 clear\n" in out
+              and f"position sample 2 (0x6007 = 0x{s2a:02x}, 0x6015 = 0x{s2b:02x}):\n" in out
+              and "  PHASE 0x5 (the entry pair's second (A2)); HS_A bit 31 up, bit 24 clear; state word 0xa03 (a sequence's start)\n" in out
+              and "  SIO_CPU: another target, bits 27:24 f, actual not f; WD2 RESET_EN set; WD2's count within 0.25 s" in out
+              and "  gate words: 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 set\n" in out
+              and "from its low two bytes and the run's alarm: 121544, 217 s before now (121761)" in out
+              and "PCPM0 off after the release, PCPM1 off after the release" in out
+              and "0x6016 = 0xbd: every alarm command was acked" in out
+              and "0x140c is the commit's second + 3600, as the run wrote it" in out
+              and "the SoC restarted about" in out and "wrote their stop bit" not in out
+              and "cores with an interrupt pending" not in out and "the cores that took the release" not in out
+              and "observe=1" not in out and "PLAN.md has the reading guide" in out and LONE not in out,
+              "position=1's 0x45: both samples decoded from the module's own bytes", out + err)
+        rc, out, err = decoded(0x44, both)
+        check(rc == 0 and "0x44 (pmgr_late=1): position=1: both samples recorded, but CPU0 had an interrupt or SError pending" in out
+              and "position sample 2" in out and LONE not in out, "position=1's 0x44: the same, with something pending", out + err)
+
+        # Each sample's own lines, exact, with every field differing between the two and the other branch of each taken.
+        (t1a, t1b), (t2a, t2b) = enc([
+            row(phase=3, hs=0x01000000, state=0xa02, sio=0x00000800, ctrl=4, count=0, g44=8, g40=0, el=1 * tps),
+            row(phase=0xe, hs=0x80000000, state=1, sio=0x0f0000ff, ctrl=0, count=25 * tps, g44=4, g40=2, el=25 * tps)])
+        rc, out, err = decoded(0x45, dict(rec, down=t2a, isrs=t2b, prog=(t1a, t1b)))
+        want1 = (f"position sample 1 (0x6012 = 0x{t1a:02x}, 0x6013 = 0x{t1b:02x}):\n"
+                 "  PHASE 0x3 (pair 1's last); HS_A bit 31 down, bit 24 up; state word 0xa02 (A1's close)\n"
+                 "  SIO_CPU: target 0, bit 11 set (B2 at op 91, inferred); WD2 RESET_EN set; WD2's count NOT within 0.25 s of CPU0's time since the first commit write\n"
+                 "  gate words: 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 clear\n")
+        want2 = (f"position sample 2 (0x6007 = 0x{t2a:02x}, 0x6015 = 0x{t2b:02x}):\n"
+                 "  PHASE 0xe (not a phase the sequences read so far write); HS_A bit 31 up, bit 24 clear; state word 1 (a sequence's end)\n"
+                 "  SIO_CPU: another target, bits 27:24 f, actual f; WD2 RESET_EN clear; WD2's count within 0.25 s of CPU0's time since the first commit write\n"
+                 "  gate words: 0x2922c0044 bit 2 set, bit 3 clear; 0x2922c0040 bit 1 set\n")
+        check(rc == 0 and want1 in out and want2 in out, "each sample's lines say that sample's bits, in both branches of each", out + err)
+        rc, out, err = decoded(0x45, dict(both, parked=0xff))
+        check(rc == 0 and "0x6005 bit 0: SIO_CPU's bits 27:24 read f at entry 61's wait, the reference for its class\n" in out
+              and "up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out and "observe=1" not in out,
+              "position=1: 0x6005 bit 0 is SIO_CPU's reference, not observe's mark", out + err)
+        rc, out, err = decoded(0x43, both)
+        check(rc == 0 and "position sample 1" in out and "position sample 2" not in out
+              and "0x43 (pmgr_late=1): position=1: about 25 s after the third commit, CPU0 began sample 2's reads" in out
+              and "held and step 8's byte, or sample 2's, the stage after them didn't follow: not decoded" in out
+              and "wrote their stop bit" not in out and "cores with an interrupt pending" not in out and LONE in out,
+              "position=1's 0x43: sample 2's bytes not read as facts, and sample 1 is flagged as alone", out + err)
+        rc, out, err = decoded(0x42, dict(rec, prog=(s1a, s1b)))
+        check(rc == 0 and "position sample 1" in out and "position sample 2" not in out
+              and "0x42 (pmgr_late=1): position=1: sample 1's bytes landed" in out
+              and "wrote their stop bit and held (0x6007 = 0xfe)" in out
+              and "0x6015 = 0x00: cores with an interrupt pending at their stop request (hold=1): none\n" in out and LONE in out,
+              "position=1's 0x42: sample 1 decoded and flagged as alone, 0x6007 and 0x6015 still hold's", out + err)
+        rc, out, err = decoded(0x41, dict(rec, prog=(s1a, s1b)))
+        check(rc == 0 and "position sample" not in out and "step 8's second's upper bytes or sample 1's" in out
+              and "0x41 (pmgr_late=1): position=1: about 1 s after the third commit, CPU0 began sample 1's reads" in out
+              and "not decoded" in out and "wrote their stop bit and held (0x6007 = 0xfe)" in out and LONE not in out,
+              "position=1's 0x41: sample 1's bytes not read as facts", out + err)
+        rc, out, err = decoded(0x40, rec)
+        check(rc == 0 and "0x40 (pmgr_late=1): position=1: the release went out and CPU0's watch ended" in out
+              and "no sample recorded yet" in out and "position sample" not in out
+              and "wrote their stop bit and held (0x6007 = 0xfe)" in out
+              and "read off after the release" in out
+              and "from its low two bytes and the run's alarm: 121544" in out,
+              "position=1's 0x40: the watch's bytes, no sample", out + err)
+        fake(path, scratch(0x45, **dict(both, flags=0x30)), rtc_secs=121761, alarm=alarm)
+        r = run(path, cnt=cnt)
+        check(r.returncode == 0 and "0x6014 = 0x30: bit 7 is clear, so its own one-byte command didn't survive the reset" in r.stdout,
+              "position=1: 0x6014 without bit 7 isn't read", r.stdout + r.stderr)
+
+        # --clear must disarm the run's alarm at every position stage, and zero the crumbs.
+        for stage in (0x40, 0x41, 0x42, 0x43, 0x44, 0x45):
+            before = fake(path, scratch(stage, **both), rtc_secs=121761, alarm=alarm)
+            r = run(path, "--clear", cnt=cnt)
+            after = open(path, "rb").read()
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                  f"--clear after position=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
+        before = fake(path, scratch(0x45, **both), rtc_secs=121761, alarm=(0x41, 200000, 0, 0))
+        r = run(path, "--clear", cnt=cnt)
+        after = open(path, "rb").read()
+        check(r.returncode == 0 and after[0x1401] == 0x41 and "left alone" in r.stdout and "disarmed" not in r.stdout,
+              "--clear after position=1 with another alarm armed: left alone", r.stdout + r.stderr)
+
+    # The decoder's names for each class, written here from the plan's grouping and not copied from its tables.
+    lines = g["sample_lines"]
+    for cls, text in enumerate(("0xa03 (a sequence's start)", "1 (a sequence's end)", "0xa02 (A1's close)", "some other value")):
+        got = lines(1, 0x6012, cls << 6, 0x6013, 0)[1]
+        check(got.endswith("state word " + text), f"the state word's class {cls} is named {text}", got)
+    for cls, text in enumerate(("all ones: a failed read", "target 0, bit 11 set (", "target 0, bit 11 clear (", "another target, bits 27:24 not f;",
+                                "another target, bits 27:24 f, actual not f;", "another target, bits 27:24 f, actual f;")):
+        got = lines(1, 0x6012, 0, 0x6013, cls)[2]
+        check(got.startswith("  SIO_CPU: " + text), f"SIO_CPU's class {cls} is named {text}", got)
+    groups = {"the entry pair": (4, 5, 7), "pair 3": (6, 9), "pair 0": (0,), "pair 1": (2, 3, 8, 0xa, 0xb, 0xc, 0xd), "not a phase": (1, 0xe, 0xf)}
+    for text, phases in groups.items():
+        for phase in phases:
+            got = lines(1, 0x6012, phase, 0x6013, 0)[1]
+            check(f"PHASE {phase:#x} ({text}" in got, f"PHASE {phase:#x} is named for {text}", got)
+
+    # e1_hook.c's side.
+    def in_order(text, pieces):
+        at = 0
+        for piece in pieces:
+            i = text.find(piece, at)
+            if i < 0:
+                return False
+            at = i + 1
+        return True
+
+    defs = {k: int(v, 0) for k, v in re.findall(r"#define (M1_POS_\w+|M1_WDX_STATE|M1_WDX)\s+(0x[0-9a-fA-F]+|\d+)", src)}
+    check(defs.get("M1_POS_PAGE") == 0x2922c0000 and defs.get("M1_POS_PHASE") == 0x110 and defs.get("M1_POS_GATE44") == 0x44
+          and defs.get("M1_POS_GATE40") == 0x40 and defs.get("M1_POS_HS_A") == 4 and defs.get("M1_WDX_STATE") == 0x1c
+          and defs.get("M1_WDX") == 0x2922b8000 and "#define E1_S2R_COMMIT\t\t0x2925c4000ULL" in src,
+          "position=1's addresses are the plan's", str(defs))
+    pos = src[src.index("static void m1_position(u8 off"):]
+    pos = pos[:pos.index("\n}\n")]
+    sample = src[src.index("static void m1_pos_sample(u8 *s)"):]
+    sample = sample[:sample.index("\n}\n")]
+    order = ["m1_crumb(0x6014, &flags, 1);", "b[0] = 0x40;", "b[1] = off | (m1_sio_ref ? BIT(0) : 0);", "b[2] = qto;", "b[3] = held;",
+             "m1_crumb(0x6004, b, 4);", "if (m1_raw) {\n\t\tm1_pos_wait(m1_t_third + m1_tps);", "m1_stage(0x41);", "m1_pos_sample(s);", "m1_crumb(0x6012, s, 2);",
+             "m1_stage(0x42);", "if (m1_raw) {\n\t\tm1_pos_wait(m1_t_third + 25 * m1_tps);", "m1_stage(0x43);", "m1_pos_sample(s);", "m1_crumb(0x6007, s, 1);",
+             "m1_crumb(0x6015, s + 1, 1);", "? 0x44 : 0x45);", "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));"]
+    check(in_order(pos, order), "m1_position() sends the stages and samples in the order m1-crumbs reads them, each wait only with raw SPMI up", pos)
+    release = src[src.index("static void m1_hold_release("):]
+    release = release[:release.index("\n}\n")]
+    check(in_order(release, ["m1_wait_off(M1_PS_PCPM0)", "m1_wait_off(M1_PS_PCPM1)", "if (position) {\n\t\tm1_position(off, qto, held, flags);\n\t\treturn;\n\t}", "b[0] = 0x5c;"]),
+          "m1_hold_release() branches to m1_position() after both PCPM waits and doesn't go on to hold=1's stages", release)
+    check("while (m1_now() < at)\n\t\tcpu_relax();" in src, "m1_pos_wait() spins until the counter reaches the deadline")
+    check(in_order(sample, ["post_map[ARRAY_SIZE(e1_post_slpa) - 1] + M1_POS_HS_A;", "phase = readl(m1_pos + M1_POS_PHASE);", "hs = readl(hs_a);",
+                            "state = readl(m1_wdx + M1_WDX_STATE);", "sio = readl(m1_sio + M1_PS_SIO_CPU);", "ctrl = readl(m1_wdt + M1_WD_CTRL(2));",
+                            "count = readl(m1_wdt + M1_WD_CUR(2));", "now = m1_now();", "gate44 = readl(m1_pos + M1_POS_GATE44);",
+                            "gate40 = readl(m1_pos + M1_POS_GATE40);", "s[0] = m1_pos_byte_a(phase, hs, state);",
+                            "s[1] = m1_pos_byte_b(sio, ctrl, m1_pos_count_near(count, now - m1_t_first, m1_tps), gate44, gate40);"]),
+          "m1_pos_sample() reads each word into its own name, and byte A goes to s[0], byte B to s[1]", sample)
+    check(pos.count("writel(") == 1 and "writel_relaxed" not in pos and "write" not in re.sub(r"writel\(U32_MAX, m1_spmi|write_sysreg_s", "", pos)
+          and "write" not in sample,
+          "position=1 writes nothing but breadcrumbs and nub-spmi0's acks; a sample only reads", pos + sample)
+    for word in ("M1_POS_PHASE", "hs_a", "M1_WDX_STATE", "M1_PS_SIO_CPU", "M1_WD_CTRL(2)", "M1_WD_CUR(2)", "M1_POS_GATE44", "M1_POS_GATE40"):
+        check(f"readl(" in sample and word in sample, f"a sample reads {word}", sample)
+    settled = re.findall(r"\{\s*(\d+),\s*M1_W_SETTLED,[^}]*\}", src)
+    check(settled == ["61"] and "0x28e580188ULL" in re.search(r"\{\s*61,\s*M1_W_SETTLED[^\n]*", src).group(0)
+          and "if (m1_waits[k].kind == M1_W_SETTLED)" in src and "m1_sio_ref = ((v >> 24) & 0xf) == 0xf;" in src,
+          "SIO_CPU's reference comes from entry 61's wait, the only M1_W_SETTLED", str(settled))
+    commit = src[src.index("m1_t_first = m1_now();"):]
+    commit = commit[:commit.index("m1_t_third = m1_now();")]
+    check(commit.count("writel_relaxed(1, commit);") == 3 and commit.index("writel_relaxed(1, commit);") > 0,
+          "the time since the first commit starts before its first write, the 25 s after its third", commit)
+    check('position && (!hold || hold_nowatch || pmp_out)' in src, "e1_check_params refuses position=1 off hold=1, with hold_nowatch or pmp_out")
+    check("0x6004 && end <= 0x6008" in src and "0x6010 && end <= 0x6017" in src, "the breadcrumb range is unchanged")
+    others = set(g["STAGES"]) | set(g["OBSERVE_STAGES"]) | set(g["LATE"]) | set(range(0x21, 0x28)) | set(range(0x31, 0x3a)) | {0x5a, 0x5b, 0x5c, 0x5d, 0x5e}
+    check(not set(g["POSITION"]) & others, "position=1's stages collide with no other run's")
+
+
+HARNESS = """#include <inttypes.h>
+#include <stdio.h>
+#include "m1_position.h"
+int main(void)
+{
+	uint32_t p, h, st, sio, ctrl, count, g44, g40;
+	uint64_t el, tps;
+
+	while (scanf("%" SCNx32 " %" SCNx32 " %" SCNx32 " %" SCNx32 " %" SCNx32 " %" SCNx32 " %" SCNx32 " %" SCNx32 " %" SCNx64 " %" SCNx64,
+		     &p, &h, &st, &sio, &ctrl, &count, &g44, &g40, &el, &tps) == 10)
+		printf("%02x %02x\\n", m1_pos_byte_a(p, h, st), m1_pos_byte_b(sio, ctrl, m1_pos_count_near(count, el, tps), g44, g40));
+	return 0;
+}
+"""
 
 
 if __name__ == "__main__":

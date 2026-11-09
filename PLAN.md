@@ -42,9 +42,10 @@ the PR with that session's work.
   (that it's what resets the SoC is inferred), and the pair of sequences that
   looks like the entry polls device power domains, the DCS and fabric p-states
   and, first, an unidentified AON status word. It accesses no address known to
-  be a CPU or display register; a wait below the sequences isn't excluded. Next,
-  if Corey OKs its new addresses and gives its run a go, is the position read
-  below (the order is at the top of that list).
+  be a CPU or display register; a wait below the sequences isn't excluded. Next
+  is the position read below (Corey OK'd its seven new read-only addresses on
+  2026-11-09, and it's built; its run waits for Corey's go; the order is at the
+  top of that list).
 
 ## Picking this up
 
@@ -411,8 +412,8 @@ steps, and restarting the DCP and the PMP afterwards.
       a cumulative rung.
       **The order after the hold run and the decode of the engine's SRAM
       (2026-11-08; judgment; this is the only place it's kept):** first the
-      position read (below; read-only, needs Corey's OK for its new addresses),
-      then whichever rung it points at; `--m1-hold-nowatch` comes after it.
+      position read (below; read-only, its addresses OK'd on 2026-11-09), then
+      whichever rung it points at; `--m1-hold-nowatch` comes after it.
       Expected, not established: SIO to macOS's state (rung 5, Corey told first)
       if the engine sits at SIO_CPU's wait, then the PMP out (rung 3, OK'd
       2026-11-08, `--m1-pmp`) on top of it; the PMP out first if the engine sits
@@ -429,12 +430,16 @@ steps, and restarting the DCP and the PMP afterwards.
       driver (both OK'd by Corey, 2026-11-08); then rungs 4-7 as numbered. Corey
       picks.
 
-      **Next, proposed (read-only; not built): where the engine stops, the
-      position read.** RESEARCH.md's SRAM section names the registers that say
-      which sequence and which round the engine is in; nothing has read them.
-      This needs Corey's OK for the new read-only addresses below, and Corey's go
-      for the run. It adds no new write and no new PMU byte. The B2 op numbers are
-      the decode's per-register count (RESEARCH.md).
+      **Next (read-only; built, not run): where the engine stops, the position
+      read.** RESEARCH.md's SRAM section names the registers that say which
+      sequence and which round the engine is in; nothing has read them. Corey
+      OK'd the new read-only addresses below on 2026-11-09, with the repeat read
+      in the regular boot after the run; the run itself needs Corey's go. It adds
+      no new write and no new PMU byte. The B2 op numbers are the decode's
+      per-register count (RESEARCH.md). As built: `e1_hook position=1`
+      (`run-floor --m1-position`, on `--m1-hold`; `e1-hook/m1_position.h` has the
+      bytes), `recfg-peek --position` (the awake pass, which run-floor requires in
+      the same boot) and `recfg-peek --position-after` (the next-boot pass).
       - The new addresses: `PHASE` 0x2922c0110, `HS_B` 0x2922c010c and the gate
         words 0x2922c0044 and 0x2922c0040 (page 0x2922c0000, new to the hook),
         `HS_A` 0x2925c4004 (the commit's own page), the state word 0x2922b801c (a
@@ -449,34 +454,47 @@ steps, and restarting the DCP and the PMP afterwards.
         nothing documents offset 0): awake, one per boot, once something needs them.
         No run has read DCS or the fabric after the commit, and this one doesn't.
       - Awake first, in the same safe boot, each read saved before the next, as
-        `recfg-peek` does: the baseline of every word, and a bad address faults
+        `recfg-peek` does (`recfg-peek --position`; WD2's two words and SIO_CPU, which
+        runs 2 and 3 read after the commit, go first as one stage, then the seven
+        new ones, one a stage, and a last `pdone/done.txt` says every read returned):
+        the baseline of every word, and a bad address faults
         there, not after the commit (it doesn't show the words read after the
-        commit: the guide says what a lost sample looks like). Then the same pass
-        again in the first boot after the run's reset, after `m1-crumbs`: if
+        commit: the guide says what a lost sample looks like). `run-floor
+        --m1-position` refuses without that pass's mark in /run. The load log has the
+        sampled words once more, 10 minutes before the commit. Then the same pass
+        again in the first boot after the run's reset (`recfg-peek
+        --position-after`), after `m1-crumbs` and `sleep-drain-safe collect`: if
         `PHASE`, the `HS` words and the state word survive WD2's reset, that is the
-        engine's position with every core down, which nothing else can show, at no
-        new byte. They may not (T8103's progress registers don't survive a WD1
+        engine's position at the reset, at no new byte: with the reset near 30 s and
+        a last stage of 0x43 or later, after at most about 5 s with every core down
+        (CPU0 goes down after sample 2, about 25 s in), and none at stage 0x44, where
+        CPU0's own WFI may not have held. Below 0x43 the time isn't known: raw SPMI
+        failed (CPU0 goes straight down, by about 1 s) or CPU0 died in its wait, so
+        up to nearly all of the 30 s, or none if it hung. They may not survive
+        (T8103's progress registers don't survive a WD1
         reset), and a value equal to the awake baseline says nothing. That second
-        pass runs in a regular boot, which `recfg-peek` refuses today, so the OK has
-        to cover it, read-only, for addresses the safe-boot pass read without a
-        fault.
+        pass runs in a regular boot, the one read of this kind outside a safe boot:
+        the OK covers it, read-only, for addresses the safe-boot pass read without
+        a fault. It refuses in a safe boot and unless the newest pass on record
+        finished (its collected `done.txt`).
       - The run: `--m1-hold`'s recipe and one change. CPU0, having read the others
-        down and sent stage 0x5c's bytes, stays up, every exception still masked,
+        down and sent stage 0x40's bytes, stays up, every exception still masked,
         and samples these words twice, about 1 s and about 25 s after the third
         commit. Two samples, so a stop can be told from slow progress, since the
         unit of B2's early delays isn't known; the second is late because op 50's
         count field, 0xff, may expire, and only the state near the bite is a stop.
         Each sample's bytes go out right after it's taken, before the wait for the
         next (the first SPMI error stops every later crumb, and these are the run's
-        only record). Then as now: 0x5e, the acks, its deep WFI. Reads only. If the
+        only record). Then the last stage (0x45, or 0x44 with something pending),
+        the acks, its deep WFI. Reads only. If the
         sequences started at the commit, WD2's reset ends the run at about 30 s;
         that isn't shown with CPU0 up, so a reset later than that, or dark past 2
         minutes, goes by the guide below and run-floor's steps.
       - Bytes (the OK'd range, no new PMU byte): the hold run read 0x6007, 0x6012,
         0x6013 and 0x6015 as 0xfe, 0xfe, 0, 0 (held, took the release, pending
         before the WFI, pending at the stop request), so this rung gives those four
-        up: 16 bits per sample, no room for raw words. A layout that fits, to be
-        settled at the build. Byte A: `PHASE` bits 3:0, `HS_A` bits 31 and 24, and
+        up: 16 bits per sample, no room for raw words. The layout as built
+        (`e1-hook/m1_position.h`). Byte A: `PHASE` bits 3:0, `HS_A` bits 31 and 24, and
         the state word's class (0xa03, 1, 0xa02, other). Byte B: SIO_CPU's word as a
         3-bit class, tested in this order so the classes don't overlap (all ones,
         a failed read; target 0 with bit 11 set; target 0 with bit 11 clear; then,
@@ -487,9 +505,16 @@ steps, and restarting the DCP and the PMP afterwards.
         0x2922c0040 bit 1). Sample 1 goes to 0x6012-0x6013 in one command, sample 2
         to 0x6007 and 0x6015. 0x6005 bit 0, unused in hold's stages, says whether
         SIO_CPU's 27:24 read f at entry 61's wait, the reference for its class. `HS_B`
-        and 0x28e20c400 don't fit: they stay in the awake passes. A stage byte
-        before each sample says which it got to; `m1-crumbs`' `ALARM_STAGES` and
-        `HOLD_AFTER` take them, or `--clear` leaves the run's alarm armed. `--m1-pmp`
+        and 0x28e20c400 don't fit: they stay in the awake passes. Stages (`m1-crumbs`
+        decodes them, and `ALARM_STAGES` and `HOLD_AFTER` have them, or `--clear` would
+        leave the run's alarm armed): 0x40 in place of 0x5c, the release and the watch
+        done (in one command with 0x6005-0x6007; 0x6014's PCPM bits go alone just
+        before it); 0x41 sample 1's reads begin; 0x42 its bytes landed; 0x43 sample 2's
+        reads begin; 0x45 both landed and nothing pending before CPU0's WFI (0x44:
+        something was, which a read that failed after the commit would leave). So
+        0x41 and 0x43 mean a stop in a sample's reads or sending, and neither sample's
+        bytes are read below the stage after them. If raw SPMI has already failed,
+        nothing can be recorded and CPU0 goes straight down. `--m1-pmp`
         keeps 0x6015, so the position bytes and the PMP's byte can't share one run
         unless another moves.
       - How to read it. `PHASE`: 4, 5, 7 is the entry pair's, A2's; 6, 9 pair 3's; 0
@@ -504,7 +529,7 @@ steps, and restarting the DCP and the PMP afterwards.
         late), and none of these words changes between B2's ops 53 and 229 either;
         a change means it was still moving at the first, and the second is the
         nearer place. Anything no row lists, or a value the awake pass makes
-        implausible (a failed read stays pending, masked, and only stage 0x5d shows
+        implausible (a failed read stays pending, masked, and only stage 0x44 shows
         it): the run didn't answer, so don't pick a rung from it. Then the next-boot
         pass, and Corey's call between repeating with other sample times and reading
         from CPU7 (runs 2 and 3's arrangement, where WD2 read armed with CPU0 down).
@@ -533,7 +558,7 @@ steps, and restarting the DCP and the PMP afterwards.
           these bytes can't tell those apart, and an unchanged word doesn't prove B2
           never ran. Nothing else about the pair is reachable yet,
           and no rung on the ladder addresses this row: first rule out the read
-          itself (the limits bullet, the reset's time), then Corey's call. What sets
+          itself (the limits bullet; a reset near 30 s doesn't), then Corey's call. What sets
           the gate is a desk question, and if it proves a rollup of the cores or
           DISPLAY, the core and display rungs come back.
         - `PHASE` 4, `HS_A` bits 31 and 24 up: A2 is inside its p-state step, with
@@ -575,17 +600,32 @@ steps, and restarting the DCP and the PMP afterwards.
         (t8140-sleep.c:2471) and that a core left awake holds it until WD2
         (:807-809); T8103's entries completed only once every core, the last
         included, reached its deep WFI (Naeem's mac27-hv try26-32, e1_hook.c
-        L856-858). None of this is shown on T6000, where no run has read the engine
+        L863-865). None of this is shown on T6000, where no run has read the engine
         with CPU0 up. A stop in this read can be the read's own, above all one at
-        B2's opening gate, whose word is unidentified. A run without the samples
-        can't settle that: it reads nothing, and run 5 already is that run
-        (30.0-31.3 s). What can: the reset's time against run 5's (the sequences
-        started at the commit if it's still about 30 s after the commit; they
-        waited for CPU0 if it comes about 30 s after CPU0's deep WFI), WD2's control
-        and count in the samples, and the next-boot pass, the only reading with
-        every core down. If a sample's bytes never land, that's no reading, not a
-        result: CPU0 can die in its wait, up to 25 s under the E complex CPU1 armed,
-        or raw SPMI can fail.
+        B2's opening gate, whose word is unidentified. A run with no samples and no
+        next-boot pass can't settle that: run 5 already is that run (30.0-31.3 s).
+        What says whether the sequences started at the commit: the reset's time
+        against run 5's (they did if it's still about 30 s after the commit; they
+        waited for CPU0 if it comes about 30 s after CPU0's deep WFI) and WD2's
+        control and count in the samples. Neither clears a stop at B2's gate: A2
+        arms WD2 before its first handshake, so a gate CPU0 holds gives the same
+        reset and the same WD2 words. For that stop, the awake read of bit 2 (the
+        `PHASE` 4 row) and the follow-up below; if the words don't survive the reset,
+        it stays open. The next-boot pass can't clear the read by itself either: in a
+        run that reached sample 2 (stage 0x43 or later), with the reset near 30 s it
+        has at most about 5 s with every core down, so a gate that CPU0's WFI opens
+        gets about 5 s to show it. Below that stage the time with every core down is
+        unknown and may be nearly all of the 30 s. If `PHASE`, the `HS` words and the
+        state word differ from the awake pass, so they survive the reset, the
+        follow-up is a plain `--m1-hold` after `recfg-peek --position` in one safe
+        boot and `--position-after` in the next boot: every core down for the full
+        30 s, with no new byte or address. That's another run, so Corey's call. If a
+        sample's bytes never land, that's no
+        reading, not a result: CPU0 can die in its wait, up to 25 s under the E
+        complex CPU1 armed, or raw SPMI can fail. Sample 1 alone (a run that ends at
+        stage 0x42 or 0x43) is no answer either: only 0x44 and 0x45 say whether a read
+        failed, and one sample can't tell a stop from slow progress. Don't pick a rung
+        from it.
 
       1. **M1 run 4: the PMU's RTC alarm** (ran 2026-11-08, `e1_hook alarm=1`,
          `pkexec e1-hook/run-floor --m1-alarm`: stage 0x5f, 0x6016 = 0xbd,
@@ -968,7 +1008,7 @@ steps, and restarting the DCP and the PMP afterwards.
         built (rung 2) and unrun; the stop bits at the park aren't built.
       - After the SRAM decode, a free variant: one commit write. macOS's T6000
         table writes the commit once (entry 73); this replay writes it three
-        times, Naeem's T8103 recipe (e1_hook.c L2199-2205). What a second write
+        times, Naeem's T8103 recipe (e1_hook.c L2339-2345). What a second write
         of 1 does while the sequence is running isn't shown, and the position read
         can't show it: the three writes are at most about 0.4 ms apart, so a
         restart reads the same a second later as a first pass (`PHASE` 4, `HS_A`

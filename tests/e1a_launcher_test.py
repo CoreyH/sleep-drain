@@ -14,8 +14,9 @@ a build that ignored its parameters; --quiet adds quiet=1 and its own label,
 --m1 quiet=1 and m1=1 and its own, --m1-observe those and observe=1 and its own,
 --m1-late those and pmgr_late=1 and its own, --m1-alarm quiet=1, m1=1, pmgr_late=1
 and alarm=1 and its own, and --m1-hold those and hold=1 and its own (and
---m1-hold-nowatch with hold_nowatch=1), and --m1-pmp --m1-hold's and pmp_out=1 and
-its own (and --m1-pmp-idle with pmp_stop=0).
+--m1-hold-nowatch with hold_nowatch=1), --m1-pmp --m1-hold's and pmp_out=1 and
+its own (and --m1-pmp-idle with pmp_stop=0), and --m1-position --m1-hold's and
+position=1 and its own, only after recfg-peek's awake pass left its mark in /run.
 And after the hand-off it stays and watches a fake
 /sys/power/suspend_stats: a floor leaves it waiting with the replay armed; a
 suspend that fails (before any PM notifier, too) or comes back, no suspend at
@@ -52,6 +53,8 @@ LAUNCHERS = (
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 pmp_out=1", "floor-m1-pmp", ("--m1-pmp",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 pmp_out=1 pmp_stop=0",
      "floor-m1-pmp-idle", ("--m1-pmp-idle",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 position=1", "floor-m1-position",
+     ("--m1-position",)),
 )
 
 failed = 0
@@ -62,9 +65,9 @@ def name(launcher):
 
 
 def is_m1(launcher):
-    """--m1, --m1-observe, --m1-late, --m1-alarm, the two --m1-hold and the two --m1-pmp: all load m1=1."""
+    """--m1, --m1-observe, --m1-late, --m1-alarm, the two --m1-hold, the two --m1-pmp and --m1-position: all load m1=1."""
     return any(a in ("--m1", "--m1-observe", "--m1-late", "--m1-alarm", "--m1-hold", "--m1-hold-nowatch", "--m1-pmp",
-                     "--m1-pmp-idle") for a in launcher[4])
+                     "--m1-pmp-idle", "--m1-position") for a in launcher[4])
 
 
 def check(cond, what, detail=""):
@@ -94,7 +97,13 @@ PARMS = {
              "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
              "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
              "alarm:With m1=1 and pmgr_late=1 (bool)\nhold:With alarm=1 (bool)\nhold_nowatch:With hold=1 only (bool)\n"
-             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nreplay:LAB ONLY (uint)\n",
+             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nreplay:LAB ONLY (uint)\n",
+    "floor-noposition": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
+                        "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
+                        "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
+                        "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
+                        "alarm:With m1=1 and pmgr_late=1 (bool)\nhold:With alarm=1 (bool)\nhold_nowatch:With hold=1 only (bool)\n"
+                        "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nreplay:LAB ONLY (uint)\n",
     "floor-nopmp": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                    "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
                    "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
@@ -135,7 +144,7 @@ def sysctl(tmp):
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
           takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
-          takes_nowatch=True, takes_pmp=True, takes_nostop=True):
+          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -145,6 +154,8 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     write(os.path.join(d, "e1_hook.ko"), "not a module\n")
     if safe:
         write(os.path.join(tmp, "run", "active"), "")
+    if awake_mark:
+        write(os.path.join(tmp, "sleep-drain-position-awake"), "")
     write(os.path.join(tmp, "ac", "online"), ac + "\n")
     write(os.path.join(tmp, "pm_test"), pm_test)
     write(os.path.join(tmp, "sysctl", "panic"), "0\n")
@@ -169,6 +180,7 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     quiet += f' hold_nowatch=1) echo Y > {moddir}/parameters/hold_nowatch ;;' if takes_nowatch else ""
     quiet += f' pmp_out=1) echo Y > {moddir}/parameters/pmp_out ;;' if takes_pmp else ""
     quiet += f' pmp_stop=0) echo N > {moddir}/parameters/pmp_stop ;;' if takes_nostop else ""
+    quiet += f' position=1) echo Y > {moddir}/parameters/position ;;' if takes_position else ""
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
               f' oneway=1) echo Y > {moddir}/parameters/oneway ;;{quiet} esac; done\n') if takes else ""
     # The rest of the floor's parameters, as before any suspend; cancel is
@@ -429,7 +441,8 @@ def test_floor_refusals(launcher):
     m1 = is_m1(launcher)
     pmp = "--m1-pmp" in launcher[4] or "--m1-pmp-idle" in launcher[4]
     nostop = "--m1-pmp-idle" in launcher[4]
-    hold = "--m1-hold" in launcher[4] or "--m1-hold-nowatch" in launcher[4] or pmp
+    position = "--m1-position" in launcher[4]
+    hold = "--m1-hold" in launcher[4] or "--m1-hold-nowatch" in launcher[4] or pmp or position
     nowatch = "--m1-hold-nowatch" in launcher[4]
     alarm = "--m1-alarm" in launcher[4] or hold
     late = "--m1-late" in launcher[4] or alarm
@@ -454,9 +467,12 @@ def test_floor_refusals(launcher):
         cases.append(("a build without hold", dict(build="floor-nohold"), None, "without hold"))
     if pmp:
         cases.append(("a build without pmp_out", dict(build="floor-nopmp"), None, "without pmp_out"))
+    if position:
+        cases += [("a build without position", dict(build="floor-noposition"), None, "without position"),
+                  ("without the awake pass's mark", dict(awake_mark=False), None, "the awake pass hasn't run in this boot")]
     if plain:
         # The floor's build before quiet still runs the floor itself.
-        usage = "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle]"
+        usage = "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position]"
         cases += [("an unknown argument", {}, ["--loud"], usage),
                   ("a second argument", {}, ["--quiet", "--quiet"], usage),
                   ("--quiet and --m1 together", {}, ["--quiet", "--m1"], usage),
@@ -467,6 +483,8 @@ def test_floor_refusals(launcher):
                   ("--m1-hold and --m1-hold-nowatch together", {}, ["--m1-hold", "--m1-hold-nowatch"], usage),
                   ("--m1-hold and --m1-pmp together", {}, ["--m1-hold", "--m1-pmp"], usage),
                   ("--m1-pmp and --m1-pmp-idle together", {}, ["--m1-pmp", "--m1-pmp-idle"], usage),
+                  ("--m1-hold and --m1-position together", {}, ["--m1-hold", "--m1-position"], usage),
+                  ("--position alone", {}, ["--position"], usage),
                   ("--pmp alone", {}, ["--pmp"], usage),
                   ("--hold alone", {}, ["--hold"], usage),
                   ("--alarm alone", {}, ["--alarm"], usage),
@@ -499,6 +517,8 @@ def test_floor_refusals(launcher):
         ignored.append(("pmp_out", dict(takes_pmp=False)))
     if nostop:
         ignored.append(("pmp_stop", dict(takes_nostop=False)))
+    if position:
+        ignored.append(("position", dict(takes_position=False)))
     for what, kw in ignored:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)

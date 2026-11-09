@@ -130,7 +130,12 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `hold=1`; `pmp_stop=0`, `--m1-pmp-idle`, is the idle pair alone) is its PMP rung:
   right after `slpa`, the PMP's RTKit idle pair once and, if its ASC then reads
   idle, one write that clears its CPU's RUN bit; bit 7 of every later stage byte
-  says 0x6015 is that step's byte. `13` is the floor with the CPUs left up. `13`
+  says 0x6015 is that step's byte. `position=1` (`run-floor --m1-position`, on
+  `hold=1`; `e1-hook/m1_position.h` has the bytes) is its position read: read-only,
+  CPU0 stays up after watching the others go down and samples where the engine
+  is, about 1 s and 25 s after the third commit, in the same breadcrumbs (stages
+  0x40-0x45); run-floor refuses it without `recfg-peek --position` having run in
+  that boot. `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
   (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s
@@ -153,7 +158,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   reconfig SRAM, in stages, saving after each: the table offset register's
   analogue, the SRAM's first word, the table, then 0x10000 bytes (`--rest`:
   on to the table's last sequence + 0x10000, after that dump is decoded).
-  The dumps stay out of the repo.
+  The dumps stay out of the repo. `--position` reads the position read's words
+  awake, one at a time, in the safe boot of the run; `--position-after` repeats
+  them once in the first regular boot after the run's reset (Corey's OK of
+  2026-11-09), the one read of this kind outside a safe boot.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake
@@ -170,7 +178,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   sandbox with stub mount and blockdev, one failure per case;
   `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe
   boot and `collect` in a fake next boot; `tests/m1_crumbs_test.py` runs
-  `e1-hook/m1-crumbs` on a fake PMU nvmem file; `tests/recfg_peek_test.py` runs
+  `e1-hook/m1-crumbs` on a fake PMU nvmem file, position=1's samples made by
+  compiling `e1-hook/m1_position.h` itself; `tests/recfg_peek_test.py` runs
   `e1-hook/recfg_peek` on a sparse file standing in for /dev/mem and its
   launcher with stubs; `tests/sleep_drain_reading_test.py`
   runs `sleep-drain-reading` as uid 0 in a bubblewrap user namespace against

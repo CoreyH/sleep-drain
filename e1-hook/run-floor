@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position]
 #
 # THIS IS ONE WAY: THE MAC NEVER WAKES FROM IT. It loads e1_hook with
 # replay=15 oneway=1, so the next suspend's prepare_late runs maralcbr's
@@ -42,7 +42,14 @@
 # pair (SetAPPower 0x201 then SetIOPPower 0x201, once each), and if its ASC then
 # reads idle, its CPU stopped with one write (RUN, bit 4 of 0x28ec00044); its
 # label is floor-m1-pmp. --m1-pmp-idle adds pmp_stop=0, the idle pair only; its
-# label is floor-m1-pmp-idle. What's said of --m1, --m1-alarm and --m1-hold
+# label is floor-m1-pmp-idle. --m1-position (E2's position read, PLAN.md) is
+# --m1-hold with position=1: after reading the others down CPU0 stays up, every
+# exception still masked, and samples where the engine is, about 1 s and about 25
+# s after the third commit, and records each sample in the PMU's breadcrumbs. It
+# reads only, and writes no PMU byte --m1-hold doesn't. pkexec
+# /home/corey/src/sleep-drain/e1-hook/recfg-peek --position must have read every
+# word awake first, in this boot, and this refuses without its mark in /run; its
+# label is floor-m1-position. What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
 #     itself into the regular boot. That's most likely the S2R entry's
@@ -56,14 +63,17 @@
 #     After --m1, also, before anything else touches the PMU:
 #       /home/corey/src/sleep-drain/e1-hook/m1-crumbs, for a photo or a copy,
 #       then pkexec /home/corey/src/sleep-drain/e1-hook/m1-crumbs --clear
-#       (after --m1-alarm and --m1-hold, --clear also disarms the alarm the run armed, 0x1401
+#       (after --m1-alarm, --m1-hold and --m1-position, --clear also disarms the alarm the run armed, 0x1401
 #       back to 0x01, so that it can't power the Mac on an hour later; every
 #       m1 run refuses to load while it reads armed).
+#     After --m1-position, also, in that same boot, once m1-crumbs and collect
+#     are done (the next restart would lose what the reset left):
+#       pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek --position-after
 #   - Dark for good: the screen goes dark, if it isn't already, and it and
 #     the keyboard (dark since the reading began) stay dark past 2 minutes.
 #     Nothing wakes the Mac from it. If that's new (it's a candidate for a
 #     completed entry), leave it at least 30 minutes, then the steps below.
-#     After --m1-alarm or --m1-hold, do them before about 55 minutes: the alarm fires 60
+#     After --m1-alarm, --m1-hold or --m1-position, do them before about 55 minutes: the alarm fires 60
 #     minutes after the commit, and if it wakes the SoC, the wake lands in
 #     m1n1 with no way back and the Mac hangs, at an unknown draw, until the
 #     power key. If it's dark past that, expect that and end it the same way.
@@ -79,8 +89,11 @@
 #          floor-m1 (floor-m1-observe after --m1-observe, floor-m1-late
 #          after --m1-late, floor-m1-alarm after --m1-alarm, floor-m1-hold
 #          and floor-m1-hold-nowatch after those, floor-m1-pmp and
-#          floor-m1-pmp-idle after --m1-pmp and --m1-pmp-idle: --clear before
-#          the reading, since a PMU write can't change BQCC). --m1 can also hang
+#          floor-m1-pmp-idle after --m1-pmp and --m1-pmp-idle, floor-m1-position
+#          after --m1-position: --clear before
+#          the reading, since a PMU write can't change BQCC). After --m1-position,
+#          collect on its own first, then, before the reading, recfg-peek
+#          --position-after as above. --m1 can also hang
 #          dark without completing the entry: DeepIdle's R20 did, on an M2
 #          Pro, and its S2R watchdog never reset it. Only that reading's BQCC tells the two apart, and m1-crumbs
 #          says how far it got, at least. So for --m1, be ready to end it
@@ -132,6 +145,7 @@ hold=0
 nowatch=0
 pmp=0
 nostop=0
+position=0
 label=floor
 if (($# == 1)) && [[ $1 == --quiet ]]; then
   quiet=1
@@ -180,8 +194,16 @@ elif (($# == 1)) && [[ $1 == --m1-pmp || $1 == --m1-pmp-idle ]]; then
     nostop=1
     label=floor-m1-pmp-idle
   fi
+elif (($# == 1)) && [[ $1 == --m1-position ]]; then
+  quiet=1
+  m1=1
+  late=1
+  alarm=1
+  hold=1
+  position=1
+  label=floor-m1-position
 elif (($# != 0)); then
-  die "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle]"
+  die "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -202,9 +224,13 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!alarm)) || [[ $parms == *$'\n'alarm:* ]] || die "$ko is an older build, without alarm: make -C $here"
 ((!hold)) || [[ $parms == *$'\n'hold:* ]] || die "$ko is an older build, without hold: make -C $here"
 ((!pmp)) || [[ $parms == *$'\n'pmp_out:* ]] || die "$ko is an older build, without pmp_out: make -C $here"
+((!position)) || [[ $parms == *$'\n'position:* ]] || die "$ko is an older build, without position: make -C $here"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 [[ $(cat "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none, so the suspend wouldn't be a real one: echo none > $PM_TEST"
+# The awake pass first, in this boot: a bad address faults there, not after the commit.
+((!position)) || [[ -f $RUNDIR/sleep-drain-position-awake ]] ||
+  die "the awake pass hasn't run in this boot: pkexec $here/recfg-peek --position first"
 
 # Disarm on every way out but the floor itself. Before the hand-off
 # (armed=1), that's an unload. The reading runs in the background and the
@@ -272,6 +298,7 @@ params=(replay=15 oneway=1)
 ((!nowatch)) || params+=(hold_nowatch=1)
 ((!pmp)) || params+=(pmp_out=1)
 ((!nostop)) || params+=(pmp_stop=0)
+((!position)) || params+=(position=1)
 armed=1
 insmod "$ko" "${params[@]}"
 # A build that doesn't know them would load with them ignored, and only warn.
@@ -284,7 +311,8 @@ insmod "$ko" "${params[@]}"
   { ((!hold)) || [[ $(cat "$MODDIR/parameters/hold") == Y ]]; } &&
   { ((!nowatch)) || [[ $(cat "$MODDIR/parameters/hold_nowatch") == Y ]]; } &&
   { ((!pmp)) || [[ $(cat "$MODDIR/parameters/pmp_out") == Y ]]; } &&
-  { ((!nostop)) || [[ $(cat "$MODDIR/parameters/pmp_stop") == N ]]; } ||
+  { ((!nostop)) || [[ $(cat "$MODDIR/parameters/pmp_stop") == N ]]; } &&
+  { ((!position)) || [[ $(cat "$MODDIR/parameters/position") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
 echo "e1_hook loaded with ${params[*]}. Leave the Mac alone: in about 10 minutes the reading ends and the Mac suspends into the floor, one way (this script's header says how it can end)"
 "$READING" take --label "$label" --then suspend &

@@ -9,7 +9,9 @@ uid 0 in a bubblewrap user namespace, with a stub reader and a stub
 sleep-drain-safe that record what they're asked and what the log directory
 held at each save: sleep-drain-safe collect keeps the first copy of a directory
 and stops on one that differs, so a stage's directory must not change after
-its save.
+its save. It also runs the position read's stages (a-h, one word each but a), the
+launcher's --position (saved after each, then done.txt and the mark run-floor
+needs) and --position-after (a regular boot, only with a collected done.txt).
 
   python3 -I tests/recfg_peek_test.py
 """
@@ -255,8 +257,30 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
         r, a = run(5, d)
         check(sram_only(a[1:]) and a[0] == CFG, "hostile table %d: stage 5's stay in the SRAM" % i, a[:3])
 
+    # The position read's words: each stage reads exactly its own, in order.
+    WORDS = {"a": [0x2922b002c, 0x2922b0020, 0x28e580188], "b": [0x2922b801c], "c": [0x2925c4004], "d": [0x28e20c400],
+             "e": [0x2922c0040], "f": [0x2922c0044], "g": [0x2922c010c], "h": [0x2922c0110]}
+    mem = Mem(fake)
+    for i, pa in enumerate(sum(WORDS.values(), [])):
+        mem.word(pa, 0xc0de0000 + i)
+    out6 = fresh("o6")
+    seen = 0
+    for letter, pas in WORDS.items():
+        r, a = run(letter, out6)
+        check(r.returncode == 0 and a == pas, f"stage {letter} reads exactly its words", str([hex(x) for x in a]))
+        for pa in pas:
+            line = "0x%x = 0x%08x" % (pa, 0xc0de0000 + seen)
+            seen += 1
+            check(line in r.stdout and r.stdout.index("reading 0x%x" % pa) < r.stdout.index(line),
+                  f"stage {letter} says what it's reading before each read, and prints 0x{pa:x}'s word", r.stdout)
+    check(not os.listdir(out6), "the position stages write no dump", os.listdir(out6))
+    # None of them is the never-write list's, nor any byte of it.
+    check(not [pa for pa in sum(WORDS.values(), []) if 0x28e0802d8 <= pa < 0x28e0802e0 or 0x28e700000 <= pa < 0x28e700008],
+          "no position word is on the never-write list")
+
     # Its arguments: no address can be asked for.
-    for args in (["0", tmp], ["6", tmp], ["12", tmp], ["x", tmp], ["1"], ["0x2925c0200", tmp], []):
+    for args in (["0", tmp], ["6", tmp], ["12", tmp], ["x", tmp], ["i", tmp], ["A", tmp], ["ab", tmp], ["1"],
+                 ["0x2925c0200", tmp], []):
         r = subprocess.run([binary] + args, capture_output=True, text=True)
         check(r.returncode == 2, "refuses arguments " + repr(args), r.stdout + r.stderr)
 
@@ -278,12 +302,14 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
             return res
 
         def sandbox(*, safe=True, rc_by_stage=None, save_fails=False, uid=0, args=(), old_binary=False,
-                    tee_fails=False):
+                    tee_fails=False, pdone=False, sync_fails=False, save_fail_at=None, pa=()):
             """Runs the launcher with stubs; returns (rc, output, calls, the log root, manifests at each save)."""
             rc_by_stage = rc_by_stage or {}
             root = tempfile.mkdtemp(dir=tmp)
             calls = os.path.join(root, "calls")
             stub = os.path.join(root, "recfg_peek")
+            run_dir = os.path.join(root, "run")
+            os.mkdir(run_dir)
             rcs = " ".join(f"[{k}]={v}" for k, v in rc_by_stage.items())
             with open(stub, "w") as f:
                 f.write(f"""#!/bin/bash
@@ -304,6 +330,14 @@ exit ${{rc[$1]:-0}}
                 os.utime(src, (1, 1))
             log_root = os.path.join(root, "log")
             os.mkdir(log_root)
+            if pdone:
+                os.mkdir(os.path.join(log_root, "recfg-peek-20261109T090000-pa"))
+                os.mkdir(os.path.join(log_root, "recfg-peek-20261109T090000-pdone"))
+                with open(os.path.join(log_root, "recfg-peek-20261109T090000-pdone", "done.txt"), "w") as f:
+                    f.write("every word\n")
+            for when in pa:
+                # Another pass's first stage, with no pdone: a pass that stopped partway.
+                os.mkdir(os.path.join(log_root, f"recfg-peek-{when}-pa"))
             snaps = os.path.join(root, "snaps")
             os.mkdir(snaps)
             save = os.path.join(root, "safe")
@@ -312,22 +346,29 @@ exit ${{rc[$1]:-0}}
 echo "save $*" >> {calls}
 n=$(ls {snaps} | wc -l)
 cp -a {log_root} {snaps}/$n
-{'exit 1' if save_fails else 'exit 0'}
+{'exit 1' if save_fails else f'[[ $n != {save_fail_at - 1} ]] || exit 1' if save_fail_at else 'exit 0'}
 """)
             os.chmod(save, 0o755)
             flag = os.path.join(root, "active")
             if safe:
                 open(flag, "w").close()
             env = ["env", "RECFG_BIN=" + stub, "RECFG_SRC=" + src, "RECFG_SAFE_FLAG=" + flag,
-                   "RECFG_SAVE=" + save, "RECFG_LOG_ROOT=" + log_root]
-            if tee_fails:
-                # A tee that can't write, as on a full overlay.
+                   "RECFG_SAVE=" + save, "RECFG_LOG_ROOT=" + log_root, "RECFG_RUNDIR=" + run_dir]
+            if tee_fails or sync_fails:
                 bindir = os.path.join(root, "bin")
                 os.mkdir(bindir)
-                teep = os.path.join(bindir, "tee")
-                with open(teep, "w") as f:
-                    f.write("#!/bin/bash\ncat > /dev/null\nexit 1\n")
-                os.chmod(teep, 0o755)
+                if tee_fails:
+                    # A tee that can't write, as on a full overlay.
+                    teep = os.path.join(bindir, "tee")
+                    with open(teep, "w") as f:
+                        f.write("#!/bin/bash\ncat > /dev/null\nexit 1\n")
+                    os.chmod(teep, 0o755)
+                if sync_fails:
+                    # A syncfs that fails, as on a disk error.
+                    syncp = os.path.join(bindir, "sync")
+                    with open(syncp, "w") as f:
+                        f.write("#!/bin/bash\nexit 1\n")
+                    os.chmod(syncp, 0o755)
                 env.append("PATH=" + bindir + ":" + os.environ["PATH"])
             r = subprocess.run(
                 ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
@@ -335,6 +376,7 @@ cp -a {log_root} {snaps}/$n
                 capture_output=True, text=True)
             lines = open(calls).read().split("\n")[:-1] if os.path.exists(calls) else []
             manifests = [manifest(os.path.join(snaps, n)) for n in sorted(os.listdir(snaps), key=int)]
+            sandbox.mark = os.path.exists(os.path.join(run_dir, "sleep-drain-position-awake"))
             return r.returncode, r.stdout + r.stderr, lines, log_root, manifests
 
         DEFAULT = ["stage 1", "save save", "stage 2", "save save", "stage 3", "save save", "stage 4", "save save"]
@@ -356,6 +398,64 @@ cp -a {log_root} {snaps}/$n
         check([d.rsplit("-", 1)[1] for d in os.listdir(logs)] == ["s5"], "--rest has its own directory", os.listdir(logs))
         rc, out, calls, logs, snaps = sandbox(args=("--more",))
         check(rc == 1 and "usage" in out and calls == [], "refuses an unknown argument", out)
+
+        # --position, in a safe boot: each stage saved before the next, then the record and the mark.
+        LETTERS = "abcdefgh"
+        POS = [x for c in LETTERS for x in (f"stage {c}", "save save")] + ["save save"]
+        rc, out, calls, logs, snaps = sandbox(args=("--position",))
+        dirs = sorted(os.listdir(logs))
+        check(rc == 0 and calls == POS and sandbox.mark, "--position runs stages a-h, saving after each, then the record, then the mark", (calls, out))
+        check(sorted(d.rsplit("-", 1)[1] for d in dirs) == sorted([f"p{c}" for c in LETTERS] + ["pdone"]), "each word has its own directory, and there's a pdone", dirs)
+        check(all(snaps[i].items() <= snaps[i + 1].items() for i in range(len(snaps) - 1)),
+              "--position: no file changes after the save that first saw it", [sorted(s) for s in snaps])
+        check(not any("pdone" in f for s in snaps[:-1] for f in s) and any("done.txt" in f for f in snaps[-1]),
+              "done.txt appears only in the last save", [sorted(s) for s in snaps])
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), rc_by_stage={"e": 1})
+        check(rc == 1 and not sandbox.mark and calls == POS[:8] + ["stage e", "save save"][:1] + ["save save"]
+              and "stage e failed" in out and not [d for d in os.listdir(logs) if d.endswith("pdone")],
+              "a failed word stops it, with no record and no mark", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), rc_by_stage={"h": "segv"})
+        check(rc == 1 and not sandbox.mark and not [d for d in os.listdir(logs) if d.endswith("pdone")],
+              "a reader killed on the last word: no record and no mark", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), save_fails=True)
+        check(rc == 1 and not sandbox.mark and calls == ["stage a", "save save"], "a failed save stops --position, with no mark", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), save_fail_at=9)
+        check(rc == 1 and not sandbox.mark and calls == POS and "run-floor --m1-position will refuse" in out,
+              "a failed save of the pass's record leaves no mark", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), sync_fails=True)
+        check(rc == 0 and calls == POS and sandbox.mark, "--position goes by its saves, not its syncs", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), safe=False)
+        check(rc == 1 and "safe boot only" in out and calls == [] and not sandbox.mark, "--position refuses outside a safe boot", out)
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), uid=1000)
+        check(rc == 1 and "as root" in out and calls == [], "--position refuses to run as non-root", out)
+
+        # --position-after, the one read in a regular boot: only with a collected done.txt.
+        AFTER = [f"stage {c}" for c in LETTERS]
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True)
+        check(rc == 0 and calls == AFTER and not sandbox.mark and snaps == [], "--position-after reads a-h, with no save and no mark", (calls, out))
+        dirs = sorted(d for d in os.listdir(logs) if not d.endswith(("pdone", "-pa")))
+        check(len(dirs) == 1 and dirs[0].endswith("-after"), "--position-after writes one directory", dirs)
+        text = open(os.path.join(logs, dirs[0], "log.txt")).read()
+        check(all(f"the reader's stage {c}" in text for c in LETTERS), "and its log holds every stage", text)
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False)
+        check(rc == 1 and "no safe boot's --position is on record" in out and calls == [], "--position-after refuses without a collected done.txt", out)
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=True, pdone=True)
+        check(rc == 1 and "regular boot" in out and calls == [], "--position-after refuses in a safe boot", out)
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True, uid=1000)
+        check(rc == 1 and "as root" in out and calls == [], "--position-after refuses to run as non-root", out)
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True, rc_by_stage={"f": 1})
+        check(rc == 1 and calls == AFTER[:6] and "stage f failed" in out, "--position-after stops at a failed word", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True, tee_fails=True)
+        check(rc == 1 and calls == ["stage a"] and "couldn't write" in out, "--position-after stops if its log can't be written", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True, sync_fails=True)
+        check(rc == 1 and calls == ["stage a"] and "not reading further" in out, "--position-after stops at a failed sync, before the next read", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True, pa=("20261109T100000",))
+        check(rc == 1 and "never finished" in out and "recfg-peek-20261109T100000-pa" in out and calls == [],
+              "--position-after refuses when the newest pass never finished, whatever an older one's done.txt says", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True, pa=("20261109T080000",))
+        check(rc == 0 and calls == AFTER, "--position-after goes when the newest pass finished, whatever an older one did", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pa=("20261109T080000",))
+        check(rc == 1 and "never finished" in out and calls == [], "--position-after refuses a pass with no done.txt", (calls, out))
 
         rc, out, calls, logs, snaps = sandbox(safe=False)
         check(rc == 1 and "safe boot only" in out and calls == [], "refuses outside a safe boot", out)

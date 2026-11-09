@@ -1,8 +1,9 @@
 #!/usr/bin/python3 -I
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
---m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp or
---m1-pmp-idle; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1, hold=1, pmp_out=1)
-leaves in the PMU, read and decoded, and cleared again.
+--m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
+--m1-pmp-idle or --m1-position; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1,
+hold=1, pmp_out=1, position=1) leaves in the PMU, read and decoded, and cleared
+again.
 
   e1-hook/m1-crumbs               read them (no root needed)
   pkexec e1-hook/m1-crumbs --clear   zero them, after reading (root)
@@ -16,8 +17,8 @@ the stage an unclean end found. The PMU is reached through the kernel's nvmem
 interface for the pmic@f node, as pmu-alarm does. --clear writes zeros to the
 breadcrumb bytes, so that the next run starts clean and no stale byte stays in
 state that iBoot and macOS share. After an alarm=1 run that armed the RTC alarm
-(stage 0x59 or 0x5f, hold=1's 0x5a-0x5e, pmp_out=1's the same with bit 7 set, and
-0x140c the commit's second + 3600,
+(stage 0x59 or 0x5f, hold=1's 0x5a-0x5e, position=1's 0x40-0x45, pmp_out=1's the
+same as hold=1's with bit 7 set, and 0x140c the commit's second + 3600,
 so that the alarm is the run's), it first sets the alarm's control, 0x1401, back to 0x01, so
 that the alarm can't power the Mac on an hour later. It writes nothing else;
 in particular not 0x14c0, and not 0x1401 for an alarm that isn't the run's
@@ -46,8 +47,13 @@ CRUMBS = ((0x6004, 4), (0x6010, 7))  # the bytes --clear zeroes
 # The RTC alarm: control (bit 6 enable, bit 1 latched when it fired), the
 # compare value (4 bytes LE, the RTC's seconds), event, mask (pmu-alarm).
 ALARM_CTRL, ALARM, ALARM_EVENT, ALARM_MASK = 0x1401, 0x140c, 0x14c0, 0x14c2
-# alarm=1 (0x59, 0x5f) and hold=1 (0x5a-0x5e): 0x6016 is the alarm's byte, and the alarm may be armed
-ALARM_STAGES = (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e)
+# position=1 (run-floor --m1-position): the stages after the commit. 0x6012-0x6013 hold
+# sample 1 from 0x42 on, 0x6007 and 0x6015 sample 2 from 0x44 on.
+POSITION = (0x40, 0x41, 0x42, 0x43, 0x44, 0x45)
+POS_S1 = (0x42, 0x43, 0x44, 0x45)
+POS_S2 = (0x44, 0x45)
+# alarm=1 (0x59, 0x5f), hold=1 (0x5a-0x5e) and position=1: 0x6016 is the alarm's byte, and the alarm may be armed
+ALARM_STAGES = (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e) + POSITION
 ALARM_SECS = 3600  # e1_hook's M1_ALARM_SECS
 ALARM_ACKED = (0xbd, 0xbf)  # 0x6016 when every alarm command was acked, 0x1401's write among them
 PMP_TAG = 0x80  # pmp_out=1: bit 7 of the stage byte, from K4 on: 0x6015 is the PMP's byte
@@ -122,8 +128,9 @@ BUCKETS = tuple(f"first read clear {t} after the hand-over" for t in ("under 5 m
 # rewritten (0x6012 the cores that took the release, 0x6013 those with an
 # interrupt pending just before their deep WFI, 0x6014 as before with PCPM0's and
 # PCPM1's bits now read after the release; only the second's low two bytes stay).
-HOLD = {**{0x31 + i: 0x21 + i for i in range(7)}, 0x39: 0x30, 0x5a: 0x50, 0x5b: 0x50, 0x5c: 0x50, 0x5d: 0x50, 0x5e: 0x50}
-HOLD_AFTER = (0x5c, 0x5d, 0x5e)
+HOLD = {**{0x31 + i: 0x21 + i for i in range(7)}, 0x39: 0x30, 0x5a: 0x50, 0x5b: 0x50, 0x5c: 0x50, 0x5d: 0x50, 0x5e: 0x50,
+        **{s: 0x50 for s in POSITION}}
+HOLD_AFTER = (0x5c, 0x5d, 0x5e) + POSITION
 OBSERVED = (0x61, 0x62, 0x6e, 0x6f)  # 0x6005-0x6007 are CPU7's
 FULL = (0x6e, 0x6f)  # 0x6012-0x6013 and 0x6015-0x6016 are CPU7's too
 SHORT = (0x62, 0x6e, 0x6f)  # only 0x6010-0x6011 of the commit's second are sure
@@ -144,6 +151,18 @@ HOLD_TEXT = {
           " deep WFI: that would end its WFI, so it likely never went down",
     0x5e: "hold=1: everything recorded, CPU0 had nothing pending just before its acks and its own deep WFI (it goes"
           " down last, by design)",
+    0x40: "position=1: the release went out and CPU0's watch ended (0x6005 = the cores it read off); CPU0 stays up,"
+          " every exception masked, waiting for sample 1 about 1 s after the third commit. It stopped there, or a"
+          " later breadcrumb failed",
+    0x41: "position=1: about 1 s after the third commit, CPU0 began sample 1's reads, and the stage after its bytes"
+          " didn't follow: a read that hung, or a reset or a failed SPMI command there",
+    0x42: "position=1: sample 1's bytes landed; CPU0 waiting for sample 2, about 25 s after the third commit. It"
+          " stopped there, or a later breadcrumb failed",
+    0x43: "position=1: about 25 s after the third commit, CPU0 began sample 2's reads, and the stage after its bytes"
+          " didn't follow: a read that hung, or a reset or a failed SPMI command there",
+    0x44: "position=1: both samples recorded, but CPU0 had an interrupt or SError pending just before its acks and its"
+          " deep WFI: that would end its WFI, and a read that failed after the commit would leave one pending (masked)",
+    0x45: "position=1: both samples recorded, CPU0 had nothing pending just before its acks and its deep WFI",
 }
 
 
@@ -179,6 +198,53 @@ def pmp_byte(p):
         what = (f"the idle pair returned 0, CPU_STATUS read non-zero by macOS's mask (low bits {st:02b}; the load log has"
                 " the awake value), and RUN read 1 before its clear and 1 after the write: NOT stopped")
     return f"0x6015 = 0x{p:02x}: K4 ran: {what}{pend}"
+
+
+PHASES = {0: "pair 0's", 2: "pair 1's", 3: "pair 1's last", 4: "the entry pair's first (A2)", 5: "the entry pair's second (A2)",
+          6: "pair 3's first", 7: "the entry pair's last (A2)", 8: "pair 1's", 9: "pair 3's second", 0xa: "pair 1's",
+          0xb: "pair 1's", 0xc: "pair 1's", 0xd: "pair 1's"}
+STATE_WORDS = ("0xa03 (a sequence's start)", "1 (a sequence's end)", "0xa02 (A1's close)", "some other value")
+SIO_CLASSES = ("all ones: a failed read", "target 0, bit 11 set (B2 at op 91, inferred)",
+               "target 0, bit 11 clear (past op 91, inferred)", "another target, bits 27:24 not f",
+               "another target, bits 27:24 f, actual not f", "another target, bits 27:24 f, actual f",
+               "not a class e1_hook sends (6)", "not a class e1_hook sends (7)")
+
+
+def sample_lines(n, addr_a, a, addr_b, b):
+    """position=1: one sample's two bytes, one line per word (m1_position.h has the layout)."""
+    phase = a & 0xf
+    return [f"position sample {n} (0x{addr_a:04x} = 0x{a:02x}, 0x{addr_b:04x} = 0x{b:02x}):",
+            f"  PHASE {phase:#x} ({PHASES.get(phase, 'not a phase the sequences read so far write')}); HS_A bit 31"
+            f" {'up' if a & 0x10 else 'down'}, bit 24 {'up' if a & 0x20 else 'clear'}; state word"
+            f" {STATE_WORDS[a >> 6]}",
+            f"  SIO_CPU: {SIO_CLASSES[b & 7]}; WD2 RESET_EN {'set' if b & 8 else 'clear'}; WD2's count"
+            f" {'within' if b & 0x10 else 'NOT within'} 0.25 s of CPU0's time since the first commit write",
+            f"  gate words: 0x2922c0044 bit 2 {'set' if b & 0x20 else 'clear'}, bit 3 {'set' if b & 0x40 else 'clear'};"
+            f" 0x2922c0040 bit 1 {'set' if b & 0x80 else 'clear'}"]
+
+
+def position_lines(s, b):
+    """position=1, stages 0x40-0x45: which samples these bytes are, and what they say."""
+    out = []
+    if s in POS_S1:
+        out += sample_lines(1, 0x6012, b[0x12], 0x6013, b[0x13])
+    elif s == 0x41:
+        out.append(f"0x6012 0x6013 = {b[0x12]:02x} {b[0x13]:02x}: step 8's second's upper bytes or sample 1's, its"
+                   " bytes' stage didn't follow: not decoded")
+    else:
+        out.append("no sample recorded yet")
+    if s in POS_S2:
+        out += sample_lines(2, 0x6007, b[0x07], 0x6015, b[0x15])
+    elif s == 0x43:
+        out.append(f"0x6007 0x6015 = {b[0x07]:02x} {b[0x15]:02x}: held and step 8's byte, or sample 2's, the stage after"
+                   " them didn't follow: not decoded")
+    if s in (0x42, 0x43):
+        out.append("  sample 1 alone, about 1 s after the commit: only stages 0x44 and 0x45 say whether a read failed, and one"
+                   " sample can't tell a stop from slow progress, so no rung from it")
+    if s in POS_S1:
+        out.append("  (compare each word with the awake pass, recfg-peek-*-p*/; a word still at its awake value says"
+                   " nothing. PLAN.md has the reading guide)")
+    return out
 
 
 def die(msg):
@@ -327,7 +393,7 @@ def decode(b, rtc, cnt=None, alarm=None):
     late = s in LATE or hold
     base = HOLD.get(s, LATE.get(s, s))  # the stage of runs 1 and 2 it stands for
     obs = base in OBSERVED
-    mark = 0x10 <= base <= 0x60 and bool(b[5] & 1)  # an observe=1 run, below CPU7's own stages
+    mark = s not in POSITION and 0x10 <= base <= 0x60 and bool(b[5] & 1)  # an observe=1 run, below CPU7's own stages
     text = HOLD_TEXT.get(s) or LATE_TEXT.get(s) or stage(base, mark)
     out = [
         f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
@@ -363,6 +429,9 @@ def decode(b, rtc, cnt=None, alarm=None):
     elif base >= 0x10:
         if s in HOLD_AFTER:
             out.append(f"read off after the release (0x6005 = 0x{b[5]:02x}, up to 10 ms each): {cpus(b[5] & 0xfe)}")
+            if s in POSITION:
+                out.append(f"0x6005 bit 0: SIO_CPU's bits 27:24 {'read f' if b[5] & 1 else 'did not read f'} at entry 61's"
+                           f" wait, the reference for its class{'' if b[5] & 1 else ' (the expected case)'}")
         else:
             out.append(f"parked (0x6005 = 0x{b[5]:02x}): {cpus(b[5] & 0xfe)}")
         if late and base >= 0x20:
@@ -370,7 +439,9 @@ def decode(b, rtc, cnt=None, alarm=None):
         if base >= 0x30:
             if not late:
                 out.append(f"left their spin to stop (0x6006 = 0x{b[6]:02x}): {cpus(b[6])}")
-            if hold:
+            if s in POS_S2 or s == 0x43:
+                pass  # sample 2's, or not decoded: position_lines()
+            elif hold:
                 out.append(f"wrote their stop bit and held (0x6007 = 0x{b[7]:02x}): {cpus(b[7])}")
             else:
                 out.append(f"read off within 10 ms (0x6007 = 0x{b[7]:02x}): {cpus(b[7])}")
@@ -415,7 +486,8 @@ def decode(b, rtc, cnt=None, alarm=None):
                        f" WD1 {'was running (stopped)' if f & 0x40 else 'was off'};"
                        f" K3's kernel-path write after slpa {'FAILED' if f & 0x08 else 'worked'}")
         else:
-            cmd = ("the 3-byte command it went in (0x6012-0x6014)" if s in (0x5d, 0x5e) else
+            cmd = ("its own one-byte command" if s in POSITION else
+                   "the 3-byte command it went in (0x6012-0x6014)" if s in (0x5d, 0x5e) else
                    "whichever command wrote it last (0x6010-0x6016 or 0x6012-0x6014)" if s == 0x5c else
                    "the 7-byte command it went in (0x6010-0x6016)")
             out.append(f"0x6014 = 0x{f:02x}: bit 7 is clear, so {cmd} didn't survive the reset; don't read it")
@@ -471,7 +543,9 @@ def decode(b, rtc, cnt=None, alarm=None):
         out.append(f"0x6012 0x6013 = {b[0x12]:02x} {b[0x13]:02x}, 0x6015 0x6016 = {b[0x15]:02x} {b[0x16]:02x}: CPU0's"
                    " or CPU7's (it was rewriting them): not decoded")
     elif base >= 0x50:
-        if hold and s in HOLD_AFTER:
+        if s in POSITION:
+            out += position_lines(s, b)
+        elif hold and s in HOLD_AFTER:
             if s == 0x5c:
                 out.append("0x6012-0x6014: being rewritten when the breadcrumbs stopped: not decoded")
             elif b[0x14] & 0x80:
@@ -481,8 +555,8 @@ def decode(b, rtc, cnt=None, alarm=None):
             else:
                 out.append("0x6012 0x6013: went in one command with 0x6014, whose bit 7 is clear: not decoded")
         # From 0x5c on, 0x6015 still comes from step 8's command; its marker there is the second's low bytes.
-        if pmp:
-            pass  # 0x6015 is the PMP's byte, already printed
+        if pmp or s in POS_S2 or s == 0x43:
+            pass  # 0x6015 is the PMP's byte, or a sample's, already printed
         elif s in HOLD_AFTER and not b[0x10:0x12] == bytes(2) or s not in HOLD_AFTER and b[0x14] & 0x80:
             at = "at their stop request (hold=1)" if hold else "at their stop"
             out.append(f"0x6015 = 0x{b[0x15]:02x}: cores with an interrupt pending {at}: {cpus(b[0x15])}")
