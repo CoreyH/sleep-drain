@@ -410,12 +410,19 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 9 (2026-11-09; judgment; this is the only place it's kept):** every
+      **The order after run 10 (2026-11-09; judgment; this is the only place it's kept):** the commit
+      written once and the SMC told changed nothing (RESEARCH.md, "M1 run 10"), and the comparison with
+      the working drivers ("The working drivers against this recipe") corrects the line below: macOS's
+      waits are used up, its power states aren't. Next: SIO's firmware stopped (needs Corey's OK:
+      the idle pair and a RUN write at 0x39bc00044), with CPU0 taken straight to its deep WFI (no new
+      address; the sample goes, and K3b's and K5's outcomes need another place in the bytes). Then the
+      internal PCIe ports and the remaining power words, one group at a time, each with Corey's OK.
+      **Earlier, the order after run 9 (2026-11-09; judgment):** every
       macOS wait is now met (`qto` 0x00), the PMP and both DCPs are stopped and SIO's subtree is
       up, and the reset and B2's gate words at about 1 s are unchanged, so the known differences at
       the PMGR level are used up. Next: a side-by-side of this recipe against the two Linux
       entries that complete and can be read, DJ's T8140 and niteria's T8132 (RESEARCH.md,
-      "Related work"), for what they do that this doesn't. Cheap runs beside it: built, not run, `pkexec
+      "Related work"), for what they do that this doesn't. Cheap runs beside it: ran 2026-11-09 as M1 run 10, `pkexec
       e1-hook/run-floor --quick --m1-macos-end` (`e1_hook one_commit=1 smc_idle=1`, on run 9's recipe):
       the commit written once (macOS's T6000 table has one, no new register), and after K4
       SetAPPower 0x201 alone to the SMC, 6 ms after the rest and followed by 30 ms, which every

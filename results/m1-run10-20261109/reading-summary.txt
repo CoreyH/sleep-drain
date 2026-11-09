@@ -1,0 +1,1 @@
+time=2026-11-09T18:05:28+01:00 ts=1794243928 label=floor-m1-macos-end boot=safe then=suspend boot_id=06642a26-0717-4446-ad38-0228f7f1523d minutes=1 samples=7 window=1794243868-1794243928 charge_now_uah=3629000 voltage_uv=11848000 current_ua=-547000 charge_counter=-112504 capacity=72 uptime_s=149.39 ac=0
