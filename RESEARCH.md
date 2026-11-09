@@ -3021,23 +3021,27 @@ here. So, if the SRAM is writable and the engine runs it live:
 
 1. **Feasibility, one run:** change A2's bite word alone to 45 s, and have CPU0 read WD2's bite once
    right after the commit, before its deep WFI, recording whether it's the new value, the old one or the
-   awake one. That read is the test: it says directly whether the engine ran the changed word. The reset
-   time is a second fact, and by itself it can't reject the SRAM (Pullfrog's point on #61): every A
-   sequence re-arms WD2 with its own 30 s, so an entry that completes followed by a wake that stalls, the
-   case the SRAM section leaves open, would also reset near 30 s with the edit live. Read together:
-   - new bite read, reset at 45 s: the SRAM is live, and A2 was the last sequence to arm WD2, so the entry
-     itself never finished with every core down;
-   - new bite read, reset near 30 s: the SRAM is live, and something re-armed WD2 right after the commit,
-     which would be a later A sequence: the entry completed and a wake stalled;
-   - old bite read, reset near 30 s: the engine doesn't run the SRAM as it reads now (or the write didn't
-     take, which the load's read-back says before the run);
-   - the awake bite read: A2 hadn't armed WD2 when CPU0 looked; the reset time is then all there is.
+   awake one. That read is the whole test of feasibility: the new bite in WD2 says the SRAM is writable
+   and that the engine ran the changed word, whenever the reset then comes; the old bite says the engine
+   doesn't run the SRAM as it reads now (or the write didn't take, which the read-back says before the
+   run); the awake bite says A2 hadn't armed WD2 when CPU0 looked, and decides nothing.
+   The reset time is a second fact, and by itself it neither rejects the SRAM nor says which sequence
+   stalled (Pullfrog's two points on #61). Every A sequence zeroes WD2's count and arms it with its own
+   bite, so the reset comes one bite after the last sequence to start: at 45 s if that's A2, at t + 30 s
+   if a later A sequence started t after the commit. So with the new bite read:
+   - a reset near 30 s says a later sequence armed WD2 right after the commit, the entry completed and
+     a wake stalled, the case the SRAM section leaves open; an unchanged 30 s is not "the edit didn't work";
+   - a reset at 45 s is A2 as the last to arm, the entry never finishing with every core down, or a later
+     sequence that started 15 s in: the same interval. A second run with another bite tells them apart
+     (the reset follows A2's bite or it doesn't), with no other word changed;
+   - any other time T is a later sequence that started at T - 30 s.
 2. **Then markers:** a write of a different bite placed at chosen points (in place of an unpolled write,
    or in a relocated copy of a sequence with the table repointed). The reset time then says how far the
    engine got with every core down: the first measurement past the gate. The same caution holds: a later
-   A sequence's preamble overwrites a marker's bite, so a marker's reset time is read against step 1's
-   result, and the other A sequences' bites can be given values of their own to say which armed last
-   (more SRAM words, each needing the OK). Whether a marker can go in B2 depends on what executes table
+   A sequence's preamble overwrites a marker's bite and restarts the count, so a marker's reset time alone
+   doesn't name the op the engine stopped at. It's read against step 1's result and against the same
+   marker at another bite, and the other A sequences' bites can be given values of their own to say which
+   armed last (more SRAM words, each needing the OK). Whether a marker can go in B2 depends on what executes table
    B, which isn't known; one in A2 right after its first handshake needs no such knowledge, and says
    whether B2's first gate ever opens.
 
