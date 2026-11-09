@@ -3019,22 +3019,28 @@ reset, and the engine's own sequences set it: each A sequence writes WD2's bite 
 reconfig SRAM. PongoOS's `recfg.c` exists to modify these sequences, and the table's lock analogue reads 0
 here. So, if the SRAM is writable and the engine runs it live:
 
-1. **Feasibility, one run:** change A2's bite word alone to 45 s, and have CPU0 read WD2's bite once
-   right after the commit, before its deep WFI, recording whether it's the new value, the old one or the
-   awake one. That read is the whole test of feasibility: the new bite in WD2 says the SRAM is writable
-   and that the engine ran the changed word, whenever the reset then comes; the old bite says the engine
-   doesn't run the SRAM as it reads now (or the write didn't take, which the read-back says before the
-   run); the awake bite says A2 hadn't armed WD2 when CPU0 looked, and decides nothing.
-   The reset time is a second fact, and by itself it neither rejects the SRAM nor says which sequence
-   stalled (Pullfrog's two points on #61). Every A sequence zeroes WD2's count and arms it with its own
-   bite, so the reset comes one bite after the last sequence to start: at 45 s if that's A2, at t + 30 s
-   if a later A sequence started t after the commit. So with the new bite read:
-   - a reset near 30 s says a later sequence armed WD2 right after the commit, the entry completed and
-     a wake stalled, the case the SRAM section leaves open; an unchanged 30 s is not "the edit didn't work";
-   - a reset at 45 s is A2 as the last to arm, the entry never finishing with every core down, or a later
-     sequence that started 15 s in: the same interval. A second run with another bite tells them apart
-     (the reset follows A2's bite or it doesn't), with no other word changed;
-   - any other time T is a later sequence that started at T - 30 s.
+1. **Feasibility, one run:** change A2's bite word alone to 45 s. Right after the commit, before its deep
+   WFI, CPU0 reads WD2's bite and `PHASE` once and records them (with `HS_A`'s two bits, and whether the
+   SRAM word still read the new value just before the commit). No reset time enters the test:
+   - **the new bite in WD2** says the SRAM is writable and that the engine ran the changed word. That's
+     the feasibility result, whenever the reset then comes;
+   - **the old bite while `PHASE` is still one of A2's (4, 5, 7)** says A2 armed WD2 from something other
+     than the word as it reads: the edit isn't what the engine runs. Only this rejects the approach;
+   - **the old bite with any other `PHASE`** says a later A sequence had already re-armed WD2 when CPU0
+     looked. It decides nothing about the edit (and would be news of its own: the entry finished within
+     milliseconds);
+   - **the awake bite** says A2 hadn't armed WD2 yet, and decides nothing.
+
+   The reset time is a second fact, read with those (Pullfrog's two points on #61). Every A sequence
+   zeroes WD2's count and arms it with its own bite, so the reset comes one bite after the last sequence
+   to start: at 45 s if that's A2, at t + 30 s if a later A sequence started t after the commit. So:
+   - an unchanged reset near 30 s is inconclusive by itself. With the new bite read it fits a later
+     sequence arming right after the commit (the entry completing and a wake stalling, the case the SRAM
+     section leaves open) or a reset from something else. It's no evidence against the edit;
+   - a reset at 45 s fits A2 as the last to arm, the entry never finishing with every core down, and
+     equally a later sequence that started 15 s in. A second run with another bite tells them apart (the
+     reset follows A2's bite or it doesn't), with no other word changed;
+   - any other time T fits a later sequence that started at T - 30 s.
 2. **Then markers:** a write of a different bite placed at chosen points (in place of an unpolled write,
    or in a relocated copy of a sequence with the table repointed). The reset time then says how far the
    engine got with every core down: the first measurement past the gate. The same caution holds: a later
