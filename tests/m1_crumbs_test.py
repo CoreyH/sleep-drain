@@ -1506,15 +1506,33 @@ def position_tests(g, src):
         check(rc == 0 and "so the stage is 0x46" in out and "but had an SError, IRQ or FIQ pending afterwards: that would end its deep WFI" in out
               and SHOWN + "\n" in out and "parked (0x6005" not in out and "from its low two bytes and the run's alarm: 121544" in out,
               "recfg_bite=1's 0xc6: the same sample, and CPU0 had something pending after its reads", out + err)
-        rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, 4, armed=False)))
-        check(rc == 0 and "WD2's control did NOT show RESET_EN within 0.3 s\n" in out
-              and SHOWN + ". But RESET_EN didn't show within 0.3 s: CPU0 looked inside A2's opening, or the word after the bite was disturbed."
-              " Then WD2 never bites, and a Mac that stayed dark is that, not a completed entry\n" in out,
-              "recfg_bite=1: the new bite without RESET_EN: feasibility shown, and a dark ending wouldn't be a completed entry", out + err)
+        NEVER = (". But RESET_EN didn't show within 0.3 s: CPU0 looked inside A2's opening, or the word after the bite was disturbed."
+                 " Then WD2 never bites, and a Mac that stayed dark is that, not a completed entry\n")
+        for phase in (0, 4, 5):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, phase, armed=False)))
+            check(rc == 0 and "WD2's control did NOT show RESET_EN within 0.3 s\n" in out and SHOWN + NEVER in out and "may be a completed entry" not in out,
+                  f"recfg_bite=1: the new bite without RESET_EN, PHASE {phase}: feasibility shown, and a dark ending wouldn't be a completed entry", out + err)
+        # A2's own close clears RESET_EN after its last phase: past PHASE 4 and 5, no RESET_EN is how a finished A2 looks.
+        for phase in (1, 2, 3, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, phase, armed=False)))
+            check(rc == 0 and SHOWN + f". RESET_EN didn't show within 0.3 s, with PHASE {phase:#x}, which isn't one A2 shows before its last (0, 4, 5):"
+                  " every A sequence clears RESET_EN at its end, so A2 may have run to its end before CPU0 looked."
+                  " A Mac that then stayed dark may be a completed entry\n" in out and "not a completed entry" not in out,
+                  f"recfg_bite=1: the new bite without RESET_EN, PHASE {phase:#x}: A2 may have finished, and a dark ending may be a completed entry", out + err)
+        for phase in range(16):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, phase)))
+            check(rc == 0 and SHOWN + "\n" in out, f"recfg_bite=1: the new bite with RESET_EN, PHASE {phase:#x}: feasibility shown, nothing added", out + err)
+        UNSEEN = ("  so: nothing decided: WD2 holds the old bite with A2 before its last phase, though the word read the new one, which points at the engine"
+                  " not taking the bite from this word. But RESET_EN didn't show within 0.3 s, and A2's opening sets it right after the bite:"
+                  " this isn't the state that opening leaves, so the record alone doesn't say\n")
         for phase in (4, 5):
             rc, out, err = dec(0xc7, dict(run10, parked=smp(OLD, phase)))
             check(rc == 0 and "  WD2's bite: the old value, 30 s; " in out and REJECT in out and "Feasibility shown" not in out,
                   f"recfg_bite=1: the old bite with PHASE {phase} says the engine didn't take the bite from this word", out + err)
+            # The one reading that rejects the approach needs the whole of what A2's opening leaves: RESET_EN too.
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(OLD, phase, armed=False)))
+            check(rc == 0 and UNSEEN in out and REJECT not in out and "Feasibility shown" not in out,
+                  f"recfg_bite=1: the old bite with PHASE {phase} and no RESET_EN decides nothing", out + err)
         rc, out, err = dec(0xc7, dict(run10, parked=smp(AWAKE, 4)))
         check(rc == 0 and "observe=1" not in out and "its awake value" in out, "recfg_bite=1: bit 0 of the sample isn't observe=1's mark", out + err)
         for phase in (0, 2, 3, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 1, 0xe, 0xf):
@@ -1539,8 +1557,19 @@ def position_tests(g, src):
               "recfg_bite=1: another bite decides nothing", out + err)
         for phase in range(16):
             rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, phase, sram=False)))
-            check(rc == 0 and SHOWN + "\n" in out and f"  PHASE {phase:#x} (" in out and "NOT the new value" in out,
-                  f"recfg_bite=1: the new bite shows feasibility whatever else reads (PHASE {phase:#x})", out + err)
+            check(rc == 0 and SHOWN + ". (Step 8's read of the word didn't show the new value, which doesn't fit a new bite in WD2: that read isn't to be trusted then)\n" in out
+                  and f"  PHASE {phase:#x} (" in out and "NOT the new value" in out,
+                  f"recfg_bite=1: the new bite shows feasibility whatever else reads (PHASE {phase:#x}), and says step 8's read doesn't fit", out + err)
+        ABSENT = "  so: nothing decided, and the edit wasn't in place at the commit (the word didn't read the new value in step 8): the reset time says nothing about it either"
+        for cls, armed in ((AWAKE, False), (AWAKE, True), (0, True)):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(cls, 4, armed=armed, sram=False)))
+            check(rc == 0 and ABSENT + "\n" in out and "Feasibility shown" not in out and REJECT not in out,
+                  f"recfg_bite=1: bite class {cls} with the SRAM word not new before the commit: the edit wasn't there, whatever else reads", out + err)
+        rc, out, err = dec(0xc7, dict(run10, parked=0x00))
+        check(rc == 0 and ABSENT + ". And 0x00 is also what a byte that didn't land, or didn't survive the reset, reads: not a reading to lean on\n" in out,
+              "recfg_bite=1: 0x00 at 0x6005 is called out as a byte that may not have landed", out + err)
+        rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, 4), down=0xfe))
+        check(rc == 0 and NOT_RAISED in out and RAISED not in out, "recfg_bite=1's 0xc7 with 0x6007's bit 0 clear: the raises did not all read on", out + err)
         # 0xfe, the parked cores, is what stage 0x4e leaves at 0x6005: it must never read as the new bite.
         rc, out, err = dec(0xc7, dict(run10, parked=0xfe))
         check(rc == 0 and "Feasibility shown" not in out and "WD2's bite: the old value, 30 s" in out and "nothing decided about the edit: with PHASE 0xf" in out
@@ -1852,9 +1881,25 @@ def position_tests(g, src):
           and "m1_stage(" not in rout,
           "m1_recfg_out(): RESET_EN waited for, up to 0.3 s, then the bite, then PHASE for up to 10 ms while it reads 0; one command with"
           " the stage and the byte; nothing written but that breadcrumb and nub-spmi0's acks", rout)
-    check("if (recfg_bite && !ps_words) {" in src and "static_assert(RECFG_WDT == M1_WDT && RECFG_WD2_COUNT == M1_WD_CUR(2) && RECFG_WD2_BITE == M1_WD_BITE(2) &&" in src
-          and 'recfg_bite ? " recfg_bite=1" : ""' in src,
-          "recfg_bite=1 refuses to load without ps_words=1; the header's WD2 registers are the module's; the load line names it")
+    check("if (recfg_bite && !ps_words) {" in src
+          and ("static_assert(RECFG_WDT == M1_WDT && RECFG_WD2_COUNT == M1_WD_CUR(2) && RECFG_WD2_BITE == M1_WD_BITE(2) &&\n"
+               "\t      RECFG_WD2_CTRL == M1_WD_CTRL(2) && RECFG_WD_RESET_EN == M1_WD_RESET_EN);") in src
+          and 'recfg_bite ? " recfg_bite=1" : ""' in src and "module_param(recfg_bite, bool, 0444);" in src,
+          "recfg_bite=1 refuses to load without ps_words=1; the header's WD2 registers and RESET_EN are the module's; the load line names it;"
+          " the parameter can't be set after the load")
+    # "The new bite shows the engine ran the edit" rests on the module never writing WD2 itself, and on the load's refusals being used.
+    check(re.findall(r"write\w*\([^;]*m1_wdt[^;]*;", src) == ["writel(0, m1_wdt + M1_WD1_CTRL);"]
+          and not [x for x in literals if 0x2922b0020 <= x <= 0x2922b002c],
+          "the module's one write through the watchdog mapping is WD1's control, and none of its literal addresses is one of WD2's registers")
+    check("\tif (recfg_bite) {\n\t\tint ret = m1_recfg_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\treturn 0;\n}" in src,
+          "m1_init() runs m1_recfg_init() last, for recfg_bite=1 alone, and returns its refusal")
+    check("\tif (!m1_pos)\n\t\tm1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);\n\tif (!m1_recfg || !m1_pos) {" in init and init.count("return -ENOMEM;") == 1
+          and ("seq[0], seq[1], seq[2], seq[3], seq[4], seq[5], ctl, readl(m1_wdt + M1_WD_CUR(2)),\n"
+               "\t\tm1_wd2_bite_awake, readl(m1_pos + M1_POS_PHASE));") in init
+          and init.count("ioremap") == 2,
+          "m1_recfg_init(): PHASE's page mapped non-posted too, a failed mapping refused, and the load line shows WD2's own awake words")
+    check(rout.count("readl(") == 3 and rout.count("M1_WD_BITE(2)") == 1 and rout.count("M1_POS_PHASE") == 1 and rout.count("M1_WD_CTRL(2)") == 1,
+          "m1_recfg_out() reads three registers, each in one place: WD2's control, WD2's bite, PHASE")
 
     # smc_idle=1 and one_commit=1.
     smc = src[src.index("static bool m1_smc_idle(void)"):]

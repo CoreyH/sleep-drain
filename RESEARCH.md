@@ -3070,7 +3070,15 @@ The sample changed in the building, for two reasons the design's critics gave. C
 it has let the other cores go, as in every sample of runs 6-10, and waits for WD2's RESET_EN first, up
 to 0.3 s: run 6 only bounds A2's arming to within 0.25 s of the commit, and a look a fraction of a
 millisecond after it could have come before A2's opening, or inside it. And the classes are numbered so
-that the byte stage 0x4e leaves in the sample's place can't read as the new bite.
+that the byte stage 0x4e leaves in the sample's place can't read as the new bite. The byte has no room for
+`HS_A`'s two bits, which the proposal above named: it holds the bite's class, `PHASE`'s low four bits,
+whether RESET_EN showed, and whether the SRAM word still read the new value in step 8.
+
+Two readings were tightened by the build's reviews. The old bite with `PHASE` at 4 or 5 is the rejection
+only if RESET_EN showed too, the state A2's opening leaves; without it the record decides nothing. And
+the new bite without RESET_EN means a WD2 that never bites only while `PHASE` reads 0, 4 or 5: past
+those, no RESET_EN is how a finished A2 looks, since every A sequence clears it at its end, and a Mac
+that then stayed dark could be a completed entry.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

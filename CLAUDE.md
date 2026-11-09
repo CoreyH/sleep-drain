@@ -186,7 +186,7 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `run-floor --m1-recfg-bite` runs that itself. The OK is one write, so nothing undoes it automatically:
   `--restore` is for a person, in a safe boot. `--after` reads that one word once in the first regular boot
   after the run (`recfg_peek`'s stage 7), and only if the collected record says it read 45 s when the Mac
-  went down.
+  went down, with nothing left to collect. run-floor refuses an `e1_hook.ko` older than its sources.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake

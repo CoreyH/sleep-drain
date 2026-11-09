@@ -28,8 +28,12 @@
 # reads the one word alone (recfg_peek's stage 7): the ten of the check have only been
 # read in safe boots. It answers one question, whether the word that read 45 s when the
 # Mac went down reads 30 s after the restart, so it goes only by the records collected
-# from the safe boot: the newest write must say the word took the write (or was 45 s
-# already), with no --restore and no earlier --after on record since. It writes nothing.
+# from the safe boot: nothing saved there may still be waiting on the boot partition,
+# and the newest write must say the word took the write (or was 45 s already), with no
+# --restore and no earlier --after on record since. Its own record is on the disk
+# before the read, so that a read that hangs the Mac (kernel.panic isn't set in a
+# regular boot) is still the one read; a reader that stops before its read leaves a
+# record named -unread, which doesn't count. It writes nothing.
 #
 # kernel.panic is set to 10 before a store, as run-floor sets it: an access that faults
 # then restarts the Mac 10 s later instead of leaving it hung.
@@ -57,6 +61,8 @@ SAFE_FLAG=${BITE_SAFE_FLAG:-/run/sleep-drain-safe/active}
 SAVE=${BITE_SAVE:-/usr/local/bin/sleep-drain-safe}
 LOG_ROOT=${BITE_LOG_ROOT:-/var/log/sleep-drain}
 SYSCTL=${BITE_SYSCTL:-/proc/sys/kernel}
+# Where sleep-drain-safe keeps what a safe boot saved until collect has put it in place.
+SAVED=${BITE_SAVED:-/boot/sleep-drain-safe/saved}
 
 mode=patch
 if (($# == 1)) && [[ $1 == --restore ]]; then
@@ -72,6 +78,8 @@ fi
 [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
 if [[ $mode == after ]]; then
   [[ ! -f $SAFE_FLAG ]] || die "--after is for the regular boot right after the run, not a safe boot"
+  # The gate goes by the collected records: a save still waiting could hold a restore, or a newer write.
+  ! compgen -G "$SAVED/*.tar" > /dev/null || die "results saved in a safe boot are waiting in $SAVED: pkexec /usr/local/bin/sleep-drain-safe collect first. Nothing read"
   # The records' names sort by time (recfg-bite-<time>-<step>), so the last of each kind is the newest.
   shopt -s nullglob
   writes=("$LOG_ROOT"/recfg-bite-*-write)
@@ -87,7 +95,7 @@ if [[ $mode == after ]]; then
     t=${d##*/recfg-bite-}
     t=${t%-*}
     # Not earlier than the write: a restore changed the word before the restart, and an --after has asked already.
-    [[ $t < $when ]] || die "${d##*/} is on record since the newest write, ${last##*/}: the question was answered there, or the word was put back by hand. Nothing read"
+    [[ $t < $when ]] || die "${d##*/} is on record since the newest write, ${last##*/}: the read was made there (or tried, and the Mac went down at it), or the word was put back by hand. Nothing read"
   done
 else
   [[ -f $SAFE_FLAG ]] || die "this runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
@@ -141,10 +149,24 @@ run() {
 # A store that faults: a restart 10 s later, not a hang (run-floor's own setting, for a run by hand).
 panic10() { echo 10 > "$SYSCTL/panic" || die "couldn't set kernel.panic"; }
 
+# --after's record of a read that wasn't made: out of the gate's way, so that the read can still be made.
+unread() {
+  mv -T "$out" "${out%-after}-unread" 2> /dev/null || echo "recfg-bite: couldn't rename $out: remove it by hand, or --after will count it as the read" >&2
+}
+
 case $mode in
 after)
   dir after
+  if ! sync -f "$out"; then
+    unread
+    die "couldn't sync $out; nothing read"
+  fi
   run "$PEEK" 7 "$out"
+  if ((rc == 1 || rc == 2)); then
+    # recfg_peek exits 1 or 2 only before its read (the device didn't open or map; its arguments).
+    unread
+    die "the reader stopped before its read (exit $rc): nothing read, and this can be run again"
+  fi
   keep "$log" || die "couldn't sync $log"
   ((rc == 0 || rc == 3)) || die "the read failed (exit $rc)"
   echo "recfg-bite: read (the line above says which value); nothing was written."
@@ -201,7 +223,7 @@ case $rc in
 5)
   started=0
   keep_or_say "$log"
-  echo "recfg-bite: THE WRITE DIDN'T READ BACK AS MEANT (above). That's a result: this SRAM didn't take the write from here. If the writer says the ten words don't read as before, restart before anything else." >&2
+  echo "recfg-bite: THE WRITE DIDN'T READ BACK AS MEANT: the writer's lines above say what the ten words read now. That's a result. Restart before anything else." >&2
   exit 5
   ;;
 *)

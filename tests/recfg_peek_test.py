@@ -390,7 +390,6 @@ echo "stage $1" >> {calls}
 echo "the reader's stage $1"
 [[ -d $2 ]] || {{ echo 'no dir' >&2; exit 9; }}
 [[ $1 == 4 ]] && echo dump > "$2/sram-00000.bin"
-if [[ ${{rc[$1]:-0}} == segv ]]; then kill -SEGV $$; fi
 exit ${{rc[$1]:-0}}
 """)
             os.chmod(stub, 0o755)
@@ -486,7 +485,7 @@ cp -a {log_root} {snaps}/$n
         check(rc == 1 and not sandbox.mark and calls == POS[:8] + ["stage e", "save save"][:1] + ["save save"]
               and "stage e failed" in out and not [d for d in os.listdir(logs) if d.endswith("pdone")],
               "a failed word stops it, with no record and no mark", (calls, out))
-        rc, out, calls, logs, snaps = sandbox(args=("--position",), rc_by_stage={"h": "segv"})
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), rc_by_stage={"h": 139})
         check(rc == 1 and not sandbox.mark and not [d for d in os.listdir(logs) if d.endswith("pdone")],
               "a reader killed on the last word: no record and no mark", (calls, out))
         rc, out, calls, logs, snaps = sandbox(args=("--position",), save_fails=True)
@@ -544,7 +543,7 @@ cp -a {log_root} {snaps}/$n
               "a stage's error stops it, after one more save", calls)
         faillog = open(os.path.join(logs, sorted(os.listdir(logs))[1], "log.txt")).read()
         check("failed (exit 1)" in faillog, "and the log says so", faillog)
-        rc, out, calls, logs, snaps = sandbox(rc_by_stage={2: "segv"})
+        rc, out, calls, logs, snaps = sandbox(rc_by_stage={2: 139})
         check(rc == 1 and calls == DEFAULT[:3] + ["save save"] and "exit 139" in out,
               "a reader killed by a signal counts as an error, saved", (calls, out))
         rc, out, calls, logs, snaps = sandbox(tee_fails=True)

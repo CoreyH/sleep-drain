@@ -262,17 +262,30 @@ def recfg_lines(v):
     if cls == 1:
         so = ("the engine took WD2's bite from the changed word: the SRAM takes a write and the engine runs it. Feasibility shown,"
               " whenever the reset came")
-        if not armed:
+        if not armed and phase in (0, 4, 5):
             so += (". But RESET_EN didn't show within 0.3 s: CPU0 looked inside A2's opening, or the word after the bite was"
                    " disturbed. Then WD2 never bites, and a Mac that stayed dark is that, not a completed entry")
+        elif not armed:
+            so += (f". RESET_EN didn't show within 0.3 s, with PHASE {phase:#x}, which isn't one A2 shows before its last (0, 4,"
+                   " 5): every A sequence clears RESET_EN at its end, so A2 may have run to its end before CPU0 looked. A Mac that"
+                   " then stayed dark may be a completed entry")
+        if not sram:
+            so += ". (Step 8's read of the word didn't show the new value, which doesn't fit a new bite in WD2: that read isn't to be trusted then)"
     elif cls == 2 and not sram:
         so = "the edit wasn't in place at the commit (the word didn't read the new value in step 8), so it wasn't tested. Not a negative"
-    elif cls == 2 and phase in (4, 5):
+    elif cls == 2 and phase in (4, 5) and armed:
         so = ("A2, before its last phase, armed WD2 with the old bite though the word read the new one: the engine didn't take the"
               " bite from this word. (A copy elsewhere isn't excluded: only the first 64 KiB of the SRAM has been read)")
+    elif cls == 2 and phase in (4, 5):
+        so = ("nothing decided: WD2 holds the old bite with A2 before its last phase, though the word read the new one, which"
+              " points at the engine not taking the bite from this word. But RESET_EN didn't show within 0.3 s, and A2's opening"
+              " sets it right after the bite: this isn't the state that opening leaves, so the record alone doesn't say")
     elif cls == 2:
         so = (f"nothing decided about the edit: with PHASE {phase:#x}, a later sequence's opening may have re-armed WD2 with its"
               " own 30 s before CPU0 looked")
+    elif not sram:
+        so = ("nothing decided, and the edit wasn't in place at the commit (the word didn't read the new value in step 8): the"
+              " reset time says nothing about it either")
     elif cls == 3:
         so = ("nothing decided: WD2 showed RESET_EN with its awake bite, which no sequence read so far would leave" if armed else
               "nothing decided: nothing had armed WD2 within 0.3 s of the release. If the Mac then stayed dark, WD2 was never armed:"
@@ -282,6 +295,8 @@ def recfg_lines(v):
     if v == 0xfe:
         so += (". And 0xfe is what stage 0x4e leaves in this byte (the parked cores): if the stage's command landed without its"
                " second byte, this isn't a sample at all")
+    if v == 0:
+        so += ". And 0x00 is also what a byte that didn't land, or didn't survive the reset, reads: not a reading to lean on"
     what = "its awake value, or pair 0's" if phase == 0 else PHASES.get(phase, "not a phase the sequences read so far write")
     return [f"0x6005 = 0x{v:02x}: recfg_bite=1, after the commit, the alarm and the release (A2's bite word in the SRAM was changed"
             " to 45 s before the load):",

@@ -417,9 +417,9 @@ steps, and restarting the DCP and the PMP afterwards.
       **The order after run 12 (2026-11-09; judgment; this is the only place it's kept):** the power
       words changed nothing (RESEARCH.md, "M1 run 12"). Next: stop guessing rungs and instrument the engine
       through its reconfig SRAM (RESEARCH.md, "A different approach"). First A2's WD2 bite changed to 45 s
-      (Corey's OK of 2026-11-09 for that one word), with CPU0 reading WD2's bite and `PHASE` right after the
-      commit: the new bite says the engine ran the changed word, and only the old bite with `PHASE` at 4 or 5,
-      A2 before its last phase, says it didn't. The reset time is read with that and never decides it: an unchanged reset near
+      (Corey's OK of 2026-11-09 for that one word), with CPU0 reading WD2's bite and `PHASE` after the
+      commit, once it has let the other cores go: the new bite says the engine ran the changed word, and only the old bite with `PHASE` at 4 or 5,
+      A2 before its last phase, and RESET_EN seen, says it didn't. The reset time is read with that and never decides it: an unchanged reset near
       30 s is inconclusive, and 45 s doesn't by itself say A2 is the sequence that stalled, since a later A
       sequence re-arms WD2 with its own 30 s (RESEARCH.md has the cases; a second bite value settles the
       45 s one). Then bite markers to read how far the engine gets, each needing Corey's OK. A study for the
@@ -447,13 +447,18 @@ steps, and restarting the DCP and the PMP afterwards.
         (1 new, 2 old, 3 its awake value), 5:2 `PHASE`, 6 RESET_EN seen, 7 the SRAM word still new in step 8.
       - After the run, in the first regular boot: `m1-crumbs`, then `--clear` and `collect`, then `pkexec
         e1-hook/recfg-bite --after`, the read that says whether a restart brings 30 s back (it goes only if
-        the collected record says the word read 45 s when the Mac went down). If it reads 45 s still: no
+        the collected record says the word read 45 s when the Mac went down, with nothing left to collect;
+        its own record is on the disk before the read, so a read that hangs the Mac still counts as the
+        one read, and a reader that stops before reading doesn't). If it reads 45 s still: no
         other one-way recipe and no macOS before `recfg-bite --restore` in the next safe boot, Corey's call.
       - No restart and no system update before `m1-crumbs` has run: the reset time is right only in that
         boot, and run 12 lost its own that way.
       - Before the run, for aurora15: `pkexec bash install.sh` (pmp_sleep_release and smc_peek are built
         per kernel; run-floor now refuses a stale pmp_sleep_release before it loads anything), `make -C
         e1-hook`, and `cc -O2 -Wall -o e1-hook/recfg_peek e1-hook/recfg_peek.c`, the same for `recfg_poke`.
+        run-floor refuses an `e1_hook.ko` older than `e1_hook.c`, `recfg_bite.h` or `m1_position.h`: the
+        byte's layout changed between this build's two versions under the same stage, and the older
+        module's byte would read the other way round.
         The safe boot's image is rebuilt by `sleep-drain-safe boot` itself; never pick its GRUB entry by hand.
 
       How its ending reads, beyond RESEARCH.md's cases (m1-crumbs prints the reading for the byte):
@@ -465,11 +470,15 @@ steps, and restarting the DCP and the PMP afterwards.
         or a hang, before the commit, and the step-8 read of the SRAM is the new suspect.
       - Stage 0xce with 0x6016 = 0xbd: the commit and the alarm happened and the sample's command didn't
         land. No sample; a reset at 45 s then suggests the edit ran without showing it.
-      - The new bite without RESET_EN, or the awake bite, and a Mac that stays dark: WD2 was never armed
-        (the value word after the bite, or the edit itself). Not a completed entry: the power key.
+      - The new bite without RESET_EN while `PHASE` reads 0, 4 or 5, or the awake bite, and a Mac that
+        stays dark: WD2 was never armed (the value word after the bite, or the edit itself). Not a
+        completed entry: the power key.
+      - The new bite without RESET_EN and any other `PHASE`, 7 above all: how a finished A2 looks, since
+        every A sequence clears RESET_EN at its end. A Mac that then stays dark may be a completed entry.
       - Stage 0xc6: CPU0 had something pending after its reads, so it likely never went down; the bite's
         reading stands, the reset time says less.
-      - The old bite with `PHASE` 4 or 5 says the engine didn't take the bite from this word. Before
+      - The old bite with `PHASE` 4 or 5 and RESET_EN seen says the engine didn't take the bite from this
+        word; without RESET_EN it decides nothing, since that isn't the state A2's opening leaves. Before
         dropping the approach: the rest of the SRAM (only 64 KiB of 0x70000 are read) could hold a copy.
       **Earlier, the order after run 11 (2026-11-09; judgment):** SIO's
       firmware stopped and CPU0 sent straight down changed nothing (RESEARCH.md, "M1 run 11"). Next, needing

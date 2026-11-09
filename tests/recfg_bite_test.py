@@ -215,6 +215,23 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
           "a store that takes but changes the next word: caught by the ten read again (exit 5), the bite put back, and no store to the neighbour",
           r.stdout + str(acc))
 
+    # The same for each of the four words outside A2: all ten decide after the write, not A2's six alone.
+    for i, name in ((0, "the offset register"), (1, "its lock"), (2, "table A's entry 2"), (3, "the entry's second word")):
+        exe = build("recfg_poke_w%d" % i, '-DRECFG_POKE_STORE(v,n)=((n)==0?(pwrite(mem_fd,"\\x01\\x00\\x00\\x10",4,%dL),(v)):(v))' % TEN[i])
+        start = mem(GOOD, NEIGHBOURS)
+        r, acc = run(exe, "patch")
+        check(r.returncode == 5 and "the word took the write" not in r.stdout and "THE TEN WORDS READ NEITHER AS BEFORE NOR AS INTENDED" in r.stdout
+              and shape(acc) == "T w(new) T w(old) T" and content(fake) == {**start, TEN[i]: 0x10000001},
+              f"a store that takes and changes {name}: caught by the ten read again (exit 5), the bite put back", r.stdout + str(acc))
+    # restore's own read-back: the ten must read as before patch, not merely the bite no longer new.
+    for exe, what, left in ((garbled, "lands as another value", {BITE: OLD ^ 0xffff}), (neighbour, "changes the next word", {SRAM + 0x2014: None})):
+        start = mem(GOOD[:8] + [NEW, 4], NEIGHBOURS)
+        r, acc = run(exe, "restore")
+        want = {k: v for k, v in {**start, BITE: OLD, **left}.items() if v is not None}
+        check(r.returncode == 5 and "THE OLD VALUE DIDN'T GO BACK" in r.stdout and "the word reads the old value, 30 s, again" not in r.stdout
+              and shape(acc) == "T w(old) T" and content(fake) == want,
+              f"a restore whose store {what}: exit 5, said so, one store", r.stdout + str(acc))
+
     # Outside a safe boot, and its arguments: nothing is even read.
     start = mem(GOOD, NEIGHBOURS)
     os.unlink(flag)
@@ -237,11 +254,18 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
         mem(GOOD, NEIGHBOURS)
         r, acc = run(poke, "patch")
         check(r.returncode == 0 and shape(acc) == "T w(new) T", f"patch goes with the flag and a command line of {text!r}", r.stdout + r.stderr)
+    # A command line as long as this Mac's safe boot's, and as long as the kernel allows (COMMAND_LINE_SIZE is 2048), the word last.
+    for n in (238, 2047):
+        with open(cmdline, "w") as f:
+            f.write("x" * (n - 16) + " sleepdrain.safe\n")
+        mem(GOOD, NEIGHBOURS)
+        r, acc = run(poke, "patch")
+        check(r.returncode == 0 and shape(acc) == "T w(new) T", f"patch goes with a {n}-byte command line whose last word is sleepdrain.safe", r.stdout + r.stderr)
     with open(cmdline, "w") as f:
         f.write(SAFE_CMDLINE)
     start = mem(GOOD, NEIGHBOURS)
-    # Started with stdout or stderr closed, the device would take that descriptor, and every line printed would be a write to it.
-    for fd in (1, 2):
+    # Started with a standard descriptor closed, the device would take it: with stdout or stderr, every line printed would be a write to it.
+    for fd in (0, 1, 2):
         if os.path.exists(trace):
             os.unlink(trace)
         r = subprocess.run([poke, "patch"], stdout=subprocess.PIPE if fd == 2 else None, stderr=subprocess.PIPE if fd == 1 else None,
@@ -261,6 +285,9 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
           and len(re.findall(r"(?<![a-z_])open\(", src)) == 1 and "open(RECFG_MEM, O_RDWR | O_SYNC)" in src
           and not any(w in src for w in ("strtoul", "strtol", "atoi", "sscanf", "argv[2]", "getenv", "environ")),
           "recfg_poke.c has one store, to BITE_PA, of one of the two values, one open of the device, and takes no number from its arguments or the environment")
+    check('#define RECFG_MEM "/dev/mem"\n' in src and '#define RECFG_SAFE_FLAG "/run/sleep-drain-safe/active"\n' in src
+          and '#define RECFG_CMDLINE "/proc/cmdline"\n' in src and "#define MAP_UNIT UINT64_C(0x4000)\n" in src and "sysconf" not in src,
+          "recfg_poke.c's own memory device, safe-boot flag and command line, which every build here overrides, are the real ones; it maps by 16 KiB")
     check("#define RECFG_BITE_OLD\t\t0x2aea5400U" in hdr and "#define RECFG_BITE_NEW\t\t0x405f7e00U" in hdr and "#define RECFG_SRAM\t\t0x292f00000ULL" in hdr
           and "#define RECFG_A2\t\t0x2000U" in hdr and "#define RECFG_BITE\t\t(RECFG_A2 + 4 * 4)" in hdr,
           "recfg_bite.h: the word and the two values are the ones Corey OK'd on 2026-11-09")
@@ -287,13 +314,15 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
             return res
 
         def sandbox(*, args=(), safe=True, uid=0, peek_rc=0, patch_rc=0, restore_rc=0, save_fail_at=None, tee_fails=False, sync_fails=False,
-                    old=None, records=(), term_at=None, real=None, sysctl=True, date=None):
+                    old=None, records=(), term_at=None, real=None, sysctl=True, date=None, sync_logs=False, waiting=False):
             """Runs the launcher with stubs; returns (rc, output, calls, the log root, manifests at each save).
             old: which built file is older than a source ("peek", "poke", "peek-header", "poke-header").
             records: directories on record from a safe boot, as (time, step, the log's text).
             tee_fails: True, or "write" for the write's log alone. term_at: a save's number: SIGTERM to the launcher there.
             real: (reader, writer) built for the fake device, in place of the stubs. sysctl: False for no kernel.panic to write.
-            date: the time the launcher's date gives, for a run in the same second as one on record."""
+            date: the time the launcher's date gives, for a run in the same second as one on record.
+            sync_logs: each sync is listed in calls. waiting: a save is still on the boot partition, not collected.
+            A stub that "dies of a signal" exits 139, which is all its caller can see of one, and leaves no core dump."""
             root = tempfile.mkdtemp(dir=tmp)
             calls = os.path.join(root, "calls")
             log_root = os.path.join(root, "log")
@@ -311,8 +340,8 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
 echo "peek $1" >> {calls}
 [[ -d $2 ]] || {{ echo 'no dir' >&2; exit 9; }}
 echo "the reader's stage $1"
-{'kill -SEGV $$' if peek_rc == 'segv' else f'''[[ {peek_rc} == 0 || {peek_rc} == 3 ]] && echo "{VERDICT}"
-exit {peek_rc}'''}
+[[ {peek_rc} == 0 || {peek_rc} == 3 ]] && echo "{VERDICT}"
+exit {peek_rc}
 """)
             with open(poke_s, "w") as f:
                 f.write(f"""#!/bin/bash
@@ -320,7 +349,7 @@ echo "poke $* panic=$(cat {sysdir}/panic 2>/dev/null)" >> {calls}
 echo "the writer's $1"
 case $1 in
 patch) [[ {patch_rc} != 0 ]] || echo "{TOOK}"
-  {'kill -SEGV $$' if patch_rc == 'segv' else f'exit {patch_rc}'} ;;
+  exit {patch_rc} ;;
 restore) exit {restore_rc} ;;
 esac
 exit 9
@@ -361,16 +390,24 @@ exit 0
             flag_s = os.path.join(root, "active")
             if safe:
                 open(flag_s, "w").close()
+            saved = os.path.join(root, "saved")
+            if waiting:
+                os.mkdir(saved)
+                open(os.path.join(saved, "20261109T210500.tar"), "w").close()
             env = ["env", "BITE_PEEK=" + peek_s, "BITE_PEEK_SRC=" + srcs["recfg_peek.c"], "BITE_POKE=" + poke_s, "BITE_POKE_SRC=" + srcs["recfg_poke.c"],
                    "BITE_HEADER=" + srcs["recfg_bite.h"], "BITE_SAFE_FLAG=" + flag_s, "BITE_SAVE=" + save, "BITE_LOG_ROOT=" + log_root,
-                   "BITE_SYSCTL=" + sysdir]
-            if tee_fails or sync_fails or date:
+                   "BITE_SYSCTL=" + sysdir, "BITE_SAVED=" + saved]
+            if tee_fails or sync_fails or date or sync_logs:
                 bindir = os.path.join(root, "bin")
                 os.mkdir(bindir)
                 if date:
                     with open(os.path.join(bindir, "date"), "w") as f:
                         f.write(f"#!/bin/bash\necho {date}\n")
                     os.chmod(os.path.join(bindir, "date"), 0o755)
+                if sync_logs:
+                    with open(os.path.join(bindir, "sync"), "w") as f:
+                        f.write(f'#!/bin/bash\necho "sync" >> {calls}\nexec /usr/bin/sync "$@"\n')
+                    os.chmod(os.path.join(bindir, "sync"), 0o755)
                 for name, on in (("tee", tee_fails), ("sync", sync_fails)):
                     if on:
                         p = os.path.join(bindir, name)
@@ -412,8 +449,8 @@ exit 0
               "a check that isn't as expected: exit 3, saved, and no write", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(peek_rc=1)
         check(rc == 4 and calls == FULL[:2] and "the check failed (exit 1); nothing written" in out and MAY not in out, "a check that fails: exit 4, saved, and no write", (rc, calls, out))
-        rc, out, calls, logs, snaps = sandbox(peek_rc="segv")
-        check(rc == 4 and calls == FULL[:2] and "nothing written" in out, "a reader killed by a signal: exit 4, saved, and no write", (rc, calls, out))
+        rc, out, calls, logs, snaps = sandbox(peek_rc=139)
+        check(rc == 4 and calls == FULL[:2] and "the check failed (exit 139); nothing written" in out, "a reader killed by a signal (139): exit 4, saved, and no write", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(save_fail_at=1)
         check(rc == 4 and calls == FULL[:2] and "couldn't save the check; nothing written" in out, "a check that can't be saved: exit 4, no write", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(tee_fails=True)
@@ -425,6 +462,10 @@ exit 0
         rc, out, calls, logs, snaps = sandbox(date="20261109T230000", records=(("20261109T230000", "check", "another run's\n"),))
         check(rc == 4 and calls == [] and "couldn't make" in out and open(os.path.join(logs, "recfg-bite-20261109T230000-check", "log.txt")).read() == "another run's\n",
               "a directory that's there already (another run, the same second) isn't written into: exit 4, nothing read", (rc, calls, out))
+        rc, out, calls, logs, snaps = sandbox(date="20261109T230000", records=(("20261109T230000", "write", "another run's\n"),))
+        check(rc == 4 and calls == FULL[:2] and "couldn't make" in out and MAY not in out
+              and open(os.path.join(logs, "recfg-bite-20261109T230000-write", "log.txt")).read() == "another run's\n",
+              "a write directory that's there already: exit 4 after the check, the writer never runs, and nothing is said about the word", (rc, calls, out))
         NOT_SAVED = "NOT SAVED: the lines above are the only record"
         rc, out, calls, logs, snaps = sandbox(peek_rc=3, save_fail_at=1)
         check(rc == 3 and NOT_SAVED in out, "a check that isn't as expected and can't be saved says its record isn't saved", (rc, out))
@@ -450,7 +491,7 @@ exit 0
         rc, out, calls, logs, snaps = sandbox(patch_rc=3)
         check(rc == 3 and calls == FULL and "changed between the check and the write" in out and MAY not in out,
               "a writer that refuses: exit 3, saved; nothing was written", (rc, calls, out))
-        for bad in (2, 9, "segv"):
+        for bad in (2, 9, 139):
             rc, out, calls, logs, snaps = sandbox(patch_rc=bad)
             check(rc == 1 and calls == FULL and "recfg_poke failed" in out and MAY in out,
                   f"a writer that fails ({bad}): exit 1, saved, and it says the word may read 45 s", (rc, calls, out))
@@ -481,6 +522,9 @@ exit 0
         check(rc == 1 and "safe boot only" in out and calls == [], "--restore refuses outside a safe boot", out)
         rc, out, calls, logs, snaps = sandbox(args=("--restore",), old="peek")
         check(rc == 0 and calls == ["poke restore panic=10", "save save"], "--restore doesn't need the reader", (rc, calls, out))
+        for old in ("poke", "poke-header"):
+            rc, out, calls, logs, snaps = sandbox(args=("--restore",), old=old)
+            check(rc == 1 and "older than its source" in out and calls == [], f"--restore refuses a writer older than its source or the header ({old})", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(args=("--restore",), sysctl=False)
         check(rc == 1 and calls == [] and "couldn't set kernel.panic" in out, "--restore without kernel.panic: no store", (rc, calls, out))
 
@@ -496,8 +540,21 @@ exit 0
         check(rc == 0 and calls == ["peek 7"], "--after goes after a write that found the word at 45 s already", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W), peek_rc=3)
         check(rc == 3 and calls == ["peek 7"], "--after passes on a word that's neither value (exit 3)", (rc, calls, out))
-        rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W), peek_rc=1)
-        check(rc == 1 and calls == ["peek 7"] and "the read failed" in out, "--after: a failed read is an error", (rc, calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W), sync_logs=True)
+        check(rc == 0 and calls == ["sync", "peek 7", "sync"],
+              "--after's record is on the disk before the read (a read that hangs the Mac is still the one read), and synced again after it", (rc, calls, out))
+        # The reader exits 1 or 2 only before its read: that record mustn't count as the read.
+        for bad in (1, 2):
+            rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W), peek_rc=bad)
+            check(rc == 1 and calls == ["peek 7"] and f"the reader stopped before its read (exit {bad}): nothing read, and this can be run again" in out
+                  and steps(logs) == ["check", "unread", "write"],
+                  f"--after: a reader that stops before its read (exit {bad}) leaves a record named -unread, not -after", (rc, calls, out, os.listdir(logs)))
+        rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W, ("20261109T211500", "unread", "")))
+        check(rc == 0 and calls == ["peek 7"], "--after goes after a try that read nothing", (rc, calls, out))
+        for bad in (9, 139):
+            rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W), peek_rc=bad)
+            check(rc == 1 and calls == ["peek 7"] and f"the read failed (exit {bad})" in out and steps(logs) == ["after", "check", "write"],
+                  f"--after: a reader that fails any other way (exit {bad}) may have read: an error, and its record stays", (rc, calls, out))
         for what, records, msg in (
                 ("nothing on record", (), "no write is on record"),
                 ("a check alone (the SRAM wasn't as expected, or the write faulted)", (C,), "no write is on record"),
@@ -506,7 +563,14 @@ exit 0
                 ("an older write that took and a newer one that didn't", (W, ("20261109T220000", "write", "not as expected: nothing written\n")), "recfg-bite-20261109T220000-write"),
                 ("a restore after the write", (C, W, ("20261109T210500", "restore", "the word reads the old value, 30 s, again\n")), "recfg-bite-20261109T210500-restore"),
                 ("a restore in the same second as the write", (C, W, ("20261109T210000", "restore", "x\n")), "recfg-bite-20261109T210000-restore"),
-                ("an --after already on record", (C, W, ("20261109T211500", "after", VERDICT + "\n")), "recfg-bite-20261109T211500-after")):
+                ("an --after already on record", (C, W, ("20261109T211500", "after", VERDICT + "\n")), "recfg-bite-20261109T211500-after"),
+                ("an --after on record with nothing in it (the Mac went down at the read)", (C, W, ("20261109T211500", "after", "")), "recfg-bite-20261109T211500-after"),
+                ("a write whose line is there, but not at a line's start", (C, ("20261109T210000", "write", "x " + TOOK + "\nx " + ALREADY + "\n")), "doesn't say the word read 45 s"),
+                # Two later records, one on each side of the newest write: each one counts, whatever its place in the list.
+                ("an --after before the write and a restore after it", (("20261109T200000", "after", "x\n"), W, ("20261109T213000", "restore", "x\n")), "recfg-bite-20261109T213000-restore"),
+                ("a restore before the write and an --after after it", (("20261109T200000", "restore", "x\n"), W, ("20261109T213000", "after", "x\n")), "recfg-bite-20261109T213000-after"),
+                ("two restores, one each side", (("20261109T200000", "restore", "x\n"), W, ("20261109T213000", "restore", "x\n")), "recfg-bite-20261109T213000-restore"),
+                ("two --afters, one each side", (("20261109T200000", "after", "x\n"), W, ("20261109T213000", "after", "x\n")), "recfg-bite-20261109T213000-after")):
             rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=records)
             check(rc == 1 and msg in out and "Nothing read" in out and calls == [], f"--after refuses with {what}, reading nothing", (rc, out))
         rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False,
@@ -517,9 +581,22 @@ exit 0
         rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W), uid=1000)
         check(rc == 1 and "as root" in out and calls == [], "--after refuses to run as non-root", out)
         rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W), sync_fails=True)
-        check(rc == 1 and calls == ["peek 7"] and "couldn't sync" in out, "--after: a record that can't be synced is an error", (rc, calls, out))
+        check(rc == 1 and calls == [] and "couldn't sync" in out and "nothing read" in out and steps(logs) == ["check", "unread", "write"],
+              "--after: a record that can't be put on the disk first means no read, and doesn't count as one", (rc, calls, out, os.listdir(logs)))
         rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W), old="poke")
         check(rc == 0 and calls == ["peek 7"], "--after doesn't need the writer", (rc, calls, out))
+        for old in ("peek", "peek-header"):
+            rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W), old=old)
+            check(rc == 1 and "older than its source" in out and calls == [] and steps(logs) == ["check", "write"],
+                  f"--after refuses a reader older than its source or the header ({old}), reading nothing and leaving no record", (rc, calls, out, os.listdir(logs)))
+        rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, records=(C, W), waiting=True)
+        check(rc == 1 and "sleep-drain-safe collect first. Nothing read" in out and calls == [] and steps(logs) == ["check", "write"],
+              "--after refuses while a safe boot's save is still waiting to be collected", (rc, calls, out))
+        check('SAFE_FLAG=${BITE_SAFE_FLAG:-/run/sleep-drain-safe/active}\n' in ltext and 'SAVE=${BITE_SAVE:-/usr/local/bin/sleep-drain-safe}\n' in ltext
+              and 'LOG_ROOT=${BITE_LOG_ROOT:-/var/log/sleep-drain}\n' in ltext and 'SYSCTL=${BITE_SYSCTL:-/proc/sys/kernel}\n' in ltext
+              and 'SAVED=${BITE_SAVED:-/boot/sleep-drain-safe/saved}\n' in ltext and 'PEEK=${BITE_PEEK:-$HERE/recfg_peek}\n' in ltext
+              and 'POKE=${BITE_POKE:-$HERE/recfg_poke}\n' in ltext and 'HEADER=${BITE_HEADER:-$HERE/recfg_bite.h}\n' in ltext,
+              "the launcher's own paths, which every case here overrides, are the real ones")
 
         # The real reader and writer under the launcher, on the fake device: the pieces fit each other.
         peek_real = os.path.join(tmp, "recfg_peek_real")
