@@ -2649,3 +2649,88 @@ wait sits, so this doesn't exclude a wait beneath these sequences.
   up, would say which sequence and round the engine is in while that core is up,
   which may not be where it stops with every core down, at no new write. PLAN.md
   has it.
+
+### M1 run 6: the position read: the commit starts A2, which waits at its first handshake with B2 behind its first gate, and the SoC still resets at about 30 s (2026-11-09)
+
+`e1-hook/run-floor --m1-position` (`replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1
+alarm=1 hold=1 position=1`, #48; the module built at 00442f6; flag `radios-off`), in
+a safe boot, on battery at 99% (`reading-summary.txt`). Against run 5 it has one
+change: after reading the others down, CPU0 stays up, every exception masked, for
+about 25 s, and samples where the engine is about 1 s and about 25 s after the third
+commit. No new write and no new PMU byte. Raw data: `results/m1-run6-20261109/`.
+
+`recfg-peek --position` read every word awake at 10:55:28, in the same safe boot, and
+the module loaded at 11:17:31. The reading ended at 11:27:31 and was saved at 11:27:32.
+The Mac went dark and restarted by itself into the regular boot (Corey's report;
+`uptime -s` 11:28:28; "PMU logged 1 boot error(s) and 0 panic(s)", as after runs 4 and
+5). `--position-after` read the words again at 11:33:50, after `m1-crumbs` and
+`sleep-drain-safe collect`.
+
+**The facts:**
+- **Stage 0x45**, the run's last by design: both samples landed, and CPU0 had nothing
+  pending just before its acks and its own deep WFI.
+- **The cores, as in run 5:** CPU1-7 read off after the release, PCPM0 and PCPM1 off.
+  `qto` 0x50: DISPLAY's and SIO_CPU's waits timed out, as in runs 3-5.
+- **The restart:** 30.0-31.9 s after the commit (29.9-31.9 from `m1-crumbs`' first
+  read, 30.0-32.0 from `--clear`'s). The armed alarm survived it and `--clear` disarmed it.
+- **The two samples are byte for byte the same** (0x14 0xdc), and every word read as
+  below. `HS_B` and 0x28e20c400 don't fit in the bytes.
+
+| Word | Awake | About 1 s and about 25 s after the commit | Next boot |
+|---|---|---|---|
+| `PHASE` 0x2922c0110 | 0 | 4 | 0 |
+| `HS_A` 0x2925c4004 | 0x00010000 | bit 31 up, bit 24 clear | 0x00010000 |
+| State word 0x2922b801c | 0 | 0xa03 | 0 |
+| WD2's control | 0 | RESET_EN set | 0 |
+| WD2's count | running | within 0.25 s of CPU0's time since the first commit write | running |
+| SIO_CPU 0x28e580188 | 0x1400024f | bits 27:24 f, actual not f | 0x1400024f |
+| 0x2922c0044 | 0x8 | bit 2 clear, bit 3 set | 0x8 |
+| 0x2922c0040 | 0x3 | bit 1 set | 0x3 |
+| `HS_B` 0x2922c010c | 0x80000000 | not read | 0x80000000 |
+| 0x28e20c400 | 0x222 | not read | 0x222 |
+
+**What that shows:**
+- **The commit starts A2, at once.** `PHASE` 4 is written only by A2, 0xa03 is a
+  table-A sequence's opening, and WD2's count matches the time since the first commit
+  write in both samples. "What the commit's write selects", open in the SRAM section,
+  is answered for the A side: the entry pair's. The notebook's "the commit loads WD2"
+  is now measured, as A2's preamble.
+- **A2 reached its first handshake and stayed there,** bit 31 raised and waiting for
+  bit 24, for at least the 24 s between the samples.
+- **B2 didn't get past its opening segment.** 0x2922c0040 bit 1 still reads 1, and B2
+  clears it at ops 4-6. 0x2922c0044 bit 2 is clear, which is B2's first poll. So B2 is
+  at op 1 or hasn't started; these bytes can't tell which.
+- **SIO_CPU's class places nothing.** 0x6005 bit 0 says bits 27:24 already read f at
+  entry 61's wait (PLAN.md expected 4), and B2 is nowhere near op 49 anyway.
+- **These words don't survive WD2's reset.** `PHASE` was 4 and the state word 0xa03
+  about 5 s before the restart, and the next boot reads both back at their awake values.
+  So a next-boot pass can't give a position, after this run or a plain `--m1-hold`.
+- **The reset is still 30 s after the commit,** not 30 s after CPU0's deep WFI (which
+  would be about 55 s). The sequences started at the commit, whatever CPU0 was doing.
+
+**What it doesn't settle: whether CPU0 being up is what holds the gate.** A reset near
+30 s can't say, since A2 arms WD2 before its first handshake. T8140's author says a core
+left awake holds the engine until WD2 resets the SoC, and T8103's entries completed
+only once every core reached its deep WFI. 0x2922c0044 bit 2 reads clear awake with
+every core running, so the awake pass doesn't exclude a rollup of the cores, and the
+same pattern (bit 3 set, bit 2 clear, then the reverse) is what a two-state rollup
+would show. If the gate is the cores', run 6 stopped there because of the read itself,
+and every earlier run got past it and stopped somewhere no read has reached: with
+CPU0 up, or after the reset, nothing here can see that. If it isn't, it has been closed
+in every run, and something else (DISPLAY, the PMP, or a state no list names) keeps it
+closed. T8140's "the engine waits for DISP_CPU with no timeout" fits a first poll with
+no timeout, but says nothing about this word.
+
+**Checked at the desk, no hardware:**
+- CPU0 writes no stop bit on purpose: macOS never stops the boot CPU through the PMGR
+  (e1_hook.c L795-796), and T8103's deep stop writes each core's own bit.
+- None of the replay's table writes page 0x2922c0000, so nothing the replay does
+  addresses that gate directly.
+- The sequences use that page as a bank of control words, most written and then polled
+  on a status bit (B2's 0x40; 0x2c-0x3c, 0x48 and 0x4c in the others). 0x44 is only ever
+  read: bits 2 and 3 by B2, bit 1 by B1 at 0x7b1c. What drives it isn't shown.
+
+**What it changes** (judgment; the order is in PLAN.md, and only there): the position
+read has reached the limit of what a core still up can see, and the next-boot pass adds
+nothing. It confirmed the pairing and put a floor under the engine's progress, but it
+can't choose a rung by itself.
