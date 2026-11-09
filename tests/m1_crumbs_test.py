@@ -1418,26 +1418,39 @@ def position_tests(g, src):
             check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
                   f"--clear after disp_off=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
 
-        # sio_stop=1's run: 0x6005 has the K steps' outcomes, no sample, and stages 0x4e and 0x4f.
-        run10 = dict(run7, parked=0xff, prog=None)
+        # sio_stop=1's run: 0x6012 has the K steps' outcomes, 0x6013 their marker, no sample, and stages 0x4e and 0x4f.
+        run10 = dict(run7, prog=(0xff, 0xa5))
         LINE = "  internal DCP: stopped; external DCP: stopped; the domains of the DCPs that stopped: all read off\n"
         rc, out, err = dec(0xcf, run10)
         check(rc == 0 and "stage 0x6004 = 0xcf (pmp_out=1: bit 7, so the stage is 0x4f) (pmgr_late=1): sio_stop=1: the commit and the alarm are done" in out
-              and "0x6005 = 0xff, the steps before the commit:\n" in out and LINE in out
+              and "0x6012 = 0xff, the steps before the commit:\n" in out and LINE in out
               and "  SMC's AP idle notice: acked within 200 ms; SIO's firmware: stopped\n" in out
-              and "position sample" not in out and "parked (0x6005" not in out and "read off after the release" not in out and "observe=1" not in out
+              and "position sample" not in out and "parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out and "read off after the release" not in out
               and "PCPM0 not read (hold_nowatch=1: CPU0 doesn't watch them), PCPM1 not read" in out and HELD in out and RAISED in out
-              and "0x6015 = 0x8d: K4 ran" in out and "RTC second at just before the commit: 121544," in out,
-              "sio_stop=1's 0xcf: the steps' outcomes, no sample, the second whole", out + err)
-        rc, out, err = dec(0xcf, dict(run10, parked=0x4a))
+              and "0x6015 = 0x8d: K4 ran" in out and "from its low two bytes and the run's alarm: 121544" in out,
+              "sio_stop=1's 0xcf: the steps' outcomes, no sample", out + err)
+        rc, out, err = dec(0xcf, dict(run10, prog=(0x4a, 0xa5)))
         check(rc == 0 and "  internal DCP: shut down, but RUN didn't read 1 then 0; external DCP: shut down, but RUN didn't read 1 then 0; the domains of the DCPs that stopped: NOT all read off, or none stopped\n" in out
               and "  SMC's AP idle notice: NOT acked; SIO's firmware: its RTKit idle pair FAILED another way\n" in out,
               "sio_stop=1: each outcome decoded on its own", out + err)
-        rc, out, err = dec(0xcf, dict(run10, parked=0x20))
+        rc, out, err = dec(0xcf, dict(run10, prog=(0x20, 0xa5)))
         check(rc == 0 and "  SMC's AP idle notice: acked within 200 ms; SIO's firmware: its RTKit idle pair TIMED OUT\n" in out,
               "sio_stop=1: SIO's timeout", out + err)
+        rc, out, err = dec(0xcf, dict(run10, prog=(0, 0xa5)))
+        check(rc == 0 and "0x6012 = 0x00, the steps before the commit:\n" in out and out.count("TIMED OUT") == 3 and "SMC's AP idle notice: NOT acked" in out
+              and "didn't land" not in out and "from its low two bytes and the run's alarm: 121544" in out,
+              "sio_stop=1: a recorded all-zero outcome is still an outcome", out + err)
+        for stage, prog in ((0xcf, (0, 0)), (0xce, (0x01, 0x00)), (0xcf, (0xff, 0xa4))):
+            rc, out, err = dec(stage, dict(run10, prog=prog))
+            check(rc == 0 and f"0x6012 0x6013 = {prog[0]:02x} {prog[1]:02x}: the steps' outcomes didn't land (0x6013 isn't their marker, 0xa5):" in out
+                  and "TIMED OUT" not in out and "NOT acked" not in out and "the steps before the commit:" not in out
+                  and "from its low two bytes and the run's alarm: 121544" in out,
+                  f"sio_stop=1's 0x{stage:02x}, no marker at 0x6013 ({prog[0]:02x} {prog[1]:02x}): no outcomes reported as facts", out + err)
+        rc, out, err = dec(0xb9, dict(run10, prog=None))
+        check(rc == 0 and "RTC second at the replay's start (K1): 121544," in out and "the steps before the commit:" not in out and "didn't land" not in out,
+              "the stage before sio_stop=1's 0x4e: 0x6012 is still the second's, read whole", out + err)
         rc, out, err = dec(0xce, run10)
-        check(rc == 0 and "so the stage is 0x4e" in out and "8 (sio_stop=1)" in out and "0x6005 = 0xff" in out and "(0x4f comes after them)" in out,
+        check(rc == 0 and "so the stage is 0x4e" in out and "8 (sio_stop=1)" in out and "0x6012 = 0xff" in out and "(0x4f comes after them)" in out,
               "sio_stop=1's 0xce: before the commit", out + err)
         for stage in (0xce, 0xcf):
             before = fake(path, scratch(stage, **run10), rtc_secs=121761, alarm=alarm)
@@ -1585,9 +1598,10 @@ def position_tests(g, src):
     check("if (sio_stop && n == 1 && !READ_ONCE(replay_done))\n\t\tm1_sio_fw_stop();" in src[src.index("static int e1_prepare(void)"):src.index("static int e1_prepare(void)") + 700],
           "SIO's firmware is stopped at the first prepare of the suspend that will replay, after the DCPs", "")
     check(in_order(src, ["b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;",
-                         "b[1] = sio_stop ? m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6 : parked | (obs ? BIT(0) : 0);",
-                         "m1_crumb(0x6004, b, 4);"]) and "m1_stage(sio_stop ? 0x4f : 0x5b);" in src and "m1_crumb(0x6012, &k" not in src,
-          "sio_stop=1 records the steps' outcomes in the same command as stage 0x4e, and uses stages 0x4e and 0x4f")
+                         "m1_crumb(0x6004, b, 4);\n\t\tif (sio_stop) {",
+                         "b[0] = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;\n\t\t\tb[1] = M1_K_MARK;\n\t\t\tm1_crumb(0x6012, b, 2);"])
+          and "m1_stage(sio_stop ? 0x4f : 0x5b);" in src and "#define M1_K_MARK\t\t0xa5" in src and "K_MARK = 0xa5" in open(TOOL).read(),
+          "sio_stop=1 records the steps' outcomes after stage 0x4e, in one command with their marker, and the decoder's marker is the module's")
     check('#define M1_SIO_ASC\t\t0x39bc00000ULL' in src and '#define M1_SIO_MBOX_NODE\t"/soc/mbox@39bc08000"' in src
           and "m1_never(M1_SIO_ASC + M1_ASC_CPU_CONTROL, 1)" in src, "SIO's ASC and mailbox are this Mac's, and the load checks the never-write list")
     check(0x39bc00044 not in (0x28e0802d8, 0x28e700000), "SIO's RUN word isn't on the never-write list")

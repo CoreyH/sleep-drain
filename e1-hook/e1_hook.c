@@ -1239,12 +1239,14 @@ static void e1_after_slpa(void)
  * clearing RUN, read back: both completing Linux drivers refuse a sleep without it
  * (aurora-silicon/linux ae8686a0bcf4, DJ's, for T8140). Corey's OK of 2026-11-09.
  * With hold_nowatch=1, CPU0 takes its deep WFI as soon as it has let the others go
- * after the commit, so no sample carries K3b's and K5's outcomes: they go with
- * SIO's in 0x6005, in the same command as stage 0x4e, which replaces 0x5a (parked
- * is all seven by then, or raw SPMI wouldn't be running): bits 4:0 K3b's five bits,
- * bit 5 the SMC's ack, bits 7:6 SIO's outcome (0 its idle pair timed out, 1 failed
- * another way, 2 returned 0 but RUN didn't read 1 then 0, 3 stopped). Stage 0x4f
- * replaces 0x5b. Both have bit 7 from K4 on.
+ * after the commit, so no sample carries K3b's and K5's outcomes. Step 8 writes
+ * them with SIO's in one command, after stage 0x4e (which replaces 0x5a, and says
+ * that 0x6012-0x6013 aren't the second's upper bytes any more; the alarm's compare
+ * value gives those back): 0x6012, bits 4:0 K3b's five bits, bit 5 the SMC's ack,
+ * bits 7:6 SIO's outcome (0 its idle pair timed out, 1 failed another way, 2 returned
+ * 0 but RUN didn't read 1 then 0, 3 stopped); 0x6013, M1_K_MARK, which says the record
+ * landed, so that a lost one isn't read as timeouts (the second's top byte can't be
+ * 0xa5: that's 87 years). Stage 0x4f replaces 0x5b. Both have bit 7 from K4 on.
  *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
@@ -1493,6 +1495,7 @@ static bool m1_smc_acked;
 /* sio_stop=1: SIO's RTKit (through its mailbox's device, referenced), its ASC, and its outcome (the M1_DCP_* codes). */
 #define M1_SIO_MBOX_NODE	"/soc/mbox@39bc08000"
 #define M1_SIO_ASC		0x39bc00000ULL
+#define M1_K_MARK		0xa5	/* 0x6013, with the steps' outcomes at 0x6012 (the m1 comment) */
 static struct platform_device *m1_sio_mbox_pdev;
 static struct apple_rtkit *m1_sio_rtk;
 static void __iomem *m1_sio_asc;
@@ -2624,11 +2627,16 @@ static void __noreturn m1_after_slpa(void)
 	m1_crumb(0x6010, b, 7);
 	if (pmgr_late) {
 		b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;
-		/* sio_stop=1: the steps' outcomes, in the one command that also says they're there (the m1 comment). */
-		b[1] = sio_stop ? m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6 : parked | (obs ? BIT(0) : 0);
+		b[1] = parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
 		b[3] = hold ? held : down;
 		m1_crumb(0x6004, b, 4);
+		if (sio_stop) {
+			/* After the stage that says they're there; a failed command above stops this one (the m1 comment). */
+			b[0] = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;
+			b[1] = M1_K_MARK;
+			m1_crumb(0x6012, b, 2);
+		}
 	} else {
 		m1_stage(0x50);
 	}
@@ -3510,7 +3518,7 @@ static int __init e1_check_params(void)
 		return -EINVAL;
 	}
 	if (sio_stop && (!hold_nowatch || !disp_off || !one_commit || !smc_idle || position)) {
-		pr_err("sio_stop=1 needs hold_nowatch=1 disp_off=1 one_commit=1 smc_idle=1 and no position=1 (0x6005 holds its outcomes; a CPU0 that reads the others down would rewrite it)\n");
+		pr_err("sio_stop=1 needs hold_nowatch=1 disp_off=1 one_commit=1 smc_idle=1 and no position=1 (its outcomes go in 0x6012 in that layout)\n");
 		return -EINVAL;
 	}
 	if ((one_commit || smc_idle) && !disp_off) {

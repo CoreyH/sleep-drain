@@ -421,9 +421,10 @@ steps, and restarting the DCP and the PMP afterwards.
       with `hold_nowatch=1` in place of `position=1`, on run 10's recipe), Corey's OK of 2026-11-09:
       SIO's RTKit idle pair once at the first `prepare`, after the DCPs and while SIO has power, and if
       that returned 0, one read-modify-write clearing RUN at 0x39bc00044, read back. CPU0 goes straight
-      to its deep WFI after the commit, so there's no sample. 0x6005, in stage 0x4e's own command, has
-      the steps' outcomes: bits 4:0 K3b's, bit 5 the SMC's ack, bits 7:6 SIO's (0 its idle pair timed
-      out, 1 failed another way, 2 returned 0 but RUN didn't read 1 then 0, 3 stopped). Stages 0x4e and
+      to its deep WFI after the commit, so there's no sample. 0x6012 has the steps' outcomes, written
+      after stage 0x4e with 0x6013 = 0xa5 in one command, so a lost record reads as lost and not as
+      timeouts: bits 4:0 K3b's, bit 5 the SMC's ack, bits 7:6 SIO's (0 its idle pair timed out, 1 failed
+      another way, 2 returned 0 but RUN didn't read 1 then 0, 3 stopped). Stages 0x4e and
       0x4f in place of 0x5a and 0x5b, with K4's bit 7 (0xce, 0xcf). How to read it: SIO's code 3 with the
       same reset at 30-32 s says SIO and CPU0's second weren't enough; a reset well away from 30 s or
       dark past 2 minutes is new.
