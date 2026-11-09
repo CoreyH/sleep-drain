@@ -21,11 +21,11 @@
  *   bit 7     0x2922c0040 bit 1
  *
  * disp_off=1's byte B (m1_pos_byte_d) keeps the top three bits and has, below them:
- *   bit 0     the internal DCP stopped (idle read, RUN read 1 then 0)
- *   bit 1     the external DCP stopped
- *   bit 2     disp0's two domains read off
- *   bit 3     dispext0's two domains read off
- *   bit 4     an idle pair failed
+ *   bits 1:0  the internal DCP: 0 its RTKit shutdown timed out, 1 that failed
+ *             another way (or RTKit wasn't running), 2 it returned 0 but RUN
+ *             didn't read 1 then 0, 3 stopped
+ *   bits 3:2  the external DCP, the same
+ *   bit 4     at least one DCP stopped and every domain turned off read off
  */
 #ifndef M1_POSITION_H
 #define M1_POSITION_H

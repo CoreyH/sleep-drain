@@ -2787,3 +2787,34 @@ look the same from here.
 **What it changes** (judgment; the order is in PLAN.md, and only there): the two known mismatches
 that could be fixed from the hook are gone, and the display chain is the rung left. T6020 had every
 display domain off from its R6 on and still reset, so don't expect it alone to end the reset.
+
+### M1 run 8: the display rung's first try: the DCPs didn't stop, so the display wasn't tested (2026-11-09)
+
+`e1-hook/run-floor --quick --m1-disp-off` (`replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1
+hold=1 pmp_out=1 position=1 sio_on=1 disp_off=1`, #53; the module built at 3b36234; flag
+`radios-off`; the launcher also loaded `pmp_sleep_release` with 0xc and 0xd), in a safe boot, on
+battery at 44%, with a 1-minute reading. Against run 7 it adds step K3b: both DCPs given the PMP's
+idle pair, and, if they read idle, RUN cleared, then their domains off. Raw data:
+`results/m1-run8-20261109/`.
+
+**The facts:**
+- **Stage 0xcd** (0x45 with K4's bit 7 and K3b's bit 3): the sample landed and CPU0 had nothing
+  pending just before its acks and its own deep WFI.
+- **K3b failed.** Sample 1's byte B, 0xd0: bit 4 set, an idle pair failed on at least one DCP;
+  bits 0-3 clear, neither DCP stopped, so neither pair of domains was touched. The byte can't
+  say which DCP refused, or how (a timeout, a mismatched ack, RTKit not running at that point); the
+  load log, about a minute earlier, has both running. The PMP's idle pair, the same call on the same
+  path, worked moments later (0x6015 = 0x8e), so the path is fine.
+- **SIO and the PMP as in run 7:** 0x6007 = 0xff, the raises read on; `qto` 0x10, only
+  DISPLAY's wait timed out, as K3b didn't take the display down.
+- **The sample, about 1 s after the commit** (0x14): `PHASE` 4, `HS_A` bit 31 up, bit 24 clear, state
+  word 0xa03; 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 set. As runs 6 and 7.
+- **The restart:** 28.9-30.7 s after the commit (28.7-30.7 and 28.9-30.9 from the two reads).
+  The armed alarm survived it, and `--clear` disarmed it. Corey's report: the usual restart.
+
+**What it shows.** Nothing about the display: DISPLAY's domains stayed on and its wait failed as in
+every earlier run. It shows the idle pair isn't a way to stop these DCPs at that point, at least
+one of them. JJRPF's DeepIdle `test_sleep_off` (GPL-2.0) stopped all three of T6020's DCPs with
+`apple_rtkit_shutdown()` and CPU_CONTROL := 0, at `dcp_platform_suspend`, with the domains then
+off under genpd (`data/s2r-domains/2026-11-06-2119-s6-dcp-off-held.txt`), and Linux's NVMe suspend
+does the same. The next try uses that.

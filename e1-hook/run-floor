@@ -60,7 +60,7 @@
 # sample at about 1 s, CPU0 then going down at once. A hang in those raises is dark at
 # stage 0x90 (0x10 with bit 7). No awake pass needed; its label is floor-m1-sio-pmp.
 # --m1-disp-off (E2's display rung, PLAN.md) adds disp_off=1 to that: right after slpa, both
-# DCPs' firmware idled and stopped, the way --m1-pmp treats the PMP, and their domains off
+# DCPs' firmware shut down through RTKit and their CPUs stopped, and their domains off
 # (new RTKit messages, ASC writes and PMGR writes, Corey's OK of 2026-11-09). A hang there is
 # dark at stage 0x02 or 0x84. Its label is floor-m1-disp-off.
 # What's said of --m1, --m1-alarm and --m1-hold

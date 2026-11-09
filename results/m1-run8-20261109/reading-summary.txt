@@ -1,0 +1,1 @@
+time=2026-11-09T16:37:34+01:00 ts=1794238654 label=floor-m1-disp-off boot=safe then=suspend boot_id=ca7c900b-8a40-4c22-9527-d2cd0e8d2815 minutes=1 samples=7 window=1794238594-1794238654 charge_now_uah=2260000 voltage_uv=11306000 current_ua=-571000 charge_counter=-87693 capacity=44 uptime_s=105.92 ac=0

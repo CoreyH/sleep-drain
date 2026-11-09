@@ -416,19 +416,22 @@ steps, and restarting the DCP and the PMP afterwards.
       and independent: one commit write instead of three (macOS's T6000 table has one).
 
       **Next (built, not run): the display rung, `pkexec e1-hook/run-floor --quick
-      --m1-disp-off`** (`e1_hook disp_off=1`, on `--m1-sio-pmp`'s recipe). Corey's OK of
-      2026-11-09, as asked:
+      --m1-disp-off`** (`e1_hook disp_off=1`, on `--m1-sio-pmp`'s recipe). Run 8 (RESEARCH.md)
+      tried it with K4's idle pair, and neither DCP stopped. Corey's OKs of 2026-11-09, the second
+      after run 8:
       - Step K3b, right after `slpa` and before K4, interrupts on: both DCPs Linux keeps
         running through s2idle, the internal one (dcp@38bc00000) and the external one
-        (dcp@289c00000), the display firmware first as T8140 has it: RTKit's idle pair once
-        each, then, only if CPU_STATUS then reads idle, one read-modify-write clearing RUN
-        (0x38bc00044, 0x289c00044), read back.
+        (dcp@289c00000), the display firmware first as T8140 has it: `apple_rtkit_shutdown`
+        (SetAPPower 0x10, then SetIOPPower 0x01), as Linux's NVMe suspend and DeepIdle's
+        `test_sleep_off` do, then, if that returned 0, one read-modify-write clearing RUN
+        (0x38bc00044, 0x289c00044), read back, with no idle gate.
       - Only for a DCP that stopped: its two domains to target 0, child first, as the
         power-state driver asks for it, each polled up to 10 ms (disp0_cpu0 0x28e580350,
         disp0_fe 0x28e580328, dispext0_cpu0 0x28e080280, dispext0_fe 0x28e080258; the last
         two on ps_pmp's page, never its word).
-      - Bytes: sample 1's byte B holds K3b's outcome in its low five bits (internal stopped,
-        external stopped, disp0's domains off, dispext0's off, an idle pair failed) under the
+      - Bytes: sample 1's byte B holds K3b's outcome in its low five bits (each DCP's two-bit
+        outcome: its shutdown timed out, failed another way, returned 0 but RUN didn't read 1
+        then 0, or stopped; and whether every domain turned off read off) under the
         gate's three, no SIO class, RESET_EN or count, so the position stages are 0xc8,
         0xc9, 0xca, 0xcc and 0xcd (bit 3 up). `m1-crumbs` decodes them, and `--clear` disarms
         the alarm at each. Stage 0x84 is K3b done, before K4's 0x83.
@@ -440,8 +443,8 @@ steps, and restarting the DCP and the PMP afterwards.
           the power key.
         - `qto` (0x6006) bit 4: clear for the first time on any chip means DISPLAY's
           power-down settled with the chain off.
-        - The display bits: anything other than 0x0f means a DCP or a domain didn't
-          stop; that DCP's load-log line has the baseline.
+        - The display bits: anything other than 0x1f means a DCP or a domain didn't
+          stop, and `m1-crumbs` says which and how; that DCP's load-log line has the baseline.
         - The gate bits against run 7's: `PHASE` past 4, `HS_A` bit 24 up, or 0x2922c0040 bit
           1 clear means the gate opened with CPU0 up, so the display was what held it.
         - The ending: a reset 30-32 s after the commit is the same ending, and then the

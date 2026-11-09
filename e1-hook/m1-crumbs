@@ -211,6 +211,7 @@ PHASES = {0: "pair 0's", 2: "pair 1's", 3: "pair 1's last", 4: "the entry pair's
           6: "pair 3's first", 7: "the entry pair's last (A2)", 8: "pair 1's", 9: "pair 3's second", 0xa: "pair 1's",
           0xb: "pair 1's", 0xc: "pair 1's", 0xd: "pair 1's"}
 STATE_WORDS = ("0xa03 (a sequence's start)", "1 (a sequence's end)", "0xa02 (A1's close)", "some other value")
+DCP_CODES = ("its RTKit shutdown TIMED OUT", "its RTKit shutdown FAILED another way", "shut down, but RUN didn't read 1 then 0", "stopped")
 SIO_CLASSES = ("all ones: a failed read", "target 0, bit 11 set (B2 at op 91, inferred)",
                "target 0, bit 11 clear (past op 91, inferred)", "another target, bits 27:24 not f",
                "another target, bits 27:24 f, actual not f", "another target, bits 27:24 f, actual f",
@@ -220,10 +221,8 @@ SIO_CLASSES = ("all ones: a failed read", "target 0, bit 11 set (B2 at op 91, in
 def sample_lines(n, addr_a, a, addr_b, b, disp=False):
     """position=1: one sample's two bytes, one line per word (m1_position.h has the layout). disp: disp_off=1's byte B."""
     phase = a & 0xf
-    middle = (f"  display (K3b): internal DCP {'stopped' if b & 1 else 'NOT stopped'}, external DCP"
-              f" {'stopped' if b & 2 else 'NOT stopped'}; disp0's domains {'read off' if b & 4 else 'did NOT read off'},"
-              f" dispext0's {'read off' if b & 8 else 'did NOT read off'}; idle pair"
-              f" {'FAILED on at least one' if b & 0x10 else 'returned 0 on both'}") if disp else (
+    middle = (f"  display (K3b): internal DCP: {DCP_CODES[b & 3]}; external DCP: {DCP_CODES[b >> 2 & 3]}; the domains of the DCPs"
+              f" that stopped: {'all read off' if b & 0x10 else 'NOT all read off, or none stopped'}") if disp else (
              f"  SIO_CPU: {SIO_CLASSES[b & 7]}; WD2 RESET_EN {'set' if b & 8 else 'clear'}; WD2's count"
              f" {'within' if b & 0x10 else 'NOT within'} 0.25 s of CPU0's time since the first commit write")
     return [f"position sample {n} (0x{addr_a:04x} = 0x{a:02x}, 0x{addr_b:04x} = 0x{b:02x}):",
