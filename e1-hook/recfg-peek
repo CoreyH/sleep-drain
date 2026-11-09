@@ -37,8 +37,9 @@
 #
 # --position-after is the one read that runs outside a safe boot, and only for
 # addresses a safe boot's --position already read without a fault: it refuses
-# in a safe boot, and without a collected done.txt. Its words go to one
-# recfg-peek-<time>-after/log.txt on the disk, synced after each.
+# in a safe boot, and unless the newest --position on record finished (its
+# collected done.txt). Its words go to one recfg-peek-<time>-after/log.txt on the
+# disk, synced after each, and it stops at a sync that fails.
 set -u
 
 die() { echo "recfg-peek: $*" >&2; exit 1; }
@@ -69,9 +70,11 @@ fi
 if [[ $mode == after ]]; then
   [[ ! -f $SAFE_FLAG ]] || die "--position-after is for the regular boot right after the run, not a safe boot"
   shopt -s nullglob
-  marks=("$LOG_ROOT"/recfg-peek-*-pdone/done.txt)
+  passes=("$LOG_ROOT"/recfg-peek-*-pa)
   shopt -u nullglob
-  ((${#marks[@]})) || die "no safe boot's --position is on record here (no $LOG_ROOT/recfg-peek-*-pdone/done.txt): pkexec /usr/local/bin/sleep-drain-safe collect first; and if the safe boot's pass never finished, these addresses haven't been shown safe to read"
+  ((${#passes[@]})) || die "no safe boot's --position is on record here (no $LOG_ROOT/recfg-peek-*-pa): pkexec /usr/local/bin/sleep-drain-safe collect first"
+  # The names sort by time, so the last is the newest. An older pass's done.txt won't do: a newer one may have stopped at one of these words.
+  [[ -f ${passes[-1]%-pa}-pdone/done.txt ]] || die "the newest --position on record, ${passes[-1]##*/}, never finished (no done.txt): these addresses haven't been shown safe to read"
 else
   [[ -f $SAFE_FLAG ]] || die "this runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
 fi
@@ -91,9 +94,12 @@ else
 fi
 
 # Every stage's output is on the disk, or in the boot partition's save, before the next read.
+# The last step's status is keep()'s: the save in a safe boot, the sync in --position-after, which has no save.
 keep() {
-  sync -f "$1"
-  if [[ $mode != after ]]; then
+  if [[ $mode == after ]]; then
+    sync -f "$1"
+  else
+    sync -f "$1"
     "$SAVE" save > /dev/null
   fi
 }

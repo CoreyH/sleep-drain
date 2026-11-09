@@ -302,7 +302,7 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
             return res
 
         def sandbox(*, safe=True, rc_by_stage=None, save_fails=False, uid=0, args=(), old_binary=False,
-                    tee_fails=False, pdone=False):
+                    tee_fails=False, pdone=False, sync_fails=False, save_fail_at=None, pa=()):
             """Runs the launcher with stubs; returns (rc, output, calls, the log root, manifests at each save)."""
             rc_by_stage = rc_by_stage or {}
             root = tempfile.mkdtemp(dir=tmp)
@@ -331,9 +331,13 @@ exit ${{rc[$1]:-0}}
             log_root = os.path.join(root, "log")
             os.mkdir(log_root)
             if pdone:
+                os.mkdir(os.path.join(log_root, "recfg-peek-20261109T090000-pa"))
                 os.mkdir(os.path.join(log_root, "recfg-peek-20261109T090000-pdone"))
                 with open(os.path.join(log_root, "recfg-peek-20261109T090000-pdone", "done.txt"), "w") as f:
                     f.write("every word\n")
+            for when in pa:
+                # Another pass's first stage, with no pdone: a pass that stopped partway.
+                os.mkdir(os.path.join(log_root, f"recfg-peek-{when}-pa"))
             snaps = os.path.join(root, "snaps")
             os.mkdir(snaps)
             save = os.path.join(root, "safe")
@@ -342,7 +346,7 @@ exit ${{rc[$1]:-0}}
 echo "save $*" >> {calls}
 n=$(ls {snaps} | wc -l)
 cp -a {log_root} {snaps}/$n
-{'exit 1' if save_fails else 'exit 0'}
+{'exit 1' if save_fails else f'[[ $n != {save_fail_at - 1} ]] || exit 1' if save_fail_at else 'exit 0'}
 """)
             os.chmod(save, 0o755)
             flag = os.path.join(root, "active")
@@ -350,14 +354,21 @@ cp -a {log_root} {snaps}/$n
                 open(flag, "w").close()
             env = ["env", "RECFG_BIN=" + stub, "RECFG_SRC=" + src, "RECFG_SAFE_FLAG=" + flag,
                    "RECFG_SAVE=" + save, "RECFG_LOG_ROOT=" + log_root, "RECFG_RUNDIR=" + run_dir]
-            if tee_fails:
-                # A tee that can't write, as on a full overlay.
+            if tee_fails or sync_fails:
                 bindir = os.path.join(root, "bin")
                 os.mkdir(bindir)
-                teep = os.path.join(bindir, "tee")
-                with open(teep, "w") as f:
-                    f.write("#!/bin/bash\ncat > /dev/null\nexit 1\n")
-                os.chmod(teep, 0o755)
+                if tee_fails:
+                    # A tee that can't write, as on a full overlay.
+                    teep = os.path.join(bindir, "tee")
+                    with open(teep, "w") as f:
+                        f.write("#!/bin/bash\ncat > /dev/null\nexit 1\n")
+                    os.chmod(teep, 0o755)
+                if sync_fails:
+                    # A syncfs that fails, as on a disk error.
+                    syncp = os.path.join(bindir, "sync")
+                    with open(syncp, "w") as f:
+                        f.write("#!/bin/bash\nexit 1\n")
+                    os.chmod(syncp, 0o755)
                 env.append("PATH=" + bindir + ":" + os.environ["PATH"])
             r = subprocess.run(
                 ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
@@ -408,6 +419,11 @@ cp -a {log_root} {snaps}/$n
               "a reader killed on the last word: no record and no mark", (calls, out))
         rc, out, calls, logs, snaps = sandbox(args=("--position",), save_fails=True)
         check(rc == 1 and not sandbox.mark and calls == ["stage a", "save save"], "a failed save stops --position, with no mark", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), save_fail_at=9)
+        check(rc == 1 and not sandbox.mark and calls == POS and "run-floor --m1-position will refuse" in out,
+              "a failed save of the pass's record leaves no mark", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), sync_fails=True)
+        check(rc == 0 and calls == POS and sandbox.mark, "--position goes by its saves, not its syncs", (calls, out))
         rc, out, calls, logs, snaps = sandbox(args=("--position",), safe=False)
         check(rc == 1 and "safe boot only" in out and calls == [] and not sandbox.mark, "--position refuses outside a safe boot", out)
         rc, out, calls, logs, snaps = sandbox(args=("--position",), uid=1000)
@@ -417,7 +433,7 @@ cp -a {log_root} {snaps}/$n
         AFTER = [f"stage {c}" for c in LETTERS]
         rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True)
         check(rc == 0 and calls == AFTER and not sandbox.mark and snaps == [], "--position-after reads a-h, with no save and no mark", (calls, out))
-        dirs = sorted(d for d in os.listdir(logs) if not d.endswith("pdone"))
+        dirs = sorted(d for d in os.listdir(logs) if not d.endswith(("pdone", "-pa")))
         check(len(dirs) == 1 and dirs[0].endswith("-after"), "--position-after writes one directory", dirs)
         text = open(os.path.join(logs, dirs[0], "log.txt")).read()
         check(all(f"the reader's stage {c}" in text for c in LETTERS), "and its log holds every stage", text)
@@ -431,6 +447,15 @@ cp -a {log_root} {snaps}/$n
         check(rc == 1 and calls == AFTER[:6] and "stage f failed" in out, "--position-after stops at a failed word", (calls, out))
         rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True, tee_fails=True)
         check(rc == 1 and calls == ["stage a"] and "couldn't write" in out, "--position-after stops if its log can't be written", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True, sync_fails=True)
+        check(rc == 1 and calls == ["stage a"] and "not reading further" in out, "--position-after stops at a failed sync, before the next read", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True, pa=("20261109T100000",))
+        check(rc == 1 and "never finished" in out and "recfg-peek-20261109T100000-pa" in out and calls == [],
+              "--position-after refuses when the newest pass never finished, whatever an older one's done.txt says", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pdone=True, pa=("20261109T080000",))
+        check(rc == 0 and calls == AFTER, "--position-after goes when the newest pass finished, whatever an older one did", (calls, out))
+        rc, out, calls, logs, snaps = sandbox(args=("--position-after",), safe=False, pa=("20261109T080000",))
+        check(rc == 1 and "never finished" in out and calls == [], "--position-after refuses a pass with no done.txt", (calls, out))
 
         rc, out, calls, logs, snaps = sandbox(safe=False)
         check(rc == 1 and "safe boot only" in out and calls == [], "refuses outside a safe boot", out)

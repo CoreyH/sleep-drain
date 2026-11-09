@@ -1198,6 +1198,7 @@ def position_tests(g, src):
             r = run(path, cnt=cnt)
             return r.returncode, r.stdout, r.stderr
 
+        LONE = "sample 1 alone, about 1 s after the commit: only stages 0x44 and 0x45 say whether a read failed"
         rc, out, err = decoded(0x45, both)
         check(rc == 0 and "0x6004 = 0x45 (pmgr_late=1): position=1: both samples recorded, CPU0 had nothing pending" in out
               and "read off after the release (0x6005 = 0xfe, up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
@@ -1217,28 +1218,46 @@ def position_tests(g, src):
               and "0x140c is the commit's second + 3600, as the run wrote it" in out
               and "the SoC restarted about" in out and "wrote their stop bit" not in out
               and "cores with an interrupt pending" not in out and "the cores that took the release" not in out
-              and "observe=1" not in out and "PLAN.md has the reading guide" in out,
+              and "observe=1" not in out and "PLAN.md has the reading guide" in out and LONE not in out,
               "position=1's 0x45: both samples decoded from the module's own bytes", out + err)
         rc, out, err = decoded(0x44, both)
         check(rc == 0 and "0x44 (pmgr_late=1): position=1: both samples recorded, but CPU0 had an interrupt or SError pending" in out
-              and "position sample 2" in out, "position=1's 0x44: the same, with something pending", out + err)
+              and "position sample 2" in out and LONE not in out, "position=1's 0x44: the same, with something pending", out + err)
+
+        # Each sample's own lines, exact, with every field differing between the two and the other branch of each taken.
+        (t1a, t1b), (t2a, t2b) = enc([
+            row(phase=3, hs=0x01000000, state=0xa02, sio=0x00000800, ctrl=4, count=0, g44=8, g40=0, el=1 * tps),
+            row(phase=0xe, hs=0x80000000, state=1, sio=0x0f0000ff, ctrl=0, count=25 * tps, g44=4, g40=2, el=25 * tps)])
+        rc, out, err = decoded(0x45, dict(rec, down=t2a, isrs=t2b, prog=(t1a, t1b)))
+        want1 = (f"position sample 1 (0x6012 = 0x{t1a:02x}, 0x6013 = 0x{t1b:02x}):\n"
+                 "  PHASE 0x3 (pair 1's last); HS_A bit 31 down, bit 24 up; state word 0xa02 (A1's close)\n"
+                 "  SIO_CPU: target 0, bit 11 set (B2 at op 91, inferred); WD2 RESET_EN set; WD2's count NOT within 0.25 s of CPU0's time since the first commit write\n"
+                 "  gate words: 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 clear\n")
+        want2 = (f"position sample 2 (0x6007 = 0x{t2a:02x}, 0x6015 = 0x{t2b:02x}):\n"
+                 "  PHASE 0xe (not a phase the sequences read so far write); HS_A bit 31 up, bit 24 clear; state word 1 (a sequence's end)\n"
+                 "  SIO_CPU: another target, bits 27:24 f, actual f; WD2 RESET_EN clear; WD2's count within 0.25 s of CPU0's time since the first commit write\n"
+                 "  gate words: 0x2922c0044 bit 2 set, bit 3 clear; 0x2922c0040 bit 1 set\n")
+        check(rc == 0 and want1 in out and want2 in out, "each sample's lines say that sample's bits, in both branches of each", out + err)
         rc, out, err = decoded(0x45, dict(both, parked=0xff))
         check(rc == 0 and "0x6005 bit 0: SIO_CPU's bits 27:24 read f at entry 61's wait, the reference for its class\n" in out
-              and "CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out and "observe=1" not in out,
+              and "up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out and "observe=1" not in out,
               "position=1: 0x6005 bit 0 is SIO_CPU's reference, not observe's mark", out + err)
         rc, out, err = decoded(0x43, both)
         check(rc == 0 and "position sample 1" in out and "position sample 2" not in out
+              and "0x43 (pmgr_late=1): position=1: about 25 s after the third commit, CPU0 began sample 2's reads" in out
               and "held and step 8's byte, or sample 2's, the stage after them didn't follow: not decoded" in out
-              and "wrote their stop bit" not in out and "cores with an interrupt pending" not in out,
-              "position=1's 0x43: sample 2's bytes not read as facts", out + err)
+              and "wrote their stop bit" not in out and "cores with an interrupt pending" not in out and LONE in out,
+              "position=1's 0x43: sample 2's bytes not read as facts, and sample 1 is flagged as alone", out + err)
         rc, out, err = decoded(0x42, dict(rec, prog=(s1a, s1b)))
         check(rc == 0 and "position sample 1" in out and "position sample 2" not in out
+              and "0x42 (pmgr_late=1): position=1: sample 1's bytes landed" in out
               and "wrote their stop bit and held (0x6007 = 0xfe)" in out
-              and "0x6015 = 0x00: cores with an interrupt pending at their stop request (hold=1): none\n" in out,
-              "position=1's 0x42: sample 1 decoded, 0x6007 and 0x6015 still hold's", out + err)
+              and "0x6015 = 0x00: cores with an interrupt pending at their stop request (hold=1): none\n" in out and LONE in out,
+              "position=1's 0x42: sample 1 decoded and flagged as alone, 0x6007 and 0x6015 still hold's", out + err)
         rc, out, err = decoded(0x41, dict(rec, prog=(s1a, s1b)))
         check(rc == 0 and "position sample" not in out and "step 8's second's upper bytes or sample 1's" in out
-              and "not decoded" in out and "wrote their stop bit and held (0x6007 = 0xfe)" in out,
+              and "0x41 (pmgr_late=1): position=1: about 1 s after the third commit, CPU0 began sample 1's reads" in out
+              and "not decoded" in out and "wrote their stop bit and held (0x6007 = 0xfe)" in out and LONE not in out,
               "position=1's 0x41: sample 1's bytes not read as facts", out + err)
         rc, out, err = decoded(0x40, rec)
         check(rc == 0 and "0x40 (pmgr_late=1): position=1: the release went out and CPU0's watch ended" in out
@@ -1269,7 +1288,31 @@ def position_tests(g, src):
         check(r.returncode == 0 and after[0x1401] == 0x41 and "left alone" in r.stdout and "disarmed" not in r.stdout,
               "--clear after position=1 with another alarm armed: left alone", r.stdout + r.stderr)
 
+    # The decoder's names for each class, written here from the plan's grouping and not copied from its tables.
+    lines = g["sample_lines"]
+    for cls, text in enumerate(("0xa03 (a sequence's start)", "1 (a sequence's end)", "0xa02 (A1's close)", "some other value")):
+        got = lines(1, 0x6012, cls << 6, 0x6013, 0)[1]
+        check(got.endswith("state word " + text), f"the state word's class {cls} is named {text}", got)
+    for cls, text in enumerate(("all ones: a failed read", "target 0, bit 11 set (", "target 0, bit 11 clear (", "another target, bits 27:24 not f;",
+                                "another target, bits 27:24 f, actual not f;", "another target, bits 27:24 f, actual f;")):
+        got = lines(1, 0x6012, 0, 0x6013, cls)[2]
+        check(got.startswith("  SIO_CPU: " + text), f"SIO_CPU's class {cls} is named {text}", got)
+    groups = {"the entry pair": (4, 5, 7), "pair 3": (6, 9), "pair 0": (0,), "pair 1": (2, 3, 8, 0xa, 0xb, 0xc, 0xd), "not a phase": (1, 0xe, 0xf)}
+    for text, phases in groups.items():
+        for phase in phases:
+            got = lines(1, 0x6012, phase, 0x6013, 0)[1]
+            check(f"PHASE {phase:#x} ({text}" in got, f"PHASE {phase:#x} is named for {text}", got)
+
     # e1_hook.c's side.
+    def in_order(text, pieces):
+        at = 0
+        for piece in pieces:
+            i = text.find(piece, at)
+            if i < 0:
+                return False
+            at = i + 1
+        return True
+
     defs = {k: int(v, 0) for k, v in re.findall(r"#define (M1_POS_\w+|M1_WDX_STATE|M1_WDX)\s+(0x[0-9a-fA-F]+|\d+)", src)}
     check(defs.get("M1_POS_PAGE") == 0x2922c0000 and defs.get("M1_POS_PHASE") == 0x110 and defs.get("M1_POS_GATE44") == 0x44
           and defs.get("M1_POS_GATE40") == 0x40 and defs.get("M1_POS_HS_A") == 4 and defs.get("M1_WDX_STATE") == 0x1c
@@ -1280,15 +1323,21 @@ def position_tests(g, src):
     sample = src[src.index("static void m1_pos_sample(u8 *s)"):]
     sample = sample[:sample.index("\n}\n")]
     order = ["m1_crumb(0x6014, &flags, 1);", "b[0] = 0x40;", "b[1] = off | (m1_sio_ref ? BIT(0) : 0);", "b[2] = qto;", "b[3] = held;",
-             "m1_crumb(0x6004, b, 4);", "m1_pos_wait(m1_t_third + m1_tps);", "m1_stage(0x41);", "m1_pos_sample(s);", "m1_crumb(0x6012, s, 2);",
-             "m1_stage(0x42);", "m1_pos_wait(m1_t_third + 25 * m1_tps);", "m1_stage(0x43);", "m1_pos_sample(s);", "m1_crumb(0x6007, s, 1);",
+             "m1_crumb(0x6004, b, 4);", "if (m1_raw) {\n\t\tm1_pos_wait(m1_t_third + m1_tps);", "m1_stage(0x41);", "m1_pos_sample(s);", "m1_crumb(0x6012, s, 2);",
+             "m1_stage(0x42);", "if (m1_raw) {\n\t\tm1_pos_wait(m1_t_third + 25 * m1_tps);", "m1_stage(0x43);", "m1_pos_sample(s);", "m1_crumb(0x6007, s, 1);",
              "m1_crumb(0x6015, s + 1, 1);", "? 0x44 : 0x45);", "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));"]
-    at, ok = 0, True
-    for piece in order:
-        i = pos.find(piece, at)
-        ok = ok and i >= 0
-        at = i + 1 if i >= 0 else at
-    check(ok, "m1_position() sends the stages and samples in the order m1-crumbs reads them", pos)
+    check(in_order(pos, order), "m1_position() sends the stages and samples in the order m1-crumbs reads them, each wait only with raw SPMI up", pos)
+    release = src[src.index("static void m1_hold_release("):]
+    release = release[:release.index("\n}\n")]
+    check(in_order(release, ["m1_wait_off(M1_PS_PCPM0)", "m1_wait_off(M1_PS_PCPM1)", "if (position) {\n\t\tm1_position(off, qto, held, flags);\n\t\treturn;\n\t}", "b[0] = 0x5c;"]),
+          "m1_hold_release() branches to m1_position() after both PCPM waits and doesn't go on to hold=1's stages", release)
+    check("while (m1_now() < at)\n\t\tcpu_relax();" in src, "m1_pos_wait() spins until the counter reaches the deadline")
+    check(in_order(sample, ["post_map[ARRAY_SIZE(e1_post_slpa) - 1] + M1_POS_HS_A;", "phase = readl(m1_pos + M1_POS_PHASE);", "hs = readl(hs_a);",
+                            "state = readl(m1_wdx + M1_WDX_STATE);", "sio = readl(m1_sio + M1_PS_SIO_CPU);", "ctrl = readl(m1_wdt + M1_WD_CTRL(2));",
+                            "count = readl(m1_wdt + M1_WD_CUR(2));", "now = m1_now();", "gate44 = readl(m1_pos + M1_POS_GATE44);",
+                            "gate40 = readl(m1_pos + M1_POS_GATE40);", "s[0] = m1_pos_byte_a(phase, hs, state);",
+                            "s[1] = m1_pos_byte_b(sio, ctrl, m1_pos_count_near(count, now - m1_t_first, m1_tps), gate44, gate40);"]),
+          "m1_pos_sample() reads each word into its own name, and byte A goes to s[0], byte B to s[1]", sample)
     check(pos.count("writel(") == 1 and "writel_relaxed" not in pos and "write" not in re.sub(r"writel\(U32_MAX, m1_spmi|write_sysreg_s", "", pos)
           and "write" not in sample,
           "position=1 writes nothing but breadcrumbs and nub-spmi0's acks; a sample only reads", pos + sample)

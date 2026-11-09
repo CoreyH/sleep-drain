@@ -203,7 +203,7 @@ def pmp_byte(p):
 PHASES = {0: "pair 0's", 2: "pair 1's", 3: "pair 1's last", 4: "the entry pair's first (A2)", 5: "the entry pair's second (A2)",
           6: "pair 3's first", 7: "the entry pair's last (A2)", 8: "pair 1's", 9: "pair 3's second", 0xa: "pair 1's",
           0xb: "pair 1's", 0xc: "pair 1's", 0xd: "pair 1's"}
-STATE_WORDS = ("0xa03 (a sequence's start)", "1 (a sequence's end)", "0xa02 (A1's start)", "some other value")
+STATE_WORDS = ("0xa03 (a sequence's start)", "1 (a sequence's end)", "0xa02 (A1's close)", "some other value")
 SIO_CLASSES = ("all ones: a failed read", "target 0, bit 11 set (B2 at op 91, inferred)",
                "target 0, bit 11 clear (past op 91, inferred)", "another target, bits 27:24 not f",
                "another target, bits 27:24 f, actual not f", "another target, bits 27:24 f, actual f",
@@ -238,6 +238,9 @@ def position_lines(s, b):
     elif s == 0x43:
         out.append(f"0x6007 0x6015 = {b[0x07]:02x} {b[0x15]:02x}: held and step 8's byte, or sample 2's, the stage after"
                    " them didn't follow: not decoded")
+    if s in (0x42, 0x43):
+        out.append("  sample 1 alone, about 1 s after the commit: only stages 0x44 and 0x45 say whether a read failed, and one"
+                   " sample can't tell a stop from slow progress, so no rung from it")
     if s in POS_S1:
         out.append("  (compare each word with the awake pass, recfg-peek-*-p*/; a word still at its awake value says"
                    " nothing. PLAN.md has the reading guide)")

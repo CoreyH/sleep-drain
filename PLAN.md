@@ -465,21 +465,25 @@ steps, and restarting the DCP and the PMP afterwards.
         again in the first boot after the run's reset (`recfg-peek
         --position-after`), after `m1-crumbs` and `sleep-drain-safe collect`: if
         `PHASE`, the `HS` words and the state word survive WD2's reset, that is the
-        engine's position with every core down, which nothing else can show, at no
-        new byte. They may not (T8103's progress registers don't survive a WD1
+        engine's position at the reset, at no new byte: with the reset near 30 s,
+        after at most about 5 s with every core down (CPU0 goes down after sample 2,
+        about 25 s in), and none at stage 0x44, where CPU0's own WFI may not have
+        held. They may not survive (T8103's progress registers don't survive a WD1
         reset), and a value equal to the awake baseline says nothing. That second
         pass runs in a regular boot, the one read of this kind outside a safe boot:
         the OK covers it, read-only, for addresses the safe-boot pass read without
-        a fault. It refuses in a safe boot and without a collected `done.txt`.
+        a fault. It refuses in a safe boot and unless the newest pass on record
+        finished (its collected `done.txt`).
       - The run: `--m1-hold`'s recipe and one change. CPU0, having read the others
-        down and sent stage 0x5c's bytes, stays up, every exception still masked,
+        down and sent stage 0x40's bytes, stays up, every exception still masked,
         and samples these words twice, about 1 s and about 25 s after the third
         commit. Two samples, so a stop can be told from slow progress, since the
         unit of B2's early delays isn't known; the second is late because op 50's
         count field, 0xff, may expire, and only the state near the bite is a stop.
         Each sample's bytes go out right after it's taken, before the wait for the
         next (the first SPMI error stops every later crumb, and these are the run's
-        only record). Then as now: 0x5e, the acks, its deep WFI. Reads only. If the
+        only record). Then the last stage (0x45, or 0x44 with something pending),
+        the acks, its deep WFI. Reads only. If the
         sequences started at the commit, WD2's reset ends the run at about 30 s;
         that isn't shown with CPU0 up, so a reset later than that, or dark past 2
         minutes, goes by the guide below and run-floor's steps.
@@ -522,7 +526,7 @@ steps, and restarting the DCP and the PMP afterwards.
         late), and none of these words changes between B2's ops 53 and 229 either;
         a change means it was still moving at the first, and the second is the
         nearer place. Anything no row lists, or a value the awake pass makes
-        implausible (a failed read stays pending, masked, and only stage 0x5d shows
+        implausible (a failed read stays pending, masked, and only stage 0x44 shows
         it): the run didn't answer, so don't pick a rung from it. Then the next-boot
         pass, and Corey's call between repeating with other sample times and reading
         from CPU7 (runs 2 and 3's arrangement, where WD2 read armed with CPU0 down).
@@ -595,15 +599,23 @@ steps, and restarting the DCP and the PMP afterwards.
         included, reached its deep WFI (Naeem's mac27-hv try26-32, e1_hook.c
         L856-858). None of this is shown on T6000, where no run has read the engine
         with CPU0 up. A stop in this read can be the read's own, above all one at
-        B2's opening gate, whose word is unidentified. A run without the samples
-        can't settle that: it reads nothing, and run 5 already is that run
-        (30.0-31.3 s). What can: the reset's time against run 5's (the sequences
-        started at the commit if it's still about 30 s after the commit; they
-        waited for CPU0 if it comes about 30 s after CPU0's deep WFI), WD2's control
-        and count in the samples, and the next-boot pass, the only reading with
-        every core down. If a sample's bytes never land, that's no reading, not a
-        result: CPU0 can die in its wait, up to 25 s under the E complex CPU1 armed,
-        or raw SPMI can fail.
+        B2's opening gate, whose word is unidentified. A run with no samples and no
+        next-boot pass can't settle that: run 5 already is that run (30.0-31.3 s).
+        What can: the reset's time against run 5's (the sequences started at the
+        commit if it's still about 30 s after the commit; they waited for CPU0 if it
+        comes about 30 s after CPU0's deep WFI) and WD2's control and count in the
+        samples. The next-boot pass can't clear the read by itself: with the reset
+        near 30 s it has at most about 5 s with every core down, so a gate that CPU0's
+        WFI opens gets about 5 s to show it. If its values differ from the awake pass,
+        so the words survive the reset, the follow-up is a plain `--m1-hold` after
+        `recfg-peek --position` in one safe boot and `--position-after` in the next
+        boot: every core down for the full 30 s, with no new byte or address. That's
+        another run, so Corey's call. If a sample's bytes never land, that's no
+        reading, not a result: CPU0 can die in its wait, up to 25 s under the E
+        complex CPU1 armed, or raw SPMI can fail. Sample 1 alone (a run that ends at
+        stage 0x42 or 0x43) is no answer either: only 0x44 and 0x45 say whether a read
+        failed, and one sample can't tell a stop from slow progress. Don't pick a rung
+        from it.
 
       1. **M1 run 4: the PMU's RTC alarm** (ran 2026-11-08, `e1_hook alarm=1`,
          `pkexec e1-hook/run-floor --m1-alarm`: stage 0x5f, 0x6016 = 0xbd,

@@ -66,6 +66,9 @@
 #       (after --m1-alarm, --m1-hold and --m1-position, --clear also disarms the alarm the run armed, 0x1401
 #       back to 0x01, so that it can't power the Mac on an hour later; every
 #       m1 run refuses to load while it reads armed).
+#     After --m1-position, also, in that same boot, once m1-crumbs and collect
+#     are done (the next restart would lose what the reset left):
+#       pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek --position-after
 #   - Dark for good: the screen goes dark, if it isn't already, and it and
 #     the keyboard (dark since the reading began) stay dark past 2 minutes.
 #     Nothing wakes the Mac from it. If that's new (it's a candidate for a
@@ -88,7 +91,9 @@
 #          and floor-m1-hold-nowatch after those, floor-m1-pmp and
 #          floor-m1-pmp-idle after --m1-pmp and --m1-pmp-idle, floor-m1-position
 #          after --m1-position: --clear before
-#          the reading, since a PMU write can't change BQCC). --m1 can also hang
+#          the reading, since a PMU write can't change BQCC). After --m1-position,
+#          collect on its own first, then, before the reading, recfg-peek
+#          --position-after as above. --m1 can also hang
 #          dark without completing the entry: DeepIdle's R20 did, on an M2
 #          Pro, and its S2R watchdog never reset it. Only that reading's BQCC tells the two apart, and m1-crumbs
 #          says how far it got, at least. So for --m1, be ready to end it
