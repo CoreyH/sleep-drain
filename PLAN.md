@@ -465,10 +465,13 @@ steps, and restarting the DCP and the PMP afterwards.
         again in the first boot after the run's reset (`recfg-peek
         --position-after`), after `m1-crumbs` and `sleep-drain-safe collect`: if
         `PHASE`, the `HS` words and the state word survive WD2's reset, that is the
-        engine's position at the reset, at no new byte: with the reset near 30 s,
-        after at most about 5 s with every core down (CPU0 goes down after sample 2,
-        about 25 s in), and none at stage 0x44, where CPU0's own WFI may not have
-        held. They may not survive (T8103's progress registers don't survive a WD1
+        engine's position at the reset, at no new byte: with the reset near 30 s and
+        a last stage of 0x43 or later, after at most about 5 s with every core down
+        (CPU0 goes down after sample 2, about 25 s in), and none at stage 0x44, where
+        CPU0's own WFI may not have held. Below 0x43 the time isn't known: raw SPMI
+        failed (CPU0 goes straight down, by about 1 s) or CPU0 died in its wait, so
+        up to nearly all of the 30 s, or none if it hung. They may not survive
+        (T8103's progress registers don't survive a WD1
         reset), and a value equal to the awake baseline says nothing. That second
         pass runs in a regular boot, the one read of this kind outside a safe boot:
         the OK covers it, read-only, for addresses the safe-boot pass read without
@@ -555,7 +558,7 @@ steps, and restarting the DCP and the PMP afterwards.
           these bytes can't tell those apart, and an unchanged word doesn't prove B2
           never ran. Nothing else about the pair is reachable yet,
           and no rung on the ladder addresses this row: first rule out the read
-          itself (the limits bullet, the reset's time), then Corey's call. What sets
+          itself (the limits bullet; a reset near 30 s doesn't), then Corey's call. What sets
           the gate is a desk question, and if it proves a rollup of the cores or
           DISPLAY, the core and display rungs come back.
         - `PHASE` 4, `HS_A` bits 31 and 24 up: A2 is inside its p-state step, with
@@ -597,20 +600,27 @@ steps, and restarting the DCP and the PMP afterwards.
         (t8140-sleep.c:2471) and that a core left awake holds it until WD2
         (:807-809); T8103's entries completed only once every core, the last
         included, reached its deep WFI (Naeem's mac27-hv try26-32, e1_hook.c
-        L856-858). None of this is shown on T6000, where no run has read the engine
+        L863-865). None of this is shown on T6000, where no run has read the engine
         with CPU0 up. A stop in this read can be the read's own, above all one at
         B2's opening gate, whose word is unidentified. A run with no samples and no
         next-boot pass can't settle that: run 5 already is that run (30.0-31.3 s).
-        What can: the reset's time against run 5's (the sequences started at the
-        commit if it's still about 30 s after the commit; they waited for CPU0 if it
-        comes about 30 s after CPU0's deep WFI) and WD2's control and count in the
-        samples. The next-boot pass can't clear the read by itself: with the reset
-        near 30 s it has at most about 5 s with every core down, so a gate that CPU0's
-        WFI opens gets about 5 s to show it. If its values differ from the awake pass,
-        so the words survive the reset, the follow-up is a plain `--m1-hold` after
-        `recfg-peek --position` in one safe boot and `--position-after` in the next
-        boot: every core down for the full 30 s, with no new byte or address. That's
-        another run, so Corey's call. If a sample's bytes never land, that's no
+        What says whether the sequences started at the commit: the reset's time
+        against run 5's (they did if it's still about 30 s after the commit; they
+        waited for CPU0 if it comes about 30 s after CPU0's deep WFI) and WD2's
+        control and count in the samples. Neither clears a stop at B2's gate: A2
+        arms WD2 before its first handshake, so a gate CPU0 holds gives the same
+        reset and the same WD2 words. For that stop, the awake read of bit 2 (the
+        `PHASE` 4 row) and the follow-up below; if the words don't survive the reset,
+        it stays open. The next-boot pass can't clear the read by itself either: in a
+        run that reached sample 2 (stage 0x43 or later), with the reset near 30 s it
+        has at most about 5 s with every core down, so a gate that CPU0's WFI opens
+        gets about 5 s to show it. Below that stage the time with every core down is
+        unknown and may be nearly all of the 30 s. If `PHASE`, the `HS` words and the
+        state word differ from the awake pass, so they survive the reset, the
+        follow-up is a plain `--m1-hold` after `recfg-peek --position` in one safe
+        boot and `--position-after` in the next boot: every core down for the full
+        30 s, with no new byte or address. That's another run, so Corey's call. If a
+        sample's bytes never land, that's no
         reading, not a result: CPU0 can die in its wait, up to 25 s under the E
         complex CPU1 armed, or raw SPMI can fail. Sample 1 alone (a run that ends at
         stage 0x42 or 0x43) is no answer either: only 0x44 and 0x45 say whether a read
@@ -998,7 +1008,7 @@ steps, and restarting the DCP and the PMP afterwards.
         built (rung 2) and unrun; the stop bits at the park aren't built.
       - After the SRAM decode, a free variant: one commit write. macOS's T6000
         table writes the commit once (entry 73); this replay writes it three
-        times, Naeem's T8103 recipe (e1_hook.c L2199-2205). What a second write
+        times, Naeem's T8103 recipe (e1_hook.c L2339-2345). What a second write
         of 1 does while the sequence is running isn't shown, and the position read
         can't show it: the three writes are at most about 0.4 ms apart, so a
         restart reads the same a second later as a first pass (`PHASE` 4, `HS_A`
