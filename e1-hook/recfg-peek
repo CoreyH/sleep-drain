@@ -5,6 +5,17 @@
 #   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek          stages 1-4
 #   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek --rest   stage 5
 #
+# and the position read's words, one at a time (Corey's OK, 2026-11-09):
+#
+#   pkexec .../recfg-peek --position         stages a-h, awake, in the safe boot
+#                                            of the run, before run-floor
+#                                            --m1-position, which refuses without
+#                                            it (it leaves a mark in /run)
+#   pkexec .../recfg-peek --position-after   stages a-h again, in the first
+#                                            regular boot after the run's reset,
+#                                            after m1-crumbs and
+#                                            sleep-drain-safe collect
+#
 # It runs recfg_peek's stages in order, one word at a time at first: the
 # table-offset register's analogue and its lock, inside the ADT's AON window;
 # the SRAM's first word; the table; the first 0x10000 bytes. --rest is the
@@ -17,11 +28,17 @@
 # everything before it. A stage's directory is never changed after its save,
 # because sleep-drain-safe collect keeps the first copy of a directory it's seen
 # and stops on one that differs. The next regular boot's collect brings them all to
-# /var/log/sleep-drain.
+# /var/log/sleep-drain. --position's are recfg-peek-<time>-p<letter>/, and a last
+# recfg-peek-<time>-pdone/done.txt, saved too, says that every read returned.
 #
 # It writes no register and no PMU byte. A read of an address nothing answers
 # can panic the kernel, or hang the Mac until the power key: it's a safe boot
 # for that reason. Stage 3 stops it if there's no table to read.
+#
+# --position-after is the one read that runs outside a safe boot, and only for
+# addresses a safe boot's --position already read without a fault: it refuses
+# in a safe boot, and without a collected done.txt. Its words go to one
+# recfg-peek-<time>-after/log.txt on the disk, synced after each.
 set -u
 
 die() { echo "recfg-peek: $*" >&2; exit 1; }
@@ -32,24 +49,61 @@ SRC=${RECFG_SRC:-$HERE/recfg_peek.c}
 SAFE_FLAG=${RECFG_SAFE_FLAG:-/run/sleep-drain-safe/active}
 SAVE=${RECFG_SAVE:-/usr/local/bin/sleep-drain-safe}
 LOG_ROOT=${RECFG_LOG_ROOT:-/var/log/sleep-drain}
+RUNDIR=${RECFG_RUNDIR:-/run}
 
+mode=sram
 stages="1 2 3 4"
 if (($# == 1)) && [[ $1 == --rest ]]; then
   stages=5
+elif (($# == 1)) && [[ $1 == --position ]]; then
+  mode=position
+  stages="a b c d e f g h"
+elif (($# == 1)) && [[ $1 == --position-after ]]; then
+  mode=after
+  stages="a b c d e f g h"
 elif (($# != 0)); then
-  die "usage: recfg-peek [--rest]"
+  die "usage: recfg-peek [--rest | --position | --position-after]"
 fi
 
 [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
-[[ -f $SAFE_FLAG ]] || die "this runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
+if [[ $mode == after ]]; then
+  [[ ! -f $SAFE_FLAG ]] || die "--position-after is for the regular boot right after the run, not a safe boot"
+  shopt -s nullglob
+  marks=("$LOG_ROOT"/recfg-peek-*-pdone/done.txt)
+  shopt -u nullglob
+  ((${#marks[@]})) || die "no safe boot's --position is on record here (no $LOG_ROOT/recfg-peek-*-pdone/done.txt): pkexec /usr/local/bin/sleep-drain-safe collect first; and if the safe boot's pass never finished, these addresses haven't been shown safe to read"
+else
+  [[ -f $SAFE_FLAG ]] || die "this runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
+fi
 [[ -x $BIN ]] || die "no $BIN: cc -O2 -Wall -o $BIN $SRC"
 [[ $BIN -nt $SRC ]] || die "$BIN is older than $SRC: cc -O2 -Wall -o $BIN $SRC"
 
 now=$(date +%Y%m%dT%H%M%S)
-echo "recfg-peek: saving under $LOG_ROOT/recfg-peek-$now-s*/"
+case $mode in
+  sram) tag=s ;;
+  position) tag=p ;;
+  after) tag=after ;;
+esac
+if [[ $mode == after ]]; then
+  echo "recfg-peek: saving to $LOG_ROOT/recfg-peek-$now-after/log.txt"
+else
+  echo "recfg-peek: saving under $LOG_ROOT/recfg-peek-$now-$tag*/"
+fi
+
+# Every stage's output is on the disk, or in the boot partition's save, before the next read.
+keep() {
+  sync -f "$1"
+  if [[ $mode != after ]]; then
+    "$SAVE" save > /dev/null
+  fi
+}
 
 for stage in $stages; do
-  out=$LOG_ROOT/recfg-peek-$now-s$stage
+  if [[ $mode == after ]]; then
+    out=$LOG_ROOT/recfg-peek-$now-after
+  else
+    out=$LOG_ROOT/recfg-peek-$now-$tag$stage
+  fi
   mkdir -p "$out" || die "couldn't make $out"
   log=$out/log.txt
   echo "== stage $stage" | tee -a "$log"
@@ -57,20 +111,27 @@ for stage in $stages; do
   st=("${PIPESTATUS[@]}")
   rc=${st[0]}
   if ((st[1] != 0)); then
-    "$SAVE" save > /dev/null 2>&1
+    keep "$log" > /dev/null 2>&1
     die "couldn't write $log (tee exit ${st[1]}); stage $stage's reader exited $rc; nothing further was read"
   fi
   if ((rc != 0 && rc != 3)); then
     echo "stage $stage failed (exit $rc); nothing further was read" | tee -a "$log"
-    sync -f "$log"
-    "$SAVE" save > /dev/null 2>&1
+    keep "$log" > /dev/null 2>&1
     die "stage $stage failed (exit $rc); nothing further was read"
   fi
-  sync -f "$log"
-  "$SAVE" save > /dev/null || die "couldn't save stage $stage's results; not reading further"
+  keep "$log" || die "couldn't save stage $stage's results; not reading further"
   if ((rc == 3)); then
     echo "recfg-peek: stopped at stage $stage, by what it found. That's a result: nothing else to do."
     exit 0
   fi
 done
+if [[ $mode == position ]]; then
+  # Every read returned. Saved first: the mark in /run is what lets run-floor go on.
+  done_dir=$LOG_ROOT/recfg-peek-$now-pdone
+  mkdir -p "$done_dir" || die "couldn't make $done_dir"
+  echo "every word of stages ${stages// /, } read without a fault, $now" > "$done_dir/done.txt" || die "couldn't write $done_dir/done.txt"
+  sync -f "$done_dir/done.txt"
+  "$SAVE" save > /dev/null || die "couldn't save the pass's record; run-floor --m1-position will refuse"
+  : > "$RUNDIR/sleep-drain-position-awake" || die "couldn't leave the mark in $RUNDIR; run-floor --m1-position will refuse"
+fi
 echo "recfg-peek: done (stages ${stages// /, }). Go on with the next step."

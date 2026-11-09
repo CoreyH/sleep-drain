@@ -1,6 +1,9 @@
-// recfg_peek (T6000, as root, in a safe boot): the AON engine's reconfig SRAM
-// and the table that points into it, through /dev/mem, read-only. One stage per
-// run; e1-hook/recfg-peek runs them in order and saves after each.
+// recfg_peek (T6000, as root): the AON engine's reconfig SRAM and the table that
+// points into it, and the words that say where the engine is, through /dev/mem,
+// read-only. One stage per run; e1-hook/recfg-peek runs them in order and saves
+// after each. Stages 1-5 run in a safe boot only; so does the first pass over
+// stages a-h, and the launcher repeats those a-h once in the regular boot after
+// a run, when the safe-boot pass read them all without a fault.
 //
 //   stage 1: the table-offset register's analogue (0x2925c0200) and its
 //            lock's (0x2925c0214), inside the ADT's window 0x2925c0000 + 0x14000
@@ -17,6 +20,10 @@
 //            read most exposed to an SRAM smaller than 0x70000 (T8103's is
 //            128 KiB), so the launcher runs it only when asked (--rest), after
 //            someone has decoded stage 4's dump
+//   stages a-h: the words of the position read (PLAN.md), one stage a word,
+//            but for a: WD2's control and count and SIO_CPU, which runs 2 and
+//            3 read after the commit. b-h are the seven nothing had read: the
+//            state word, HS_A, the DCS page's word, the gate words, HS_B, PHASE.
 //
 // The addresses are inferred (PLAN.md, "the engine's reconfig SRAM"). PongoOS
 // (recfg_soc.c, MIT) has T8012's and T8015's table offset register at AON +
@@ -38,7 +45,8 @@
 // KiB page of reads, so if a read faults the output shows which one or which
 // page it was.
 // An unmapped address can raise an SError and panic the kernel: that's why it
-// runs in a safe boot, and only with Corey's OK (2026-11-08).
+// runs in a safe boot, and only with Corey's OK (2026-11-08; 2026-11-09 for
+// stages a-h and their one repeat in a regular boot).
 //
 // A stage's exit status: 0, go on; 3, it found nothing more worth reading
 // and the next stage shouldn't run; anything else, an error.
@@ -75,6 +83,24 @@
 #define MIN_ENTRIES	4
 #define TAIL		UINT64_C(0x10000)
 #define PAGE_ROUND	UINT64_C(0x4000)
+
+/* The position read's words, in the order they're read. */
+static const struct pos_word {
+	char stage;
+	uint64_t pa;
+	const char *what;
+} pos_words[] = {
+	{ 'a', UINT64_C(0x2922b002c), "WD2's control" },
+	{ 'a', UINT64_C(0x2922b0020), "WD2's count" },
+	{ 'a', UINT64_C(0x28e580188), "SIO_CPU's power state" },
+	{ 'b', UINT64_C(0x2922b801c), "the state word" },
+	{ 'c', UINT64_C(0x2925c4004), "HS_A (the commit + 4)" },
+	{ 'd', UINT64_C(0x28e20c400), "the DCS p-state page's word that A2 clears and polls" },
+	{ 'e', UINT64_C(0x2922c0040), "the gate word B2 clears" },
+	{ 'f', UINT64_C(0x2922c0044), "B2's first poll" },
+	{ 'g', UINT64_C(0x2922c010c), "HS_B" },
+	{ 'h', UINT64_C(0x2922c0110), "PHASE" },
+};
 
 static int mem_fd = -1;
 
@@ -202,14 +228,15 @@ int main(int argc, char **argv)
 	const char *why;
 	uint32_t cfg, words[TABLE_WORDS];
 	uint64_t base, highest, end;
-	int stage, i, valid;
+	int stage, i, valid, letter;
 
 	if (argc != 3 || !argv[1][0] || argv[1][1]) {
-		fprintf(stderr, "usage: recfg_peek STAGE DIR (STAGE 1-5; DIR for its dumps)\n");
+		fprintf(stderr, "usage: recfg_peek STAGE DIR (STAGE 1-5 or a-h; DIR for its dumps)\n");
 		return 2;
 	}
 	stage = argv[1][0] - '0';
-	if (stage < 1 || stage > 5) {
+	letter = argv[1][0] >= 'a' && argv[1][0] <= 'h';
+	if (!letter && (stage < 1 || stage > 5)) {
 		fprintf(stderr, "recfg_peek: no stage %s\n", argv[1]);
 		return 2;
 	}
@@ -218,6 +245,17 @@ int main(int argc, char **argv)
 	if (mem_fd < 0) {
 		fprintf(stderr, "recfg_peek: %s: %s\n", RECFG_MEM, strerror(errno));
 		return 1;
+	}
+
+	if (letter) {
+		for (i = 0; i < (int)(sizeof(pos_words) / sizeof(pos_words[0])); i++) {
+			if (pos_words[i].stage != argv[1][0])
+				continue;
+			printf("reading 0x%" PRIx64 "\n", pos_words[i].pa);
+			cfg = read_word(pos_words[i].pa);
+			printf("0x%" PRIx64 " = 0x%08x  %s\n", pos_words[i].pa, cfg, pos_words[i].what);
+		}
+		return 0;
 	}
 
 	switch (stage) {

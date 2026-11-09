@@ -80,6 +80,7 @@
  *   pkexec e1-hook/run-floor --m1-hold-nowatch    (the same and hold_nowatch=1)
  *   pkexec e1-hook/run-floor --m1-pmp             (--m1-hold's and pmp_out=1: PLAN.md, rung 3)
  *   pkexec e1-hook/run-floor --m1-pmp-idle        (the same and pmp_stop=0: the idle pair alone)
+ *   pkexec e1-hook/run-floor --m1-position        (--m1-hold's and position=1: PLAN.md, the position read)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -115,6 +116,8 @@
 #include <asm/sysreg.h>
 #include <asm/virt.h>
 #include <trace/events/power.h>
+
+#include "m1_position.h"
 
 #if IS_ENABLED(CONFIG_ACPI)
 #error "ACPI registers s2idle ops of its own, and this module would replace them"
@@ -280,6 +283,10 @@ MODULE_PARM_DESC(pmp_out, "With m1=1 pmgr_late=1 alarm=1, without observe=1: rig
 static bool pmp_stop = true;
 module_param(pmp_stop, bool, 0444);
 MODULE_PARM_DESC(pmp_stop, "With pmp_out=1: 0 leaves out the write that stops the PMP's CPU (the idle pair only)");
+/* E2's position read: where the engine stops (PLAN.md). */
+static bool position;
+module_param(position, bool, 0444);
+MODULE_PARM_DESC(position, "With hold=1, without hold_nowatch=1 and pmp_out=1: after reading the others down, CPU0 stays up, every exception masked, and reads the engine's phase, handshake, state and gate words, WD2 and SIO_CPU about 1 s and about 25 s after the third commit, recording each sample at once, then goes down as hold=1 does. Reads only; Corey's OK of 2026-11-09");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -1097,6 +1104,44 @@ static void e1_after_slpa(void)
  * commit with the PMP and SIO still running reset the SoC 5.5 s later, and
  * idles the same pair and clears the same bit before its last mile.
  *
+ * position=1 (run-floor --m1-position, E2's position read; PLAN.md; on hold=1,
+ * without hold_nowatch=1 or pmp_out=1): hold=1's recipe and one change. CPU0,
+ * having read the others down, stays up, every exception still masked, and
+ * samples where the engine is, about 1 s and about 25 s after the third commit
+ * (two, so that a stop can be told from slow progress; the second late, since
+ * a count-bounded poll may expire and only the state near WD2's bite is a stop),
+ * each sample's bytes sent before the wait for the next. It then goes down as
+ * hold=1 does. Reads only, and no new PMU byte: PHASE (0x2922c0110) and the
+ * gate words (0x2922c0044, 0x2922c0040; a page new to this module), HS_A
+ * (0x2925c4004, the commit + 4), the state word (0x2922b801c, on the page only
+ * observe=1 had mapped), WD2's control and count and SIO_CPU (as runs 2 and 3
+ * read them after the commit). e1-hook/recfg-peek --position reads each of
+ * them awake first, in the same safe boot, each read saved before the next
+ * (with HS_B, 0x2922c010c, and 0x28e20c400, which don't fit in the bytes), and
+ * run-floor refuses without that; --position-after repeats that pass in the
+ * first boot after the reset. Corey OK'd the seven new read-only addresses,
+ * and that repeat in a regular boot, on 2026-11-09. CPU0 being up is the run's
+ * main confound (run 5 had it up at most about 100 ms after the commit); PLAN.md
+ * has the checks and the reading guide. With raw SPMI already failed nothing
+ * could be recorded, so CPU0 doesn't wait, and goes straight down.
+ * m1_position.h has the two bytes' layout. The breadcrumbs (it gives up hold=1's
+ * 0x6012, 0x6013 and, once sample 2 lands, 0x6007 and 0x6015):
+ *   0x6014  hold=1's byte, its PCPM bits read after the release, sent alone
+ *           before 0x40, so that 0x40 says it landed
+ *   0x6004  0x40 in place of 0x5c: the release made and the watch over, in one
+ *           command with 0x6005 (the cores that read off after the release;
+ *           bit 0, otherwise unused here: SIO_CPU's bits 27:24 read f at entry
+ *           61's wait, the reference for its class), 0x6006 (qto) and 0x6007
+ *           (those that said held); 0x41 sample 1's reads begin; 0x42 sample
+ *           1's bytes landed; 0x43 sample 2's reads begin; 0x45 both samples
+ *           landed and CPU0 had nothing pending just before its acks and deep
+ *           WFI (0x44: it had, which a failed read's masked SError would be)
+ *   0x6010  step 8's RTC second, its low two bytes only from 0x42 on
+ *   0x6012  from 0x42, sample 1's byte A; 0x6013 its byte B (one command)
+ *   0x6007  from 0x44, sample 2's byte A; 0x6015 its byte B (two commands, so
+ *           neither is read below 0x44)
+ *   0x6016  the alarm's byte, as hold=1's
+ *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
  * clusters to the
@@ -1208,6 +1253,15 @@ static void e1_after_slpa(void)
 #define M1_WDX			0x2922b8000ULL
 #define M1_WDX_PROG0		0x28
 #define M1_WDX_PROG1		0x40
+/* position=1: + 0x1c, the state word every A sequence writes (RESEARCH.md, "The engine's reconfig SRAM"). */
+#define M1_WDX_STATE		0x1c
+/* position=1: the page B2 opens on. + 0x110 PHASE, + 0x44 and + 0x40 its gate words. */
+#define M1_POS_PAGE		0x2922c0000ULL
+#define M1_POS_PHASE		0x110
+#define M1_POS_GATE44		0x44
+#define M1_POS_GATE40		0x40
+/* position=1: HS_A, the commit's page + 4. */
+#define M1_POS_HS_A		4
 /* PMGR reg[7] + 0x24: the AP wake status, inferred: 7 words right after the masks, as on T8103 and T6020. */
 #define M1_AON_WAKE_STATUS	0x292004024ULL
 /*
@@ -1286,6 +1340,11 @@ static void __iomem *m1_cpu_start, *m1_ps, *m1_aic, *m1_aic_event, *m1_aon, *m1_
 #define m1_spmi			(m1_spmi_page + (M1_SPMI & ~PAGE_MASK))
 /* observe=1, and pmgr_late for m1_soc and m1_sio: read, never written. */
 static void __iomem *m1_soc, *m1_sio, *m1_wdx, *m1_cpm;
+/* position=1: the page B2 opens on, read only. */
+static void __iomem *m1_pos;
+/* position=1: CPU0's times of the first and third commit writes, and SIO_CPU's reference. */
+static u64 m1_t_first, m1_t_third;
+static bool m1_sio_ref;
 #define m1_wake_status		(m1_aon + (M1_AON_WAKE_STATUS - M1_AON_WAKE))
 static unsigned int m1_aic_mask, m1_aic_words;
 static struct nvmem_device *m1_nvmem;
@@ -1563,6 +1622,8 @@ static const struct m1_wait {
  */
 #define M1_FABRIC_PS		0x28e20c000ULL
 static_assert((M1_FABRIC_PS & PAGE_MASK) == (0x28e20c800ULL & PAGE_MASK));
+/* position=1 reads HS_A through the commit's own mapping. */
+static_assert((E1_S2R_COMMIT & ~PAGE_MASK) + M1_POS_HS_A + 4 <= PAGE_SIZE);
 
 static bool m1_wait_met(const struct m1_wait *w, u32 v)
 {
@@ -1928,10 +1989,81 @@ done:
 	m1_crumb(0x6016, &res, 1);
 }
 
+/* position=1: one sample's two bytes (m1_position.h). Reads only. */
+static void m1_pos_sample(u8 *s)
+{
+	void __iomem *hs_a = post_map[ARRAY_SIZE(e1_post_slpa) - 1] + M1_POS_HS_A;
+	u32 phase, hs, state, sio, ctrl, count, gate44, gate40;
+	u64 now;
+
+	phase = readl(m1_pos + M1_POS_PHASE);
+	hs = readl(hs_a);
+	state = readl(m1_wdx + M1_WDX_STATE);
+	sio = readl(m1_sio + M1_PS_SIO_CPU);
+	ctrl = readl(m1_wdt + M1_WD_CTRL(2));
+	count = readl(m1_wdt + M1_WD_CUR(2));
+	now = m1_now();
+	gate44 = readl(m1_pos + M1_POS_GATE44);
+	gate40 = readl(m1_pos + M1_POS_GATE40);
+	s[0] = m1_pos_byte_a(phase, hs, state);
+	s[1] = m1_pos_byte_b(sio, ctrl, m1_pos_count_near(count, now - m1_t_first, m1_tps), gate44, gate40);
+}
+
+/* position=1: spin, every exception masked, until CNTVCT reaches at. */
+static void m1_pos_wait(u64 at)
+{
+	while (m1_now() < at)
+		cpu_relax();
+}
+
+/*
+ * position=1, CPU0, at the end of m1_hold_release(): the two samples (the m1
+ * comment has the bytes). Each sample's bytes go out before the wait for the
+ * next, since the first SPMI error stops every later crumb. With raw SPMI
+ * failed nothing can be recorded, so it doesn't wait.
+ */
+static void m1_position(u8 off, u8 qto, u8 held, u8 flags)
+{
+	u8 b[4], s[2];
+	unsigned int i;
+
+	m1_crumb(0x6014, &flags, 1);
+	b[0] = 0x40;
+	b[1] = off | (m1_sio_ref ? BIT(0) : 0);
+	b[2] = qto;
+	b[3] = held;
+	m1_crumb(0x6004, b, 4);
+	if (m1_raw) {
+		m1_pos_wait(m1_t_third + m1_tps);
+		m1_stage(0x41);
+		m1_pos_sample(s);
+		m1_crumb(0x6012, s, 2);
+		m1_stage(0x42);
+	}
+	if (m1_raw) {
+		m1_pos_wait(m1_t_third + 25 * m1_tps);
+		m1_stage(0x43);
+		m1_pos_sample(s);
+		m1_crumb(0x6007, s, 1);
+		m1_crumb(0x6015, s + 1, 1);
+	}
+	/* CPU0's own last check, then the last acks, as m1_hold_release()'s. */
+	write_sysreg_s(M1_IPI_SR_PENDING, M1_IPI_SR_EL1);
+	isb();
+	m1_drain_aic();
+	dsb(sy);
+	isb();
+	m1_stage(((read_sysreg(isr_el1) >> 6) & 7) ? 0x44 : 0x45);
+	for (i = 0; i < M1_SPMI_WORDS; i++)
+		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
+	dsb(sy);
+	isb();
+}
+
 /*
  * hold=1, CPU0 after the third commit: the release, a flag in memory, then,
  * unless hold_nowatch, the others read down and recorded (the m1 comment has
- * the bytes). Every core leaves its hold at once, so each one's power state
+ * the bytes; position=1 goes on to its samples instead of the last record). Every core leaves its hold at once, so each one's power state
  * gets up to 10 ms of its own, in the park's order, then the P complexes'.
  * CPU0 goes down last: nothing reads its own power-down or the E complex's.
  */
@@ -1960,6 +2092,10 @@ static void m1_hold_release(u8 held, u8 qto, u8 flags)
 		flags |= BIT(4);
 	if (m1_wait_off(M1_PS_PCPM1))
 		flags |= BIT(5);
+	if (position) {
+		m1_position(off, qto, held, flags);
+		return;
+	}
 	/* The stage with its bytes; 0x6012-0x6014 change meaning next, as it says. */
 	b[0] = 0x5c;
 	b[1] = off;
@@ -2100,6 +2236,8 @@ static void __noreturn m1_after_slpa(void)
 				qto |= m1_waits[k].qto;
 			if (m1_waits[k].kind == M1_W_PSTATE)
 				dcs = v;
+			if (m1_waits[k].kind == M1_W_SETTLED)	/* SIO_CPU's, entry 61's: the only one */
+				m1_sio_ref = ((v >> 24) & 0xf) == 0xf;
 		}
 	}
 	dsb(sy);
@@ -2196,6 +2334,8 @@ static void __noreturn m1_after_slpa(void)
 		if (pmgr_late)
 			pacc0 = readl(m1_soc + M1_SOC_PACC0) & BIT(4);
 	}
+	if (position)
+		m1_t_first = m1_now();
 	writel_relaxed(1, commit);
 	if (alarm) {
 		dsb(sy);
@@ -2204,6 +2344,8 @@ static void __noreturn m1_after_slpa(void)
 	writel_relaxed(1, commit);
 	writel_relaxed(1, commit);
 	dsb(sy);
+	if (position)
+		m1_t_third = m1_now();
 	if (alarm) {
 		/* The last SPMI command before the release (hold=1) or the deep WFI: every one leaves a vector to ack before that WFI. */
 		if (hold)
@@ -2355,6 +2497,29 @@ static int __init m1_observe_init(void)
 	pr_info("m1: observe: 0x%llx +0x30 %08x +0x34 %08x +0x38 %08x +0x80 %08x +0x88 %08x\n", M1_CPM_GATE,
 		readl(m1_cpm + 0x30), readl(m1_cpm + 0x34), readl(m1_cpm + 0x38), readl(m1_cpm + 0x80),
 		readl(m1_cpm + 0x88));
+	return 0;
+}
+
+/*
+ * position=1 at load: the page B2 opens on and the state word's, mapped, and
+ * every word the samples read, logged as it is now, awake. Reads only, and
+ * after recfg-peek --position has read each of them in this boot (run-floor
+ * checks for that).
+ */
+static int __init m1_position_init(void)
+{
+	void __iomem *hs_a = post_map[ARRAY_SIZE(e1_post_slpa) - 1] + M1_POS_HS_A;
+
+	m1_wdx = ioremap_np(M1_WDX, PAGE_SIZE);
+	m1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);
+	if (!m1_wdx || !m1_pos) {
+		pr_err("m1: position: a mapping failed; refusing\n");
+		return -ENOMEM;
+	}
+	pr_info("m1: position: awake: PHASE %08x HS_A %08x state %08x; 0x2922c0044 %08x 0x2922c0040 %08x; WD2 ctrl %x count %08x; SIO_CPU %08x\n",
+		readl(m1_pos + M1_POS_PHASE), readl(hs_a), readl(m1_wdx + M1_WDX_STATE),
+		readl(m1_pos + M1_POS_GATE44), readl(m1_pos + M1_POS_GATE40),
+		readl(m1_wdt + M1_WD_CTRL(2)), readl(m1_wdt + M1_WD_CUR(2)), readl(m1_sio + M1_PS_SIO_CPU));
 	return 0;
 }
 
@@ -2554,6 +2719,12 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
+	if (position) {
+		int ret = m1_position_init();
+
+		if (ret)
+			return ret;
+	}
 	return 0;
 }
 
@@ -2581,6 +2752,8 @@ static void m1_unmap(void)
 		iounmap(m1_wdx);
 	if (m1_cpm)
 		iounmap(m1_cpm);
+	if (m1_pos)
+		iounmap(m1_pos);
 	if (m1_pmp_asc)
 		iounmap(m1_pmp_asc);
 	if (m1_pmp_mbox_pdev)
@@ -2873,6 +3046,10 @@ static int __init e1_check_params(void)
 		pr_err("hold_nowatch=1 only changes hold=1\n");
 		return -EINVAL;
 	}
+	if (position && (!hold || hold_nowatch || pmp_out)) {
+		pr_err("position=1 needs hold=1 and no hold_nowatch=1 or pmp_out=1 (its samples follow CPU0's watch, and 0x6015 holds one)\n");
+		return -EINVAL;
+	}
 	if ((replay & (2 | 8)) && !oneway) {
 		pr_err("replay=%u can't be undone: it writes the post-slpa table%s. Load it with oneway=1 as well\n",
 		       replay, (replay & 2) ? " and powers every CPU down for good" : "");
@@ -3033,11 +3210,11 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
-		pmp_out && !pmp_stop ? " pmp_stop=0" : "");
+		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "");
 	return 0;
 
 unmap:
