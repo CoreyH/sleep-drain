@@ -2243,7 +2243,8 @@ static void m1_dcp_shutdown(void)
 
 		ret = apple_rtkit_is_running(m1_dcp_rtk[i]) ? apple_rtkit_shutdown(m1_dcp_rtk[i]) : -ENODEV;
 		if (ret) {
-			m1_dcp_code[i] = ret == -ETIME ? M1_DCP_TIMEOUT : M1_DCP_FAILED;
+			/* -ETIME: an ack didn't come; -ETIMEDOUT: the mailbox couldn't send. */
+			m1_dcp_code[i] = ret == -ETIME || ret == -ETIMEDOUT ? M1_DCP_TIMEOUT : M1_DCP_FAILED;
 			continue;
 		}
 		ctrl = readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);

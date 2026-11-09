@@ -1506,7 +1506,7 @@ def position_tests(g, src):
                           "if (turned && all_off)", "res |= BIT(4);", "m1_kwrite(0x6004, &stage, 1);"]) and "rtkit" not in stop.lower() and stop.count("writel(") == 0,
           "m1_disp_stop(): the domains off only for a DCP whose RUN read 1 then 0, and no message to any DCP", stop)
     check("static const u8 stage = 0x84;" in stop, "K3b's stage is 0x84", stop)
-    check("if (ret) {\n\t\t\tm1_dcp_code[i] = ret == -ETIME ? M1_DCP_TIMEOUT : M1_DCP_FAILED;\n\t\t\tcontinue;\n\t\t}" in shut,
+    check("m1_dcp_code[i] = ret == -ETIME || ret == -ETIMEDOUT ? M1_DCP_TIMEOUT : M1_DCP_FAILED;\n\t\t\tcontinue;\n\t\t}" in shut,
           "a DCP whose RTKit shutdown failed is left alone: RUN is only cleared after it returned 0 (what Corey OK'd)", shut)
     check("m1_dcp_code[i] = (ctrl & M1_ASC_CPU_RUN) && !(readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN) ?" in shut,
           "a DCP is only STOPPED, and its domains only go off, if RUN read 1 then 0", shut)
