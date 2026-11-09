@@ -183,7 +183,7 @@ def sysctl(tmp):
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
           takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
-          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, restore_rc=0, insmod_rc=0, tools=True):
+          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, restore_rc=0, insmod_rc=0, tools=True, pmp_stale=False):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -250,8 +250,10 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     write(os.path.join(stubs, "pmp"), f'#!/bin/sh\necho "$*" >> {tmp}/pmp-calls\ngrep -q "^reading" {calls} 2>/dev/null && echo LATE >> {tmp}/pmp-calls\nexit {pmp_rc}\n', 0o755)
     write(os.path.join(stubs, "save"), f'#!/bin/sh\necho "sleep-drain-safe $*" >> {calls}\n', 0o755)
     write(os.path.join(stubs, "dmesg"), '#!/bin/sh\necho "[   12.345678] e1_hook: replay: a stub line"\n', 0o755)
+    # pmp_sleep_release.ko is install.sh's, built for one kernel: pmp_stale is the one a kernel update leaves behind.
+    stale = 'case "$3" in *pmp_sleep_release.ko) echo "0.0.0-0-OLD SMP preempt mod_unload aarch64"; exit 0 ;; esac\n' if pmp_stale else ""
     write(os.path.join(stubs, "modinfo"),
-          f'#!/bin/sh\ncase "$2" in\nvermagic) echo "{RELEASE} SMP preempt mod_unload aarch64" ;;\n'
+          f'#!/bin/sh\n{stale}case "$2" in\nvermagic) echo "{RELEASE} SMP preempt mod_unload aarch64" ;;\n'
           f'parm) printf "%s" "{PARMS[build]}" ;;\nesac\n', 0o755)
     mp = f"{moddir}/parameters"
     # What the kernel does with the suspend the reading asked for, a second
@@ -296,7 +298,8 @@ def env(tmp, launcher, watch_s=3):
         e.update(FLOOR_SAVE=os.path.join(tmp, "stubs", "save"), FLOOR_STATS=os.path.join(tmp, "stats"),
                  FLOOR_LOGDIR=os.path.join(tmp, "log"), FLOOR_RUNDIR=tmp, FLOOR_WATCH_S=str(watch_s),
                  FLOOR_KBD=os.path.join(tmp, "kbd"), FLOOR_PMP=os.path.join(tmp, "stubs", "pmp"),
-                 FLOOR_BITE=os.path.join(tmp, "stubs", "recfg-bite"), FLOOR_POKE=os.path.join(tmp, "stubs", "recfg_poke"))
+                 FLOOR_BITE=os.path.join(tmp, "stubs", "recfg-bite"), FLOOR_POKE=os.path.join(tmp, "stubs", "recfg_poke"),
+                 FLOOR_PMP_KO=os.path.join(tmp, "stubs", "pmp_sleep_release.ko"))
     return e
 
 
@@ -456,7 +459,11 @@ def test_signals(launcher):
                 launcher_pid, reading = (int(x) for x in open(pids).read().split())
                 if both:
                     os.kill(reading, sig)
-                os.kill(launcher_pid, sig)
+                try:
+                    os.kill(launcher_pid, sig)
+                except ProcessLookupError:
+                    # The reading's end can take the launcher out first on a busy machine; the checks below still hold it to the same exit.
+                    pass
                 t0 = time.monotonic()
                 out, err = p.communicate(timeout=30)
                 c = calls(tmp)
@@ -536,7 +543,8 @@ def test_floor_refusals(launcher):
     if position and not sio:
         cases.append(("without the awake pass's mark", dict(awake_mark=False), None, "the awake pass hasn't run in this boot"))
     if sio:
-        cases.append(("a build without sio_on", dict(build="floor-nosio"), None, "without sio_on"))
+        cases += [("a build without sio_on", dict(build="floor-nosio"), None, "without sio_on"),
+                  ("with pmp_sleep_release built for another kernel", dict(pmp_stale=True), None, "isn't built for " + RELEASE)]
     if disp:
         cases.append(("a build without disp_off", dict(build="floor-nodisp"), None, "without disp_off"))
     if macend:
@@ -668,7 +676,7 @@ def test_insmod_fails(launcher):
         rc_ = recfg_calls(tmp)
         recfg = "--m1-recfg-bite" in launcher[4]
         check(r.returncode == 1 and "e1_hook didn't load" in r.stderr and "e1_hook: replay: a stub line" in r.stderr
-              and not any(x.startswith("reading") for x in c)
+              and "didn't take" not in r.stderr and not any(x.startswith("reading") for x in c)
               and ([x.split()[:2] for x in rc_] == ([["bite", "panic=10"], ["poke", "restore"]] if recfg else [])),
               f"{name(launcher)}: a module that refuses to load: the kernel's lines shown, no reading"
               + (", and the bite word put back" if recfg else ""), r.stdout + r.stderr + "\n".join(c + rc_))

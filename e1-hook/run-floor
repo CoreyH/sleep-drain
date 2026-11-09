@@ -167,6 +167,7 @@ LOGDIR=${FLOOR_LOGDIR:-/var/log}
 KBD=${FLOOR_KBD:-/sys/class/leds/kbd_backlight}
 RUNDIR=${FLOOR_RUNDIR:-/run}
 PMP=${FLOOR_PMP:-/usr/local/bin/sleep-drain-pmp}
+PMP_KO=${FLOOR_PMP_KO:-/usr/local/lib/sleep-drain/pmp_sleep_release.ko}
 # How long, awake, the suspend may take to begin after the reading asks.
 WATCH_S=${FLOOR_WATCH_S:-120}
 
@@ -358,6 +359,10 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!pwords)) || [[ $parms == *$'\n'ps_words:* ]] || die "$ko is an older build, without ps_words: make -C $here"
 ((!recfg)) || [[ $parms == *$'\n'recfg_bite:* ]] || die "$ko is an older build, without recfg_bite: make -C $here"
 ((!recfg)) || [[ -x $BITE && -x $POKE ]] || die "no $BITE or no $POKE: cc -O2 -Wall -o $here/recfg_poke $here/recfg_poke.c (and recfg_peek the same way)"
+# sleep-drain-pmp's module is built by install.sh for one kernel. After a kernel update it's the old kernel's until
+# install.sh runs again, which a safe boot can't do: better to say so now than after the load.
+((!sio)) || [[ $(modinfo -F vermagic "$PMP_KO" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] ||
+  die "$PMP_KO isn't built for $(uname -r): restart into the regular boot and run pkexec bash install.sh there"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 [[ $(cat "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none, so the suspend wouldn't be a real one: echo none > $PM_TEST"

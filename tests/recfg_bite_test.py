@@ -129,6 +129,17 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     r, acc = run(poke, "patch")
     check(r.returncode == 0 and "already the new value: nothing written" in r.stdout and reads_then(acc, []) and content(fake) == after,
           "patch on a word that's already new: exit 0, no store", r.stdout + str(acc))
+    # Each line is out before its access is made: with the trace on stdout too, the order shows.
+    inline = os.path.join(tmp, "recfg_poke_inline")
+    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", '-DRECFG_MEM="%s"' % fake, '-DRECFG_SAFE_FLAG="%s"' % flag,
+                    '-DRECFG_TRACE="/dev/stdout"', "-o", inline, src_path], check=True)
+    mem(GOOD, NEIGHBOURS)
+    seen = subprocess.run([inline, "patch"], capture_output=True, text=True).stdout
+    check(all(seen.index("reading 0x%x\n" % pa) < seen.index("r 0x%x " % pa) for pa in TEN)
+          and seen.index("writing 0x405f7e00 to 0x292f02010\n") < seen.index("w 0x292f02010 0x405f7e00\n") < seen.rindex("reading 0x292f02010\n")
+          < seen.rindex("r 0x292f02010 0x405f7e00\n"),
+          "patch prints each \"reading\" line before that read and the \"writing\" line before the store", seen)
+    mem(GOOD[:8] + [NEW, 4], NEIGHBOURS)
     r, acc = run(poke, "restore")
     check(r.returncode == 0 and "the word reads the old value, 30 s, again" in r.stdout and reads_then(acc, [("w", BITE, OLD), ("r", BITE, OLD)])
           and content(fake) == before,

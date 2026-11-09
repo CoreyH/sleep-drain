@@ -315,6 +315,14 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     r, a = run(6, out7)
     check(r.returncode == 3 and a == TEN, "stage 6 on all ones: the same ten reads, and it stops", r.stdout)
     check(not os.listdir(out7), "stage 6 writes no dump", os.listdir(out7))
+    # Each "reading" line is out before its read is made: with the trace on stdout too, the order shows.
+    inline = os.path.join(tmp, "recfg_peek_inline")
+    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", '-DRECFG_MEM="%s"' % fake, '-DRECFG_TRACE="/dev/stdout"', "-o", inline,
+                    os.path.join(E1_HOOK, "recfg_peek.c")], check=True)
+    ten(GOOD)
+    seen = subprocess.run([inline, "6", out7], capture_output=True, text=True).stdout
+    check(all(seen.index("reading 0x%x\n" % pa) < seen.index("\n0x%x\n" % pa) < seen.index("0x%x = 0x%08x" % (pa, v)) for pa, v in zip(TEN, GOOD)),
+          "stage 6 prints each \"reading\" line before it makes that read, and the word after", seen)
     check(not [pa for pa in TEN if 0x28e0802d8 <= pa < 0x28e0802e0 or 0x28e700000 <= pa < 0x28e700008],
           "none of stage 6's words is on the never-write list")
 

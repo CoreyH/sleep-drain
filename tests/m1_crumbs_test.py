@@ -1561,6 +1561,17 @@ def position_tests(g, src):
         bad = [r for r in rows[1:] if int(r[5], 16) != want_sample(*(int(x, 16) for x in r[:5]))]
         check(len(rows) == 1 + 5 * 32 * 8 * 2 * 5 and not bad, "m1_recfg_sample: the bite's class, PHASE's low four bits, armed-and-counting, the SRAM word: nothing else",
               str(bad[:4]))
+        # The awake class is only for a bite that's neither value: an awake bite equal to one of them must not hide it.
+        c_c = os.path.join(tmp, "c.c")
+        with open(c_c, "w") as f:
+            f.write('#include <stdio.h>\n#include "recfg_bite.h"\nint main(void)\n{\n'
+                    'printf("%d %d %d %d %d %d\\n", m1_bite_class(RECFG_BITE_OLD, RECFG_BITE_OLD), m1_bite_class(RECFG_BITE_NEW, RECFG_BITE_NEW),\n'
+                    '       m1_bite_class(RECFG_BITE_NEW, RECFG_BITE_OLD), m1_bite_class(RECFG_BITE_OLD, RECFG_BITE_NEW), m1_bite_class(7, 7), m1_bite_class(7, 8));\n'
+                    'return 0;\n}\n')
+        cexe = os.path.join(tmp, "c")
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", cexe, c_c], check=True)
+        got = subprocess.run([cexe], capture_output=True, text=True, check=True).stdout.split()
+        check(got == ["1", "2", "2", "1", "3", "0"], "m1_bite_class: old is 1 and new is 2 whatever the awake bite was; awake is 3 only for a bite that's neither", str(got))
 
         v_c = os.path.join(tmp, "v.c")
         with open(v_c, "w") as f:
@@ -1789,7 +1800,7 @@ def position_tests(g, src):
     after = after[:after.index("\n}\n")]
     check(in_order(after, ["b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;", "m1_crumb(0x6012, b, 2);", "if (recfg_bite)\n\t\tsram = readl(m1_recfg_word);",
                            "/* 9 */", "local_daif_mask();", "if (position || recfg_bite)\n\t\tm1_t_first = m1_now();", "writel_relaxed(1, commit);",
-                           "m1_alarm_arm(rtc);", "if (recfg_bite) {",
+                           "if (alarm) {\n\t\tdsb(sy);\n\t\tm1_alarm_arm(rtc);\n\t}", "if (recfg_bite) {",
                            "u32 bite = readl(m1_wdt + M1_WD_BITE(2)), wctl = readl(m1_wdt + M1_WD_CTRL(2));", "u32 count = readl(m1_wdt + M1_WD_CUR(2));",
                            "u64 now = m1_now();", "b[0] = M1_RECFG_STAGE;",
                            "b[1] = m1_recfg_sample(bite, m1_wd2_bite_awake, readl(m1_pos + M1_POS_PHASE), wctl,",
