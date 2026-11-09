@@ -410,8 +410,24 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after the hold run and the decode of the engine's SRAM
-      (2026-11-08; judgment; this is the only place it's kept):** first the
+      **The order after the position read (2026-11-09; judgment; this is the only
+      place it's kept):** the read stopped at the row no rung addresses, with CPU0
+      up, and neither a sample from a core still up nor the next boot can show where
+      the engine stops with every core down. About 2 in 3 that CPU0 being up is what
+      holds B2's gate (T8140's and T8103's statements; 0x2922c0044 bit 2 reads clear
+      awake with every core running, so the awake pass doesn't exclude it): the gate
+      then opens once the last core is down, as in runs 1-5, and the stop is further
+      on, with B2's op 50 still the leading candidate. About 1 in 3 that the gate is
+      closed in every run for another reason, with DISPLAY and the PMP the known
+      candidates. Each blocker hides the next and nothing senses past the first, so
+      the recommended next run is cumulative (Corey's pick): SIO to macOS's state
+      (rung 5, a new PMGR write, Corey's OK first) and the PMP out (rung 3, OK'd) in
+      one run, keeping one position sample at about 1 s, so that CPU0 goes down with
+      the engine still having about 29 s, which also detects the 1-in-3 branch. A
+      different ending: subtract one at a time. The same reset: the display chain
+      (rung 6) goes on top. `--m1-hold-nowatch` stays behind these.
+      **Earlier, the order after the hold run and the decode of the engine's SRAM
+      (2026-11-08; judgment):** first the
       position read (below; read-only, its addresses OK'd on 2026-11-09), then
       whichever rung it points at; `--m1-hold-nowatch` comes after it.
       Expected, not established: SIO to macOS's state (rung 5, Corey told first)
@@ -430,11 +446,16 @@ steps, and restarting the DCP and the PMP afterwards.
       driver (both OK'd by Corey, 2026-11-08); then rungs 4-7 as numbered. Corey
       picks.
 
-      **Next (read-only; built, not run): where the engine stops, the position
-      read.** RESEARCH.md's SRAM section names the registers that say which
-      sequence and which round the engine is in; nothing has read them. Corey
+      **Done 2026-11-09 (M1 run 6, RESEARCH.md): where the engine stops, the position
+      read.** The commit starts A2, which sits at its first handshake (`PHASE` 4,
+      `HS_A` bit 31 up, bit 24 clear, WD2 armed at the commit), the same at about 1 s
+      and about 25 s; B2 is at its first poll (0x2922c0044 bit 2, clear) or hasn't
+      started; the reset 30.0-31.9 s after the commit. The words don't survive WD2's
+      reset, so the next-boot pass gives nothing. What follows is the plan as it ran.
+      RESEARCH.md's SRAM section names the registers that say which
+      sequence and which round the engine is in; nothing had read them. Corey
       OK'd the new read-only addresses below on 2026-11-09, with the repeat read
-      in the regular boot after the run; the run itself needs Corey's go. It adds
+      in the regular boot after the run. It adds
       no new write and no new PMU byte. The B2 op numbers are the decode's
       per-register count (RESEARCH.md). As built: `e1_hook position=1`
       (`run-floor --m1-position`, on `--m1-hold`; `e1-hook/m1_position.h` has the
@@ -930,8 +951,10 @@ steps, and restarting the DCP and the PMP afterwards.
          as far as its records go and still reset, so SIO on may be needed and
          isn't shown sufficient. `qto` bit 6 tells whether SIO alone meets
          entry 61's wait on the table's word (not whether B2 passes op 50, which
-         asks for 0x0f00024f after the commit); this rung's run keeps the
-         position read's samples, so that a reset says how far B2 got. If bit 6
+         asks for 0x0f00024f after the commit); this rung's run keeps one
+         position sample, at about 1 s (run 6: a core still up may hold B2's gate,
+         so the sample detects a gate that opens regardless of the cores, and
+         nothing more). If bit 6
          stays set, UART_P and SPI_P are next (Linux's device tree gives
          ps_sio_cpu four parents, and B1 raises those two with SIO): a further
          new PMGR write, Corey's OK. A possible way with no new MMIO, untested

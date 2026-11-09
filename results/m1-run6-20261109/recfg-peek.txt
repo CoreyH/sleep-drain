@@ -1,0 +1,60 @@
+# recfg-peek --position (read-only), 2026-11-09, in the safe boot, at 10:55:28: about 22 minutes before run-floor loaded the module at 11:17:31
+== stage a
+reading 0x2922b002c
+0x2922b002c = 0x00000000  WD2's control
+reading 0x2922b0020
+0x2922b0020 = 0x6a11a47e  WD2's count
+reading 0x28e580188
+0x28e580188 = 0x1400024f  SIO_CPU's power state
+== stage b
+reading 0x2922b801c
+0x2922b801c = 0x00000000  the state word
+== stage c
+reading 0x2925c4004
+0x2925c4004 = 0x00010000  HS_A (the commit + 4)
+== stage d
+reading 0x28e20c400
+0x28e20c400 = 0x00000222  the DCS p-state page's word that A2 clears and polls
+== stage e
+reading 0x2922c0040
+0x2922c0040 = 0x00000003  the gate word B2 clears
+== stage f
+reading 0x2922c0044
+0x2922c0044 = 0x00000008  B2's first poll
+== stage g
+reading 0x2922c010c
+0x2922c010c = 0x80000000  HS_B
+== stage h
+reading 0x2922c0110
+0x2922c0110 = 0x00000000  PHASE
+every word of stages a, b, c, d, e, f, g, h read without a fault, 20261109T105528
+
+# recfg-peek --position-after (read-only), 2026-11-09, at 11:33:50, in the first regular boot after the run's reset (uptime -s 11:28:28), after m1-crumbs, --clear and collect
+== stage a
+reading 0x2922b002c
+0x2922b002c = 0x00000000  WD2's control
+reading 0x2922b0020
+0x2922b0020 = 0xe6dba0d3  WD2's count
+reading 0x28e580188
+0x28e580188 = 0x1400024f  SIO_CPU's power state
+== stage b
+reading 0x2922b801c
+0x2922b801c = 0x00000000  the state word
+== stage c
+reading 0x2925c4004
+0x2925c4004 = 0x00010000  HS_A (the commit + 4)
+== stage d
+reading 0x28e20c400
+0x28e20c400 = 0x00000222  the DCS p-state page's word that A2 clears and polls
+== stage e
+reading 0x2922c0040
+0x2922c0040 = 0x00000003  the gate word B2 clears
+== stage f
+reading 0x2922c0044
+0x2922c0044 = 0x00000008  B2's first poll
+== stage g
+reading 0x2922c010c
+0x2922c010c = 0x80000000  HS_B
+== stage h
+reading 0x2922c0110
+0x2922c0110 = 0x00000000  PHASE

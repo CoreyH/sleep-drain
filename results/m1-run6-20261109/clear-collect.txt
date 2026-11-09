@@ -1,0 +1,38 @@
+0x6000: 00 30 00 50 45 ff 50 14  00 00 00 00 00 00 00 00
+0x6010: 58 06 14 dc b0 dc bd 00  00 00 00 00 00 00 00 00
+boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (the stage the last unclean end found; sticky, so it says nothing about this boot by itself; this boot's journal says, macsmc-reboot's "PMU logged N boot error(s)")
+stage 0x6004 = 0x45 (pmgr_late=1): position=1: both samples recorded, CPU0 had nothing pending just before its acks and its deep WFI
+  (the last breadcrumb that reached the PMU: the run got at least that far)
+read off after the release (0x6005 = 0xff, up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+0x6005 bit 0: SIO_CPU's bits 27:24 read f at entry 61's wait, the reference for its class
+0x6006 = 0x50: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)
+RTC second just before the commit, from its low two bytes and the run's alarm: 263768, 376 s before now (264144)
+0x6014 = 0xb0: CPU0 had nothing pending before the commit; PCPM0 off after the release, PCPM1 off after the release; WD1 was off; K3's kernel-path write after slpa worked
+position sample 1 (0x6012 = 0x14, 0x6013 = 0xdc):
+  PHASE 0x4 (the entry pair's first (A2)); HS_A bit 31 up, bit 24 clear; state word 0xa03 (a sequence's start)
+  SIO_CPU: another target, bits 27:24 f, actual not f; WD2 RESET_EN set; WD2's count within 0.25 s of CPU0's time since the first commit write
+  gate words: 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 set
+position sample 2 (0x6007 = 0x14, 0x6015 = 0xdc):
+  PHASE 0x4 (the entry pair's first (A2)); HS_A bit 31 up, bit 24 clear; state word 0xa03 (a sequence's start)
+  SIO_CPU: another target, bits 27:24 f, actual not f; WD2 RESET_EN set; WD2's count within 0.25 s of CPU0's time since the first commit write
+  gate words: 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 set
+  (compare each word with the awake pass, recfg-peek-*-p*/; a word still at its awake value says nothing. PLAN.md has the reading guide)
+0x6016 = 0xbd: every alarm command was acked (no event was set): 0x140c, 0x14c2 = 0, then 0x1401 = 0x41
+the SoC restarted about 31 s after the commit (30.0 to 32.0 s: the PMU's RTC counts whole seconds); its counter (CNTVCT) is 345.0 s old. Right only in the first boot after the run
+PMU alarm: 0x1401 = 0x41 (armed, fires in 3224 s), 0x140c = 267368, 0x14c0 event 0x00, 0x14c2 mask 0x00
+  0x140c is the commit's second + 3600, as the run wrote it
+  the armed alarm survived the reset
+disarmed: 0x1401 = 0x01
+cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros
+== clear done
+collected 20261109T105528-2
+collected 20261109T105528-3
+collected 20261109T105528
+collected 20261109T105529-2
+collected 20261109T105529-3
+collected 20261109T105529-4
+collected 20261109T105529-5
+collected 20261109T105529
+collected 20261109T105530
+collected 20261109T112732
+== collect done
