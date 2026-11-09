@@ -2991,3 +2991,40 @@ DISPEXT1's two, SEP, NUB_SPMI1, AFNC3_LW0), the PMP's word, which is never writt
 macOS has the internal PCIe ports down before it gets here, and this recipe doesn't, so the PCIe and fabric
 words are the ones most likely to behave differently here. maralcbr's own table has these words as macOS's
 state at sleep entry; whether their runs wrote this exact set isn't established here.
+
+### M1 run 12: macOS's remaining power words: the same reset (2026-11-09)
+
+`e1-hook/run-floor --quick --m1-power-words` (run 11's parameters and `ps_words=1`, #60; the module built at
+0c28390; kernel 7.2.11-14; flag `radios-off`; `pmp_sleep_release` with 0xc and 0xd), in a safe boot, on
+battery at about 40%. Raw data: `results/m1-run12-20261109/`.
+
+**The facts:** stage 0xcf. 0x6012 = 0xff as in run 11 (both DCPs, the SMC's ack, SIO's firmware stopped), `qto`
+0x00. 0x6013 = 0xdf: the sixteen target-0 words (UARTs, MSG, ATC USB_AON, PCIE and COMMON) all read actual 0
+within 10 ms; of the four fabric and PCIe words, at least one didn't read back its target and auto fields as
+written (one bit for the group, so which isn't known). The restart: about 30 s by Corey's count. `m1-crumbs`
+couldn't time it: a system update restarted the Mac once more before the read (`boots.txt`; the journal puts
+it at roughly 28-34 s). The alarm was disarmed by `--clear`.
+
+**The kernel changed after this run:** linux-aurora 7.2.11.aurora14 to aurora15 (2026-11-09 20:17). The module
+needs a rebuild, and later runs compare against this one across a kernel update.
+
+**What that shows:** sixteen more domains at macOS's state didn't move the reset. Twelve runs have now ended
+the same way, the last two with nothing able to see past the commit.
+
+### A different approach: instrument the engine instead of guessing (2026-11-09, proposed, not OK'd)
+
+Every rung since run 6 has been a guess at what the engine waits for, at about 1 in 6 each, and the only
+observer, a core left up, may itself hold the gate. The one thing that survives a run is the time of the
+reset, and the engine's own sequences set it: each A sequence writes WD2's bite (0x2aea5400, 30 s) from the
+reconfig SRAM. PongoOS's `recfg.c` exists to modify these sequences, and the table's lock analogue reads 0
+here. So, if the SRAM is writable and the engine runs it live:
+
+1. **Feasibility, one run:** change A2's bite word alone to 45 s. A reset at 45 s says the SRAM is writable,
+   live, and that A2 as decoded is what runs. A reset at 30 s says it isn't, and costs one run.
+2. **Then markers:** a write of a different bite placed at chosen points in B2 (in place of an unpolled
+   write, or in a relocated copy of the sequence with the table repointed). The reset time then says how far
+   the engine got with every core down: the first measurement past the gate. A handful of 5-minute runs
+   finds the op it stops at, and whether B2's first gate ever opens.
+
+New writes to the engine's SRAM: Corey's OK first. Undone by a restart if iBoot rewrites the SRAM at boot,
+which a `recfg-peek` after step 1 would confirm (inferred until then).

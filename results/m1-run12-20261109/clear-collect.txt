@@ -1,0 +1,30 @@
+0x6000: 00 30 00 50 cf fe 00 ff  00 00 00 00 00 00 00 00
+0x6010: 16 82 ff df 80 8e bd 00  00 00 00 00 00 00 00 00
+boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (the stage the last unclean end found; sticky, so it says nothing about this boot by itself; this boot's journal says, macsmc-reboot's "PMU logged N boot error(s)")
+stage 0x6004 = 0xcf (pmp_out=1: bit 7, so the stage is 0x4f) (pmgr_late=1): sio_stop=1: the commit and the alarm are done, the run's last breadcrumb by design: CPU0 then released the others and took its deep WFI at once, unrecorded
+  (the last breadcrumb that reached the PMU: the run got at least that far)
+0x6015 = 0x8e: K4 ran: the idle pair returned 0, CPU_STATUS read non-zero by macOS's mask (low bits 10; the load log has the awake value), and RUN read 1 before its clear and reads 0 after the write: the PMP's CPU is stopped
+parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+0x6006 = 0x00: every one of macOS's waits was met within 10 ms
+wrote their stop bit and held (0x6007 = 0xff): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7
+0x6007 bit 0 (sio_on=1): ps_sio, UART_P and SPI_P all read actual f within 10 ms
+RTC second just before the commit, from its low two bytes and the run's alarm: 295446, 319 s before now (295765)
+0x6014 = 0x80: CPU0 had nothing pending before the commit; PCPM0 not read (hold_nowatch=1: CPU0 doesn't watch them), PCPM1 not read (hold_nowatch=1: CPU0 doesn't watch them); WD1 was off; K3's kernel-path write after slpa worked
+0x6012 = 0xff, the steps before the commit:
+  internal DCP: stopped; external DCP: stopped; the domains of the DCPs that stopped: all read off
+  SMC's AP idle notice: acked within 200 ms; SIO's firmware: stopped
+0x6013 = 0xdf: ps_words=1 wrote the 20 power words, after the table:
+  the five UARTs: read actual 0 within 10 ms each
+  MSG: read actual 0 within 10 ms each
+  ATC1-3_USB_AON: read actual 0 within 10 ms each
+  ATC0-3_PCIE: read actual 0 within 10 ms each
+  ATC1-3_COMMON: read actual 0 within 10 ms each
+  PCIE0_REF, APCIE_GP_SYS, AFNC1_LW2, AFNC2_LW1: target and auto fields NOT all read back as written
+0x6016 = 0xbd: every alarm command was acked (no event was set): 0x140c, 0x14c2 = 0, then 0x1401 = 0x41
+the SoC restarted about 140 s after the commit (139.4 to 141.4 s: the PMU's RTC counts whole seconds); its counter (CNTVCT) is 178.6 s old. Right only in the first boot after the run
+PMU alarm: 0x1401 = 0x41 (armed, fires in 3281 s), 0x140c = 299046, 0x14c0 event 0x00, 0x14c2 mask 0x00
+  0x140c is the commit's second + 3600, as the run wrote it
+  the armed alarm survived the reset
+disarmed: 0x1401 = 0x01
+cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros
+collected 20261109T201530
