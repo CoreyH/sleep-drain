@@ -1390,6 +1390,10 @@ def position_tests(g, src):
         r = run(path, cnt=cnt)
         check(r.returncode == 0 and "K3b (disp_off=1): both DCPs and their domains were handled" in r.stdout and "so the stage is 0x4" in r.stdout,
               "stage 0x84: K3b finished, nothing later", r.stdout + r.stderr)
+        fake(path, scratch(0x02, down=0, isrs=0, parked=0, left=0, secs=0, flags=0, drained=0), rtc_secs=121761, alarm=alarm)
+        r = run(path, cnt=cnt)
+        check(r.returncode == 0 and "in a disp_off=1 run, K3b comes first: a stall or fault in it leaves this stage too" in r.stdout,
+              "stage 0x02 says a stall in K3b leaves it, too", r.stdout + r.stderr)
         for stage in (0xc8, 0xc9, 0xca, 0xcc, 0xcd):
             before = fake(path, scratch(stage, **run8), rtc_secs=121761, alarm=alarm)
             r = run(path, "--clear", cnt=cnt)
@@ -1487,11 +1491,15 @@ def position_tests(g, src):
     stop = src[src.index("static u8 m1_disp_stop(void)"):]
     stop = stop[:stop.index("\n}\n")]
     check(in_order(stop, ["apple_rtkit_idle(m1_dcp_rtk[i])", "M1_ASC_CPU_STATUS", "st & M1_ASC_IDLE", "readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL)",
-                          "writel(ctrl & ~M1_ASC_CPU_RUN, m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);", "res |= BIT(i);",
+                          "writel(ctrl & ~M1_ASC_CPU_RUN, m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);", "res |= BIT(i);", "msleep(2);",
                           "m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK))", "m1_ps_off(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK))", "res |= BIT(2 + i);",
                           "m1_kwrite(0x6004, &stage, 1);"]) and stop.count("apple_rtkit_idle(") == 1 and stop.count("writel(") == 1,
           "m1_disp_stop(): the idle pair once, RUN cleared only after idle, its domains off only after RUN read 0", stop)
     check("static const u8 stage = 0x84;" in stop, "K3b's stage is 0x84", stop)
+    check("if (!(st & M1_ASC_IDLE))\n\t\t\tcontinue;\n\t\tctrl = readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);" in stop,
+          "a DCP that doesn't read idle is left running: RUN is only cleared after the idle gate (what Corey OK'd)", stop)
+    check("if (!(ctrl & M1_ASC_CPU_RUN) || (readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN))\n\t\t\tcontinue;\n\t\tres |= BIT(i);" in stop,
+          "a DCP whose RUN didn't read 1 then 0 keeps its domains on", stop)
     psoff = src[src.index("static bool m1_ps_off(void __iomem *p)"):]
     psoff = psoff[:psoff.index("\n}\n")]
     check("writel(v & ~(BIT(28) | BIT(12) | BIT(11) | BIT(10) | BIT(9) | BIT(8) | GENMASK(3, 0)), p);" in psoff and psoff.count("writel(") == 1

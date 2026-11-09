@@ -2247,6 +2247,12 @@ static u8 m1_disp_stop(void)
 		if (!(ctrl & M1_ASC_CPU_RUN) || (readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN))
 			continue;
 		res |= BIT(i);
+		/*
+		 * Its mailbox is in the domain that goes off next, and RTKit's RX path is still live:
+		 * let the mailbox IRQ and RTKit's ordered queue finish whatever it posted before its
+		 * CPU stopped, which can post no more.
+		 */
+		msleep(2);
 		if (m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK)) &&
 		    m1_ps_off(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK)))
 			res |= BIT(2 + i);

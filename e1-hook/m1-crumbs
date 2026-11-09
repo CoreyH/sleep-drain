@@ -69,7 +69,8 @@ STAGES = {
     0x01: "K1: the replay began (the PMU written through the kernel's SPMI path)",
     0x02: "K3: MBSE=slpa was accepted; nothing after it reached the PMU (not all 7 cores parked, or raw SPMI failed;"
           " in a pmp_out=1 run, instead: K4 didn't finish, CPU0 stalled or faulted in it, a fault restarting the"
-          " Mac about 10 s later, or its kernel-path stage write failed)",
+          " Mac about 10 s later, or its kernel-path stage write failed; in a disp_off=1 run, K3b comes first: a"
+          " stall or fault in it leaves this stage too, its 0x84 being written only at its end)",
     0x04: "K3b (disp_off=1): both DCPs and their domains were handled (sample 1's byte says how, if it landed); nothing"
           " after it reached the PMU (K4 didn't finish, or not all 7 cores parked, or raw SPMI failed)",
     0x03: "K4 (pmp_out=1): the PMP's idle pair and its stop are over (0x6015 says how); nothing after it reached the"
