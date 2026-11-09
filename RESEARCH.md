@@ -2859,3 +2859,41 @@ from hypervisor traces are marked). What's new or was missing here:
 - **The t600x alarm is merged upstream of aurora** (aurora-silicon/linux#1312), with Maverick's fix for
   the hypothesis from #1225 here: control bit 1 latched stale, so arming as 0x43 latched no new edge.
 - Watch aurora#401, which would keep a third DCP powered through sleep if it reaches this kernel.
+
+### M1 run 9: the display off: every macOS wait met for the first time, and the SoC still resets at about 30 s (2026-11-09)
+
+`e1-hook/run-floor --quick --m1-disp-off` (`replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1
+pmp_out=1 position=1 sio_on=1 disp_off=1`, #54; the module built at 3674f02; flag `radios-off`; the
+launcher also loaded `pmp_sleep_release` with 0xc and 0xd), in a safe boot, on battery at 33%, with a
+1-minute reading. Against run 8 it has one change: the DCPs shut down through RTKit at the first
+suspend's `prepare`, before noirq and `slpa`, not given the idle pair after `slpa`. Raw data:
+`results/m1-run9-20261109/`.
+
+**The facts:**
+- **Stage 0xcd:** the sample landed and CPU0 had nothing pending just before its acks and deep WFI.
+- **The display:** byte B 0xdf: both DCPs' RTKit shutdowns returned 0, RUN read 1 then 0 on both,
+  and all four domains read off.
+- **`qto` 0x00: every one of macOS's waits was met within 10 ms, for the first time,** DISPLAY's
+  (entry 58) among them. T6020's display-off runs never recorded that bit, so as far as these notes
+  go it's the first time on any chip.
+- **SIO and the PMP as in run 7:** the raises read on, SIO_CPU settled, the PMP's CPU stopped
+  (0x6015 = 0x8e).
+- **The sample, about 1 s after the commit** (0x14): `PHASE` 4, `HS_A` bit 31 up, bit 24 clear,
+  state word 0xa03; 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 set. The same as runs 6-8.
+- **The restart:** 29.7-31.4 s after the commit (29.4-31.4 and 29.7-31.7 from the two reads). Corey's
+  report: about 30 s of black, then the restart. The armed alarm survived it, and `--clear` disarmed it.
+
+**What that shows:**
+- DISPLAY's power-down settles once both DCPs are stopped and their domains off, so the display
+  chain was what held that wait.
+- With the PMP stopped, SIO's subtree up, the display off and every macOS PMGR wait met, B2's gate
+  words at about 1 s, with CPU0 up, are where they were in run 6. None of these opens it while a core is up.
+- No early wake, so the memory-controller error "Related work" warned of didn't show here.
+- The ending doesn't change. As in run 7, the record stops before CPU0's acks and deep WFI, so
+  about 29 s with every core down is a reading, and a close of A2 after the sample and a re-arm
+  within about the next 1.4 s isn't excluded. It matches T6020, which had every display domain off
+  from R6 on and still reset.
+
+**What it changes** (judgment; the order is in PLAN.md, and only there): this is the first run with
+every known PMGR-level difference from macOS gone. What's left is what the working chips do that this
+recipe doesn't, and they can now be read: the desk comparison comes before more rungs.

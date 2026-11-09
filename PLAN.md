@@ -410,15 +410,22 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 7 (2026-11-09; judgment; this is the only place it's kept):**
-      SIO's subtree and the PMP are out of the way, and DISPLAY is the one macOS wait left
-      unmet, so the display chain (rung 6) is next, on top of run 7's recipe. Beside it, free
-      and independent: one commit write instead of three (macOS's T6000 table has one).
+      **The order after run 9 (2026-11-09; judgment; this is the only place it's kept):** every
+      macOS wait is now met (`qto` 0x00), the PMP and both DCPs are stopped and SIO's subtree is
+      up, and the reset and B2's gate words at about 1 s are unchanged, so the known differences at
+      the PMGR level are used up. Next: a side-by-side of this recipe against the two Linux
+      entries that complete and can be read, DJ's T8140 and niteria's T8132 (RESEARCH.md,
+      "Related work"), for what they do that this doesn't. Cheap runs beside it: one commit
+      write instead of three (macOS's T6000 table has one, no new register), and SetAPPower 0x201
+      to the SMC after `slpa`, which every completing recipe sends (a new RTKit message: Corey's OK).
+      **Earlier, after run 7:** SIO's subtree and the PMP were out of the way, and DISPLAY the one
+      macOS wait left unmet, so the display chain (rung 6) came next.
 
-      **Next (built, not run): the display rung, `pkexec e1-hook/run-floor --quick
-      --m1-disp-off`** (`e1_hook disp_off=1`, on `--m1-sio-pmp`'s recipe). Run 8 (RESEARCH.md)
-      tried it with K4's idle pair, and neither DCP stopped. Corey's OKs of 2026-11-09, the second
-      after run 8:
+      **Done 2026-11-09 (M1 runs 8 and 9, RESEARCH.md): the display rung, `pkexec
+      e1-hook/run-floor --quick --m1-disp-off`** (`e1_hook disp_off=1`, on `--m1-sio-pmp`'s
+      recipe). Run 8 tried it with K4's idle pair, and neither DCP stopped. Run 9, as below: both
+      stopped, their domains off, `qto` 0x00, the sample as run 6's, and the reset at 29.7-31.4 s.
+      What follows is the plan as it ran. Corey's OKs of 2026-11-09, the second after run 8:
       - At the first suspend's `prepare`, before noirq and `slpa` (where macOS stops them and
         DeepIdle's patch did): both DCPs Linux keeps running through s2idle, the internal one
         (dcp@38bc00000) and the external one (dcp@289c00000): `apple_rtkit_shutdown`
