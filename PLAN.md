@@ -410,14 +410,20 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 10 (2026-11-09; judgment; this is the only place it's kept):** the commit
+      **The order after run 11 (2026-11-09; judgment; this is the only place it's kept):** SIO's
+      firmware stopped and CPU0 sent straight down changed nothing (RESEARCH.md, "M1 run 11"). Next, needing
+      Corey's OK: the remaining 20 power words at macOS's state, in one run (the list and values are in that
+      section), after `slpa` and before the commit, about 1 in 6 as a blocker. Done as one group because a
+      run costs the same for 3 words as for 20, and a changed ending can be split afterwards. Then the
+      internal PCIe ports (maralcbr's `lab_pcie_ports_down`, about 13 writes per port), each with Corey's OK.
+      **Earlier, the order after run 10 (2026-11-09; judgment):** the commit
       written once and the SMC told changed nothing (RESEARCH.md, "M1 run 10"), and the comparison with
       the working drivers ("The working drivers against this recipe") corrects the line below: macOS's
       waits are used up, its power states aren't. Next: SIO's firmware stopped (needs Corey's OK:
       the idle pair and a RUN write at 0x39bc00044), with CPU0 taken straight to its deep WFI (no new
       address; the sample goes, and K3b's and K5's outcomes need another place in the bytes). Then the
       internal PCIe ports and the remaining power words, one group at a time, each with Corey's OK.
-      Built, not run: `pkexec e1-hook/run-floor --quick --m1-sio-stop` (`e1_hook sio_stop=1`,
+      Ran 2026-11-09 as M1 run 11: `pkexec e1-hook/run-floor --quick --m1-sio-stop` (`e1_hook sio_stop=1`,
       with `hold_nowatch=1` in place of `position=1`, on run 10's recipe), Corey's OK of 2026-11-09:
       SIO's RTKit idle pair once at the first `prepare`, after the DCPs and while SIO has power, and if
       that returned 0, one read-modify-write clearing RUN at 0x39bc00044, read back. CPU0 goes straight
