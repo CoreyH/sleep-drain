@@ -3080,6 +3080,33 @@ the new bite without RESET_EN means a WD2 that never bites only while `PHASE` re
 those, no RESET_EN is how a finished A2 looks, since every A sequence clears it at its end, and a Mac
 that then stayed dark could be a completed entry.
 
+### M1 run 13: the feasibility run: the SRAM didn't take the write (2026-11-09)
+
+`e1-hook/run-floor --quick --m1-recfg-bite` (#62, built at 7dc57fd; kernel 7.2.11-15; flag `radios-off`), in a
+safe boot, on battery at about 95%. Raw data: `results/m1-run13-20261109/`.
+
+**The facts:** `recfg-bite`'s check read the ten words as on 2026-11-08 (the offset register's analogue
+0x1000, its lock 0, table A's entry 2 pointing at A2, A2's opening with the bite at 0x2aea5400) and was
+saved. `recfg_poke` then made its one store, 0x405f7e00 to 0x292f02010 (an aligned 32-bit `str` through
+`/dev/mem`, then `dsb sy`), and read all ten again: each read as before, the bite still 0x2aea5400. It said
+"THE WRITE DIDN'T TAKE" and exited 5, with no put-back (none was called for: nothing had changed). run-floor
+stopped there: e1_hook wasn't loaded, and there was no reading, no suspend and no reset. The safe boot's
+saved journal has no kernel message about the access: the store was taken without a fault and changed
+nothing. `recfg-bite --after` wasn't run: the write record says the word never read 45 s, so its gate
+refuses, and there's nothing for it to measure.
+
+**What that shows:** this SRAM doesn't take a store from the AP under Linux, at least not a 32-bit one at
+this address. A silent drop fits a lock set before Linux runs, as iBoot sets PongoOS's range lock on
+A9-A11 (inferred: PongoOS stops before writing a locked SRAM, so what a store then does isn't in its
+code). The store's width is a weaker suspect: PongoOS edits a Write32 value in place with a 32-bit
+volatile store (`datap[i] = data`), which works there when the SRAM is unlocked. A write filter in front of
+the SRAM for the AP isn't excluded either. Judgment: a lock, about 70%; the width, about 15%; something
+else, about 15%.
+
+So step 1 of "A different approach" failed in the way PLAN.md's reading guide gave first ("the SRAM is
+locked against a write from here. Not a run"), and the markers of step 2 need a writable SRAM. Twelve
+resets are still the only data past the commit.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

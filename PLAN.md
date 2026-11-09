@@ -69,11 +69,11 @@ the PR with that session's work.
 State that lives on the MacBook, not in git:
 - linux-aurora 7.2.11.aurora15 (2026-11-09 20:17, with a system update; aurora14
   until then: no code this Mac runs changed, RESEARCH.md, "Before the feasibility
-  run"). The modules `install.sh` builds are per kernel: it has to run again
-  before the next run. m1n1-aurora and uboot-asahi are held back in
+  run"). The modules `install.sh` builds are per kernel: it has run again for
+  aurora15. m1n1-aurora and uboot-asahi are held back in
   pacman.conf (IgnorePkg). GRUB isn't, but the installed 2:2.16-3 is newer than
   the repo's 2:2.16-1, so pacman leaves it alone.
-- `/etc/sleep-drain/radios-off` is set. `install.sh` last ran at 4f2da37.
+- `/etc/sleep-drain/radios-off` is set. `install.sh` last ran at 7dc57fd, for aurora15.
 - The reconfig SRAM's dump and its decode, on this MacBook only:
   `/var/log/sleep-drain/recfg-peek-20261108T195626-s4/sram-00000.bin` (64 KiB) and
   `~/.local/share/sleep-drain/recfg-decode-20261108/` (the workflow's result at
@@ -414,7 +414,16 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 12 (2026-11-09; judgment; this is the only place it's kept):** the power
+      **The order after run 13 (2026-11-09; judgment; this is the only place it's kept):** the reconfig
+      SRAM didn't take the write (RESEARCH.md, "M1 run 13"): a lock set before Linux runs, most likely,
+      which Linux can't clear (inferred). Before giving the approach up, one cheap test of the next
+      likeliest cause, the store's width, needing Corey's OK: the same change as one aligned 64-bit store
+      at 0x292f02010, the bite's new value in its low half and 0x292f02014's own value (4) in its high
+      half, awake in a safe boot, with the ten words read before and after. If it takes, the feasibility
+      run goes ahead in that boot; if not, a lock is near certain and the markers are off. Then back to
+      guessing: the internal PCIe ports (maralcbr's `lab_pcie_ports_down`, about 13 writes per port), each
+      with Corey's OK.
+      **Earlier, the order after run 12 (2026-11-09; judgment):** the power
       words changed nothing (RESEARCH.md, "M1 run 12"). Next: stop guessing rungs and instrument the engine
       through its reconfig SRAM (RESEARCH.md, "A different approach"). First A2's WD2 bite changed to 45 s
       (Corey's OK of 2026-11-09 for that one word), with CPU0 reading WD2's bite and `PHASE` after the
@@ -429,7 +438,8 @@ steps, and restarting the DCP and the PMP afterwards.
       wait with every core down; 60 s + t that it passed at t. Not proposed to Corey yet. The PCIe ports
       stay the next guess only if the write doesn't take, or the old bite is read with `PHASE` at 4 or 5.
       Rebuild e1_hook for aurora15 first.
-      Built, not run: `pkexec e1-hook/run-floor --quick --m1-recfg-bite` (`e1_hook recfg_bite=1`, on run 12's
+      Ran 2026-11-09 as M1 run 13, and stopped at the write: the SRAM didn't take it (RESEARCH.md, "M1 run
+      13"). `pkexec e1-hook/run-floor --quick --m1-recfg-bite` (`e1_hook recfg_bite=1`, on run 12's
       recipe). In order:
       - Before anything is loaded, `e1-hook/recfg-bite` reads the ten words that say where the bite is
         (`recfg_peek`'s stage 6), saves that, makes the one write (`recfg_poke patch`: 0x292f02010, from
