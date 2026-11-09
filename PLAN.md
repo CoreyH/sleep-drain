@@ -410,13 +410,24 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 11 (2026-11-09; judgment; this is the only place it's kept):** SIO's
+      **The order after run 12 (2026-11-09; judgment; this is the only place it's kept):** the power
+      words changed nothing (RESEARCH.md, "M1 run 12"). Next: stop guessing rungs and instrument the engine
+      through its reconfig SRAM (RESEARCH.md, "A different approach"). First A2's WD2 bite changed to 45 s
+      (Corey's OK of 2026-11-09 for that one word), with CPU0 reading WD2's bite and `PHASE` right after the
+      commit: the new bite says the engine ran the changed word, and only the old bite with `PHASE` at 4 or 5,
+      A2 before its last phase, says it didn't. The reset time is read with that and never decides it: an unchanged reset near
+      30 s is inconclusive, and 45 s doesn't by itself say A2 is the sequence that stalled, since a later A
+      sequence re-arms WD2 with its own 30 s (RESEARCH.md has the cases; a second bite value settles the
+      45 s one). Then bite markers to read how far the engine gets, each needing Corey's OK. The PCIe ports
+      stay the next guess only if the write doesn't take, or the old bite is read with `PHASE` at 4 or 5.
+      Rebuild e1_hook for aurora15 first.
+      **Earlier, the order after run 11 (2026-11-09; judgment):** SIO's
       firmware stopped and CPU0 sent straight down changed nothing (RESEARCH.md, "M1 run 11"). Next, needing
       Corey's OK: the remaining 20 power words at macOS's state, in one run (the list and values are in that
       section), about 1 in 6 as a blocker. Done as one group because a run costs the same for 3 words as for
       20, and a changed ending can be split afterwards. Then the internal PCIe ports (maralcbr's
       `lab_pcie_ports_down`, about 13 writes per port), each with Corey's OK.
-      Built, not run: `pkexec e1-hook/run-floor --quick --m1-power-words` (`e1_hook ps_words=1`, on run 11's
+      Ran 2026-11-09 as M1 run 12: `pkexec e1-hook/run-floor --quick --m1-power-words` (`e1_hook ps_words=1`, on run 11's
       recipe), Corey's OK of 2026-11-09 for exactly those 20 words and values. At the end of step 5, after
       the table (its apcie[2] words reach the PCIe side) and before the stop bits, children first and the
       fabric last. Sixteen go to target 0, up to 10 ms each for actual 0; the four fabric and PCIe words

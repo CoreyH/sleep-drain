@@ -1,0 +1,9 @@
+# Boots around M1 run 12
+ -3 6ad7b8baf41c44198b136cb88cb6adc5 Mon 2026-11-09 18:02:34 CET  Mon 2026-11-09 19:14:00 CET
+ -2 3f7b03557818442798b5d7b9ba9d6ba0 Mon 2026-11-09 19:14:01 CET  Mon 2026-11-09 20:12:41 CET
+ -1 200a1e7a82534ca09a0e9fd5ddfaddab Mon 2026-11-09 20:12:41 CET  Mon 2026-11-09 20:17:52 CET
+  0 c6d3024e19034546828d1636712e1653 Mon 2026-11-09 20:17:52 CET  Mon 2026-11-09 20:23:08 CET
+The run's safe boot loaded e1_hook at 20:14:29 (kernel 7.2.11-14). The commit: RTC second 295446, about 20:15:33.
+Boot -1 (kernel -14) is the first after the reset; a system update in it upgraded linux-aurora to aurora15 at 20:17:17 and the Mac was restarted. Boot 0 (kernel -15) is where m1-crumbs was read,
+so m1-crumbs' '140 s after the commit' is not the restart time: it's right only in the first boot. From boot -1's journal (85 s long, ended 20:17:52) the SoC restarted roughly 28-34 s after the commit; Corey counted about 30 s.
+--clear: alarm disarmed (0x1401 = 0x01), breadcrumbs zeroed; collected 20261109T201530
