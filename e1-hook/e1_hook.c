@@ -84,6 +84,7 @@
  *   pkexec e1-hook/run-floor --m1-sio-pmp         (--m1-pmp's, position=1 and sio_on=1: PLAN.md, the combined rung)
  *   pkexec e1-hook/run-floor --m1-disp-off        (--m1-sio-pmp's and disp_off=1: PLAN.md, the display rung)
  *   pkexec e1-hook/run-floor --m1-macos-end       (--m1-disp-off's, one_commit=1 and smc_idle=1: PLAN.md)
+ *   pkexec e1-hook/run-floor --m1-sio-stop        (--m1-macos-end's, hold_nowatch=1 for position=1, and sio_stop=1: PLAN.md)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -305,6 +306,10 @@ MODULE_PARM_DESC(one_commit, "With disp_off=1: the commit written once, as macOS
 static bool smc_idle;
 module_param(smc_idle, bool, 0444);
 MODULE_PARM_DESC(smc_idle, "With disp_off=1: after K4, SetAPPower 0x201 alone to the SMC's RTKit, the AP idle notice, last of the notices. Corey's OK of 2026-11-09");
+/* SIO's firmware stopped before the commit, as the working drivers do (PLAN.md). */
+static bool sio_stop;
+module_param(sio_stop, bool, 0444);
+MODULE_PARM_DESC(sio_stop, "With hold_nowatch=1, disp_off=1, one_commit=1 and smc_idle=1: at the first suspend's prepare, SIO's RTKit idle pair, once, and if that returned 0, its CPU stopped (RUN, read-modify-write). Corey's OK of 2026-11-09");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -623,6 +628,7 @@ static int e1_begin(void)
 
 /* Step 2, before the noirq pass: the control for prepare_late's read. */
 static void m1_dcp_shutdown(void);
+static void m1_sio_fw_stop(void);
 
 static int e1_prepare(void)
 {
@@ -635,6 +641,8 @@ static int e1_prepare(void)
 	/* disp_off=1: only the suspend that will replay can get here with n == 1 and replay_done 0. */
 	if (disp_off && n == 1 && !READ_ONCE(replay_done))
 		m1_dcp_shutdown();
+	if (sio_stop && n == 1 && !READ_ONCE(replay_done))
+		m1_sio_fw_stop();
 	return 0;
 }
 
@@ -1224,6 +1232,20 @@ static void e1_after_slpa(void)
  * class isn't sampled there, so its reference isn't needed). Stage 0x85 is K5 done.
  * Corey's OK of 2026-11-09.
  *
+ * sio_stop=1 (run-floor --m1-sio-stop; with hold_nowatch=1, disp_off=1, one_commit=1
+ * and smc_idle=1, no position=1): at the first suspend's prepare, after the DCPs and
+ * while SIO still has power (genpd cuts it at noirq), SIO's RTKit idle pair, once,
+ * and if that returned 0, one read-modify-write of its CPU_CONTROL (0x39bc00044)
+ * clearing RUN, read back: both completing Linux drivers refuse a sleep without it
+ * (aurora-silicon/linux ae8686a0bcf4, DJ's, for T8140). Corey's OK of 2026-11-09.
+ * With hold_nowatch=1, CPU0 takes its deep WFI as soon as it has let the others go
+ * after the commit, so no sample carries K3b's and K5's outcomes: step 8 writes
+ * them with SIO's to 0x6012 (the second's upper bytes, which the alarm's compare
+ * value makes spare), bits 4:0 K3b's five bits, bit 5 the SMC's ack, bits 7:6 SIO's
+ * outcome (0 its idle pair timed out, 1 failed another way, 2 returned 0 but RUN
+ * didn't read 1 then 0, 3 stopped). Stage 0x4e replaces 0x5a and 0x4f 0x5b, with
+ * bit 7 from K4 on.
+ *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
  * clusters to the
@@ -1468,6 +1490,13 @@ static u8 m1_disp_bits;		/* disp_off=1: K3b's five bits, for byte B */
 static struct platform_device *m1_smc_mbox_pdev;
 static struct apple_rtkit *m1_smc_rtk;
 static bool m1_smc_acked;
+/* sio_stop=1: SIO's RTKit (through its mailbox's device, referenced), its ASC, and its outcome (the M1_DCP_* codes). */
+#define M1_SIO_MBOX_NODE	"/soc/mbox@39bc08000"
+#define M1_SIO_ASC		0x39bc00000ULL
+static struct platform_device *m1_sio_mbox_pdev;
+static struct apple_rtkit *m1_sio_rtk;
+static void __iomem *m1_sio_asc;
+static u8 m1_sio_code;
 
 static __always_inline u64 m1_now(void)
 {
@@ -2287,6 +2316,29 @@ static void m1_dcp_shutdown(void)
 }
 
 /*
+ * sio_stop=1, at the first suspend's prepare, after the DCPs and while SIO still has
+ * power (the m1 comment says why, and what Corey OK'd). This task can sleep.
+ */
+static void m1_sio_fw_stop(void)
+{
+	u32 ctrl;
+	int ret;
+
+	ret = apple_rtkit_is_running(m1_sio_rtk) ? apple_rtkit_idle(m1_sio_rtk) : -ENODEV;
+	if (ret) {
+		m1_sio_code = ret == -ETIME || ret == -ETIMEDOUT ? M1_DCP_TIMEOUT : M1_DCP_FAILED;
+		return;
+	}
+	ctrl = readl(m1_sio_asc + M1_ASC_CPU_CONTROL);
+	writel(ctrl & ~M1_ASC_CPU_RUN, m1_sio_asc + M1_ASC_CPU_CONTROL);
+	dsb(sy);
+	m1_sio_code = (ctrl & M1_ASC_CPU_RUN) && !(readl(m1_sio_asc + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN) ?
+		      M1_DCP_STOPPED : M1_DCP_NOT_STOPPED;
+	/* genpd cuts its power at noirq: let anything it posted before it stopped be handled first. */
+	msleep(2);
+}
+
+/*
  * disp_off=1, step K3b, right after K3 and before K4: the domains of the DCPs
  * that stopped at prepare. A DCP that didn't keeps its domains. Returns byte B's
  * five bits.
@@ -2570,8 +2622,14 @@ static void __noreturn m1_after_slpa(void)
 	b[5] = pmp_out ? pmpb | (isrs ? BIT(6) : 0) : isrs;
 	b[6] = alarm ? 0 : min(drained, 255U);	/* alarm=1: 0x6016 is m1_alarm_arm()'s */
 	m1_crumb(0x6010, b, 7);
+	if (sio_stop) {
+		/* No sample carries these with hold_nowatch=1: the second's upper byte is spare (the m1 comment). */
+		u8 k = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;
+
+		m1_crumb(0x6012, &k, 1);
+	}
 	if (pmgr_late) {
-		b[0] = hold ? 0x5a : alarm ? 0x59 : 0x58;
+		b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;
 		b[1] = parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
 		b[3] = hold ? held : down;
@@ -2614,7 +2672,7 @@ static void __noreturn m1_after_slpa(void)
 	if (alarm) {
 		/* The last SPMI command before the release (hold=1) or the deep WFI: every one leaves a vector to ack before that WFI. */
 		if (hold)
-			m1_stage(0x5b);
+			m1_stage(sio_stop ? 0x4f : 0x5b);
 		else
 			m1_stage(0x5f);
 		for (i = 0; i < M1_SPMI_WORDS; i++)
@@ -2844,6 +2902,33 @@ nomap:
 	return -ENOMEM;
 }
 
+/* sio_stop=1 at load: SIO's RTKit, through its mailbox's drvdata, running, and its ASC mapped. Refuses the module otherwise. */
+static int __init m1_sio_stop_init(void)
+{
+	struct device_node *np = of_find_node_by_path(M1_SIO_MBOX_NODE);
+	struct apple_mbox *mbox;
+
+	m1_sio_mbox_pdev = np ? of_find_device_by_node(np) : NULL;
+	of_node_put(np);
+	mbox = m1_sio_mbox_pdev ? platform_get_drvdata(m1_sio_mbox_pdev) : NULL;
+	m1_sio_rtk = mbox ? READ_ONCE(mbox->cookie) : NULL;
+	if (!m1_sio_rtk || !apple_rtkit_is_running(m1_sio_rtk)) {
+		pr_err("m1: sio_stop: SIO's RTKit (through %s) isn't running; refusing\n", M1_SIO_MBOX_NODE);
+		return -ENODEV;
+	}
+	if (m1_never(M1_SIO_ASC + M1_ASC_CPU_CONTROL, 1)) {
+		pr_err("m1: sio_stop: the RUN bit's word would touch the never-write list; refusing\n");
+		return -EPERM;
+	}
+	m1_sio_asc = ioremap_np(M1_SIO_ASC, PAGE_SIZE);
+	if (!m1_sio_asc) {
+		pr_err("m1: sio_stop: a mapping failed; refusing\n");
+		return -ENOMEM;
+	}
+	pr_info("m1: sio_stop: SIO's RTKit is running (through %s)\n", M1_SIO_MBOX_NODE);
+	return 0;
+}
+
 /* smc_idle=1 at load: the SMC's RTKit, through its mailbox's drvdata, running. Refuses the module otherwise. */
 static int __init m1_smc_init(void)
 {
@@ -3058,6 +3143,12 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
+	if (sio_stop) {
+		int ret = m1_sio_stop_init();
+
+		if (ret)
+			return ret;
+	}
 	if (smc_idle) {
 		int ret = m1_smc_init();
 
@@ -3113,6 +3204,10 @@ static void m1_unmap(void)
 		put_device(&m1_pmp_mbox_pdev->dev);
 	if (m1_smc_mbox_pdev)
 		put_device(&m1_smc_mbox_pdev->dev);
+	if (m1_sio_asc)
+		iounmap(m1_sio_asc);
+	if (m1_sio_mbox_pdev)
+		put_device(&m1_sio_mbox_pdev->dev);
 	for (i = 0; i < ARRAY_SIZE(m1_dcp_info); i++) {
 		if (m1_dcp_asc[i])
 			iounmap(m1_dcp_asc[i]);
@@ -3415,8 +3510,12 @@ static int __init e1_check_params(void)
 		pr_err("position=1 needs hold=1, no hold_nowatch=1, and sio_on=1 if pmp_out=1 (its samples follow CPU0's watch, and 0x6015 holds one)\n");
 		return -EINVAL;
 	}
-	if (sio_on && (!position || !pmp_out)) {
-		pr_err("sio_on=1 needs position=1 and pmp_out=1 (0x6007's bit 0 says how it went, and only stages 0xc0-0xc5 read it)\n");
+	if (sio_on && (!pmp_out || (!position && !sio_stop))) {
+		pr_err("sio_on=1 needs pmp_out=1 and position=1 or sio_stop=1 (0x6007's bit 0 says how it went, and only those runs' stages read it)\n");
+		return -EINVAL;
+	}
+	if (sio_stop && (!hold_nowatch || !disp_off || !one_commit || !smc_idle || position)) {
+		pr_err("sio_stop=1 needs hold_nowatch=1 disp_off=1 one_commit=1 smc_idle=1 and no position=1 (its outcomes go in 0x6012 in that layout)\n");
 		return -EINVAL;
 	}
 	if ((one_commit || smc_idle) && !disp_off) {
@@ -3587,12 +3686,13 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
 		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "",
-		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "");
+		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
+		sio_stop ? " sio_stop=1" : "");
 	return 0;
 
 unmap:
