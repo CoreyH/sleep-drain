@@ -239,11 +239,12 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
             return res
 
         def sandbox(*, args=(), safe=True, uid=0, peek_rc=0, patch_rc=0, restore_rc=0, save_fail_at=None, tee_fails=False, sync_fails=False,
-                    old=None, checks=(), term_at=None):
+                    old=None, checks=(), term_at=None, real=None):
             """Runs the launcher with stubs; returns (rc, output, calls, the log root, manifests at each save).
             old: which built file is older than a source ("peek", "poke", "peek-header", "poke-header").
             checks: earlier check directories on record, as (time, has a verdict line).
-            tee_fails: True, or "write" for the write's log alone. term_at: "patch" or a save's number: SIGTERM to the launcher there."""
+            tee_fails: True, or "write" for the write's log alone. term_at: "patch" or a save's number: SIGTERM to the launcher there.
+            real: (reader, writer) built for the fake device, in place of the stubs."""
             root = tempfile.mkdtemp(dir=tmp)
             calls = os.path.join(root, "calls")
             log_root = os.path.join(root, "log")
@@ -288,6 +289,8 @@ exit 0
                 os.chmod(p, 0o755)
             os.utime(peek_s, (2000, 2000))
             os.utime(poke_s, (2000, 2000))
+            if real:
+                peek_s, poke_s = real
             if old == "peek":
                 os.utime(srcs["recfg_peek.c"], (3000, 3000))
             elif old == "poke":
@@ -431,6 +434,38 @@ exit 0
         check(rc == 1 and calls == ["peek 6"] and "couldn't sync" in out, "--after: a record that can't be synced is an error", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(args=("--after",), safe=False, checks=(("20261109T210000", True),), old="poke")
         check(rc == 0 and calls == ["peek 6"], "--after doesn't need the writer", (rc, calls, out))
+
+        # The real reader and writer under the launcher, on the fake device: the pieces fit each other.
+        peek_real = os.path.join(tmp, "recfg_peek_real")
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", '-DRECFG_MEM="%s"' % fake, "-o", peek_real, os.path.join(E1_HOOK, "recfg_peek.c")], check=True)
+        before = mem(GOOD, NEIGHBOURS)
+        rc, out, calls, logs, snaps = sandbox(real=(peek_real, poke))
+        check(rc == 0 and calls == ["save save", "save save"] and content(fake) == {**before, BITE: NEW} and "done: A2's WD2 bite word reads 45 s" in out,
+              "the launcher with the real tools: the one word changed on the device, two saves, exit 0", (rc, calls, out))
+        cdir, wdir = (os.path.join(logs, [d for d in os.listdir(logs) if d.endswith(e)][0], "log.txt") for e in ("-check", "-write"))
+        ctext, wtext = open(cdir).read(), open(wdir).read()
+        check(ctext.count("reading 0x") == 10 and "A2's WD2 bite word, 0x292f02010: the old value, 30 s\n" in ctext and "writing" not in ctext
+              and "writing 0x405f7e00 to 0x292f02010\n" in wtext and "the word took the write: it reads the new value, 45 s\n" in wtext,
+              "its two logs: the check's ten reads and verdict, then the writer's own lines", ctext + wtext)
+        rc, out, calls, logs, snaps = sandbox(real=(peek_real, poke))
+        check(rc == 0 and content(fake) == {**before, BITE: NEW} and "already the new value: nothing written" in out, "run again: the check finds the new value, and nothing is written", out)
+        rc, out, calls, logs, snaps = sandbox(real=(peek_real, poke), safe=False, args=("--after",), checks=(("20261109T210000", True),))
+        check(rc == 0 and calls == [] and content(fake) == {**before, BITE: NEW} and "0x292f02010: the new value, 45 s" in out,
+              "--after with the real reader: it reports a word that kept the new value, and writes nothing", (rc, out))
+        rc, out, calls, logs, snaps = sandbox(real=(peek_real, poke), args=("--restore",))
+        check(rc == 0 and content(fake) == before and "the old value is there" in out, "--restore with the real writer: the device is as it began", (rc, out))
+        rc, out, calls, logs, snaps = sandbox(real=(peek_real, poke), safe=False, args=("--after",), checks=(("20261109T210000", True),))
+        check(rc == 0 and "0x292f02010: the old value, 30 s" in out, "--after then reports the old value", (rc, out))
+        values = list(GOOD)
+        values[5] ^= 0x100
+        start = mem(values, NEIGHBOURS)
+        rc, out, calls, logs, snaps = sandbox(real=(peek_real, poke))
+        check(rc == 3 and content(fake) == start and calls == ["save save"] and not [d for d in os.listdir(logs) if d.endswith("-write")],
+              "the real tools on an SRAM that isn't as expected: exit 3 at the check, saved, and the writer never runs", (rc, calls, out))
+        start = mem(GOOD, NEIGHBOURS)
+        rc, out, calls, logs, snaps = sandbox(real=(peek_real, dropped))
+        check(rc == 5 and content(fake) == start and "THE WRITE DIDN'T TAKE" in out and "THE WRITE DIDN'T READ BACK" in out and BACK in out,
+              "the real tools on an SRAM that drops the store: exit 5, said twice over, and the device unchanged", (rc, out))
 
 print("\n%d failures" % failed)
 sys.exit(1 if failed else 0)
