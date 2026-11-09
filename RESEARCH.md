@@ -3011,7 +3011,7 @@ needs a rebuild, and later runs compare against this one across a kernel update.
 **What that shows:** sixteen more domains at macOS's state didn't move the reset. Twelve runs have now ended
 the same way, the last two with nothing able to see past the commit.
 
-### A different approach: instrument the engine instead of guessing (2026-11-09, proposed, not OK'd)
+### A different approach: instrument the engine instead of guessing (2026-11-09; step 1 has Corey's OK of that day, the rest is proposed)
 
 Every rung since run 6 has been a guess at what the engine waits for, at about 1 in 6 each, and the only
 observer, a core left up, may itself hold the gate. The one thing that survives a run is the time of the
@@ -3019,12 +3019,27 @@ reset, and the engine's own sequences set it: each A sequence writes WD2's bite 
 reconfig SRAM. PongoOS's `recfg.c` exists to modify these sequences, and the table's lock analogue reads 0
 here. So, if the SRAM is writable and the engine runs it live:
 
-1. **Feasibility, one run:** change A2's bite word alone to 45 s. A reset at 45 s says the SRAM is writable,
-   live, and that A2 as decoded is what runs. A reset at 30 s says it isn't, and costs one run.
-2. **Then markers:** a write of a different bite placed at chosen points in B2 (in place of an unpolled
-   write, or in a relocated copy of the sequence with the table repointed). The reset time then says how far
-   the engine got with every core down: the first measurement past the gate. A handful of 5-minute runs
-   finds the op it stops at, and whether B2's first gate ever opens.
+1. **Feasibility, one run:** change A2's bite word alone to 45 s, and have CPU0 read WD2's bite once
+   right after the commit, before its deep WFI, recording whether it's the new value, the old one or the
+   awake one. That read is the test: it says directly whether the engine ran the changed word. The reset
+   time is a second fact, and by itself it can't reject the SRAM (Pullfrog's point on #61): every A
+   sequence re-arms WD2 with its own 30 s, so an entry that completes followed by a wake that stalls, the
+   case the SRAM section leaves open, would also reset near 30 s with the edit live. Read together:
+   - new bite read, reset at 45 s: the SRAM is live, and A2 was the last sequence to arm WD2, so the entry
+     itself never finished with every core down;
+   - new bite read, reset near 30 s: the SRAM is live, and something re-armed WD2 right after the commit,
+     which would be a later A sequence: the entry completed and a wake stalled;
+   - old bite read, reset near 30 s: the engine doesn't run the SRAM as it reads now (or the write didn't
+     take, which the load's read-back says before the run);
+   - the awake bite read: A2 hadn't armed WD2 when CPU0 looked; the reset time is then all there is.
+2. **Then markers:** a write of a different bite placed at chosen points (in place of an unpolled write,
+   or in a relocated copy of a sequence with the table repointed). The reset time then says how far the
+   engine got with every core down: the first measurement past the gate. The same caution holds: a later
+   A sequence's preamble overwrites a marker's bite, so a marker's reset time is read against step 1's
+   result, and the other A sequences' bites can be given values of their own to say which armed last
+   (more SRAM words, each needing the OK). Whether a marker can go in B2 depends on what executes table
+   B, which isn't known; one in A2 right after its first handshake needs no such knowledge, and says
+   whether B2's first gate ever opens.
 
-New writes to the engine's SRAM: Corey's OK first. Undone by a restart if iBoot rewrites the SRAM at boot,
-which a `recfg-peek` after step 1 would confirm (inferred until then).
+New writes to the engine's SRAM: Corey's OK first, word by word. Undone by a restart if iBoot rewrites the
+SRAM at boot, which a read of the word in the boot after step 1 confirms (inferred until then).
