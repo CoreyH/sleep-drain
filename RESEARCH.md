@@ -3024,11 +3024,13 @@ here. So, if the SRAM is writable and the engine runs it live:
    SRAM word still read the new value just before the commit). No reset time enters the test:
    - **the new bite in WD2** says the SRAM is writable and that the engine ran the changed word. That's
      the feasibility result, whenever the reset then comes;
-   - **the old bite while `PHASE` is still one of A2's (4, 5, 7)** says A2 armed WD2 from something other
-     than the word as it reads: the edit isn't what the engine runs. Only this rejects the approach;
-   - **the old bite with any other `PHASE`** says a later A sequence had already re-armed WD2 when CPU0
-     looked. It decides nothing about the edit (and would be news of its own: the entry finished within
-     milliseconds);
+   - **the old bite while `PHASE` reads 4 or 5**, A2 before its last phase, says A2 itself armed WD2 from
+     something other than the word as it reads: the edit isn't what the engine runs. Only this rejects
+     the approach;
+   - **the old bite with any other `PHASE`** decides nothing about the edit: a later A sequence may have
+     re-armed WD2 before CPU0 looked. That includes 7, A2's last code, which stays until the next
+     sequence writes its own, and that sequence's opening re-arms WD2 first (Pullfrog's point). A later
+     sequence that soon would be news of its own: the entry finished within milliseconds;
    - **the awake bite** says A2 hadn't armed WD2 yet, and decides nothing.
 
    The reset time is a second fact, read with those (Pullfrog's two points on #61). Every A sequence
