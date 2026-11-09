@@ -1,0 +1,1 @@
+time=2026-11-09T19:16:11+01:00 ts=1794248171 label=floor-m1-sio-stop boot=safe then=suspend boot_id=12e15075-c9d0-4758-bfc4-a4e38dd79daf minutes=1 samples=7 window=1794248111-1794248171 charge_now_uah=2759000 voltage_uv=11433000 current_ua=-566000 charge_counter=-87838 capacity=54 uptime_s=106.43 ac=0

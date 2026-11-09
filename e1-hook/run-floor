@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words]
 #
 # --quick, ahead of the recipe, makes the reading 1 minute instead of 10, with no need to wait
 # 20 minutes off the charger: for a run whose question is how it ends. If one ever goes dark for
@@ -68,7 +68,9 @@
 # RTKit message, Corey's OK of 2026-11-09). Its label is floor-m1-macos-end. --m1-sio-stop is that
 # with SIO's firmware stopped before noirq (its idle pair, and if that returns 0, RUN cleared: Corey's
 # OK of 2026-11-09) and hold_nowatch=1 in place of position=1, so CPU0 goes straight to its deep WFI
-# after the commit and there's no sample. Its label is floor-m1-sio-stop.
+# after the commit and there's no sample. Its label is floor-m1-sio-stop. --m1-power-words is that with
+# ps_words=1: macOS's remaining 20 power words at the end of step 5, after the table (new PMGR writes, Corey's
+# OK of 2026-11-09). A hang in them is dark at stage 0xa8. Its label is floor-m1-power-words.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
@@ -83,7 +85,7 @@
 #     After --m1, also, before anything else touches the PMU:
 #       /home/corey/src/sleep-drain/e1-hook/m1-crumbs, for a photo or a copy,
 #       then pkexec /home/corey/src/sleep-drain/e1-hook/m1-crumbs --clear
-#       (after --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end and --m1-sio-stop, --clear also disarms the alarm the run armed, 0x1401
+#       (after --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop and --m1-power-words, --clear also disarms the alarm the run armed, 0x1401
 #       back to 0x01, so that it can't power the Mac on an hour later; every
 #       m1 run refuses to load while it reads armed).
 #     After --m1-position, also, in that same boot, once m1-crumbs and collect
@@ -93,7 +95,7 @@
 #     the keyboard (dark since the reading began) stay dark past 2 minutes.
 #     Nothing wakes the Mac from it. If that's new (it's a candidate for a
 #     completed entry), leave it at least 30 minutes, then the steps below.
-#     After --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end or --m1-sio-stop, do them before about 55 minutes: the alarm fires 60
+#     After --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop or --m1-power-words, do them before about 55 minutes: the alarm fires 60
 #     minutes after the commit, and if it wakes the SoC, the wake lands in
 #     m1n1 with no way back and the Mac hangs, at an unknown draw, until the
 #     power key. If it's dark past that, expect that and end it the same way.
@@ -110,7 +112,7 @@
 #          after --m1-late, floor-m1-alarm after --m1-alarm, floor-m1-hold
 #          and floor-m1-hold-nowatch after those, floor-m1-pmp and
 #          floor-m1-pmp-idle after --m1-pmp and --m1-pmp-idle, floor-m1-position
-#          after --m1-position, floor-m1-sio-pmp after --m1-sio-pmp, floor-m1-disp-off after --m1-disp-off, floor-m1-macos-end after --m1-macos-end, floor-m1-sio-stop after --m1-sio-stop: --clear before
+#          after --m1-position, floor-m1-sio-pmp after --m1-sio-pmp, floor-m1-disp-off after --m1-disp-off, floor-m1-macos-end after --m1-macos-end, floor-m1-sio-stop after --m1-sio-stop, floor-m1-power-words after --m1-power-words: --clear before
 #          the reading, since a PMU write can't change BQCC). After --m1-position,
 #          collect on its own first, then, before the reading, recfg-peek
 #          --position-after as above. --m1 can also hang
@@ -171,6 +173,7 @@ sio=0
 disp=0
 macend=0
 siostop=0
+pwords=0
 quick=()
 label=floor
 # --quick, ahead of the rest: a 1-minute reading, for a run whose question is how it ends, not what it draws.
@@ -279,8 +282,22 @@ elif (($# == 1)) && [[ $1 == --m1-sio-stop ]]; then
   macend=1
   siostop=1
   label=floor-m1-sio-stop
+elif (($# == 1)) && [[ $1 == --m1-power-words ]]; then
+  quiet=1
+  m1=1
+  late=1
+  alarm=1
+  hold=1
+  nowatch=1
+  pmp=1
+  sio=1
+  disp=1
+  macend=1
+  siostop=1
+  pwords=1
+  label=floor-m1-power-words
 elif (($# != 0)); then
-  die "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop]"
+  die "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -306,6 +323,7 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!disp)) || [[ $parms == *$'\n'disp_off:* ]] || die "$ko is an older build, without disp_off: make -C $here"
 ((!macend)) || [[ $parms == *$'\n'one_commit:* && $parms == *$'\n'smc_idle:* ]] || die "$ko is an older build, without one_commit and smc_idle: make -C $here"
 ((!siostop)) || [[ $parms == *$'\n'sio_stop:* ]] || die "$ko is an older build, without sio_stop: make -C $here"
+((!pwords)) || [[ $parms == *$'\n'ps_words:* ]] || die "$ko is an older build, without ps_words: make -C $here"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 [[ $(cat "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none, so the suspend wouldn't be a real one: echo none > $PM_TEST"
@@ -385,6 +403,7 @@ params=(replay=15 oneway=1)
 ((!disp)) || params+=(disp_off=1)
 ((!macend)) || params+=(one_commit=1 smc_idle=1)
 ((!siostop)) || params+=(sio_stop=1)
+((!pwords)) || params+=(ps_words=1)
 armed=1
 insmod "$ko" "${params[@]}"
 # A build that doesn't know them would load with them ignored, and only warn.
@@ -402,7 +421,8 @@ insmod "$ko" "${params[@]}"
   { ((!sio)) || [[ $(cat "$MODDIR/parameters/sio_on") == Y ]]; } &&
   { ((!disp)) || [[ $(cat "$MODDIR/parameters/disp_off") == Y ]]; } &&
   { ((!macend)) || [[ $(cat "$MODDIR/parameters/one_commit") == Y && $(cat "$MODDIR/parameters/smc_idle") == Y ]]; } &&
-  { ((!siostop)) || [[ $(cat "$MODDIR/parameters/sio_stop") == Y ]]; } ||
+  { ((!siostop)) || [[ $(cat "$MODDIR/parameters/sio_stop") == Y ]]; } &&
+  { ((!pwords)) || [[ $(cat "$MODDIR/parameters/ps_words") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
 # --m1-sio-pmp: the PMP's display report requests withdrawn at this suspend's noirq (Corey's pick of 2026-11-09), as
 # T8140's driver does before it idles the PMP. A reboot undoes it; the module stays loaded on the ways out here.
