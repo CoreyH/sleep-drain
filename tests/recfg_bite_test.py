@@ -78,8 +78,10 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
 
     def build(name, *extra, trace_to=trace):
         exe = os.path.join(tmp, name)
-        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", '-DRECFG_MEM="%s"' % fake, '-DRECFG_SAFE_FLAG="%s"' % flag,
-                        '-DRECFG_CMDLINE="%s"' % cmdline, '-DRECFG_TRACE="%s"' % trace_to, *extra, "-o", exe, src_path], check=True)
+        # _FORTIFY_SOURCE as some distributions' compilers set it by default: glibc's warn_unused_result is then an error here too.
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-U_FORTIFY_SOURCE", "-D_FORTIFY_SOURCE=3", '-DRECFG_MEM="%s"' % fake,
+                        '-DRECFG_SAFE_FLAG="%s"' % flag, '-DRECFG_CMDLINE="%s"' % cmdline, '-DRECFG_TRACE="%s"' % trace_to, *extra, "-o", exe, src_path],
+                       check=True)
         return exe
 
     poke = build("recfg_poke")
@@ -217,7 +219,8 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
 
     # The same for each of the four words outside A2: all ten decide after the write, not A2's six alone.
     for i, name in ((0, "the offset register"), (1, "its lock"), (2, "table A's entry 2"), (3, "the entry's second word")):
-        exe = build("recfg_poke_w%d" % i, '-DRECFG_POKE_STORE(v,n)=((n)==0?(pwrite(mem_fd,"\\x01\\x00\\x00\\x10",4,%dL),(v)):(v))' % TEN[i])
+        # The injected write's result is checked: glibc marks pwrite warn_unused_result under _FORTIFY_SOURCE, an error with -Werror.
+        exe = build("recfg_poke_w%d" % i, '-DRECFG_POKE_STORE(v,n)=((n)==0&&pwrite(mem_fd,"\\x01\\x00\\x00\\x10",4,%dL)!=4?(exit(9),(v)):(v))' % TEN[i])
         start = mem(GOOD, NEIGHBOURS)
         r, acc = run(exe, "patch")
         check(r.returncode == 5 and "the word took the write" not in r.stdout and "THE TEN WORDS READ NEITHER AS BEFORE NOR AS INTENDED" in r.stdout
@@ -600,7 +603,8 @@ exit 0
 
         # The real reader and writer under the launcher, on the fake device: the pieces fit each other.
         peek_real = os.path.join(tmp, "recfg_peek_real")
-        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", '-DRECFG_MEM="%s"' % fake, "-o", peek_real, os.path.join(E1_HOOK, "recfg_peek.c")], check=True)
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-U_FORTIFY_SOURCE", "-D_FORTIFY_SOURCE=3", '-DRECFG_MEM="%s"' % fake, "-o", peek_real,
+                        os.path.join(E1_HOOK, "recfg_peek.c")], check=True)
         before = mem(GOOD, NEIGHBOURS)
         rc, out, calls, logs, snaps = sandbox(real=(peek_real, poke))
         check(rc == 0 and calls == ["save save", "save save"] and content(fake) == {**before, BITE: NEW} and "done: A2's WD2 bite word reads 45 s" in out,
