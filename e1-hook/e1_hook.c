@@ -83,6 +83,7 @@
  *   pkexec e1-hook/run-floor --m1-position        (--m1-hold's and position=1: PLAN.md, the position read)
  *   pkexec e1-hook/run-floor --m1-sio-pmp         (--m1-pmp's, position=1 and sio_on=1: PLAN.md, the combined rung)
  *   pkexec e1-hook/run-floor --m1-disp-off        (--m1-sio-pmp's and disp_off=1: PLAN.md, the display rung)
+ *   pkexec e1-hook/run-floor --m1-macos-end       (--m1-disp-off's, one_commit=1 and smc_idle=1: PLAN.md)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -297,6 +298,13 @@ MODULE_PARM_DESC(sio_on, "With position=1 and pmp_out=1: in step 5, just before 
 static bool disp_off;
 module_param(disp_off, bool, 0444);
 MODULE_PARM_DESC(disp_off, "With sio_on=1: at the first suspend's prepare, before noirq and slpa, both DCPs' firmware shut down through RTKit (SetAPPower 0x10, then SetIOPPower 0x01) and, if that returned 0, its CPU stopped (RUN, read-modify-write); then in K3b, right after slpa, only for a DCP whose RUN read 1 then 0, disp0's and dispext0's domains to target 0, child first, each polled up to 10 ms. Corey's OK of 2026-11-09");
+/* The end of the sequence as macOS has it (PLAN.md): the commit written once, and the AP idle notice to the SMC. */
+static bool one_commit;
+module_param(one_commit, bool, 0444);
+MODULE_PARM_DESC(one_commit, "With disp_off=1: the commit written once, as macOS's T6000 table does, not three times");
+static bool smc_idle;
+module_param(smc_idle, bool, 0444);
+MODULE_PARM_DESC(smc_idle, "With disp_off=1: after K4, SetAPPower 0x201 alone to the SMC's RTKit, the AP idle notice, last of the notices. Corey's OK of 2026-11-09");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -1202,6 +1210,20 @@ static void e1_after_slpa(void)
  * 0xcd with K4's bit 7 (m1_position.h has the byte). Stage 0x84 is this step
  * done, before K4's 0x83; a stall in it is dark at 0x02.
  *
+ * one_commit=1 (run-floor --m1-macos-end; only with disp_off=1): the commit
+ * written once, as macOS's T6000 table has it (entry 73), not three times as
+ * Naeem's T8103 recipe. The alarm still goes after that write, where every run
+ * since run 4 has put it. smc_idle=1 (the same launcher; only with disp_off=1):
+ * step K5, after K4, with interrupts on: SetAPPower 0x201 alone to the SMC's
+ * RTKit, the AP idle notice macOS gives it last of all (the SMC itself keeps
+ * running), sent raw on the management endpoint since RTKit's API has no call for
+ * AP power alone, 6 ms after the rest and followed by 30 ms, the gaps DJ's driver
+ * measured on T8140 (aurora-silicon/linux d6158d07a07b); Naeem's T8103 driver sends
+ * the same after slpa. The ack is read as apple_rtkit_is_running() turning false,
+ * up to 200 ms. 0x6005 bit 0, in disp_off=1's stages, says it came (SIO_CPU's
+ * class isn't sampled there, so its reference isn't needed). Stage 0x85 is K5 done.
+ * Corey's OK of 2026-11-09.
+ *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
  * clusters to the
@@ -1437,6 +1459,15 @@ static struct apple_rtkit *m1_dcp_rtk[ARRAY_SIZE(m1_dcp_info)];
 static void __iomem *m1_dcp_asc[ARRAY_SIZE(m1_dcp_info)];
 static void __iomem *m1_dcp_ps[ARRAY_SIZE(m1_dcp_info)][2];	/* their pages; the words are at each address's page offset */
 static u8 m1_disp_bits;		/* disp_off=1: K3b's five bits, for byte B */
+/* smc_idle=1: the SMC's RTKit (through its mailbox's device, referenced), and whether it acked K5's notice. */
+#define M1_SMC_MBOX_NODE	"/soc/mbox@290408000"
+/* RTKit's management endpoint and SetAPPower (drivers/soc/apple/rtkit.c), for AP power alone. */
+#define M1_RTKIT_EP_MGMT	0
+#define M1_RTKIT_SET_AP_PWR	(0xbULL << 52)
+#define M1_RTKIT_PWR_IDLE	0x201ULL
+static struct platform_device *m1_smc_mbox_pdev;
+static struct apple_rtkit *m1_smc_rtk;
+static bool m1_smc_acked;
 
 static __always_inline u64 m1_now(void)
 {
@@ -2113,7 +2144,7 @@ static void m1_position(u8 off, u8 qto, u8 held, u8 flags)
 
 	m1_crumb(0x6014, &flags, 1);
 	b[0] = M1_POS_ST(0x40);
-	b[1] = off | (m1_sio_ref ? BIT(0) : 0);
+	b[1] = off | ((disp_off ? m1_smc_acked : m1_sio_ref) ? BIT(0) : 0);
 	b[2] = qto;
 	b[3] = held;
 	m1_crumb(0x6004, b, 4);
@@ -2369,6 +2400,29 @@ static bool m1_sio_raise(void)
 	return ok;
 }
 
+/*
+ * smc_idle=1, step K5, after K4 (the m1 comment says what and whose order). The ack
+ * comes through the SMC's mailbox interrupt and RTKit's queue, as K4's do; RTKit then
+ * records the new AP state, and apple_rtkit_is_running() turns false. True if it did.
+ */
+static bool m1_smc_idle(void)
+{
+	static const u8 stage = 0x85;
+	bool acked = false;
+	u64 t0;
+
+	msleep(6);
+	if (apple_rtkit_is_running(m1_smc_rtk) &&
+	    !apple_rtkit_send_message(m1_smc_rtk, M1_RTKIT_EP_MGMT, M1_RTKIT_SET_AP_PWR | M1_RTKIT_PWR_IDLE, NULL, false)) {
+		t0 = m1_now();
+		while (!(acked = !apple_rtkit_is_running(m1_smc_rtk)) && m1_now() - t0 < m1_tps / 5)
+			usleep_range(1000, 1200);
+	}
+	msleep(30);
+	m1_kwrite(0x6004, &stage, 1);
+	return acked;
+}
+
 /* Steps K3, K4 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
 {
@@ -2392,6 +2446,10 @@ static void __noreturn m1_after_slpa(void)
 	/* K4 (pmp_out=1): the PMP's idle pair and its CPU stopped */
 	if (pmp_out)
 		pmpb = m1_pmp_out();
+
+	/* K5 (smc_idle=1): the AP idle notice to the SMC, after every other coprocessor's */
+	if (smc_idle)
+		m1_smc_acked = m1_smc_idle();
 
 	/* 1, 2 */
 	preempt_disable();
@@ -2546,8 +2604,10 @@ static void __noreturn m1_after_slpa(void)
 		dsb(sy);
 		m1_alarm_arm(rtc);
 	}
-	writel_relaxed(1, commit);
-	writel_relaxed(1, commit);
+	if (!one_commit) {
+		writel_relaxed(1, commit);
+		writel_relaxed(1, commit);
+	}
 	dsb(sy);
 	if (position)
 		m1_t_third = m1_now();
@@ -2784,6 +2844,24 @@ nomap:
 	return -ENOMEM;
 }
 
+/* smc_idle=1 at load: the SMC's RTKit, through its mailbox's drvdata, running. Refuses the module otherwise. */
+static int __init m1_smc_init(void)
+{
+	struct device_node *np = of_find_node_by_path(M1_SMC_MBOX_NODE);
+	struct apple_mbox *mbox;
+
+	m1_smc_mbox_pdev = np ? of_find_device_by_node(np) : NULL;
+	of_node_put(np);
+	mbox = m1_smc_mbox_pdev ? platform_get_drvdata(m1_smc_mbox_pdev) : NULL;
+	m1_smc_rtk = mbox ? READ_ONCE(mbox->cookie) : NULL;
+	if (!m1_smc_rtk || !apple_rtkit_is_running(m1_smc_rtk)) {
+		pr_err("m1: smc_idle: the SMC's RTKit (through %s) isn't running; refusing\n", M1_SMC_MBOX_NODE);
+		return -ENODEV;
+	}
+	pr_info("m1: smc_idle: the SMC's RTKit is running (through %s)\n", M1_SMC_MBOX_NODE);
+	return 0;
+}
+
 /*
  * pmgr_late at load: what it writes where, and every word its waits read,
  * as it is now, awake, through the entries' own mappings; and two words its
@@ -2980,6 +3058,12 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
+	if (smc_idle) {
+		int ret = m1_smc_init();
+
+		if (ret)
+			return ret;
+	}
 	if (disp_off) {
 		int ret = m1_disp_init();
 
@@ -3027,6 +3111,8 @@ static void m1_unmap(void)
 		iounmap(m1_pmp_asc);
 	if (m1_pmp_mbox_pdev)
 		put_device(&m1_pmp_mbox_pdev->dev);
+	if (m1_smc_mbox_pdev)
+		put_device(&m1_smc_mbox_pdev->dev);
 	for (i = 0; i < ARRAY_SIZE(m1_dcp_info); i++) {
 		if (m1_dcp_asc[i])
 			iounmap(m1_dcp_asc[i]);
@@ -3333,6 +3419,10 @@ static int __init e1_check_params(void)
 		pr_err("sio_on=1 needs position=1 and pmp_out=1 (0x6007's bit 0 says how it went, and only stages 0xc0-0xc5 read it)\n");
 		return -EINVAL;
 	}
+	if ((one_commit || smc_idle) && !disp_off) {
+		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
+		return -EINVAL;
+	}
 	if (disp_off && !sio_on) {
 		pr_err("disp_off=1 needs sio_on=1 (its outcome is in sample 1's byte B, in that run's layout)\n");
 		return -EINVAL;
@@ -3497,12 +3587,12 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
 		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "",
-		disp_off ? " disp_off=1" : "");
+		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "");
 	return 0;
 
 unmap:

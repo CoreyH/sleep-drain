@@ -1,8 +1,8 @@
 #!/usr/bin/python3 -I
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
---m1-pmp-idle, --m1-position, --m1-sio-pmp or --m1-disp-off; e1_hook m1=1, observe=1, pmgr_late=1,
-alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1) leaves in the PMU, read and decoded, and cleared
+--m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off or --m1-macos-end; e1_hook m1=1, observe=1,
+pmgr_late=1, alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1, one_commit=1, smc_idle=1) leaves in the PMU, read and decoded, and cleared
 again.
 
   e1-hook/m1-crumbs               read them (no root needed)
@@ -71,6 +71,8 @@ STAGES = {
           " in a pmp_out=1 run, instead: K4 didn't finish, CPU0 stalled or faulted in it, a fault restarting the"
           " Mac about 10 s later, or its kernel-path stage write failed; in a disp_off=1 run, K3b comes first: a"
           " stall or fault in it leaves this stage too, its 0x84 being written only at its end)",
+    0x05: "K5 (smc_idle=1): the AP idle notice to the SMC is over (0x6005 bit 0 says if it was acked, in a position"
+          " stage); nothing after it reached the PMU (not all 7 cores parked, or raw SPMI failed)",
     0x04: "K3b (disp_off=1): both DCPs and their domains were handled (sample 1's byte says how, if it landed); nothing"
           " after it reached the PMU (K4 didn't finish, or not all 7 cores parked, or raw SPMI failed)",
     0x03: "K4 (pmp_out=1): the PMP's idle pair and its stop are over (0x6015 says how); nothing after it reached the"
@@ -449,8 +451,11 @@ def decode(b, rtc, cnt=None, alarm=None):
         if s in HOLD_AFTER:
             out.append(f"read off after the release (0x6005 = 0x{b[5]:02x}, up to 10 ms each): {cpus(b[5] & 0xfe)}")
             if s in POSITION:
-                out.append(f"0x6005 bit 0: SIO_CPU's bits 27:24 {'read f' if b[5] & 1 else 'did not read f'} at entry 61's"
-                           " wait, the reference for its class")
+                if disp:
+                    out.append(f"0x6005 bit 0 (smc_idle=1): the SMC {'acked the AP idle notice within 200 ms' if b[5] & 1 else 'did NOT ack an AP idle notice, or this run sent none'}")
+                else:
+                    out.append(f"0x6005 bit 0: SIO_CPU's bits 27:24 {'read f' if b[5] & 1 else 'did not read f'} at entry 61's"
+                               " wait, the reference for its class")
         else:
             out.append(f"parked (0x6005 = 0x{b[5]:02x}): {cpus(b[5] & 0xfe)}")
         if late and base >= 0x20:

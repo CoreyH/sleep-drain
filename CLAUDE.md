@@ -141,7 +141,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   requests, and one sample at about 1 s (stages 0xc0-0xc5; 0x6007's bit 0 says the
   raises read on). `disp_off=1` (`run-floor --m1-disp-off`, with `sio_on=1`) is its
   display rung: before noirq, both DCPs shut down through RTKit and their CPUs stopped,
-  and after `slpa` their domains off (Corey's OKs of 2026-11-09; stages 0xc8-0xcd). `run-floor --quick` ahead of any
+  and after `slpa` their domains off (Corey's OKs of 2026-11-09; stages 0xc8-0xcd). `one_commit=1` and `smc_idle=1` (`run-floor --m1-macos-end`, on
+  `disp_off=1`) write the commit once and give the SMC its AP idle notice after K4. `run-floor --quick` ahead of any
   recipe makes the reading 1 minute. `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay

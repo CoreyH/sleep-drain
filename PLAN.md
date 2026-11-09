@@ -415,9 +415,14 @@ steps, and restarting the DCP and the PMP afterwards.
       up, and the reset and B2's gate words at about 1 s are unchanged, so the known differences at
       the PMGR level are used up. Next: a side-by-side of this recipe against the two Linux
       entries that complete and can be read, DJ's T8140 and niteria's T8132 (RESEARCH.md,
-      "Related work"), for what they do that this doesn't. Cheap runs beside it: one commit
-      write instead of three (macOS's T6000 table has one, no new register), and SetAPPower 0x201
-      to the SMC after `slpa`, which every completing recipe sends (a new RTKit message: Corey's OK).
+      "Related work"), for what they do that this doesn't. Cheap runs beside it: built, not run, `pkexec
+      e1-hook/run-floor --quick --m1-macos-end` (`e1_hook one_commit=1 smc_idle=1`, on run 9's recipe):
+      the commit written once (macOS's T6000 table has one, no new register), and after K4
+      SetAPPower 0x201 alone to the SMC, 6 ms after the rest and followed by 30 ms, which every
+      completing recipe sends (a new RTKit message: Corey's OK of 2026-11-09). 0x6005 bit 0
+      says the SMC acked; `qto` and the sample read as in run 9. T8103 completes with and without
+      the notice and T6020 sent it and still reset, so low odds alone. A reset 30-32 s after
+      the commit is the same ending.
       **Earlier, after run 7:** SIO's subtree and the PMP were out of the way, and DISPLAY the one
       macOS wait left unmet, so the display chain (rung 6) came next.
 
