@@ -1109,7 +1109,7 @@ def main():
     check(defs.get("M1_PMU_ALARM_CTRL") == g["ALARM_CTRL"] and defs.get("M1_PMU_ALARM") == g["ALARM"]
           and defs.get("M1_PMU_ALARM_EVENT") == g["ALARM_EVENT"] and defs.get("M1_PMU_ALARM_MASK") == g["ALARM_MASK"]
           and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"]
-          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f)
+          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x46, 0x47)
           and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src and "hold ? 0x5a : alarm ? 0x59 : 0x58" in src
           and "m1_stage(sio_stop ? 0x4f : 0x5b)" in src and "b[0] = 0x5c" in src and "? 0x5d : 0x5e" in src and "hold ? 0x39 :" in src
           and "hold ? 0x31 :" in src,
@@ -1469,7 +1469,8 @@ def position_tests(g, src):
         check(rc == 0 and "RTC second at the replay's start (K1): 121544," in out and "the steps before the commit:" not in out and "didn't land" not in out,
               "the stage before sio_stop=1's 0x4e: 0x6012 is still the second's, read whole", out + err)
         rc, out, err = dec(0xce, run10)
-        check(rc == 0 and "so the stage is 0x4e" in out and "8 (sio_stop=1)" in out and "0x6012 = 0xff" in out and "(0x4f comes after them)" in out,
+        check(rc == 0 and "so the stage is 0x4e" in out and "8 (sio_stop=1)" in out and "0x6012 = 0xff" in out
+              and "(0x4f, or recfg_bite=1's 0x46 or 0x47, comes after them)" in out,
               "sio_stop=1's 0xce: before the commit", out + err)
         for stage in (0xce, 0xcf):
             before = fake(path, scratch(stage, **run10), rtc_secs=121761, alarm=alarm)
@@ -1481,6 +1482,196 @@ def position_tests(g, src):
             want[0x1401] = 0x01
             check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
                   f"--clear after sio_stop=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
+
+        # recfg_bite=1's run: stage 0x47 (0x46 with something pending) in place of 0x4f, with the sample at 0x6005, where parked was.
+        NEW, OLD, AWAKE = 1, 2, 3
+
+        def smp(cls, phase, armed=True, sram=True):
+            return cls | phase << 2 | (0x40 if armed else 0) | (0x80 if sram else 0)
+
+        SHOWN = "  so: the engine took WD2's bite from the changed word: the SRAM takes a write and the engine runs it. Feasibility shown, whenever the reset came"
+        REJECT = ("  so: A2, before its last phase, armed WD2 with the old bite though the word read the new one: the engine didn't take the bite from this word."
+                  " (A copy elsewhere isn't excluded: only the first 64 KiB of the SRAM has been read)\n")
+        rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, 4), prog=(0xff, 0xff)))
+        check(rc == 0 and "stage 0x6004 = 0xc7 (pmp_out=1: bit 7, so the stage is 0x47) (pmgr_late=1): recfg_bite=1: the commit, the alarm and the release are done, and CPU0 read WD2 and PHASE (0x6005) with nothing pending afterwards" in out
+              and "0x6005 = 0xd1: recfg_bite=1, after the commit, the alarm and the release" in out
+              and "  WD2's bite: the new value, 45 s; WD2's control showed RESET_EN\n" in out
+              and "  PHASE 0x4 (the entry pair's first (A2)), read after the bite; A2's bite word in the SRAM, read in step 8 just before the commit: the new value\n" in out
+              and SHOWN + "\n" in out and "parked (0x6005" not in out and "observe=1" not in out and "read off after the release" not in out
+              and LINE in out and WLINE.format(0xff) in out and HELD in out and RAISED in out and "0x6015 = 0x8d: K4 ran" in out
+              and "PCPM0 not read (hold_nowatch=1: CPU0 doesn't watch them)" in out
+              and "from its low two bytes and the run's alarm: 121544" in out and "the SoC restarted about" in out,
+              "recfg_bite=1's 0xc7: the sample at 0x6005, the steps' outcomes, no parked line", out + err)
+        rc, out, err = dec(0xc6, dict(run10, parked=smp(NEW, 4)))
+        check(rc == 0 and "so the stage is 0x46" in out and "but had an SError, IRQ or FIQ pending afterwards: that would end its deep WFI" in out
+              and SHOWN + "\n" in out and "parked (0x6005" not in out and "from its low two bytes and the run's alarm: 121544" in out,
+              "recfg_bite=1's 0xc6: the same sample, and CPU0 had something pending after its reads", out + err)
+        NEVER = (". But RESET_EN didn't show within 0.3 s: CPU0 looked inside A2's opening, or the word after the bite was disturbed."
+                 " Then WD2 never bites, and a Mac that stayed dark is that, not a completed entry\n")
+        for phase in (0, 4, 5):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, phase, armed=False)))
+            check(rc == 0 and "WD2's control did NOT show RESET_EN within 0.3 s\n" in out and SHOWN + NEVER in out and "may be a completed entry" not in out,
+                  f"recfg_bite=1: the new bite without RESET_EN, PHASE {phase}: feasibility shown, and a dark ending wouldn't be a completed entry", out + err)
+        # A2's own close clears RESET_EN after its last phase: past PHASE 4 and 5, no RESET_EN is how a finished A2 looks.
+        for phase in (1, 2, 3, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, phase, armed=False)))
+            check(rc == 0 and SHOWN + f". RESET_EN didn't show within 0.3 s, with PHASE {phase:#x}, which isn't one A2 shows before its last (0, 4, 5):"
+                  " every A sequence clears RESET_EN at its end, so A2 may have run to its end before CPU0 looked."
+                  " A Mac that then stayed dark may be a completed entry\n" in out and "not a completed entry" not in out,
+                  f"recfg_bite=1: the new bite without RESET_EN, PHASE {phase:#x}: A2 may have finished, and a dark ending may be a completed entry", out + err)
+        for phase in range(16):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, phase)))
+            check(rc == 0 and SHOWN + "\n" in out, f"recfg_bite=1: the new bite with RESET_EN, PHASE {phase:#x}: feasibility shown, nothing added", out + err)
+        UNSEEN = ("  so: nothing decided: WD2 holds the old bite with A2 before its last phase, though the word read the new one, which points at the engine"
+                  " not taking the bite from this word. But RESET_EN didn't show within 0.3 s, and A2's opening sets it right after the bite:"
+                  " this isn't the state that opening leaves, so the record alone doesn't say\n")
+        for phase in (4, 5):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(OLD, phase)))
+            check(rc == 0 and "  WD2's bite: the old value, 30 s; " in out and REJECT in out and "Feasibility shown" not in out,
+                  f"recfg_bite=1: the old bite with PHASE {phase} says the engine didn't take the bite from this word", out + err)
+            # The one reading that rejects the approach needs the whole of what A2's opening leaves: RESET_EN too.
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(OLD, phase, armed=False)))
+            check(rc == 0 and UNSEEN in out and REJECT not in out and "Feasibility shown" not in out,
+                  f"recfg_bite=1: the old bite with PHASE {phase} and no RESET_EN decides nothing", out + err)
+        rc, out, err = dec(0xc7, dict(run10, parked=smp(AWAKE, 4)))
+        check(rc == 0 and "observe=1" not in out and "its awake value" in out, "recfg_bite=1: bit 0 of the sample isn't observe=1's mark", out + err)
+        for phase in (0, 2, 3, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 1, 0xe, 0xf):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(OLD, phase)))
+            check(rc == 0 and f"  so: nothing decided about the edit: with PHASE {phase:#x}, a later sequence's opening may have re-armed WD2 with its own 30 s before CPU0 looked" in out
+                  and REJECT not in out and "Feasibility shown" not in out,
+                  f"recfg_bite=1: the old bite with PHASE {phase:#x} decides nothing (7 is A2's last: the next opening re-arms WD2 before its own code)", out + err)
+        rc, out, err = dec(0xc7, dict(run10, parked=smp(OLD, 4, sram=False)))
+        check(rc == 0 and "read in step 8 just before the commit: NOT the new value\n" in out and REJECT not in out
+              and "  so: the edit wasn't in place at the commit (the word didn't read the new value in step 8), so it wasn't tested. Not a negative\n" in out,
+              "recfg_bite=1: the old bite with the SRAM word not new before the commit: not tested, not a negative", out + err)
+        rc, out, err = dec(0xc7, dict(run10, parked=smp(AWAKE, 0, armed=False)))
+        check(rc == 0 and "  WD2's bite: its awake value; WD2's control did NOT show RESET_EN within 0.3 s\n" in out
+              and "  PHASE 0x0 (its awake value, or pair 0's), read after the bite; " in out
+              and "  so: nothing decided: nothing had armed WD2 within 0.3 s of the release. If the Mac then stayed dark, WD2 was never armed: not a completed entry, and the edit is the first suspect\n" in out,
+              "recfg_bite=1: the awake bite decides nothing, and says what a dark ending would then be", out + err)
+        rc, out, err = dec(0xc7, dict(run10, parked=smp(AWAKE, 4)))
+        check(rc == 0 and "  so: nothing decided: WD2 showed RESET_EN with its awake bite, which no sequence read so far would leave\n" in out,
+              "recfg_bite=1: RESET_EN with the awake bite decides nothing", out + err)
+        rc, out, err = dec(0xc7, dict(run10, parked=smp(0, 4)))
+        check(rc == 0 and "  WD2's bite: another value; " in out and "  so: nothing decided: not a bite any sequence read so far writes. Unreadable, not a negative\n" in out,
+              "recfg_bite=1: another bite decides nothing", out + err)
+        for phase in range(16):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, phase, sram=False)))
+            check(rc == 0 and SHOWN + ". (Step 8's read of the word didn't show the new value, which doesn't fit a new bite in WD2: that read isn't to be trusted then)\n" in out
+                  and f"  PHASE {phase:#x} (" in out and "NOT the new value" in out,
+                  f"recfg_bite=1: the new bite shows feasibility whatever else reads (PHASE {phase:#x}), and says step 8's read doesn't fit", out + err)
+        ABSENT = "  so: nothing decided, and the edit wasn't in place at the commit (the word didn't read the new value in step 8): the reset time says nothing about it either"
+        for cls, armed in ((AWAKE, False), (AWAKE, True), (0, True)):
+            rc, out, err = dec(0xc7, dict(run10, parked=smp(cls, 4, armed=armed, sram=False)))
+            check(rc == 0 and ABSENT + "\n" in out and "Feasibility shown" not in out and REJECT not in out,
+                  f"recfg_bite=1: bite class {cls} with the SRAM word not new before the commit: the edit wasn't there, whatever else reads", out + err)
+        rc, out, err = dec(0xc7, dict(run10, parked=0x00))
+        check(rc == 0 and ABSENT + ". And 0x00 is also what a byte that didn't land, or didn't survive the reset, reads: not a reading to lean on\n" in out,
+              "recfg_bite=1: 0x00 at 0x6005 is called out as a byte that may not have landed", out + err)
+        rc, out, err = dec(0xc7, dict(run10, parked=smp(NEW, 4), down=0xfe))
+        check(rc == 0 and NOT_RAISED in out and RAISED not in out, "recfg_bite=1's 0xc7 with 0x6007's bit 0 clear: the raises did not all read on", out + err)
+        # 0xfe, the parked cores, is what stage 0x4e leaves at 0x6005: it must never read as the new bite.
+        rc, out, err = dec(0xc7, dict(run10, parked=0xfe))
+        check(rc == 0 and "Feasibility shown" not in out and "WD2's bite: the old value, 30 s" in out and "nothing decided about the edit: with PHASE 0xf" in out
+              and "And 0xfe is what stage 0x4e leaves in this byte (the parked cores): if the stage's command landed without its second byte, this isn't a sample at all\n" in out,
+              "recfg_bite=1: 0xfe at 0x6005, the byte stage 0x4e leaves there, is never feasibility, and is called out", out + err)
+        rc, out, err = dec(0xcf, dict(run10, parked=0xd1))
+        check(rc == 0 and "recfg_bite=1" not in out and "parked (0x6005 = 0xd1)" in out, "stage 0x4f's 0x6005 is still parked, never a sample", out + err)
+        for stage in (0xc6, 0xc7):
+            before = fake(path, scratch(stage, **dict(run10, parked=smp(NEW, 4))), rtc_secs=121761, alarm=alarm)
+            r = run(path, "--clear", cnt=cnt)
+            after = open(path, "rb").read()
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                  f"--clear after recfg_bite=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
+
+        # recfg_bite.h itself: the sample's byte against an independent reading of its layout, the two values, and the verdict.
+        r_c = os.path.join(tmp, "r.c")
+        with open(r_c, "w") as f:
+            f.write('#include <stdio.h>\n#include "recfg_bite.h"\nint main(void)\n{\n'
+                    'static const u32 bites[] = { RECFG_BITE_OLD, RECFG_BITE_NEW, 0x80befc00, 0x12345678, 0 };\n'
+                    'printf("consts %llx %x %x %x %x %x %llx %llx %llx %x %x %x\\n", RECFG_SRAM + RECFG_BITE, RECFG_BITE_OLD, RECFG_BITE_NEW, RECFG_TABLE, RECFG_A2_ENTRY, RECFG_A2,\n'
+                    '       RECFG_CFG_REG, RECFG_CFG_LOCK, RECFG_WDT, RECFG_WD2_COUNT, RECFG_WD2_BITE, RECFG_WD2_CTRL);\n'
+                    'for (unsigned b = 0; b < 5; b++) for (unsigned p = 0; p < 32; p++) for (unsigned c = 0; c < 8; c++) for (unsigned s = 0; s < 5; s++)\n'
+                    '  printf("%x %x %x %x %02x\\n", bites[b], p, c, bites[s], m1_recfg_sample(bites[b], 0x80befc00, p, c, bites[s]));\n'
+                    'return 0;\n}\n')
+        exe = os.path.join(tmp, "r")
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", exe, r_c], check=True)
+        rows = [line.split() for line in subprocess.run([exe], capture_output=True, text=True, check=True).stdout.splitlines()]
+        check(rows[0] == ["consts", "292f02010", "2aea5400", "405f7e00", "1000", "1010", "2000", "2925c0200", "2925c0214", "2922b0000", "20", "24", "2c"]
+              and 0x2aea5400 == 30 * 24000000 and 0x405f7e00 == 45 * 24000000,
+              "recfg_bite.h: the word is 0x292f02010, 30 s and 45 s at 24 MHz, the table at 0x1000 and A2 at 0x2000; WD2's count, bite and control at 0x20, 0x24, 0x2c",
+              str(rows[0]))
+
+        def want_sample(bite, phase, ctrl, sram):
+            cls = 1 if bite == 0x405f7e00 else 2 if bite == 0x2aea5400 else 3 if bite == 0x80befc00 else 0
+            return cls | (phase & 0xf) << 2 | (0x40 if ctrl & 4 else 0) | (0x80 if sram == 0x405f7e00 else 0)
+
+        bad = [r for r in rows[1:] if int(r[4], 16) != want_sample(*(int(x, 16) for x in r[:4]))]
+        check(len(rows) == 1 + 5 * 32 * 8 * 5 and not bad, "m1_recfg_sample: the bite's class, PHASE's low four bits, RESET_EN, the SRAM word: nothing else",
+              str(bad[:4]))
+        check(want_sample(0x405f7e00, 0xf, 4, 0x405f7e00) != 0xfe and 0xfe & 3 != 1,
+              "the parked byte, 0xfe, isn't a sample with the new bite: its class bits say old")
+        # The awake class is only for a bite that's neither value: an awake bite equal to one of them must not hide it.
+        c_c = os.path.join(tmp, "c.c")
+        with open(c_c, "w") as f:
+            f.write('#include <stdio.h>\n#include "recfg_bite.h"\nint main(void)\n{\n'
+                    'printf("%d %d %d %d %d %d\\n", m1_bite_class(RECFG_BITE_OLD, RECFG_BITE_OLD), m1_bite_class(RECFG_BITE_NEW, RECFG_BITE_NEW),\n'
+                    '       m1_bite_class(RECFG_BITE_NEW, RECFG_BITE_OLD), m1_bite_class(RECFG_BITE_OLD, RECFG_BITE_NEW), m1_bite_class(7, 7), m1_bite_class(7, 8));\n'
+                    'return 0;\n}\n')
+        cexe = os.path.join(tmp, "c")
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", cexe, c_c], check=True)
+        got = subprocess.run([cexe], capture_output=True, text=True, check=True).stdout.split()
+        check(got == ["2", "1", "1", "2", "3", "0"], "m1_bite_class: new is 1 and old is 2 whatever the awake bite was; awake is 3 only for a bite that's neither", str(got))
+
+        v_c = os.path.join(tmp, "v.c")
+        with open(v_c, "w") as f:
+            f.write('#include <stdio.h>\n#include <stdlib.h>\n#include "recfg_bite.h"\nint main(int argc, char **argv)\n{\n'
+                    'u32 w[10];\nif (argc != 11) return 2;\nfor (int i = 0; i < 10; i++) w[i] = (u32)strtoul(argv[i + 1], NULL, 16);\n'
+                    'printf("%d\\n", recfg_bite_verdict(w[0], w[1], w + 2, w + 4));\nreturn 0;\n}\n')
+        vexe = os.path.join(tmp, "v")
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", vexe, v_c], check=True)
+
+        def verdict(words):
+            return int(subprocess.run([vexe] + [f"{w:x}" for w in words], capture_output=True, text=True, check=True).stdout)
+
+        # The ten words as the format and WD2's register map give them: nothing here is copied from the dump.
+        head = ((0x2922b0000 >> 10) << 6) | (4 - 1) << 2 | 1
+        offs = int.from_bytes(bytes(reg >> 2 for reg in (0x2c, 0x20, 0x24, 0x2c)), "little")
+        good = [0x1000, 0, (0x292f00000 + 0x2000) >> 4, 0, head, offs, 0, 0, 0x2aea5400, 4]
+        OLDV, NEWV, BAD_BITE, BAD_CFG, LOCKED, BAD_TABLE, BAD_SEQ = range(7)
+        check(verdict(good) == OLDV and verdict(good[:8] + [0x405f7e00, 4]) == NEWV, "the verdict: the ten words as expected, with the old bite and with the new")
+        check(verdict(good[:8] + [0x405f7e01, 4]) == BAD_BITE and verdict(good[:8] + [0, 4]) == BAD_BITE and verdict(good[:8] + [0x80befc00, 4]) == BAD_BITE,
+              "the verdict: any other bite, in the op as expected, is its own answer")
+        for i, (name, want_v) in enumerate((("the offset register", BAD_CFG), ("the lock", LOCKED), ("the table entry", BAD_TABLE), ("its second word", BAD_TABLE),
+                                           ("the op's head", BAD_SEQ), ("the offsets", BAD_SEQ), ("control's first value", BAD_SEQ), ("count's value", BAD_SEQ),
+                                           (None, None), ("control's last value", BAD_SEQ))):
+            if name is None:
+                continue
+            for flip in (1, 0x80000000, 0x100):
+                words = list(good)
+                words[i] ^= flip
+                check(verdict(words) == want_v, f"the verdict: {name} off by {flip:#x} is refused as that")
+                words[8] = 0x405f7e00
+                check(verdict(words) == want_v, f"the verdict: the same with the new bite there")
+        check(verdict([0x1004, 1, 0, 0, 0, 0, 0, 0, 0x2aea5400, 4]) == BAD_CFG and verdict([0x1000, 1, 0, 0, 0, 0, 0, 0, 0x2aea5400, 4]) == LOCKED
+              and verdict([0x1000, 0, 1, 0, 0, 0, 0, 0, 0x2aea5400, 4]) == BAD_TABLE,
+              "the verdict names the first thing that isn't as expected")
+        dump = os.path.expanduser("~/.local/share/sleep-drain/recfg-decode-20261108/run5/sram-00000.bin")
+        if os.path.exists(dump):
+            with open(dump, "rb") as f:
+                raw = f.read()
+            word = lambda off: int.from_bytes(raw[off:off + 4], "little")
+            real = [0x1000, 0, word(0x1010), word(0x1014)] + [word(0x2000 + 4 * i) for i in range(6)]
+            check(verdict(real) == OLDV and real == good,
+                  "this Mac's own dump of 2026-11-08: its ten words are the ones built here, and the verdict is the old bite")
+            check([o for o in range(0, len(raw) - 3, 4) if word(o) == 0x2aea5400] == [0x1a10, 0x1cf0, 0x2010, 0x21b0],
+                  "and the old bite is in that dump four times, A2's at 0x2010")
+        else:
+            print("skip the dump's own words: no local dump here")
 
         # m1_pos_byte_d, the module's own code.
         d_h = os.path.join(tmp, "d.c")
@@ -1644,6 +1835,71 @@ def position_tests(g, src):
     check('#define M1_SIO_ASC\t\t0x39bc00000ULL' in src and '#define M1_SIO_MBOX_NODE\t"/soc/mbox@39bc08000"' in src
           and "m1_never(M1_SIO_ASC + M1_ASC_CPU_CONTROL, 1)" in src, "SIO's ASC and mailbox are this Mac's, and the load checks the never-write list")
     check(0x39bc00044 not in (0x28e0802d8, 0x28e700000), "SIO's RUN word isn't on the never-write list")
+
+    # recfg_bite=1: the module reads, and never writes, the SRAM; the sample goes out once, after the release, in one command with its stage.
+    tool = open(TOOL).read()
+    check("#define M1_RECFG_STAGE\t\t0x47" in src and "#define M1_RECFG_STAGE_PEND\t0x46" in src and "RECFG_STAGES = (0x46, 0x47)\n" in tool
+          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x46, 0x47),
+          "recfg_bite=1's stages are 0x46 and 0x47 in the module and in m1-crumbs, with sio_stop=1's stages")
+    uses = [l for l in src.splitlines() if re.search(r"\bm1_recfg\b", l)]
+    literals = [int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", src)]
+    check(len(uses) == 9 and not [l for l in uses if "write" in l] and src.count("readl(m1_recfg + ") == 4
+          and src.count("RECFG_SRAM") == 1 and "m1_recfg = ioremap_np(RECFG_SRAM, M1_RECFG_MAP);" in src
+          and not [x for x in literals if 0x292f00000 <= x < 0x292f70000],
+          "the module maps the SRAM's start, reads it at load and in step 8, unmaps it, and holds no other way to the SRAM",
+          "\n".join(uses))
+    init = src[src.index("static int __init m1_recfg_init(void)"):]
+    init = init[:init.index("\n}\n")]
+    check(in_order(init, ["m1_recfg = ioremap_np(RECFG_SRAM, M1_RECFG_MAP);", "entry[0] = readl(m1_recfg + RECFG_A2_ENTRY);", "entry[1] = readl(m1_recfg + RECFG_A2_ENTRY + 4);",
+                          "seq[i] = readl(m1_recfg + RECFG_A2 + 4 * i);", "verdict = recfg_bite_verdict(RECFG_TABLE, 0, entry, seq);",
+                          "ctl = readl(m1_wdt + M1_WD_CTRL(2));", "m1_wd2_bite_awake = readl(m1_wdt + M1_WD_BITE(2));",
+                          "if (verdict != RECFG_NEW) {", "return -EINVAL;",
+                          "if ((ctl & M1_WD_RESET_EN) || m1_wd2_bite_awake == RECFG_BITE_OLD || m1_wd2_bite_awake == RECFG_BITE_NEW) {", "return -EBUSY;",
+                          "return 0;"])
+          and "write" not in init,
+          "the load refuses unless table A's entry 2 and A2's opening read as expected with the new bite, and unless WD2 is in its awake state; it writes nothing",
+          init)
+    after = src[src.index("static void __noreturn m1_after_slpa(void)"):]
+    after = after[:after.index("\n}\n")]
+    check(in_order(after, ["b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;", "m1_crumb(0x6012, b, 2);",
+                           "if (recfg_bite) {\n\t\tsram = readl(m1_recfg + RECFG_BITE);\n\t\tdsb(sy);\n\t\tisb();\n\t}",
+                           "/* 9 */", "local_daif_mask();", "if (position)\n\t\tm1_t_first = m1_now();", "writel_relaxed(1, commit);",
+                           "if (alarm) {\n\t\tdsb(sy);\n\t\tm1_alarm_arm(rtc);\n\t}",
+                           "if (!hold)\n\t\t\tm1_stage(0x5f);\n\t\telse if (!recfg_bite)\n\t\t\tm1_stage(sio_stop ? 0x4f : 0x5b);",
+                           "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));",
+                           "if (hold)\n\t\tm1_hold_release(held, qto, flags);\n\tif (recfg_bite)\n\t\tm1_recfg_out(sram);", "m1_arm_deep_sleep();"]),
+          "step 8 reads the SRAM word after the 0x4e crumbs and before SError is masked, with dsb and isb; a recfg_bite=1 run sends no stage 0x4f,"
+          " and its sample goes out after the release and before CPU0's deep WFI", after)
+    rout = src[src.index("static void m1_recfg_out(u32 sram)"):]
+    rout = rout[:rout.index("\n}\n")]
+    check(in_order(rout, ["while (!((ctl = readl(m1_wdt + M1_WD_CTRL(2))) & M1_WD_RESET_EN) && m1_now() - t0 < 3 * m1_tps / 10)",
+                          "bite = readl(m1_wdt + M1_WD_BITE(2));", "while (!(phase = readl(m1_pos + M1_POS_PHASE)) && m1_now() - t0 < m1_tps / 100)",
+                          "dsb(sy);\n\tisb();\n\tb[0] = ((read_sysreg(isr_el1) >> 6) & 7) ? M1_RECFG_STAGE_PEND : M1_RECFG_STAGE;",
+                          "b[1] = m1_recfg_sample(bite, m1_wd2_bite_awake, phase, ctl, sram);", "m1_crumb(0x6004, b, 2);",
+                          "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));"])
+          and rout.count("t0 = m1_now();") == 2 and rout.count("writel(") == 1 and "writel_relaxed" not in rout and rout.count("m1_crumb(") == 1
+          and "m1_stage(" not in rout,
+          "m1_recfg_out(): RESET_EN waited for, up to 0.3 s, then the bite, then PHASE for up to 10 ms while it reads 0; one command with"
+          " the stage and the byte; nothing written but that breadcrumb and nub-spmi0's acks", rout)
+    check("if (recfg_bite && !ps_words) {" in src
+          and ("static_assert(RECFG_WDT == M1_WDT && RECFG_WD2_COUNT == M1_WD_CUR(2) && RECFG_WD2_BITE == M1_WD_BITE(2) &&\n"
+               "\t      RECFG_WD2_CTRL == M1_WD_CTRL(2) && RECFG_WD_RESET_EN == M1_WD_RESET_EN);") in src
+          and 'recfg_bite ? " recfg_bite=1" : ""' in src and "module_param(recfg_bite, bool, 0444);" in src,
+          "recfg_bite=1 refuses to load without ps_words=1; the header's WD2 registers and RESET_EN are the module's; the load line names it;"
+          " the parameter can't be set after the load")
+    # "The new bite shows the engine ran the edit" rests on the module never writing WD2 itself, and on the load's refusals being used.
+    check(re.findall(r"write\w*\([^;]*m1_wdt[^;]*;", src) == ["writel(0, m1_wdt + M1_WD1_CTRL);"]
+          and not [x for x in literals if 0x2922b0020 <= x <= 0x2922b002c],
+          "the module's one write through the watchdog mapping is WD1's control, and none of its literal addresses is one of WD2's registers")
+    check("\tif (recfg_bite) {\n\t\tint ret = m1_recfg_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\treturn 0;\n}" in src,
+          "m1_init() runs m1_recfg_init() last, for recfg_bite=1 alone, and returns its refusal")
+    check("\tif (!m1_pos)\n\t\tm1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);\n\tif (!m1_recfg || !m1_pos) {" in init and init.count("return -ENOMEM;") == 1
+          and ("seq[0], seq[1], seq[2], seq[3], seq[4], seq[5], ctl, readl(m1_wdt + M1_WD_CUR(2)),\n"
+               "\t\tm1_wd2_bite_awake, readl(m1_pos + M1_POS_PHASE));") in init
+          and init.count("ioremap") == 2,
+          "m1_recfg_init(): PHASE's page mapped non-posted too, a failed mapping refused, and the load line shows WD2's own awake words")
+    check(rout.count("readl(") == 3 and rout.count("M1_WD_BITE(2)") == 1 and rout.count("M1_POS_PHASE") == 1 and rout.count("M1_WD_CTRL(2)") == 1,
+          "m1_recfg_out() reads three registers, each in one place: WD2's control, WD2's bite, PHASE")
 
     # smc_idle=1 and one_commit=1.
     smc = src[src.index("static bool m1_smc_idle(void)"):]

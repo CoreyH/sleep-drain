@@ -11,7 +11,9 @@ held at each save: sleep-drain-safe collect keeps the first copy of a directory
 and stops on one that differs, so a stage's directory must not change after
 its save. It also runs the position read's stages (a-h, one word each but a), the
 launcher's --position (saved after each, then done.txt and the mark run-floor
-needs) and --position-after (a regular boot, only with a collected done.txt).
+needs) and --position-after (a regular boot, only with a collected done.txt),
+stage 6, the ten words that say where A2's WD2 bite is (recfg_bite.h), and
+stage 7, that word alone.
 
   python3 -I tests/recfg_peek_test.py
 """
@@ -278,8 +280,78 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     check(not [pa for pa in sum(WORDS.values(), []) if 0x28e0802d8 <= pa < 0x28e0802e0 or 0x28e700000 <= pa < 0x28e700008],
           "no position word is on the never-write list")
 
+    # Stage 6: the ten words that say where A2's WD2 bite is, read in order and never followed, and its verdict.
+    # Built here from the format and WD2's register map, as recfg_bite.h builds them: nothing is copied from the dump.
+    HEAD = ((0x2922b0000 >> 10) << 6) | (4 - 1) << 2 | 1
+    OFFS = int.from_bytes(bytes(reg >> 2 for reg in (0x2c, 0x20, 0x24, 0x2c)), "little")
+    TEN = [CFG, LOCK, SRAM + 0x1010, SRAM + 0x1014] + [SRAM + 0x2000 + 4 * i for i in range(6)]
+    GOOD = [0x1000, 0, (SRAM + 0x2000) >> 4, 0, HEAD, OFFS, 0, 0, 0x2aea5400, 4]
+
+    def ten(values):
+        m = Mem(fake)
+        for pa, v in zip(TEN, values):
+            m.word(pa, v)
+
+    out7 = fresh("o7")
+    ten(GOOD)
+    r, a = run(6, out7)
+    check(r.returncode == 0 and a == TEN, "stage 6 reads exactly the ten words, in order", str([hex(x) for x in a]))
+    check(r.stdout.rstrip().endswith("A2's WD2 bite word, 0x292f02010: the old value, 30 s"), "stage 6's last line is the verdict: the old bite", r.stdout)
+    check(all("0x%x = 0x%08x" % (pa, v) in r.stdout and r.stdout.index("reading 0x%x\n" % pa) < r.stdout.index("0x%x = 0x%08x" % (pa, v))
+              for pa, v in zip(TEN, GOOD)), "stage 6 says what it's reading before each read, and prints each word", r.stdout)
+    ten(GOOD[:8] + [0x405f7e00, 4])
+    r, a = run(6, out7)
+    check(r.returncode == 0 and a == TEN and r.stdout.rstrip().endswith("0x292f02010: the new value, 45 s"), "stage 6 says when the bite is the new one", r.stdout)
+    for i, text in ((0, "the table offset register's analogue doesn't read 0x1000"), (1, "the lock's analogue reads non-zero"),
+                    (2, "table A's entry 2 doesn't point at the SRAM + 0x2000"), (3, "table A's entry 2 doesn't point"),
+                    (4, "A2 doesn't open with the op that arms WD2"), (5, "A2 doesn't open"), (6, "A2 doesn't open"), (7, "A2 doesn't open"),
+                    (8, "neither the old value nor the new one"), (9, "A2 doesn't open")):
+        values = list(GOOD)
+        values[i] ^= 0x10
+        ten(values)
+        r, a = run(6, out7)
+        check(r.returncode == 3 and a == TEN and text in r.stdout.splitlines()[-1],
+              f"stage 6 stops (exit 3) when word {i} isn't as expected, having read the same ten and no more", r.stdout)
+    ten([0xffffffff] * 10)
+    r, a = run(6, out7)
+    check(r.returncode == 3 and a == TEN, "stage 6 on all ones: the same ten reads, and it stops", r.stdout)
+    check(not os.listdir(out7), "stage 6 writes no dump", os.listdir(out7))
+    # Each "reading" line is out before its read is made: with the trace on stdout too, the order shows.
+    inline = os.path.join(tmp, "recfg_peek_inline")
+    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", '-DRECFG_MEM="%s"' % fake, '-DRECFG_TRACE="/dev/stdout"', "-o", inline,
+                    os.path.join(E1_HOOK, "recfg_peek.c")], check=True)
+    ten(GOOD)
+    seen = subprocess.run([inline, "6", out7], capture_output=True, text=True).stdout
+    check(all(seen.index("reading 0x%x\n" % pa) < seen.index("\n0x%x\n" % pa) < seen.index("0x%x = 0x%08x" % (pa, v)) for pa, v in zip(TEN, GOOD)),
+          "stage 6 prints each \"reading\" line before it makes that read, and the word after", seen)
+    check(not [pa for pa in TEN if 0x28e0802d8 <= pa < 0x28e0802e0 or 0x28e700000 <= pa < 0x28e700008],
+          "none of stage 6's words is on the never-write list")
+
+    # Stage 7: the bite word alone, for the regular boot after the run: one read, and which value.
+    BITE = SRAM + 0x2010
+    for value, rc_, text in ((0x2aea5400, 0, "the old value, 30 s"), (0x405f7e00, 0, "the new value, 45 s"), (0x405f7e01, 3, "neither the old value nor the new one"),
+                             (0, 3, "neither"), (0xffffffff, 3, "neither")):
+        ten(GOOD[:8] + [value, 4])
+        r, a = run(7, out7)
+        check(r.returncode == rc_ and a == [BITE] and r.stdout.rstrip().endswith("0x292f02010 = 0x%08x  A2's WD2 bite word: %s" % (value, text)
+              if text != "neither" else "neither the old value nor the new one"),
+              f"stage 7 reads the one word and nothing else, and says {value:#x} is {text} (exit {rc_})", r.stdout + str([hex(x) for x in a]))
+    ten([0xffffffff] * 8 + [0x2aea5400, 0xffffffff])
+    r, a = run(7, out7)
+    check(r.returncode == 0 and a == [BITE], "stage 7 goes by that word whatever the other nine read: it never reads them", r.stdout)
+    seen = subprocess.run([inline, "7", out7], capture_output=True, text=True).stdout
+    check(seen.index("reading 0x292f02010\n") < seen.index("\n0x292f02010\n") < seen.index("0x292f02010 = 0x"), "stage 7 prints its \"reading\" line before the read", seen)
+    check(not os.listdir(out7), "stage 7 writes no dump", os.listdir(out7))
+
+    # Started with stdout closed, the device would become this program's stdout: it stops before any read.
+    ten(GOOD)
+    if os.path.exists(trace):
+        os.unlink(trace)
+    r = subprocess.run([binary, "6", out7], stderr=subprocess.PIPE, preexec_fn=lambda: os.close(1))
+    check(r.returncode == 1 and not os.path.exists(trace), "with stdout closed, the device isn't used as stdout: exit 1 before any read", r.stderr)
+
     # Its arguments: no address can be asked for.
-    for args in (["0", tmp], ["6", tmp], ["12", tmp], ["x", tmp], ["i", tmp], ["A", tmp], ["ab", tmp], ["1"],
+    for args in (["0", tmp], ["8", tmp], ["12", tmp], ["x", tmp], ["i", tmp], ["A", tmp], ["ab", tmp], ["1"],
                  ["0x2925c0200", tmp], []):
         r = subprocess.run([binary] + args, capture_output=True, text=True)
         check(r.returncode == 2, "refuses arguments " + repr(args), r.stdout + r.stderr)
@@ -318,7 +390,6 @@ echo "stage $1" >> {calls}
 echo "the reader's stage $1"
 [[ -d $2 ]] || {{ echo 'no dir' >&2; exit 9; }}
 [[ $1 == 4 ]] && echo dump > "$2/sram-00000.bin"
-if [[ ${{rc[$1]:-0}} == segv ]]; then kill -SEGV $$; fi
 exit ${{rc[$1]:-0}}
 """)
             os.chmod(stub, 0o755)
@@ -414,7 +485,7 @@ cp -a {log_root} {snaps}/$n
         check(rc == 1 and not sandbox.mark and calls == POS[:8] + ["stage e", "save save"][:1] + ["save save"]
               and "stage e failed" in out and not [d for d in os.listdir(logs) if d.endswith("pdone")],
               "a failed word stops it, with no record and no mark", (calls, out))
-        rc, out, calls, logs, snaps = sandbox(args=("--position",), rc_by_stage={"h": "segv"})
+        rc, out, calls, logs, snaps = sandbox(args=("--position",), rc_by_stage={"h": 139})
         check(rc == 1 and not sandbox.mark and not [d for d in os.listdir(logs) if d.endswith("pdone")],
               "a reader killed on the last word: no record and no mark", (calls, out))
         rc, out, calls, logs, snaps = sandbox(args=("--position",), save_fails=True)
@@ -472,7 +543,7 @@ cp -a {log_root} {snaps}/$n
               "a stage's error stops it, after one more save", calls)
         faillog = open(os.path.join(logs, sorted(os.listdir(logs))[1], "log.txt")).read()
         check("failed (exit 1)" in faillog, "and the log says so", faillog)
-        rc, out, calls, logs, snaps = sandbox(rc_by_stage={2: "segv"})
+        rc, out, calls, logs, snaps = sandbox(rc_by_stage={2: 139})
         check(rc == 1 and calls == DEFAULT[:3] + ["save save"] and "exit 139" in out,
               "a reader killed by a signal counts as an error, saved", (calls, out))
         rc, out, calls, logs, snaps = sandbox(tee_fails=True)
