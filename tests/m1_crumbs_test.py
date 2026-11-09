@@ -1361,6 +1361,62 @@ def position_tests(g, src):
             check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
                   f"--clear after sio_on=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
 
+        # disp_off=1's run: the same with bit 3 set too, and sample 1's byte B is K3b's.
+        DISP = "  display (K3b): internal DCP stopped, external DCP stopped; disp0's domains read off, dispext0's read off; idle pair returned 0 on both\n"
+        run8 = dict(run7, prog=(0x14, 0xcf))
+        rc, out, err = dec(0xcd, run8)
+        check(rc == 0 and "stage 0x6004 = 0xcd (pmp_out=1: bit 7; disp_off=1: bit 3, so the stage is 0x45) (pmgr_late=1): position=1: the samples recorded, CPU0 had nothing pending" in out
+              and "position sample 1 (0x6012 = 0x14, 0x6013 = 0xcf):\n" in out and DISP in out
+              and "  gate words: 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 set\n" in out
+              and "SIO_CPU:" not in out and "position sample 2" not in out and RAISED in out and "0x6015 = 0x8d: K4 ran" in out,
+              "disp_off=1's 0xcd: K3b's byte, the gate's bits, no SIO class", out + err)
+        rc, out, err = dec(0xcd, dict(run8, prog=(0x14, 0x15)))
+        check(rc == 0 and "  display (K3b): internal DCP stopped, external DCP NOT stopped; disp0's domains read off, dispext0's did NOT read off; idle pair FAILED on at least one\n" in out
+              and "  gate words: 0x2922c0044 bit 2 clear, bit 3 clear; 0x2922c0040 bit 1 clear\n" in out,
+              "disp_off=1: each of K3b's bits decoded on its own", out + err)
+        rc, out, err = dec(0xcc, run8)
+        check(rc == 0 and "disp_off=1: bit 3, so the stage is 0x44" in out and "CPU0 had an interrupt or SError pending" in out and DISP in out,
+              "disp_off=1's 0xcc: the same, with something pending", out + err)
+        rc, out, err = dec(0xca, run8)
+        check(rc == 0 and "so the stage is 0x42" in out and DISP in out and ", and only stages 0x44 and 0x45 say whether a read failed" in out,
+              "disp_off=1's 0xca: sample 1 landed, no last check", out + err)
+        rc, out, err = dec(0xc9, run8)
+        check(rc == 0 and "so the stage is 0x41" in out and "position sample" not in out and "not decoded" in out,
+              "disp_off=1's 0xc9: its bytes not read as a sample", out + err)
+        rc, out, err = dec(0xc8, run8)
+        check(rc == 0 and "so the stage is 0x40" in out and "no sample recorded yet" in out and RAISED in out,
+              "disp_off=1's 0xc8: the watch's bytes, no sample", out + err)
+        fake(path, scratch(0x84, down=0, isrs=0, parked=0, left=0, secs=0, flags=0, drained=0), rtc_secs=121761, alarm=alarm)
+        r = run(path, cnt=cnt)
+        check(r.returncode == 0 and "K3b (disp_off=1): both DCPs and their domains were handled" in r.stdout and "so the stage is 0x4" in r.stdout,
+              "stage 0x84: K3b finished, nothing later", r.stdout + r.stderr)
+        fake(path, scratch(0x02, down=0, isrs=0, parked=0, left=0, secs=0, flags=0, drained=0), rtc_secs=121761, alarm=alarm)
+        r = run(path, cnt=cnt)
+        check(r.returncode == 0 and "in a disp_off=1 run, K3b comes first: a stall or fault in it leaves this stage too" in r.stdout,
+              "stage 0x02 says a stall in K3b leaves it, too", r.stdout + r.stderr)
+        for stage in (0xc8, 0xc9, 0xca, 0xcc, 0xcd):
+            before = fake(path, scratch(stage, **run8), rtc_secs=121761, alarm=alarm)
+            r = run(path, "--clear", cnt=cnt)
+            after = open(path, "rb").read()
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                  f"--clear after disp_off=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
+
+        # m1_pos_byte_d, the module's own code.
+        d_h = os.path.join(tmp, "d.c")
+        with open(d_h, "w") as f:
+            f.write('#include <stdio.h>\n#include "m1_position.h"\nint main(void)\n{\n'
+                    'for (unsigned k = 0; k < 256; k++) for (unsigned g = 0; g < 16; g++) printf("%x %x %02x\\n", k, g,'
+                    ' m1_pos_byte_d((u8)k, g << 2, (g >> 2) << 1));\nreturn 0;\n}\n')
+        exe = os.path.join(tmp, "d")
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", exe, d_h], check=True)
+        rows = [line.split() for line in subprocess.run([exe], capture_output=True, text=True, check=True).stdout.splitlines()]
+        bad = [r for r in rows if int(r[2], 16) != (int(r[0], 16) & 0x1f) | (int(r[1], 16) & 1) << 5 | (int(r[1], 16) >> 1 & 1) << 6 | (int(r[1], 16) >> 2 & 1) << 7]
+        check(len(rows) == 4096 and not bad, "m1_pos_byte_d: K3b's five bits and the gate's three, nothing else", str(bad[:4]))
+
     # e1_hook.c's side.
     def in_order(text, pieces):
         at = 0
@@ -1380,10 +1436,10 @@ def position_tests(g, src):
     pos = pos[:pos.index("\n}\n")]
     sample = src[src.index("static void m1_pos_sample(u8 *s)"):]
     sample = sample[:sample.index("\n}\n")]
-    order = ["m1_crumb(0x6014, &flags, 1);", "b[0] = 0x40;", "b[1] = off | (m1_sio_ref ? BIT(0) : 0);", "b[2] = qto;", "b[3] = held;",
-             "m1_crumb(0x6004, b, 4);", "if (m1_raw) {\n\t\tm1_pos_wait(m1_t_third + m1_tps);", "m1_stage(0x41);", "m1_pos_sample(s);", "m1_crumb(0x6012, s, 2);",
-             "m1_stage(0x42);", "if (m1_raw && !pmp_out) {\n\t\tm1_pos_wait(m1_t_third + 25 * m1_tps);", "m1_stage(0x43);", "m1_pos_sample(s);", "m1_crumb(0x6007, s, 1);",
-             "m1_crumb(0x6015, s + 1, 1);", "? 0x44 : 0x45);", "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));"]
+    order = ["m1_crumb(0x6014, &flags, 1);", "b[0] = M1_POS_ST(0x40);", "b[1] = off | (m1_sio_ref ? BIT(0) : 0);", "b[2] = qto;", "b[3] = held;",
+             "m1_crumb(0x6004, b, 4);", "if (m1_raw) {\n\t\tm1_pos_wait(m1_t_third + m1_tps);", "m1_stage(M1_POS_ST(0x41));", "m1_pos_sample(s);", "m1_crumb(0x6012, s, 2);",
+             "m1_stage(M1_POS_ST(0x42));", "if (m1_raw && !pmp_out) {\n\t\tm1_pos_wait(m1_t_third + 25 * m1_tps);", "m1_stage(0x43);", "m1_pos_sample(s);", "m1_crumb(0x6007, s, 1);",
+             "m1_crumb(0x6015, s + 1, 1);", "? 0x44 : 0x45));", "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));"]
     check(in_order(pos, order), "m1_position() sends the stages and samples in the order m1-crumbs reads them, each wait only with raw SPMI up", pos)
     release = src[src.index("static void m1_hold_release("):]
     release = release[:release.index("\n}\n")]
@@ -1394,7 +1450,8 @@ def position_tests(g, src):
                             "state = readl(m1_wdx + M1_WDX_STATE);", "sio = readl(m1_sio + M1_PS_SIO_CPU);", "ctrl = readl(m1_wdt + M1_WD_CTRL(2));",
                             "count = readl(m1_wdt + M1_WD_CUR(2));", "now = m1_now();", "gate44 = readl(m1_pos + M1_POS_GATE44);",
                             "gate40 = readl(m1_pos + M1_POS_GATE40);", "s[0] = m1_pos_byte_a(phase, hs, state);",
-                            "s[1] = m1_pos_byte_b(sio, ctrl, m1_pos_count_near(count, now - m1_t_first, m1_tps), gate44, gate40);"]),
+                            "s[1] = disp_off ? m1_pos_byte_d(m1_disp_bits, gate44, gate40) :",
+                            "m1_pos_byte_b(sio, ctrl, m1_pos_count_near(count, now - m1_t_first, m1_tps), gate44, gate40);"]),
           "m1_pos_sample() reads each word into its own name, and byte A goes to s[0], byte B to s[1]", sample)
     check(pos.count("writel(") == 1 and "writel_relaxed" not in pos and "write" not in re.sub(r"writel\(U32_MAX, m1_spmi|write_sysreg_s", "", pos)
           and "write" not in sample,
@@ -1430,7 +1487,39 @@ def position_tests(g, src):
     check("e1_post_slpa[M1_SIO_ENTRY].addr != M1_PS_SIO_PAGE + M1_PS_SIO_CPU" in src
           and all(f"e1_never_write(M1_PS_SIO_PAGE + M1_PS_{n})" in src for n in ("SIO", "UART_P", "SPI_P")),
           "the load refuses if entry 61 isn't SIO_CPU's word, or a raise would touch the never-write list")
+    # disp_off=1's own code.
+    stop = src[src.index("static u8 m1_disp_stop(void)"):]
+    stop = stop[:stop.index("\n}\n")]
+    check(in_order(stop, ["apple_rtkit_idle(m1_dcp_rtk[i])", "M1_ASC_CPU_STATUS", "st & M1_ASC_IDLE", "readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL)",
+                          "writel(ctrl & ~M1_ASC_CPU_RUN, m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);", "res |= BIT(i);", "msleep(2);",
+                          "m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK))", "m1_ps_off(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK))", "res |= BIT(2 + i);",
+                          "m1_kwrite(0x6004, &stage, 1);"]) and stop.count("apple_rtkit_idle(") == 1 and stop.count("writel(") == 1,
+          "m1_disp_stop(): the idle pair once, RUN cleared only after idle, its domains off only after RUN read 0", stop)
+    check("static const u8 stage = 0x84;" in stop, "K3b's stage is 0x84", stop)
+    check("if (!(st & M1_ASC_IDLE))\n\t\t\tcontinue;\n\t\tctrl = readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);" in stop,
+          "a DCP that doesn't read idle is left running: RUN is only cleared after the idle gate (what Corey OK'd)", stop)
+    check("if (!(ctrl & M1_ASC_CPU_RUN) || (readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN))\n\t\t\tcontinue;\n\t\tres |= BIT(i);" in stop,
+          "a DCP whose RUN didn't read 1 then 0 keeps its domains on", stop)
+    psoff = src[src.index("static bool m1_ps_off(void __iomem *p)"):]
+    psoff = psoff[:psoff.index("\n}\n")]
+    check("writel(v & ~(BIT(28) | BIT(12) | BIT(11) | BIT(10) | BIT(9) | BIT(8) | GENMASK(3, 0)), p);" in psoff and psoff.count("writel(") == 1
+          and "(readl(p) >> 4) & 0xf" in psoff and "m1_tps / 100" in psoff,
+          "m1_ps_off(): target 0 as the power-state driver asks for it, polled up to 10 ms for actual 0", psoff)
+    check('{ "internal", "/soc/mbox@38bc08000", 0x38bc00000ULL, { 0x28e580350ULL, 0x28e580328ULL } },' in src
+          and '{ "external", "/soc/mbox@289c08000", 0x289c00000ULL, { 0x28e080280ULL, 0x28e080258ULL } },' in src,
+          "the DCPs, their ASCs and their domains are the ones Corey OK'd, child first")
+    after = src[src.index("static void __noreturn m1_after_slpa(void)"):]
+    check(in_order(after, ["if (m1_kwrite(0x6004, &two, 1))", "if (disp_off)\n\t\tm1_disp_bits = m1_disp_stop();", "if (pmp_out)\n\t\tpmpb = m1_pmp_out();", "preempt_disable();"]),
+          "K3b comes after K3, before K4, with interrupts still on", after[:1400])
+    check("#define M1_POS_ST(s)\t((s) | (disp_off ? 8 : 0))" in src
+          and all(f"M1_POS_ST({x})" in pos for x in ("0x40", "0x41", "0x42")) and "M1_POS_ST(((read_sysreg(isr_el1) >> 6) & 7) ? 0x44 : 0x45)" in pos,
+          "disp_off=1's position stages are bit 3 up", pos)
+    check("s[1] = disp_off ? m1_pos_byte_d(m1_disp_bits, gate44, gate40) :" in sample, "disp_off=1 samples K3b's byte in place of byte B", sample)
+    check('disp_off && !sio_on' in src, "e1_check_params refuses disp_off=1 without sio_on=1")
+    check(all(f"m1_never(d->{w}" in src for w in ("asc + M1_ASC_CPU_CONTROL", "ps[0]", "ps[1]")),
+          "the load refuses if a DCP's word would touch the never-write list")
     never = (0x28e0802d8, 0x28e700000)
+    check(not {0x38bc00044, 0x289c00044, 0x28e580350, 0x28e580328, 0x28e080280, 0x28e080258} & set(never), "none of the display writes is on the never-write list")
     check(not {0x28e580180, 0x28e580230, 0x28e5801e8} & set(never), "none of the three raises is on the never-write list")
     check("0x6004 && end <= 0x6008" in src and "0x6010 && end <= 0x6017" in src, "the breadcrumb range is unchanged")
     others = set(g["STAGES"]) | set(g["OBSERVE_STAGES"]) | set(g["LATE"]) | set(range(0x21, 0x28)) | set(range(0x31, 0x3a)) | {0x5a, 0x5b, 0x5c, 0x5d, 0x5e}

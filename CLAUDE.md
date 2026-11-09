@@ -139,7 +139,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   combined rung: ps_sio, UART_P and SPI_P raised just before the table's SIO_CPU word
   (Corey's OK of 2026-11-09), the launcher withdrawing the PMP's display report
   requests, and one sample at about 1 s (stages 0xc0-0xc5; 0x6007's bit 0 says the
-  raises read on). `13` is the floor with the CPUs left up. `13`
+  raises read on). `disp_off=1` (`run-floor --m1-disp-off`, with `sio_on=1`) is its
+  display rung: before K4, both DCPs idled and stopped as the PMP is and their domains
+  off (Corey's OK of 2026-11-09; stages 0xc8-0xcd). `run-floor --quick` ahead of any
+  recipe makes the reading 1 minute. `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
   (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s

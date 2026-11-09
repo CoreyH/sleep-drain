@@ -82,6 +82,7 @@
  *   pkexec e1-hook/run-floor --m1-pmp-idle        (the same and pmp_stop=0: the idle pair alone)
  *   pkexec e1-hook/run-floor --m1-position        (--m1-hold's and position=1: PLAN.md, the position read)
  *   pkexec e1-hook/run-floor --m1-sio-pmp         (--m1-pmp's, position=1 and sio_on=1: PLAN.md, the combined rung)
+ *   pkexec e1-hook/run-floor --m1-disp-off        (--m1-sio-pmp's and disp_off=1: PLAN.md, the display rung)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -292,6 +293,10 @@ MODULE_PARM_DESC(position, "With hold=1, without hold_nowatch=1, and with pmp_ou
 static bool sio_on;
 module_param(sio_on, bool, 0444);
 MODULE_PARM_DESC(sio_on, "With position=1 and pmp_out=1: in step 5, just before entry 61, ps_sio, UART_P and SPI_P on with the words genpd's resume writes, each polled up to 10 ms for actual f. Corey's OK of 2026-11-09");
+/* E2's display rung: both DCPs stopped and their domains off before the entry (PLAN.md). */
+static bool disp_off;
+module_param(disp_off, bool, 0444);
+MODULE_PARM_DESC(disp_off, "With sio_on=1: right after slpa, before K4, both DCPs' firmware idled (RTKit's idle pair, once each) and, if its ASC then reads idle, its CPU stopped (RUN, read-modify-write), then disp0's and dispext0's domains to target 0, child first, each polled up to 10 ms. Corey's OK of 2026-11-09");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -1154,7 +1159,8 @@ static void e1_after_slpa(void)
  * (0x28e580180), UART_P := 0xf (0x28e580230) and SPI_P := 0xf (0x28e5801e8), Corey's
  * OK of 2026-11-09, in genpd's resume order and with its words
  * (safe-journal-20261106T201952.txt L6172-L6260), each polled up to 10 ms for
- * actual f: the state macOS leaves them in (B1 raises the three before SIO_CPU).
+ * actual f: B1 raises the three before SIO_CPU on macOS (SPI_P only as far as its
+ * clock-gated state; this writes genpd's word, target f, as Corey OK'd).
  * Linux's noirq has them all off by then, and B2 raises SIO_CPU itself and
  * waits for its actual f at op 50. A raise that never finishes doesn't stop
  * the run: 0x6007's bit 0, which no core uses (CPU0 never holds), says all
@@ -1164,6 +1170,26 @@ static void e1_after_slpa(void)
  * the third commit), not sample 2, and CPU0 goes down right after it, leaving
  * the engine about 29 s: its stages are 0x40, 0x41, 0x42, 0x44 and 0x45, with
  * bit 7 set from K4 on (0xc0-0xc5).
+ *
+ * disp_off=1 (run-floor --m1-disp-off, E2's display rung; PLAN.md, rung 6; only
+ * with sio_on=1): step K3b, right after slpa and before K4, with interrupts
+ * still on and this task able to sleep, as at K4. The two DCPs Linux keeps
+ * running through s2idle (dcp@38bc00000 and dcp@289c00000) get what K4 gives the
+ * PMP, display firmware first as T8140's driver has it: RTKit's idle pair once
+ * each, its acks awaited, CPU_STATUS polled up to 10 ms for macOS's idle mask
+ * and, only if that's seen, one read-modify-write of CPU_CONTROL clearing RUN,
+ * read back. Only for a DCP that stopped, its two domains then go to target 0,
+ * child first (disp0_cpu0 0x28e580350, disp0_fe 0x28e580328; dispext0_cpu0
+ * 0x28e080280, dispext0_fe 0x28e080258, on ps_pmp's page but not its word), each
+ * read-modify-written with the fields the power-state driver clears cleared,
+ * and polled up to 10 ms for actual 0. Corey's OK of 2026-11-09, as asked. No
+ * breadcrumb has room for its outcome until sample 1, whose byte B then holds
+ * bit 0 the internal DCP stopped, bit 1 the external one, bit 2 disp0's two
+ * domains read off, bit 3 dispext0's, bit 4 an idle pair failed, and the gate's
+ * three bits where they always are (no SIO class, RESET_EN or count). So its
+ * stages are the position stages with bit 3 set too, 0xc8, 0xc9, 0xca, 0xcc and
+ * 0xcd with K4's bit 7 (m1_position.h has the byte). Stage 0x84 is this step
+ * done, before K4's 0x83; a stall in it is dark at 0x02.
  *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
@@ -1366,7 +1392,7 @@ static call_single_data_t m1_csd[M1_NCPUS];
 
 static void __iomem *m1_cpu_start, *m1_ps, *m1_aic, *m1_aic_event, *m1_aon, *m1_wdt, *m1_spmi_page;
 #define m1_spmi			(m1_spmi_page + (M1_SPMI & ~PAGE_MASK))
-/* observe=1, and pmgr_late for m1_soc and m1_sio: read, never written. */
+/* observe=1, and pmgr_late for m1_soc and m1_sio: read, never written, but for sio_on=1's three raises. */
 static void __iomem *m1_soc, *m1_sio, *m1_wdx, *m1_cpm;
 /* position=1: the page B2 opens on, read only. */
 static void __iomem *m1_pos;
@@ -1385,6 +1411,21 @@ static struct platform_device *m1_pmp_mbox_pdev;
 static struct apple_rtkit *m1_pmp_rtk;
 static void __iomem *m1_pmp_asc;
 static u8 m1_pmp_tag;	/* bit 7 from K4 on: the stage byte says 0x6015 is the PMP's */
+/* disp_off=1: the two DCPs: their mailboxes (whose cookie is their RTKit), ASCs, and domains, child first. */
+static const struct m1_dcp {
+	const char *name;
+	const char *mbox_node;
+	u64 asc;
+	u64 ps[2];
+} m1_dcp_info[] = {
+	{ "internal", "/soc/mbox@38bc08000", 0x38bc00000ULL, { 0x28e580350ULL, 0x28e580328ULL } },	/* disp0_cpu0, disp0_fe */
+	{ "external", "/soc/mbox@289c08000", 0x289c00000ULL, { 0x28e080280ULL, 0x28e080258ULL } },	/* dispext0_cpu0, dispext0_fe */
+};
+static struct platform_device *m1_dcp_mbox_pdev[ARRAY_SIZE(m1_dcp_info)];
+static struct apple_rtkit *m1_dcp_rtk[ARRAY_SIZE(m1_dcp_info)];
+static void __iomem *m1_dcp_asc[ARRAY_SIZE(m1_dcp_info)];
+static void __iomem *m1_dcp_ps[ARRAY_SIZE(m1_dcp_info)][2];	/* their pages; the words are at each address's page offset */
+static u8 m1_disp_bits;		/* disp_off=1: K3b's five bits, for byte B */
 
 static __always_inline u64 m1_now(void)
 {
@@ -2034,7 +2075,8 @@ static void m1_pos_sample(u8 *s)
 	gate44 = readl(m1_pos + M1_POS_GATE44);
 	gate40 = readl(m1_pos + M1_POS_GATE40);
 	s[0] = m1_pos_byte_a(phase, hs, state);
-	s[1] = m1_pos_byte_b(sio, ctrl, m1_pos_count_near(count, now - m1_t_first, m1_tps), gate44, gate40);
+	s[1] = disp_off ? m1_pos_byte_d(m1_disp_bits, gate44, gate40) :
+		m1_pos_byte_b(sio, ctrl, m1_pos_count_near(count, now - m1_t_first, m1_tps), gate44, gate40);
 }
 
 /* position=1: spin, every exception masked, until CNTVCT reaches at. */
@@ -2043,6 +2085,9 @@ static void m1_pos_wait(u64 at)
 	while (m1_now() < at)
 		cpu_relax();
 }
+
+/* disp_off=1's stages are the position stages with bit 3: byte B is K3b's then (the m1 comment). */
+#define M1_POS_ST(s)	((s) | (disp_off ? 8 : 0))
 
 /*
  * position=1, CPU0, at the end of m1_hold_release(): the two samples (the m1
@@ -2056,17 +2101,17 @@ static void m1_position(u8 off, u8 qto, u8 held, u8 flags)
 	unsigned int i;
 
 	m1_crumb(0x6014, &flags, 1);
-	b[0] = 0x40;
+	b[0] = M1_POS_ST(0x40);
 	b[1] = off | (m1_sio_ref ? BIT(0) : 0);
 	b[2] = qto;
 	b[3] = held;
 	m1_crumb(0x6004, b, 4);
 	if (m1_raw) {
 		m1_pos_wait(m1_t_third + m1_tps);
-		m1_stage(0x41);
+		m1_stage(M1_POS_ST(0x41));
 		m1_pos_sample(s);
 		m1_crumb(0x6012, s, 2);
-		m1_stage(0x42);
+		m1_stage(M1_POS_ST(0x42));
 	}
 	/* With pmp_out=1, 0x6015 is K4's byte: sample 1 alone, and CPU0 goes down sooner. */
 	if (m1_raw && !pmp_out) {
@@ -2082,7 +2127,7 @@ static void m1_position(u8 off, u8 qto, u8 held, u8 flags)
 	m1_drain_aic();
 	dsb(sy);
 	isb();
-	m1_stage(((read_sysreg(isr_el1) >> 6) & 7) ? 0x44 : 0x45);
+	m1_stage(M1_POS_ST(((read_sysreg(isr_el1) >> 6) & 7) ? 0x44 : 0x45));
 	for (i = 0; i < M1_SPMI_WORDS; i++)
 		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
 	dsb(sy);
@@ -2146,6 +2191,75 @@ static void m1_hold_release(u8 held, u8 qto, u8 flags)
 		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
 	dsb(sy);
 	isb();
+}
+
+/* disp_off=1: one domain to target 0, as the power-state driver asks for it; up to 10 ms for actual 0. */
+static bool m1_ps_off(void __iomem *p)
+{
+	u32 v = readl(p);
+	u64 t0;
+
+	writel(v & ~(BIT(28) | BIT(12) | BIT(11) | BIT(10) | BIT(9) | BIT(8) | GENMASK(3, 0)), p);
+	dsb(sy);
+	t0 = m1_now();
+	while ((readl(p) >> 4) & 0xf) {
+		if (m1_now() - t0 > m1_tps / 100)
+			return false;
+		cpu_relax();
+	}
+	return true;
+}
+
+/*
+ * disp_off=1, step K3b, right after K3 and before K4 (the m1 comment says what,
+ * in what order, and what Corey OK'd). Interrupts are on and this task can sleep.
+ * A DCP that doesn't stop keeps its domains. Returns byte B's five bits.
+ */
+static u8 m1_disp_stop(void)
+{
+	static const u8 stage = 0x84;
+	unsigned int i;
+	u8 res = 0;
+
+	for (i = 0; i < ARRAY_SIZE(m1_dcp_info); i++) {
+		const struct m1_dcp *d = &m1_dcp_info[i];
+		u32 ctrl, st;
+		u64 t0;
+		int ret;
+
+		ret = apple_rtkit_is_running(m1_dcp_rtk[i]) ? apple_rtkit_idle(m1_dcp_rtk[i]) : -ENODEV;
+		if (ret) {
+			res |= BIT(4);
+			continue;
+		}
+		t0 = m1_now();
+		do {
+			st = readl(m1_dcp_asc[i] + M1_ASC_CPU_STATUS);
+		} while (!(st & M1_ASC_IDLE) && m1_now() - t0 < m1_tps / 100);
+		/* Preemptible here: a last read, as K4's. */
+		if (!(st & M1_ASC_IDLE))
+			st = readl(m1_dcp_asc[i] + M1_ASC_CPU_STATUS);
+		if (!(st & M1_ASC_IDLE))
+			continue;
+		ctrl = readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);
+		writel(ctrl & ~M1_ASC_CPU_RUN, m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);
+		dsb(sy);
+		if (!(ctrl & M1_ASC_CPU_RUN) || (readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN))
+			continue;
+		res |= BIT(i);
+		/*
+		 * Its mailbox is in the domain that goes off next, and RTKit's RX path is still live:
+		 * let the mailbox IRQ and RTKit's ordered queue finish whatever it posted before its
+		 * CPU stopped, which can post no more.
+		 */
+		msleep(2);
+		if (m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK)) &&
+		    m1_ps_off(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK)))
+			res |= BIT(2 + i);
+	}
+	/* Through the kernel's path, as K4's. */
+	m1_kwrite(0x6004, &stage, 1);
+	return res;
 }
 
 /*
@@ -2247,6 +2361,10 @@ static void __noreturn m1_after_slpa(void)
 	/* K3 */
 	if (m1_kwrite(0x6004, &two, 1))
 		flags |= BIT(3);
+
+	/* K3b (disp_off=1): both DCPs stopped and their domains off, the display firmware first */
+	if (disp_off)
+		m1_disp_bits = m1_disp_stop();
 
 	/* K4 (pmp_out=1): the PMP's idle pair and its CPU stopped */
 	if (pmp_out)
@@ -2568,7 +2686,7 @@ static int __init m1_observe_init(void)
  * position=1 at load: the page B2 opens on and the state word's, mapped, and
  * every word the samples read, logged as it is now, awake. Reads only, and
  * after recfg-peek --position has read each of them in this boot (run-floor
- * checks for that).
+ * checks for that, but for sio_on=1's run: run 6 read them after the commit).
  */
 static int __init m1_position_init(void)
 {
@@ -2596,6 +2714,63 @@ static int __init m1_position_init(void)
 			readl(m1_sio + M1_PS_UART_P), readl(m1_sio + M1_PS_SPI_P), readl(m1_sio + M1_PS_SIO_CPU));
 	}
 	return 0;
+}
+
+/*
+ * disp_off=1 at load: each DCP's RTKit running (through its mailbox's drvdata, as
+ * for the PMP), its ASC and domains mapped, and its control and status words and
+ * domains logged as the awake baseline. Refuses the module otherwise. The mailboxes'
+ * devices stay referenced until unload (m1_unmap()).
+ */
+static int __init m1_disp_init(void)
+{
+	unsigned int i, j;
+
+	for (i = 0; i < ARRAY_SIZE(m1_dcp_info); i++) {
+		const struct m1_dcp *d = &m1_dcp_info[i];
+		struct device_node *np = of_find_node_by_path(d->mbox_node);
+		u32 st, all_and = U32_MAX, all_or = 0, reads = 0;
+		struct apple_mbox *mbox;
+		u64 t0;
+
+		m1_dcp_mbox_pdev[i] = np ? of_find_device_by_node(np) : NULL;
+		of_node_put(np);
+		mbox = m1_dcp_mbox_pdev[i] ? platform_get_drvdata(m1_dcp_mbox_pdev[i]) : NULL;
+		m1_dcp_rtk[i] = mbox ? READ_ONCE(mbox->cookie) : NULL;
+		if (!m1_dcp_rtk[i] || !apple_rtkit_is_running(m1_dcp_rtk[i])) {
+			pr_err("m1: disp_off: the %s DCP's RTKit (through %s) isn't running; refusing\n", d->name, d->mbox_node);
+			return -ENODEV;
+		}
+		if (m1_never(d->asc + M1_ASC_CPU_CONTROL, 1) || m1_never(d->ps[0], 1) || m1_never(d->ps[1], 1)) {
+			pr_err("m1: disp_off: a word of the %s DCP's would touch the never-write list; refusing\n", d->name);
+			return -EPERM;
+		}
+		m1_dcp_asc[i] = ioremap_np(d->asc, PAGE_SIZE);
+		if (!m1_dcp_asc[i])
+			goto nomap;
+		for (j = 0; j < 2; j++) {
+			m1_dcp_ps[i][j] = ioremap_np(d->ps[j] & PAGE_MASK, PAGE_SIZE);
+			if (!m1_dcp_ps[i][j])
+				goto nomap;
+		}
+		t0 = m1_now();
+		do {
+			st = readl(m1_dcp_asc[i] + M1_ASC_CPU_STATUS);
+			all_and &= st;
+			all_or |= st;
+			reads++;
+		} while (m1_now() - t0 < m1_tps / 100);
+		pr_info("m1: disp_off: the %s DCP's RTKit is running; ASC CPU_CONTROL %08x CPU_STATUS %08x; over 10 ms awake (%u reads) AND %08x OR %08x; domains %08x %08x\n",
+			d->name, readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL), st, reads, all_and, all_or,
+			readl(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK)), readl(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK)));
+		if (all_and & M1_ASC_IDLE)
+			pr_warn("m1: disp_off: the %s DCP's CPU_STATUS read idle by macOS's mask on every read awake: the idle gate may not tell running from idle\n",
+				d->name);
+	}
+	return 0;
+nomap:
+	pr_err("m1: disp_off: a mapping failed; refusing\n");
+	return -ENOMEM;
 }
 
 /*
@@ -2794,6 +2969,12 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
+	if (disp_off) {
+		int ret = m1_disp_init();
+
+		if (ret)
+			return ret;
+	}
 	if (position) {
 		int ret = m1_position_init();
 
@@ -2805,6 +2986,8 @@ static int __init m1_init(void)
 
 static void m1_unmap(void)
 {
+	unsigned int i;
+
 	if (m1_cpu_start)
 		iounmap(m1_cpu_start);
 	if (m1_ps)
@@ -2833,6 +3016,16 @@ static void m1_unmap(void)
 		iounmap(m1_pmp_asc);
 	if (m1_pmp_mbox_pdev)
 		put_device(&m1_pmp_mbox_pdev->dev);
+	for (i = 0; i < ARRAY_SIZE(m1_dcp_info); i++) {
+		if (m1_dcp_asc[i])
+			iounmap(m1_dcp_asc[i]);
+		if (m1_dcp_ps[i][0])
+			iounmap(m1_dcp_ps[i][0]);
+		if (m1_dcp_ps[i][1])
+			iounmap(m1_dcp_ps[i][1]);
+		if (m1_dcp_mbox_pdev[i])
+			put_device(&m1_dcp_mbox_pdev[i]->dev);
+	}
 	if (m1_nvmem)
 		nvmem_device_put(m1_nvmem);
 	if (m1_spmi_owner)
@@ -3129,6 +3322,10 @@ static int __init e1_check_params(void)
 		pr_err("sio_on=1 needs position=1 and pmp_out=1 (0x6007's bit 0 says how it went, and only stages 0xc0-0xc5 read it)\n");
 		return -EINVAL;
 	}
+	if (disp_off && !sio_on) {
+		pr_err("disp_off=1 needs sio_on=1 (its outcome is in sample 1's byte B, in that run's layout)\n");
+		return -EINVAL;
+	}
 	if ((replay & (2 | 8)) && !oneway) {
 		pr_err("replay=%u can't be undone: it writes the post-slpa table%s. Load it with oneway=1 as well\n",
 		       replay, (replay & 2) ? " and powers every CPU down for good" : "");
@@ -3289,11 +3486,12 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
-		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "");
+		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "",
+		disp_off ? " disp_off=1" : "");
 	return 0;
 
 unmap:
