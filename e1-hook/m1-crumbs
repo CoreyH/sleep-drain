@@ -1,9 +1,9 @@
 #!/usr/bin/python3 -I
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
---m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end or --m1-sio-stop; e1_hook m1=1,
+--m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop or --m1-power-words; e1_hook m1=1,
 observe=1, pmgr_late=1, alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1, one_commit=1, smc_idle=1,
-sio_stop=1) leaves in the PMU, read and decoded, and cleared
+sio_stop=1, ps_words=1) leaves in the PMU, read and decoded, and cleared
 again.
 
   e1-hook/m1-crumbs               read them (no root needed)
@@ -220,6 +220,8 @@ PHASES = {0: "pair 0's", 2: "pair 1's", 3: "pair 1's last", 4: "the entry pair's
           0xb: "pair 1's", 0xc: "pair 1's", 0xd: "pair 1's"}
 STATE_WORDS = ("0xa03 (a sequence's start)", "1 (a sequence's end)", "0xa02 (A1's close)", "some other value")
 K_MARK = 0xa5  # e1_hook's M1_K_MARK: 0x6013, when 0x6012 has sio_stop=1's outcomes
+W_MARK = 0xc0  # e1_hook's M1_W_MARK: 0x6013's top two bits in a ps_words=1 run, one bit per group below them
+W_GROUPS = ("the five UARTs", "MSG", "ATC1-3_USB_AON", "ATC0-3_PCIE", "ATC1-3_COMMON")  # bits 0-4; e1_hook's M1_PW_*
 DCP_CODES = ("its RTKit shutdown TIMED OUT", "its RTKit shutdown FAILED another way", "shut down, but RUN didn't read 1 then 0", "stopped")
 SIO_CODES = ("its RTKit idle pair TIMED OUT", "its RTKit idle pair FAILED another way", "idle returned 0, but RUN didn't read 1 then 0", "stopped")
 SIO_CLASSES = ("all ones: a failed read", "target 0, bit 11 set (B2 at op 91, inferred)",
@@ -247,13 +249,21 @@ def sample_lines(n, addr_a, a, addr_b, b, disp=False):
 def k_lines(b):
     """sio_stop=1: 0x6012, the steps before the commit, if 0x6013 says it landed (e1_hook.c's m1 comment has the layout)."""
     k = b[0x12]
-    if b[0x13] != K_MARK:
-        return [f"0x6012 0x6013 = {k:02x} {b[0x13]:02x}: the steps' outcomes didn't land (0x6013 isn't their marker, 0x{K_MARK:02x}):"
-                " nothing here says how the DCPs, the SMC's notice or SIO went"]
-    return [f"0x6012 = 0x{k:02x}, the steps before the commit:",
+    m = b[0x13]
+    words = m & W_MARK == W_MARK
+    if m != K_MARK and not words:
+        return [f"0x6012 0x6013 = {k:02x} {m:02x}: the steps' outcomes didn't land (0x6013 is neither their marker, 0x{K_MARK:02x}, nor"
+                f" ps_words=1's, 0x{W_MARK:02x} and up): nothing here says how the DCPs, the SMC's notice, SIO or any power word went"]
+    out = [f"0x6012 = 0x{k:02x}, the steps before the commit:",
             f"  internal DCP: {DCP_CODES[k & 3]}; external DCP: {DCP_CODES[k >> 2 & 3]}; the domains of the DCPs that stopped:"
             f" {'all read off' if k & 0x10 else 'NOT all read off, or none stopped'}",
             f"  SMC's AP idle notice: {'acked within 200 ms' if k & 0x20 else 'NOT acked'}; SIO's firmware: {SIO_CODES[k >> 6]}"]
+    if words:
+        out.append(f"0x6013 = 0x{m:02x}: ps_words=1 wrote the 20 power words, after the table:")
+        out += [f"  {g}: " + ("read actual 0 within 10 ms each" if m >> i & 1 else "NOT all read actual 0 within 10 ms each") for i, g in enumerate(W_GROUPS)]
+        out.append("  PCIE0_REF, APCIE_GP_SYS, AFNC1_LW2, AFNC2_LW1: target and auto fields "
+                   + ("read back as written" if m & 0x20 else "NOT all read back as written"))
+    return out
 
 
 def position_lines(s, b, pmp=False, disp=False):

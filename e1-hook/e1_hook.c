@@ -85,6 +85,7 @@
  *   pkexec e1-hook/run-floor --m1-disp-off        (--m1-sio-pmp's and disp_off=1: PLAN.md, the display rung)
  *   pkexec e1-hook/run-floor --m1-macos-end       (--m1-disp-off's, one_commit=1 and smc_idle=1: PLAN.md)
  *   pkexec e1-hook/run-floor --m1-sio-stop        (--m1-macos-end's, hold_nowatch=1 for position=1, and sio_stop=1: PLAN.md)
+ *   pkexec e1-hook/run-floor --m1-power-words     (--m1-sio-stop's and ps_words=1: PLAN.md)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -310,6 +311,10 @@ MODULE_PARM_DESC(smc_idle, "With disp_off=1: after K4, SetAPPower 0x201 alone to
 static bool sio_stop;
 module_param(sio_stop, bool, 0444);
 MODULE_PARM_DESC(sio_stop, "With hold_nowatch=1, disp_off=1, one_commit=1 and smc_idle=1: at the first suspend's prepare, SIO's RTKit idle pair, once, and if that returned 0, its CPU stopped (RUN, read-modify-write). Corey's OK of 2026-11-09");
+/* The rest of macOS's power words at sleep entry, after the table (PLAN.md). */
+static bool ps_words;
+module_param(ps_words, bool, 0444);
+MODULE_PARM_DESC(ps_words, "With sio_stop=1: at the end of step 5, the 20 PMGR power words in m1_pw[] written with macOS's values at sleep entry");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -1248,6 +1253,19 @@ static void e1_after_slpa(void)
  * landed, so that a lost one isn't read as timeouts (the second's top byte can't be
  * 0xa5: that's 87 years). Stage 0x4f replaces 0x5b. Both have bit 7 from K4 on.
  *
+ * ps_words=1 (run-floor --m1-power-words; with sio_stop=1) is the power-word rung:
+ * the 20 PMGR power words that differ from macOS's state at sleep entry and that the
+ * recipe didn't have (maralcbr's lab_ps_off at 37be2668, less the display's and
+ * DISPEXT1's, the ones that already match, the PMP's and PMS_SRAM), with macOS's values,
+ * Corey's OK of 2026-11-09. They go out at the end of step 5, after the table (its
+ * apcie[2] words reach the PCIe side) and before the stop bits, children first and the
+ * fabric last, as maralcbr's lab_force_fabric_off has it. A hang in them is dark at
+ * stage 0x28 (0xa8 with K4's bit). Sixteen go to target 0, up to 10 ms each for actual 0;
+ * the four fabric and PCIe words keep target f with macOS's auto floor, so their target
+ * and auto fields are read back instead. 0x6013 then has 0xc0 | one bit per group
+ * (M1_PW_*), set if the whole group did, in place of M1_K_MARK (the second's top byte
+ * can't reach 0xc0 either: that's 102 years).
+ *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
  * clusters to the
@@ -1496,6 +1514,44 @@ static bool m1_smc_acked;
 #define M1_SIO_MBOX_NODE	"/soc/mbox@39bc08000"
 #define M1_SIO_ASC		0x39bc00000ULL
 #define M1_K_MARK		0xa5	/* 0x6013, with the steps' outcomes at 0x6012 (the m1 comment) */
+#define M1_W_MARK		0xc0	/* ps_words=1: 0x6013's top two bits, in place of M1_K_MARK */
+
+/* ps_words=1: the groups, one bit each in 0x6013 (the m1 comment). */
+#define M1_PW_UART	0
+#define M1_PW_MSG	1
+#define M1_PW_USB_AON	2
+#define M1_PW_PCIE	3
+#define M1_PW_COMMON	4
+#define M1_PW_FABRIC	5	/* target f with macOS's auto floor: read back, not waited for */
+/* macOS's values at sleep entry on a J314s, maralcbr's lab_ps_off at 37be2668; children first, the fabric last. */
+static const struct m1_pw {
+	u64 addr;
+	u32 val;
+	u8 grp;
+} m1_pw[] = {
+	{ 0x28e580250ULL, 0x00000200, M1_PW_UART },	/* UART2 */
+	{ 0x28e580258ULL, 0x00000200, M1_PW_UART },	/* UART3 */
+	{ 0x28e580260ULL, 0x00000200, M1_PW_UART },	/* UART4 */
+	{ 0x28e580268ULL, 0x00000200, M1_PW_UART },	/* UART6 */
+	{ 0x28e580270ULL, 0x00000200, M1_PW_UART },	/* UART7 */
+	{ 0x292280078ULL, 0x00000200, M1_PW_MSG },	/* MSG */
+	{ 0x292280090ULL, 0x00000300, M1_PW_USB_AON },	/* ATC1_USB_AON */
+	{ 0x292280098ULL, 0x00000300, M1_PW_USB_AON },	/* ATC2_USB_AON */
+	{ 0x2922800a0ULL, 0x00000300, M1_PW_USB_AON },	/* ATC3_USB_AON */
+	{ 0x28e080330ULL, 0x00000300, M1_PW_PCIE },	/* ATC0_PCIE */
+	{ 0x28e080340ULL, 0x00000300, M1_PW_PCIE },	/* ATC1_PCIE */
+	{ 0x28e080350ULL, 0x00000300, M1_PW_PCIE },	/* ATC2_PCIE */
+	{ 0x28e080360ULL, 0x00000300, M1_PW_PCIE },	/* ATC3_PCIE */
+	{ 0x28e080240ULL, 0x00000300, M1_PW_COMMON },	/* ATC1_COMMON */
+	{ 0x28e0802f8ULL, 0x00000300, M1_PW_COMMON },	/* ATC2_COMMON */
+	{ 0x28e080300ULL, 0x00000300, M1_PW_COMMON },	/* ATC3_COMMON */
+	{ 0x28e080138ULL, 0x1400024f, M1_PW_FABRIC },	/* PCIE0_REF */
+	{ 0x28e080320ULL, 0x1000030f, M1_PW_FABRIC },	/* APCIE_GP_SYS */
+	{ 0x28e080220ULL, 0x1000030f, M1_PW_FABRIC },	/* AFNC1_LW2 */
+	{ 0x28e580160ULL, 0x1000030f, M1_PW_FABRIC },	/* AFNC2_LW1 */
+};
+static void __iomem *m1_pw_map[ARRAY_SIZE(m1_pw)];
+static u8 m1_pw_bits;
 static struct platform_device *m1_sio_mbox_pdev;
 static struct apple_rtkit *m1_sio_rtk;
 static void __iomem *m1_sio_asc;
@@ -2478,6 +2534,37 @@ static bool m1_smc_idle(void)
 	return acked;
 }
 
+/*
+ * ps_words=1, at the end of step 5 (the m1 comment says why there, and what Corey
+ * OK'd). Interrupts are off. Goes on past a word that doesn't finish. Returns one bit
+ * per group, set if the whole group read as asked.
+ */
+static u8 m1_pw_write(void)
+{
+	u8 res = GENMASK(M1_PW_FABRIC, 0);
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(m1_pw); i++) {
+		void __iomem *p = m1_pw_map[i];
+		bool ok;
+
+		writel(m1_pw[i].val, p);
+		dsb(sy);
+		if (m1_pw[i].grp == M1_PW_FABRIC) {
+			/* Bit 28 and the auto field 27:24, and the target 3:0; the others are status. */
+			ok = !((readl(p) ^ m1_pw[i].val) & (GENMASK(28, 24) | GENMASK(3, 0)));
+		} else {
+			u64 t0 = m1_now();
+
+			while (!(ok = !((readl(p) >> 4) & 0xf)) && m1_now() - t0 <= m1_tps / 100)
+				cpu_relax();
+		}
+		if (!ok)
+			res &= ~BIT(m1_pw[i].grp);
+	}
+	return res;
+}
+
 /* Steps K3, K4 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
 {
@@ -2568,6 +2655,10 @@ static void __noreturn m1_after_slpa(void)
 		m1_stage(0x20);
 	}
 
+	/* ps_words=1: macOS's remaining power words (the m1 comment); a hang here leaves stage 0x28 */
+	if (ps_words)
+		m1_pw_bits = m1_pw_write();
+
 	/* 6: release (hold=1: each core's stop request; they stay up through the commit) */
 	for (i = 0; i < ARRAY_SIZE(m1_order); i++) {
 		struct m1_core *c;
@@ -2634,7 +2725,7 @@ static void __noreturn m1_after_slpa(void)
 		if (sio_stop) {
 			/* After the stage that says they're there; a failed command above stops this one (the m1 comment). */
 			b[0] = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;
-			b[1] = M1_K_MARK;
+			b[1] = ps_words ? M1_W_MARK | m1_pw_bits : M1_K_MARK;
 			m1_crumb(0x6012, b, 2);
 		}
 	} else {
@@ -2905,6 +2996,27 @@ nomap:
 	return -ENOMEM;
 }
 
+/* ps_words=1 at load: each word off the never-write list and mapped, and its awake value logged as the baseline. */
+static int __init m1_pw_init(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(m1_pw); i++) {
+		if (e1_never_write(m1_pw[i].addr)) {
+			pr_err("m1: ps_words: %#llx is on the never-write list; refusing\n", m1_pw[i].addr);
+			return -EINVAL;
+		}
+		m1_pw_map[i] = ioremap_np(m1_pw[i].addr & PAGE_MASK, PAGE_SIZE);
+		if (!m1_pw_map[i]) {
+			pr_err("m1: ps_words: a mapping failed; refusing\n");
+			return -ENOMEM;
+		}
+		m1_pw_map[i] += m1_pw[i].addr & ~PAGE_MASK;
+		pr_info("m1: ps_words: %#llx awake %08x, will write %08x\n", m1_pw[i].addr, readl(m1_pw_map[i]), m1_pw[i].val);
+	}
+	return 0;
+}
+
 /* sio_stop=1 at load: SIO's RTKit, through its mailbox's drvdata, running, and its ASC mapped. Refuses the module otherwise. */
 static int __init m1_sio_stop_init(void)
 {
@@ -3146,6 +3258,12 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
+	if (ps_words) {
+		int ret = m1_pw_init();
+
+		if (ret)
+			return ret;
+	}
 	if (sio_stop) {
 		int ret = m1_sio_stop_init();
 
@@ -3207,6 +3325,9 @@ static void m1_unmap(void)
 		put_device(&m1_pmp_mbox_pdev->dev);
 	if (m1_smc_mbox_pdev)
 		put_device(&m1_smc_mbox_pdev->dev);
+	for (i = 0; i < ARRAY_SIZE(m1_pw_map); i++)
+		if (m1_pw_map[i])
+			iounmap((void __iomem *)((unsigned long)m1_pw_map[i] & PAGE_MASK));
 	if (m1_sio_asc)
 		iounmap(m1_sio_asc);
 	if (m1_sio_mbox_pdev)
@@ -3521,6 +3642,10 @@ static int __init e1_check_params(void)
 		pr_err("sio_stop=1 needs hold_nowatch=1 disp_off=1 one_commit=1 smc_idle=1 and no position=1 (its outcomes go in 0x6012 in that layout)\n");
 		return -EINVAL;
 	}
+	if (ps_words && !sio_stop) {
+		pr_err("ps_words=1 needs sio_stop=1 (0x6013 has its outcome in that layout)\n");
+		return -EINVAL;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -3689,13 +3814,13 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
 		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "",
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
-		sio_stop ? " sio_stop=1" : "");
+		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "");
 	return 0;
 
 unmap:

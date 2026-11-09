@@ -1440,12 +1440,31 @@ def position_tests(g, src):
         check(rc == 0 and "0x6012 = 0x00, the steps before the commit:\n" in out and out.count("TIMED OUT") == 3 and "SMC's AP idle notice: NOT acked" in out
               and "didn't land" not in out and "from its low two bytes and the run's alarm: 121544" in out,
               "sio_stop=1: a recorded all-zero outcome is still an outcome", out + err)
-        for stage, prog in ((0xcf, (0, 0)), (0xce, (0x01, 0x00)), (0xcf, (0xff, 0xa4))):
+        for stage, prog in ((0xcf, (0, 0)), (0xce, (0x01, 0x00)), (0xcf, (0xff, 0xa4)), (0xcf, (0xff, 0xbf)), (0xcf, (0xff, 0x80))):
             rc, out, err = dec(stage, dict(run10, prog=prog))
-            check(rc == 0 and f"0x6012 0x6013 = {prog[0]:02x} {prog[1]:02x}: the steps' outcomes didn't land (0x6013 isn't their marker, 0xa5):" in out
+            check(rc == 0 and f"0x6012 0x6013 = {prog[0]:02x} {prog[1]:02x}: the steps' outcomes didn't land (0x6013 is neither their marker, 0xa5, nor ps_words=1's, 0xc0 and up):" in out
                   and "TIMED OUT" not in out and "NOT acked" not in out and "the steps before the commit:" not in out
                   and "from its low two bytes and the run's alarm: 121544" in out,
                   f"sio_stop=1's 0x{stage:02x}, no marker at 0x6013 ({prog[0]:02x} {prog[1]:02x}): no outcomes reported as facts", out + err)
+        # ps_words=1: 0x6013 is 0xc0 | one bit per group, and the steps' outcomes are as they were.
+        WLINE = "0x6013 = 0x{:02x}: ps_words=1 wrote the 20 power words, after the table:\n"
+        rc, out, err = dec(0xcf, dict(run10, prog=(0xff, 0xff)))
+        check(rc == 0 and WLINE.format(0xff) in out and LINE in out and "0x6012 = 0xff, the steps before the commit:\n" in out and "NOT all" not in out
+              and all(f"  {g}: read actual 0 within 10 ms each\n" in out for g in ("the five UARTs", "MSG", "ATC1-3_USB_AON", "ATC0-3_PCIE", "ATC1-3_COMMON"))
+              and "  PCIE0_REF, APCIE_GP_SYS, AFNC1_LW2, AFNC2_LW1: target and auto fields read back as written\n" in out
+              and "from its low two bytes and the run's alarm: 121544" in out,
+              "ps_words=1, every group as asked", out + err)
+        rc, out, err = dec(0xcf, dict(run10, prog=(0xff, 0xc0)))
+        check(rc == 0 and WLINE.format(0xc0) in out and out.count("NOT all read actual 0") == 5 and "NOT all read back as written" in out and "didn't land" not in out,
+              "ps_words=1, no group as asked: an outcome, not a lost record", out + err)
+        for bit, what in ((0, "the five UARTs: read"), (1, "MSG: read"), (2, "ATC1-3_USB_AON: read"), (3, "ATC0-3_PCIE: read"), (4, "ATC1-3_COMMON: read")):
+            rc, out, err = dec(0xcf, dict(run10, prog=(0xff, 0xc0 | 1 << bit)))
+            check(rc == 0 and f"  {what} actual 0 within 10 ms each\n" in out and out.count("NOT all read actual 0") == 4 and "NOT all read back as written" in out,
+                  f"ps_words=1: bit {bit} is {what.split(':')[0]}'s alone", out + err)
+        rc, out, err = dec(0xcf, dict(run10, prog=(0xff, 0xe0)))
+        check(rc == 0 and "fields read back as written\n" in out and out.count("NOT all read actual 0") == 5, "ps_words=1: bit 5 is the fabric words'", out + err)
+        rc, out, err = dec(0xcf, run10)
+        check(rc == 0 and "ps_words=1" not in out, "sio_stop=1 alone says nothing of the power words", out + err)
         rc, out, err = dec(0xb9, dict(run10, prog=None))
         check(rc == 0 and "RTC second at the replay's start (K1): 121544," in out and "the steps before the commit:" not in out and "didn't land" not in out,
               "the stage before sio_stop=1's 0x4e: 0x6012 is still the second's, read whole", out + err)
@@ -1599,9 +1618,29 @@ def position_tests(g, src):
           "SIO's firmware is stopped at the first prepare of the suspend that will replay, after the DCPs", "")
     check(in_order(src, ["b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;",
                          "m1_crumb(0x6004, b, 4);\n\t\tif (sio_stop) {",
-                         "b[0] = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;\n\t\t\tb[1] = M1_K_MARK;\n\t\t\tm1_crumb(0x6012, b, 2);"])
+                         "b[0] = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;\n\t\t\tb[1] = ps_words ? M1_W_MARK | m1_pw_bits : M1_K_MARK;\n\t\t\tm1_crumb(0x6012, b, 2);"])
           and "m1_stage(sio_stop ? 0x4f : 0x5b);" in src and "#define M1_K_MARK\t\t0xa5" in src and "K_MARK = 0xa5" in open(TOOL).read(),
           "sio_stop=1 records the steps' outcomes after stage 0x4e, in one command with their marker, and the decoder's marker is the module's")
+    # ps_words=1: exactly what Corey OK'd on 2026-11-09, in this order.
+    pw = re.findall(r"\{ 0x([0-9a-f]+)ULL, 0x([0-9a-f]{8}), (M1_PW_\w+) \},", src[src.index("} m1_pw[] = {"):src.index("static void __iomem *m1_pw_map")])
+    want = [(0x28e580250, 0x200, "UART"), (0x28e580258, 0x200, "UART"), (0x28e580260, 0x200, "UART"), (0x28e580268, 0x200, "UART"), (0x28e580270, 0x200, "UART"),
+            (0x292280078, 0x200, "MSG"),
+            (0x292280090, 0x300, "USB_AON"), (0x292280098, 0x300, "USB_AON"), (0x2922800a0, 0x300, "USB_AON"),
+            (0x28e080330, 0x300, "PCIE"), (0x28e080340, 0x300, "PCIE"), (0x28e080350, 0x300, "PCIE"), (0x28e080360, 0x300, "PCIE"),
+            (0x28e080240, 0x300, "COMMON"), (0x28e0802f8, 0x300, "COMMON"), (0x28e080300, 0x300, "COMMON"),
+            (0x28e080138, 0x1400024f, "FABRIC"), (0x28e080320, 0x1000030f, "FABRIC"), (0x28e080220, 0x1000030f, "FABRIC"), (0x28e580160, 0x1000030f, "FABRIC")]
+    got = [(int(a, 16), int(v, 16), g[len("M1_PW_"):]) for a, v, g in pw]
+    check(got == want, "m1_pw[] is the 20 words Corey OK'd, with their values, children first and the fabric last", repr(got))
+    check(not {a & ~7 for a, _, _ in got} & {0x28e0802d8, 0x28e700000} and 0x28e0802e0 not in {a for a, _, _ in got} and len({a for a, _, _ in got}) == 20,
+          "m1_pw[] has neither the PMP's word, nor 0x28e700000, nor PMS_SRAM, and no word twice", repr(got))
+    check("if (e1_never_write(m1_pw[i].addr)) {" in src, "the never-write check covers m1_pw[] at load", "")
+    check(in_order(src, ["b[0] = 0x28;", "m1_crumb(0x6004, b, 3);", "if (ps_words)\n\t\tm1_pw_bits = m1_pw_write();", "/* 6: release (hold=1"]),
+          "the power words go out after the table's last write and stage 0x28, before the stop bits", "")
+    check("if (ps_words && !sio_stop) {" in src, "ps_words=1 refuses to load without sio_stop=1", "")
+    check("ok = !((readl(p) ^ m1_pw[i].val) & (GENMASK(28, 24) | GENMASK(3, 0)));" in src and "while (!(ok = !((readl(p) >> 4) & 0xf)) && m1_now() - t0 <= m1_tps / 100)" in src
+          and "writel(m1_pw[i].val, p);\n\t\tdsb(sy);" in src and "u8 res = GENMASK(M1_PW_FABRIC, 0);" in src,
+          "each word: the value as listed, then its check, 10 ms at most", "")
+    check("#define M1_W_MARK\t\t0xc0" in src and "W_MARK = 0xc0" in open(TOOL).read(), "the decoder's power-word mark is the module's", "")
     check('#define M1_SIO_ASC\t\t0x39bc00000ULL' in src and '#define M1_SIO_MBOX_NODE\t"/soc/mbox@39bc08000"' in src
           and "m1_never(M1_SIO_ASC + M1_ASC_CPU_CONTROL, 1)" in src, "SIO's ASC and mailbox are this Mac's, and the load checks the never-write list")
     check(0x39bc00044 not in (0x28e0802d8, 0x28e700000), "SIO's RUN word isn't on the never-write list")
