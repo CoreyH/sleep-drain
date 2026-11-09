@@ -416,19 +416,23 @@ steps, and restarting the DCP and the PMP afterwards.
       and independent: one commit write instead of three (macOS's T6000 table has one).
 
       **Next (built, not run): the display rung, `pkexec e1-hook/run-floor --quick
-      --m1-disp-off`** (`e1_hook disp_off=1`, on `--m1-sio-pmp`'s recipe). Corey's OK of
-      2026-11-09, as asked:
-      - Step K3b, right after `slpa` and before K4, interrupts on: both DCPs Linux keeps
-        running through s2idle, the internal one (dcp@38bc00000) and the external one
-        (dcp@289c00000), the display firmware first as T8140 has it: RTKit's idle pair once
-        each, then, only if CPU_STATUS then reads idle, one read-modify-write clearing RUN
-        (0x38bc00044, 0x289c00044), read back.
-      - Only for a DCP that stopped: its two domains to target 0, child first, as the
+      --m1-disp-off`** (`e1_hook disp_off=1`, on `--m1-sio-pmp`'s recipe). Run 8 (RESEARCH.md)
+      tried it with K4's idle pair, and neither DCP stopped. Corey's OKs of 2026-11-09, the second
+      after run 8:
+      - At the first suspend's `prepare`, before noirq and `slpa` (where macOS stops them and
+        DeepIdle's patch did): both DCPs Linux keeps running through s2idle, the internal one
+        (dcp@38bc00000) and the external one (dcp@289c00000): `apple_rtkit_shutdown`
+        (SetAPPower 0x10, then SetIOPPower 0x01), as Linux's NVMe suspend and DeepIdle's
+        `test_sleep_off` do, then, if that returned 0, one read-modify-write clearing RUN
+        (0x38bc00044, 0x289c00044), read back, with no idle gate.
+      - Step K3b, right after `slpa` and before K4. Only for a DCP that stopped: its two
+        domains to target 0, child first (T600x's tree has no third, system, domain), as the
         power-state driver asks for it, each polled up to 10 ms (disp0_cpu0 0x28e580350,
         disp0_fe 0x28e580328, dispext0_cpu0 0x28e080280, dispext0_fe 0x28e080258; the last
         two on ps_pmp's page, never its word).
-      - Bytes: sample 1's byte B holds K3b's outcome in its low five bits (internal stopped,
-        external stopped, disp0's domains off, dispext0's off, an idle pair failed) under the
+      - Bytes: sample 1's byte B holds K3b's outcome in its low five bits (each DCP's two-bit
+        outcome: its shutdown timed out, failed another way, returned 0 but RUN didn't read 1
+        then 0, or stopped; and whether every domain turned off read off) under the
         gate's three, no SIO class, RESET_EN or count, so the position stages are 0xc8,
         0xc9, 0xca, 0xcc and 0xcd (bit 3 up). `m1-crumbs` decodes them, and `--clear` disarms
         the alarm at each. Stage 0x84 is K3b done, before K4's 0x83.
@@ -440,13 +444,18 @@ steps, and restarting the DCP and the PMP afterwards.
           the power key.
         - `qto` (0x6006) bit 4: clear for the first time on any chip means DISPLAY's
           power-down settled with the chain off.
-        - The display bits: anything other than 0x0f means a DCP or a domain didn't
-          stop; that DCP's load-log line has the baseline.
+        - The display bits: anything other than 0x1f means a DCP or a domain didn't
+          stop, and `m1-crumbs` says which and how; that DCP's load-log line has the baseline.
         - The gate bits against run 7's: `PHASE` past 4, `HS_A` bit 24 up, or 0x2922c0040 bit
           1 clear means the gate opened with CPU0 up, so the display was what held it.
         - The ending: a reset 30-32 s after the commit is the same ending, and then the
           known differences from macOS are used up: back to the desk rather than another
-          rung. A reset well away from 30 s, or dark past 2 minutes, is new.
+          rung. A reset well away from 30 s, or dark past 2 minutes, is new. An early
+          wake or restart could be a memory-controller error display power-off raises
+          (RESEARCH.md, "Related work"), not engine progress.
+        - If a DCP's byte says its shutdown timed out or failed: the firmware wants a
+          preamble first. Next, with Corey's OK: setDCPPower(0) (`dcp_sleep()`, Hector
+          Martin's order) or A500 with its callbacks answered (DJ's and niteria's).
       **Earlier, the order after the position read (2026-11-09; judgment):** the read stopped at the row no rung addresses, with CPU0
       up, and neither a sample from a core still up nor the next boot can show where
       the engine stops with every core down. About 2 in 3 that CPU0 being up is what
@@ -851,7 +860,7 @@ steps, and restarting the DCP and the PMP afterwards.
          in `observe=1` was this replay's choice); then each arms ACC_OVRD and
          takes its deep WFI. Same addresses, no new PMU byte, toward macOS, so
          it needs only Corey's go. Naeem's newest commits do this on T8103,
-         with no result yet. Against it: Naeem's earlier T8103 Linux entries
+         with no result then (his run 11, 2026-11-08, the same no-wake: RESEARCH.md, "Related work"). Against it: Naeem's earlier T8103 Linux entries
          complete without it, and T6020's R11-R15 released their secondaries
          after the commit, R16-R17 before it, and all reset. Low prior (about
          1 in 15, judgment). The readout: CPU0 reads the others down after

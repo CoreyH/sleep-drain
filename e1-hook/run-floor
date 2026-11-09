@@ -59,10 +59,11 @@
 # display report requests (sleep-drain-pmp release 0xc 0xd), and takes one position
 # sample at about 1 s, CPU0 then going down at once. A hang in those raises is dark at
 # stage 0x90 (0x10 with bit 7). No awake pass needed; its label is floor-m1-sio-pmp.
-# --m1-disp-off (E2's display rung, PLAN.md) adds disp_off=1 to that: right after slpa, both
-# DCPs' firmware idled and stopped, the way --m1-pmp treats the PMP, and their domains off
+# --m1-disp-off (E2's display rung, PLAN.md) adds disp_off=1 to that: before noirq, both DCPs'
+# firmware shut down through RTKit and their CPUs stopped, then after slpa their domains off
 # (new RTKit messages, ASC writes and PMGR writes, Corey's OK of 2026-11-09). A hang there is
-# dark at stage 0x02 or 0x84. Its label is floor-m1-disp-off.
+# dark at stage 0x02 or 0x84, and a suspend that then fails has no display to show NO FLOOR on
+# (its log has it). Its label is floor-m1-disp-off.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by

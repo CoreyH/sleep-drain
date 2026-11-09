@@ -1362,18 +1362,21 @@ def position_tests(g, src):
                   f"--clear after sio_on=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
 
         # disp_off=1's run: the same with bit 3 set too, and sample 1's byte B is K3b's.
-        DISP = "  display (K3b): internal DCP stopped, external DCP stopped; disp0's domains read off, dispext0's read off; idle pair returned 0 on both\n"
-        run8 = dict(run7, prog=(0x14, 0xcf))
+        DISP = "  display (K3b): internal DCP: stopped; external DCP: stopped; the domains of the DCPs that stopped: all read off\n"
+        run8 = dict(run7, prog=(0x14, 0xdf))
         rc, out, err = dec(0xcd, run8)
         check(rc == 0 and "stage 0x6004 = 0xcd (pmp_out=1: bit 7; disp_off=1: bit 3, so the stage is 0x45) (pmgr_late=1): position=1: the samples recorded, CPU0 had nothing pending" in out
-              and "position sample 1 (0x6012 = 0x14, 0x6013 = 0xcf):\n" in out and DISP in out
+              and "position sample 1 (0x6012 = 0x14, 0x6013 = 0xdf):\n" in out and DISP in out
               and "  gate words: 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 set\n" in out
               and "SIO_CPU:" not in out and "position sample 2" not in out and RAISED in out and "0x6015 = 0x8d: K4 ran" in out,
               "disp_off=1's 0xcd: K3b's byte, the gate's bits, no SIO class", out + err)
-        rc, out, err = dec(0xcd, dict(run8, prog=(0x14, 0x15)))
-        check(rc == 0 and "  display (K3b): internal DCP stopped, external DCP NOT stopped; disp0's domains read off, dispext0's did NOT read off; idle pair FAILED on at least one\n" in out
+        rc, out, err = dec(0xcd, dict(run8, prog=(0x14, 0x06)))
+        check(rc == 0 and "  display (K3b): internal DCP: shut down, but RUN didn't read 1 then 0; external DCP: its RTKit shutdown FAILED another way; the domains of the DCPs that stopped: NOT all read off, or none stopped\n" in out
               and "  gate words: 0x2922c0044 bit 2 clear, bit 3 clear; 0x2922c0040 bit 1 clear\n" in out,
-              "disp_off=1: each of K3b's bits decoded on its own", out + err)
+              "disp_off=1: each DCP's outcome decoded on its own", out + err)
+        rc, out, err = dec(0xcd, dict(run8, prog=(0x14, 0xd3)))
+        check(rc == 0 and "  display (K3b): internal DCP: stopped; external DCP: its RTKit shutdown TIMED OUT; the domains of the DCPs that stopped: all read off\n" in out,
+              "disp_off=1: a timeout on one DCP, and the other's domains off", out + err)
         rc, out, err = dec(0xcc, run8)
         check(rc == 0 and "disp_off=1: bit 3, so the stage is 0x44" in out and "CPU0 had an interrupt or SError pending" in out and DISP in out,
               "disp_off=1's 0xcc: the same, with something pending", out + err)
@@ -1488,18 +1491,27 @@ def position_tests(g, src):
           and all(f"e1_never_write(M1_PS_SIO_PAGE + M1_PS_{n})" in src for n in ("SIO", "UART_P", "SPI_P")),
           "the load refuses if entry 61 isn't SIO_CPU's word, or a raise would touch the never-write list")
     # disp_off=1's own code.
+    shut = src[src.index("static void m1_dcp_shutdown(void)\n{"):]
+    shut = shut[:shut.index("\n}\n")]
+    check(in_order(shut, ["apple_rtkit_shutdown(m1_dcp_rtk[i])", "readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL)",
+                          "writel(ctrl & ~M1_ASC_CPU_RUN, m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);", "M1_DCP_STOPPED : M1_DCP_NOT_STOPPED;"])
+          and shut.count("apple_rtkit_shutdown(") == 1 and shut.count("writel(") == 1 and "apple_rtkit_idle" not in shut,
+          "m1_dcp_shutdown(): one RTKit shutdown each, RUN cleared after it", shut)
+    check("if (disp_off && n == 1 && !READ_ONCE(replay_done))\n\t\tm1_dcp_shutdown();" in src[src.index("static int e1_prepare(void)"):src.index("static int e1_prepare(void)") + 500],
+          "the DCPs are shut down at the first prepare of the suspend that will replay, before noirq and slpa")
     stop = src[src.index("static u8 m1_disp_stop(void)"):]
     stop = stop[:stop.index("\n}\n")]
-    check(in_order(stop, ["apple_rtkit_idle(m1_dcp_rtk[i])", "M1_ASC_CPU_STATUS", "st & M1_ASC_IDLE", "readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL)",
-                          "writel(ctrl & ~M1_ASC_CPU_RUN, m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);", "res |= BIT(i);", "msleep(2);",
-                          "m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK))", "m1_ps_off(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK))", "res |= BIT(2 + i);",
-                          "m1_kwrite(0x6004, &stage, 1);"]) and stop.count("apple_rtkit_idle(") == 1 and stop.count("writel(") == 1,
-          "m1_disp_stop(): the idle pair once, RUN cleared only after idle, its domains off only after RUN read 0", stop)
+    check(in_order(stop, ["if (m1_dcp_code[i] == M1_DCP_STOPPED) {", "turned = true;",
+                          "m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK))", "m1_ps_off(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK))", "res |= m1_dcp_code[i] << (2 * i);",
+                          "if (turned && all_off)", "res |= BIT(4);", "m1_kwrite(0x6004, &stage, 1);"]) and "rtkit" not in stop.lower() and stop.count("writel(") == 0,
+          "m1_disp_stop(): the domains off only for a DCP whose RUN read 1 then 0, and no message to any DCP", stop)
     check("static const u8 stage = 0x84;" in stop, "K3b's stage is 0x84", stop)
-    check("if (!(st & M1_ASC_IDLE))\n\t\t\tcontinue;\n\t\tctrl = readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);" in stop,
-          "a DCP that doesn't read idle is left running: RUN is only cleared after the idle gate (what Corey OK'd)", stop)
-    check("if (!(ctrl & M1_ASC_CPU_RUN) || (readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN))\n\t\t\tcontinue;\n\t\tres |= BIT(i);" in stop,
-          "a DCP whose RUN didn't read 1 then 0 keeps its domains on", stop)
+    check("m1_dcp_code[i] = ret == -ETIME || ret == -ETIMEDOUT ? M1_DCP_TIMEOUT : M1_DCP_FAILED;\n\t\t\tcontinue;\n\t\t}" in shut,
+          "a DCP whose RTKit shutdown failed is left alone: RUN is only cleared after it returned 0 (what Corey OK'd)", shut)
+    check("m1_dcp_code[i] = (ctrl & M1_ASC_CPU_RUN) && !(readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN) ?" in shut,
+          "a DCP is only STOPPED, and its domains only go off, if RUN read 1 then 0", shut)
+    check(all(f"#define M1_DCP_{n}" in src for n in ("TIMEOUT\t\t0", "FAILED\t\t1", "NOT_STOPPED\t2", "STOPPED\t\t3")),
+          "K3b's outcome codes are the ones the decoder and the layout comment give")
     psoff = src[src.index("static bool m1_ps_off(void __iomem *p)"):]
     psoff = psoff[:psoff.index("\n}\n")]
     check("writel(v & ~(BIT(28) | BIT(12) | BIT(11) | BIT(10) | BIT(9) | BIT(8) | GENMASK(3, 0)), p);" in psoff and psoff.count("writel(") == 1

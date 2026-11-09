@@ -2787,3 +2787,75 @@ look the same from here.
 **What it changes** (judgment; the order is in PLAN.md, and only there): the two known mismatches
 that could be fixed from the hook are gone, and the display chain is the rung left. T6020 had every
 display domain off from its R6 on and still reset, so don't expect it alone to end the reset.
+
+### M1 run 8: the display rung's first try: the DCPs didn't stop, so the display wasn't tested (2026-11-09)
+
+`e1-hook/run-floor --quick --m1-disp-off` (`replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1
+hold=1 pmp_out=1 position=1 sio_on=1 disp_off=1`, #53; the module built at 3b36234; flag
+`radios-off`; the launcher also loaded `pmp_sleep_release` with 0xc and 0xd), in a safe boot, on
+battery at 44%, with a 1-minute reading. Against run 7 it adds step K3b: both DCPs given the PMP's
+idle pair, and, if they read idle, RUN cleared, then their domains off. Raw data:
+`results/m1-run8-20261109/`.
+
+**The facts:**
+- **Stage 0xcd** (0x45 with K4's bit 7 and K3b's bit 3): the sample landed and CPU0 had nothing
+  pending just before its acks and its own deep WFI.
+- **K3b failed.** Sample 1's byte B, 0xd0: bit 4 set, an idle pair failed on at least one DCP;
+  bits 0-3 clear, neither DCP stopped, so neither pair of domains was touched. The byte can't
+  say which DCP refused, or how (a timeout, a mismatched ack, RTKit not running at that point); the
+  load log, about a minute earlier, has both running. The PMP's idle pair, the same call on the same
+  path, worked moments later (0x6015 = 0x8e), so the path is fine.
+- **SIO and the PMP as in run 7:** 0x6007 = 0xff, the raises read on; `qto` 0x10, only
+  DISPLAY's wait timed out, as K3b didn't take the display down.
+- **The sample, about 1 s after the commit** (0x14): `PHASE` 4, `HS_A` bit 31 up, bit 24 clear, state
+  word 0xa03; 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 set. As runs 6 and 7.
+- **The restart:** 28.9-30.7 s after the commit (28.7-30.7 and 28.9-30.9 from the two reads).
+  The armed alarm survived it, and `--clear` disarmed it. Corey's report: the usual restart.
+
+**What it shows.** Nothing about the display: DISPLAY's domains stayed on and its wait failed as in
+every earlier run. It shows the idle pair isn't a way to stop these DCPs at that point, at least
+one of them. JJRPF's DeepIdle `test_sleep_off` (GPL-2.0) stopped all three of T6020's DCPs with
+`apple_rtkit_shutdown()` and CPU_CONTROL := 0, at `dcp_platform_suspend`, with the domains then
+off under genpd (`data/s2r-domains/2026-11-06-2119-s6-dcp-off-held.txt`), and Linux's NVMe suspend
+does the same. The next try uses that, at the same point in the suspend, before noirq and `slpa`.
+
+### Related work, swept 2026-11-09
+
+A read-only sweep of the related projects after run 8 (no m1n1 and no Aura; conclusions reported
+from hypervisor traces are marked). What's new or was missing here:
+
+- **T8132 (M4 Air, J713) completes S2R from Linux**, a second chip through the engine: niteria
+  (Bartosz Nitka), aurora-silicon/linux#1314, a draft stacked on DJ's #1208 and #1059. 4 of 4 sleeps
+  on one boot, a 6 h alarm sleep on time, about 0.09 W over 9.08 h (Wi-Fi and Bluetooth off). Commit
+  c058e736840e lists what it took beyond DJ's port: the unbound external displays lowered too, the
+  SoC perf state and DCS brought down before the memory controller stops, what the wake reads cleaned
+  to the point of persistence, and a stub that restarts WD2 for 60 s on entry. It boots through
+  Aura, which we can't use.
+- **DJ's DCP stop is readable now** (aurora-silicon/linux c922a676a197): set_power_state(0), a wait
+  for the display DART's streams, A500 with the firmware's callbacks answered, RTKit idle with a
+  retry, CPU status polled for IDLE and STOPPED, the mailbox off, RUN cleared twice ("the run bit is
+  never cleared under running firmware"). niteria's J713 stop (#1059, eb39666ebf6c) is the same shape,
+  204 power cycles in one boot. Two stated reasons a firmware refuses idle: its secure RTBuddy port
+  (f7edd90a82d1; this Mac's ADT has none) and OSLOG counters left unechoed (9bacbcadf516; T8140 only
+  so far). Hector Martin's 2022 AsahiLinux/linux dcp/sleep stops a DCP with setDCPPower(0), then
+  RTKit idle, then RUN off (5aadf1fa9115); aurora still has the path, `dcp_sleep()`, unused.
+- **DJ on the engine's first step**, T8140 (#1208): "The engine's first step polls for DCS at this
+  state and has no way to get it there": macOS has every voter at 0 by then, and the driver zeroes the
+  PMC voters and steps DCS itself. It doesn't identify our 0x2922c0044.
+- **Naeem Malik's run 11** (malik-na/m1-power-lab 3b942a82a9d8, 2026-11-08): global sleep on T8103,
+  the secondaries holding in WFE through the commit, the same no-wake: "the core order is not what
+  keeps the boot CPU from restarting". His macOS 27 notes (conclusions from his traces) have
+  DCP/DCPEXT told the 0x201 pair before slpa. His driver doesn't touch the DCPs.
+- **DeepIdle is paused on a filesystem error**: its status says "Work paused due to FS error", and a
+  btrfs superblock rescue kit went up on 2026-11-08. The cause isn't stated; a forced reset is an
+  inference. It's the reason this repo's runs stay in a safe boot.
+- **A risk to reading the display rung** (DeepIdle's worklog L2596-L2598, from DJ's T8140 work): with no
+  platform error handler, an enabled and pending memory-controller error at the commit wakes the SoC
+  within 20 ms, and display power-off raises DSID_AGE_OUT. T6020's R8 cleared the enables and still
+  reset. An early wake or restart after the display goes off could be this, not engine progress.
+- **RJ Skerry-Ryan's apple-s2r on T6021** (rryan/linux 7b89ae23dfc6, October), not in these notes:
+  a full Linux enter order, with DISPLAY handled as a SoC cluster and AFR skipped while the display
+  system domain is up. No completed entry is stated. Dylan Ironside's T8132 port is active.
+- **The t600x alarm is merged upstream of aurora** (aurora-silicon/linux#1312), with Maverick's fix for
+  the hypothesis from #1225 here: control bit 1 latched stale, so arming as 0x43 latched no new edge.
+- Watch aurora#401, which would keep a third DCP powered through sleep if it reaches this kernel.
