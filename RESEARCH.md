@@ -3055,3 +3055,14 @@ here. So, if the SRAM is writable and the engine runs it live:
 
 New writes to the engine's SRAM: Corey's OK first, word by word. Undone by a restart if iBoot rewrites the
 SRAM at boot, which a read of the word in the boot after step 1 confirms (inferred until then).
+
+**Step 1 as built** (`run-floor --m1-recfg-bite`, not yet run). A2's bite is A2's fifth word, SRAM +
+0x2010 (0x292f02010): like every A sequence, A2 opens with one Write32 op of four writes on the watchdog
+page, WD2's control, count, bite and control, and the old bite is in the first 64 KiB four times, once
+per A sequence. The tools know the place by ten words, built from PongoOS's format and WD2's register
+map and checked against the dump here, not copied from it: the table offset register's analogue (0x1000)
+and its lock (0), table A's entry 2 (SRAM + 0x2000, as an address >> 4), and that op's six words. Whether
+the SRAM takes a write from Linux isn't known. PongoOS (`recfg_soc.c`, MIT) patches sequences of this kind
+in place on A9-A11, which is why this may work, and stops if the SRAM's range lock or the table's lock is
+already set, which is how it could fail: only the table lock's analogue is known on this Mac. So a write
+that's dropped and one that faults are both possible, and the run ends at either with its record saved.

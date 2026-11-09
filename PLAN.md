@@ -421,6 +421,22 @@ steps, and restarting the DCP and the PMP afterwards.
       45 s one). Then bite markers to read how far the engine gets, each needing Corey's OK. The PCIe ports
       stay the next guess only if the write doesn't take, or the old bite is read with `PHASE` at 4 or 5.
       Rebuild e1_hook for aurora15 first.
+      Built, not run: `pkexec e1-hook/run-floor --quick --m1-recfg-bite` (`e1_hook recfg_bite=1`, on run 12's
+      recipe). Before anything is loaded, `e1-hook/recfg-bite` reads the ten words that say where the bite
+      is (`recfg_peek`'s stage 6), saves that, makes the one write (`recfg_poke patch`: 0x292f02010, from
+      0x2aea5400 to 0x405f7e00) and saves again. A word that can't be changed ends the run there, as its
+      result: exit 3 if the ten words aren't as expected, 5 if the write doesn't read back, a restart about
+      10 s later if it faults. The module never writes the SRAM: its load refuses unless the word reads
+      45 s, step 8 reads it once more, and after the commit and the alarm CPU0 reads WD2's bite, control
+      and count and `PHASE` and sends stage 0x47 (0xc7) with one byte at 0x6005: bits 1:0 the bite (1 old,
+      2 new, 3 its awake value), 5:2 `PHASE`, 6 WD2 armed and counting from the commit, 7 the SRAM word
+      still new in step 8. Every way out but the floor puts the word back. After the run, in the first
+      regular boot: `m1-crumbs`, then `--clear` and `collect`, then `pkexec e1-hook/recfg-bite --after`,
+      the read that says whether a restart brings 30 s back. No restart or update before `m1-crumbs` has
+      run: the reset time is right only in that boot, and run 12 lost its own that way. Before the run,
+      for aurora15: `pkexec bash install.sh` (pmp_sleep_release and smc_peek are built per kernel),
+      `make -C e1-hook`, and `cc -O2 -Wall -o e1-hook/recfg_peek e1-hook/recfg_peek.c`, the same for
+      `recfg_poke`.
       **Earlier, the order after run 11 (2026-11-09; judgment):** SIO's
       firmware stopped and CPU0 sent straight down changed nothing (RESEARCH.md, "M1 run 11"). Next, needing
       Corey's OK: the remaining 20 power words at macOS's state, in one run (the list and values are in that
