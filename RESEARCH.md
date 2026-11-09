@@ -3061,8 +3061,64 @@ SRAM at boot, which a read of the word in the boot after step 1 confirms (inferr
 page, WD2's control, count, bite and control, and the old bite is in the first 64 KiB four times, once
 per A sequence. The tools know the place by ten words, built from PongoOS's format and WD2's register
 map and checked against the dump here, not copied from it: the table offset register's analogue (0x1000)
-and its lock (0), table A's entry 2 (SRAM + 0x2000, as an address >> 4), and that op's six words. Whether
-the SRAM takes a write from Linux isn't known. PongoOS (`recfg_soc.c`, MIT) patches sequences of this kind
-in place on A9-A11, which is why this may work, and stops if the SRAM's range lock or the table's lock is
-already set, which is how it could fail: only the table lock's analogue is known on this Mac. So a write
-that's dropped and one that faults are both possible, and the run ends at either with its record saved.
+and its lock (0), table A's entry 2 (SRAM + 0x2000, as an address >> 4), and that op's six words. After
+the write all ten are read again, so a neighbour that changed with the bite is caught at the desk and not
+as a Mac that stays dark. Nothing writes the old value back by itself: the OK is one write, and
+`recfg-bite --restore` is there for a person to run.
+
+The sample changed in the building, for two reasons the design's critics gave. CPU0 now takes it after
+it has let the other cores go, as in every sample of runs 6-10, and waits for WD2's RESET_EN first, up
+to 0.3 s: run 6 only bounds A2's arming to within 0.25 s of the commit, and a look a fraction of a
+millisecond after it could have come before A2's opening, or inside it. And the classes are numbered so
+that the byte stage 0x4e leaves in the sample's place can't read as the new bite.
+
+### Before the feasibility run: what the desk says (2026-11-09)
+
+Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
+
+**The kernel update changed nothing this Mac runs.** aurora15 is omacom/linux-aurora b798f2b0 (aurora14:
+4fdd0fc5): 12 commits, 11 files, in apple-dart's `of_xlate`, the DCP driver (a J313 panel's power cycle
+and the 14.7 firmware's swap layout) and device trees for t8103 and t8122. Between the two packages:
+`t6000-j314s.dtb` is byte for byte the same; so are the config, the headers, `Module.symvers` and the
+kernel's BTF; one function differs in vmlinux (`apple_dart_of_xlate`) and one module has code changes
+(appledrm), neither reachable here (no J314s consumer has `apple,dma-range`; this panel is a J314 on DCP
+firmware 13.5). e1_hook, pmp_sleep_release and smc_peek build to the same code. So run 13 is read against
+run 12 as on one kernel. The builds are stale all the same: the modules `install.sh` installs and
+e1_hook.ko carry aurora14's version until rebuilt.
+
+**The bite word, checked twice more.** Two more decodes of the dump, one from `recfg.h` alone and one
+set on breaking the claim, agree on the place and the six words. In the 64 KiB: the old bite is at
+exactly four places, the four A openings; nothing else writes WD2's bite or count; no B sequence touches
+WD2 (B2's one watchdog op, late, zeroes WD0's and WD1's counts); nothing points at, overlaps or checksums
+A2's fifth word. What a dump can't show: that the SRAM takes the store, that the engine fetches the word
+when it runs A2, and what the other 6/7 of the SRAM holds.
+
+**The locks (PongoOS's `recfg_soc.c` and `patches.S`, read).** On A9-A11 and T2 there are three
+registers: the table's lock at AON + 0x2c0214, and the SRAM's range lock at AON + 0x200 (two 15-bit
+fields, in 0x40-byte blocks) with its set bit at + 0x204. iBoot sets them; PongoOS takes iBoot's
+`reconfig_lock` out and stops ("Recfg is already locked") rather than write a locked SRAM; XNU's published
+source never touches them. On this Mac the table lock's analogue reads 0, and where the range lock's
+analogue is isn't known (AON + 0x200 unshifted, or shifted with the table's block: neither is in a window
+Linux knows). PongoOS edits the sequences in place and counts on the engine running the edited bytes, with
+no checksum and no shadow copy in its code or in XNU's; that this holds on T6000 is inferred. A cold boot
+through iBoot writes the sequences again; a warm wake runs the SRAM as it is. Whether this Mac's boot
+path rewrites them every time is what `recfg-bite --after` measures.
+
+**What runs table B: not found, and two facts that narrow it.**
+- The SRAM has ten descriptor blocks, 0x100 apart: A's at 0x1000, B's at 0x1100, and eight more at
+  0x1200-0x1900, whose addresses B0 writes, as address >> 8, to 0x28e099004 + 8n, 0x1000 above the
+  soc-cluster words. All 37 pointer targets past the 64 KiB hang off those eight. So the walker is one
+  of a family, each with a table register (inferred), and the eight look like the soc clusters' own
+  (inferred): their sequences are in the part of the SRAM nobody has read.
+- B's page, 0x2922c0000, is AON + 0x2c0000, where PongoOS has the classic engine's block (table register
+  at + 0x200, lock at + 0x214). A's block is at + 0x5c0000. 0x2922c0200 and 0x2922c0214 have never
+  been read.
+- T8140's author (Diljit Singh, aurora-silicon/linux#1208) writes that a system sleep's engine "waits
+  for every core to power down", that an awake core holds it until WD2 resets, and that a complex has a
+  sequence "with its untimed wait", run right before the CPU complexes'.
+- Judgment on B2's gate (0x2922c0044 bits 2 and 3): the AP's cores and complexes, about 55%; a wider
+  rollup (coprocessors, fabric, clock requests), about 20%; an always-on party's answer (the SMC's, or
+  the AOP's through 0x2925c0014, the one word of A's block its DART filter lets through), about 10%.
+
+**Reads that would be worth an OK:** the SRAM past 64 KiB (what the eight blocks' sequences poll, which
+is where a complex's untimed wait would be); 0x2922c0200 and 0x2922c0214; 0x2925c0014.

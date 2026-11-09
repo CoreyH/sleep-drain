@@ -3,8 +3,9 @@
 // read-only. One stage per run; e1-hook/recfg-peek runs them in order and saves
 // after each. Stages 1-5 run in a safe boot only; so does the first pass over
 // stages a-h, and the launcher repeats those a-h once in the regular boot after
-// a run, when the safe-boot pass read them all without a fault. Stage 6 is
-// e1-hook/recfg-bite's, in the same two places.
+// a run, when the safe-boot pass read them all without a fault. Stages 6 and 7
+// are e1-hook/recfg-bite's: 6 in a safe boot, 7 once in the regular boot after
+// its run.
 //
 //   stage 1: the table-offset register's analogue (0x2925c0200) and its
 //            lock's (0x2925c0214), inside the ADT's window 0x2925c0000 + 0x14000
@@ -26,6 +27,8 @@
 //            table A's entry 2, and A2's first six words, all of which stages
 //            1, 3 and 4 read on 2026-11-08. It says whether they're as expected
 //            and whether the bite is the old 30 s or the new 45 s
+//   stage 7: that one word alone, 0x292f02010, and which of the two values it
+//            reads: the read Corey OK'd for the regular boot after the run
 //   stages a-h: the words of the position read (PLAN.md), one stage a word,
 //            but for a: WD2's control and count and SIO_CPU, which runs 2 and
 //            3 read after the commit. b-h are the seven nothing had read: the
@@ -52,12 +55,12 @@
 // page it was.
 // An unmapped address can raise an SError and panic the kernel: that's why it
 // runs in a safe boot, and only with Corey's OK (2026-11-08; 2026-11-09 for
-// stages a-h and their one repeat in a regular boot, and for stage 6's after
-// the run that changes the bite).
+// stages a-h and their one repeat in a regular boot, and for stage 7, the one
+// word, in the regular boot after the run that changes it).
 //
 // A stage's exit status: 0, go on; 3, it found nothing more worth reading
-// and the next stage shouldn't run (stage 6: the words aren't as expected);
-// anything else, an error.
+// and the next stage shouldn't run (stage 6: the words aren't as expected;
+// stage 7: the word is neither value); anything else, an error.
 //
 // The dumps stay in /var/log/sleep-drain: they aren't for the repo, which is
 // public.
@@ -251,6 +254,19 @@ static int bite_stage(void)
 	return verdict == RECFG_OLD || verdict == RECFG_NEW ? 0 : 3;
 }
 
+/* Stage 7: the bite word alone. */
+static int bite_word_stage(void)
+{
+	const uint64_t pa = RECFG_SRAM + RECFG_BITE;
+	uint32_t v;
+
+	printf("reading 0x%" PRIx64 "\n", pa);
+	v = read_word(pa);
+	printf("0x%" PRIx64 " = 0x%08x  A2's WD2 bite word: %s\n", pa, v,
+	       v == RECFG_BITE_OLD ? "the old value, 30 s" : v == RECFG_BITE_NEW ? "the new value, 45 s" : "neither the old value nor the new one");
+	return v == RECFG_BITE_OLD || v == RECFG_BITE_NEW ? 0 : 3;
+}
+
 int main(int argc, char **argv)
 {
 	const char *why;
@@ -259,12 +275,12 @@ int main(int argc, char **argv)
 	int stage, i, valid, letter;
 
 	if (argc != 3 || !argv[1][0] || argv[1][1]) {
-		fprintf(stderr, "usage: recfg_peek STAGE DIR (STAGE 1-6 or a-h; DIR for its dumps)\n");
+		fprintf(stderr, "usage: recfg_peek STAGE DIR (STAGE 1-7 or a-h; DIR for its dumps)\n");
 		return 2;
 	}
 	stage = argv[1][0] - '0';
 	letter = argv[1][0] >= 'a' && argv[1][0] <= 'h';
-	if (!letter && (stage < 1 || stage > 6)) {
+	if (!letter && (stage < 1 || stage > 7)) {
 		fprintf(stderr, "recfg_peek: no stage %s\n", argv[1]);
 		return 2;
 	}
@@ -274,6 +290,9 @@ int main(int argc, char **argv)
 		fprintf(stderr, "recfg_peek: %s: %s\n", RECFG_MEM, strerror(errno));
 		return 1;
 	}
+	/* Started with a standard descriptor closed, the device would be this program's stdout or stderr. */
+	if (mem_fd <= 2)
+		return 1;
 
 	if (letter) {
 		for (i = 0; i < (int)(sizeof(pos_words) / sizeof(pos_words[0])); i++) {
@@ -345,6 +364,8 @@ int main(int argc, char **argv)
 		return 0;
 	case 6:
 		return bite_stage();
+	case 7:
+		return bite_word_stage();
 	}
 	return 2;
 }

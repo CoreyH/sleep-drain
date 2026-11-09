@@ -3,8 +3,8 @@
 # feasibility run (PLAN.md; RESEARCH.md, "A different approach"), as root:
 #
 #   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-bite            in a safe boot: the check, then the write
-#   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-bite --restore  in a safe boot: the old value back
 #   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-bite --after    in the first regular boot after the run
+#   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-bite --restore  in a safe boot, by hand: the old value back
 #
 # Corey's OK of 2026-11-09: one word, 0x292f02010, from 30 s to 45 s, and a read of it
 # in the boot after the run. run-floor --m1-recfg-bite runs the first form itself.
@@ -15,27 +15,37 @@
 # comes next, are saved to the boot partition (sleep-drain-safe save) before anything is
 # written, so a crash at the write keeps them. The write is recfg_poke patch: it reads
 # the ten words again, writes only if they're as expected with the bite at 30 s, and
-# reads the word back. Its output is saved too. From the write on, every way out but a
-# write that read back and was saved puts the old value back (recfg_poke restore), and
-# says so, or says that it couldn't: a log or a save that fails, a signal (bash runs the
-# trap once the writer has returned), a writer that fails. A run whose record can't be
-# kept isn't made.
+# reads all ten back. Its output is saved too.
 #
-# --after is the one read outside a safe boot, as recfg-peek --position-after is: stage
-# 6 once more, to see whether a restart brought the old value back. It refuses in a
-# safe boot, and unless the newest check on record read all ten words (its collected
-# log has the verdict line). It writes nothing.
+# Nothing here puts the old value back by itself: the OK is for one write, and whether
+# a restart brings 30 s back is what --after is there to find out. So after the write
+# the word reads 45 s until something changes it, whatever happens next, and every way
+# out that isn't a finished, saved write says that the word may have been changed.
+# --restore is for a person to run, in a safe boot: recfg_poke restore, which writes
+# only over the value patch writes.
+#
+# --after is the one read outside a safe boot, as recfg-peek --position-after is, and it
+# reads the one word alone (recfg_peek's stage 7): the ten of the check have only been
+# read in safe boots. It answers one question, whether the word that read 45 s when the
+# Mac went down reads 30 s after the restart, so it goes only by the records collected
+# from the safe boot: the newest write must say the word took the write (or was 45 s
+# already), with no --restore and no earlier --after on record since. It writes nothing.
+#
+# kernel.panic is set to 10 before a store, as run-floor sets it: an access that faults
+# then restarts the Mac 10 s later instead of leaving it hung.
 #
 # Each step has a directory of its own, /var/log/sleep-drain/recfg-bite-<time>-<step>/,
 # never changed after its save (sleep-drain-safe collect keeps the first copy of a
 # directory and stops on one that differs).
 #
 # Exit status: 0, done (the word reads what was asked for, or --after read it); 3, the
-# ten words aren't as expected, and nothing was written; 5, the write was made and the
-# word didn't read back as written; 1, anything else.
+# ten words aren't as expected, and nothing was written; 4, it stopped before the write
+# for another reason, and nothing was written; 5, the write was made and the ten words
+# don't read as it meant; 1, anything else.
 set -u
 
-die() { echo "recfg-bite: $*" >&2; exit 1; }
+fail=1
+die() { echo "recfg-bite: $*" >&2; exit "$fail"; }
 
 HERE=$(dirname "$(realpath "$0")")
 PEEK=${BITE_PEEK:-$HERE/recfg_peek}
@@ -46,6 +56,7 @@ HEADER=${BITE_HEADER:-$HERE/recfg_bite.h}
 SAFE_FLAG=${BITE_SAFE_FLAG:-/run/sleep-drain-safe/active}
 SAVE=${BITE_SAVE:-/usr/local/bin/sleep-drain-safe}
 LOG_ROOT=${BITE_LOG_ROOT:-/var/log/sleep-drain}
+SYSCTL=${BITE_SYSCTL:-/proc/sys/kernel}
 
 mode=patch
 if (($# == 1)) && [[ $1 == --restore ]]; then
@@ -53,19 +64,31 @@ if (($# == 1)) && [[ $1 == --restore ]]; then
 elif (($# == 1)) && [[ $1 == --after ]]; then
   mode=after
 elif (($# != 0)); then
-  die "usage: recfg-bite [--restore | --after]"
+  die "usage: recfg-bite [--after | --restore]"
 fi
+# Until the writer starts, a stop means nothing was written: run-floor goes by that.
+[[ $mode != patch ]] || fail=4
 
 [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
 if [[ $mode == after ]]; then
   [[ ! -f $SAFE_FLAG ]] || die "--after is for the regular boot right after the run, not a safe boot"
+  # The records' names sort by time (recfg-bite-<time>-<step>), so the last of each kind is the newest.
   shopt -s nullglob
-  checks=("$LOG_ROOT"/recfg-bite-*-check)
+  writes=("$LOG_ROOT"/recfg-bite-*-write)
+  later=("$LOG_ROOT"/recfg-bite-*-restore "$LOG_ROOT"/recfg-bite-*-after)
   shopt -u nullglob
-  ((${#checks[@]})) || die "no safe boot's check is on record here (no $LOG_ROOT/recfg-bite-*-check): pkexec /usr/local/bin/sleep-drain-safe collect first"
-  # The names sort by time, so the last is the newest. An older check's verdict won't do: a newer one may have stopped at one of these words.
-  grep -q "^A2's WD2 bite word, " "${checks[-1]}/log.txt" 2> /dev/null ||
-    die "the newest check on record, ${checks[-1]##*/}, never reached its verdict: these addresses haven't been shown safe to read"
+  ((${#writes[@]})) || die "no write is on record here (no $LOG_ROOT/recfg-bite-*-write): either none was made, or pkexec /usr/local/bin/sleep-drain-safe collect hasn't run. Nothing read"
+  last=${writes[-1]}
+  grep -q -e "^the word took the write: " -e "^already the new value: " "$last/log.txt" 2> /dev/null ||
+    die "the newest write on record, ${last##*/}, doesn't say the word read 45 s when it ended, so what the word reads now says nothing about the restart. Nothing read"
+  when=${last##*/recfg-bite-}
+  when=${when%-write}
+  for d in "${later[@]}"; do
+    t=${d##*/recfg-bite-}
+    t=${t%-*}
+    # Not earlier than the write: a restore changed the word before the restart, and an --after has asked already.
+    [[ $t < $when ]] || die "${d##*/} is on record since the newest write, ${last##*/}: the question was answered there, or the word was put back by hand. Nothing read"
+  done
 else
   [[ -f $SAFE_FLAG ]] || die "this runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
 fi
@@ -90,11 +113,17 @@ keep() {
   fi
 }
 
-# dir NAME: a step's own directory. Sets out and log.
+# dir NAME: a step's own directory, new: one that exists is another run's, a second ago, and may be in a save already.
+# Sets out and log.
 dir() {
   out=$LOG_ROOT/recfg-bite-$now-$1
-  mkdir -p "$out" || die "couldn't make $out"
+  mkdir "$out" 2> /dev/null || die "couldn't make $out (if it's there already, wait a second and run this again)"
   log=$out/log.txt
+}
+
+# For a stop that is itself a result: say so if its record didn't reach the boot partition.
+keep_or_say() {
+  keep "$1" > /dev/null 2>&1 || echo "recfg-bite: NOT SAVED: the lines above are the only record, so photograph them before any restart" >&2
 }
 
 # run PROGRAM ARGS...: its output shown, and appended to $log. Sets rc.
@@ -109,76 +138,78 @@ run() {
   fi
 }
 
+# A store that faults: a restart 10 s later, not a hang (run-floor's own setting, for a run by hand).
+panic10() { echo 10 > "$SYSCTL/panic" || die "couldn't set kernel.panic"; }
+
 case $mode in
 after)
   dir after
-  run "$PEEK" 6 "$out"
+  run "$PEEK" 7 "$out"
   keep "$log" || die "couldn't sync $log"
   ((rc == 0 || rc == 3)) || die "the read failed (exit $rc)"
-  echo "recfg-bite: read (the verdict is the last line above); nothing was written."
+  echo "recfg-bite: read (the line above says which value); nothing was written."
   exit "$rc"
   ;;
 restore)
+  panic10
   dir restore
   run "$POKE" restore
-  keep "$log" > /dev/null 2>&1 || echo "recfg-bite: couldn't save the restore's record" >&2
+  keep "$log" > /dev/null 2>&1 || echo "recfg-bite: THE RESTORE'S RECORD WASN'T SAVED: --after can't know of it. Note it by hand" >&2
   ((rc != 0)) || echo "recfg-bite: the old value is there."
   exit "$rc"
   ;;
 esac
 
-# From the write on: the old value back on every way out but a finished, saved patch.
-written=0
-undo() {
-  ((written)) || return 0
-  written=0
-  if "$POKE" restore > /dev/null 2>&1; then
-    echo "recfg-bite: the old value is back (recfg_poke restore)" >&2
-  else
-    echo "recfg-bite: THE OLD VALUE MAY NOT BE BACK (recfg_poke restore failed): recfg-bite --restore, or restart the Mac" >&2
-  fi
+# From the writer's start to a finished, saved write, any way out says what state the word may be in.
+started=0
+warn() {
+  ((started)) || return 0
+  echo "recfg-bite: A2'S BITE WORD MAY READ 45 s NOW: the writer ran, and this ended before its record was complete. Nothing puts it back by itself (recfg-bite --restore does, in a safe boot)" >&2
 }
-trap undo EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap warn EXIT
 
 echo "recfg-bite: saving under $LOG_ROOT/recfg-bite-$now-*/"
 dir check
 run "$PEEK" 6 "$out"
 if ((rc == 3)); then
-  keep "$log" > /dev/null 2>&1
+  keep_or_say "$log"
   echo "recfg-bite: the SRAM isn't as expected (above): nothing written. That's a result." >&2
   exit 3
 fi
 if ((rc != 0)); then
   echo "the check failed (exit $rc); nothing written" | tee -a "$log"
-  keep "$log" > /dev/null 2>&1
+  keep_or_say "$log"
   die "the check failed (exit $rc); nothing written"
 fi
 echo "next: recfg_poke patch, one write, 0x292f02010 := 0x405f7e00 (45 s), if the check above still holds" | tee -a "$log"
 keep "$log" || die "couldn't save the check; nothing written"
+panic10
 
 dir write
-written=1
+fail=1
+started=1
 run "$POKE" patch
-keep "$log" || die "couldn't save the write's record"
 case $rc in
-0)
-  written=0
-  echo "recfg-bite: done: A2's WD2 bite word reads 45 s. Until a restart, or recfg-bite --restore."
-  ;;
+0) ;;
 3)
-  # The writer read the ten words again and refused: nothing to put back.
-  written=0
+  # The writer read the ten words again and refused.
+  started=0
+  keep_or_say "$log"
   echo "recfg-bite: the SRAM changed between the check and the write: nothing written." >&2
+  exit 3
   ;;
 5)
-  echo "recfg-bite: THE WRITE DIDN'T READ BACK (above). That's a result: this SRAM didn't take the write from here." >&2
+  started=0
+  keep_or_say "$log"
+  echo "recfg-bite: THE WRITE DIDN'T READ BACK AS MEANT (above). That's a result: this SRAM didn't take the write from here. If the writer says the ten words don't read as before, restart before anything else." >&2
+  exit 5
   ;;
 *)
-  echo "recfg-bite: recfg_poke failed (exit $rc)" >&2
-  rc=1
+  keep_or_say "$log"
+  die "recfg_poke failed (exit $rc)"
   ;;
 esac
-exit "$rc"
+keep "$log" || die "couldn't save the write's record"
+started=0
+echo "recfg-bite: done: A2's WD2 bite word reads 45 s, and stays so until something changes it (recfg-bite --restore, in a safe boot; whether a restart does is what --after asks)."
+exit 0

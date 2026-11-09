@@ -67,8 +67,10 @@ the PR with that session's work.
 - Root goes through pkexec, which needs a healthy Omarchy shell.
 
 State that lives on the MacBook, not in git:
-- linux-aurora 7.2.11.aurora14, on Omarchy 4.5.0 (updated 2026-11-05; the
-  kernel didn't change). m1n1-aurora and uboot-asahi are held back in
+- linux-aurora 7.2.11.aurora15 (2026-11-09 20:17, with a system update; aurora14
+  until then: no code this Mac runs changed, RESEARCH.md, "Before the feasibility
+  run"). The modules `install.sh` builds are per kernel: it has to run again
+  before the next run. m1n1-aurora and uboot-asahi are held back in
   pacman.conf (IgnorePkg). GRUB isn't, but the installed 2:2.16-3 is newer than
   the repo's 2:2.16-1, so pacman leaves it alone.
 - `/etc/sleep-drain/radios-off` is set. `install.sh` last ran at 4f2da37.
@@ -80,6 +82,8 @@ State that lives on the MacBook, not in git:
   RESEARCH.md use). Both stay out of this repo, which is public. On another
   computer, RESEARCH.md's SRAM section is what there is; for the listings, ask
   Corey.
+- The design study for the step after the feasibility run, on this MacBook only (it quotes
+  dump words): `~/.local/share/sleep-drain/recfg-marker-study-20261109/study.md`.
 - The alarm needs the test drivers after every boot:
   `make -C rtc-alarm-test && pkexec rtc-alarm-test/load`.
 - The RTC was set to the real time on 2026-11-02. It had counted from 1970
@@ -418,25 +422,55 @@ steps, and restarting the DCP and the PMP afterwards.
       A2 before its last phase, says it didn't. The reset time is read with that and never decides it: an unchanged reset near
       30 s is inconclusive, and 45 s doesn't by itself say A2 is the sequence that stalled, since a later A
       sequence re-arms WD2 with its own 30 s (RESEARCH.md has the cases; a second bite value settles the
-      45 s one). Then bite markers to read how far the engine gets, each needing Corey's OK. The PCIe ports
+      45 s one). Then bite markers to read how far the engine gets, each needing Corey's OK. A study for the
+      first of them is done at the desk (kept off the repo, "State that lives on the MacBook"): ten words of
+      A2 right behind its first handshake wait, turning the three ops there into a second, full WD2 arming
+      with a 60 s bite, the opening left at 45 s. A reset at 45 s would then say A2 never got past that
+      wait with every core down; 60 s + t that it passed at t. Not proposed to Corey yet. The PCIe ports
       stay the next guess only if the write doesn't take, or the old bite is read with `PHASE` at 4 or 5.
       Rebuild e1_hook for aurora15 first.
       Built, not run: `pkexec e1-hook/run-floor --quick --m1-recfg-bite` (`e1_hook recfg_bite=1`, on run 12's
-      recipe). Before anything is loaded, `e1-hook/recfg-bite` reads the ten words that say where the bite
-      is (`recfg_peek`'s stage 6), saves that, makes the one write (`recfg_poke patch`: 0x292f02010, from
-      0x2aea5400 to 0x405f7e00) and saves again. A word that can't be changed ends the run there, as its
-      result: exit 3 if the ten words aren't as expected, 5 if the write doesn't read back, a restart about
-      10 s later if it faults. The module never writes the SRAM: its load refuses unless the word reads
-      45 s, step 8 reads it once more, and after the commit and the alarm CPU0 reads WD2's bite, control
-      and count and `PHASE` and sends stage 0x47 (0xc7) with one byte at 0x6005: bits 1:0 the bite (1 old,
-      2 new, 3 its awake value), 5:2 `PHASE`, 6 WD2 armed and counting from the commit, 7 the SRAM word
-      still new in step 8. Every way out but the floor puts the word back. After the run, in the first
-      regular boot: `m1-crumbs`, then `--clear` and `collect`, then `pkexec e1-hook/recfg-bite --after`,
-      the read that says whether a restart brings 30 s back. No restart or update before `m1-crumbs` has
-      run: the reset time is right only in that boot, and run 12 lost its own that way. Before the run,
-      for aurora15: `pkexec bash install.sh` (pmp_sleep_release and smc_peek are built per kernel),
-      `make -C e1-hook`, and `cc -O2 -Wall -o e1-hook/recfg_peek e1-hook/recfg_peek.c`, the same for
-      `recfg_poke`.
+      recipe). In order:
+      - Before anything is loaded, `e1-hook/recfg-bite` reads the ten words that say where the bite is
+        (`recfg_peek`'s stage 6), saves that, makes the one write (`recfg_poke patch`: 0x292f02010, from
+        0x2aea5400 to 0x405f7e00), reads all ten again and saves. A word that can't be changed ends the run
+        there, as its result: exit 3 if the ten words aren't as expected, 4 for another stop before the
+        write, 5 if the ten don't read as meant after it, a restart about 10 s later if it faults.
+      - Nothing puts the old value back by itself: the OK is one write. After it the word reads 45 s until
+        something changes it, and every way out says so. `recfg-bite --restore`, by hand in a safe boot,
+        writes 30 s again (only over patch's own value).
+      - The module never writes the SRAM. Its load refuses unless table A's entry 2 and A2's opening read
+        as expected with the new bite, and unless WD2 is in its awake state. Step 8 reads the word once more.
+        After the commit and the alarm there's no stage 0x4f: CPU0 lets the others go, waits for WD2's
+        RESET_EN (up to 0.3 s), reads WD2's bite, then `PHASE` (up to 10 ms while it reads 0), and sends
+        stage 0x47 (0xc7; 0x46 if it had an exception pending) with one byte at 0x6005: bits 1:0 the bite
+        (1 new, 2 old, 3 its awake value), 5:2 `PHASE`, 6 RESET_EN seen, 7 the SRAM word still new in step 8.
+      - After the run, in the first regular boot: `m1-crumbs`, then `--clear` and `collect`, then `pkexec
+        e1-hook/recfg-bite --after`, the read that says whether a restart brings 30 s back (it goes only if
+        the collected record says the word read 45 s when the Mac went down). If it reads 45 s still: no
+        other one-way recipe and no macOS before `recfg-bite --restore` in the next safe boot, Corey's call.
+      - No restart and no system update before `m1-crumbs` has run: the reset time is right only in that
+        boot, and run 12 lost its own that way.
+      - Before the run, for aurora15: `pkexec bash install.sh` (pmp_sleep_release and smc_peek are built
+        per kernel; run-floor now refuses a stale pmp_sleep_release before it loads anything), `make -C
+        e1-hook`, and `cc -O2 -Wall -o e1-hook/recfg_peek e1-hook/recfg_peek.c`, the same for `recfg_poke`.
+        The safe boot's image is rebuilt by `sleep-drain-safe boot` itself; never pick its GRUB entry by hand.
+
+      How its ending reads, beyond RESEARCH.md's cases (m1-crumbs prints the reading for the byte):
+      - The launcher stops at recfg-bite, exit 5, "THE WRITE DIDN'T TAKE": the SRAM is locked against a
+        write from here (PongoOS stops at a set lock for the same reason). Not a run.
+      - The Mac restarts about 10 s after the command, before the reading's minute: the write faulted. The
+        check's record and its "next:" line are on the boot partition; there's no write record.
+      - Stage 0xce with 0x6016 = 0x00, and a restart 10-13 s after going dark (or dark for good): a fault,
+        or a hang, before the commit, and the step-8 read of the SRAM is the new suspect.
+      - Stage 0xce with 0x6016 = 0xbd: the commit and the alarm happened and the sample's command didn't
+        land. No sample; a reset at 45 s then suggests the edit ran without showing it.
+      - The new bite without RESET_EN, or the awake bite, and a Mac that stays dark: WD2 was never armed
+        (the value word after the bite, or the edit itself). Not a completed entry: the power key.
+      - Stage 0xc6: CPU0 had something pending after its reads, so it likely never went down; the bite's
+        reading stands, the reset time says less.
+      - The old bite with `PHASE` 4 or 5 says the engine didn't take the bite from this word. Before
+        dropping the approach: the rest of the SRAM (only 64 KiB of 0x70000 are read) could hold a copy.
       **Earlier, the order after run 11 (2026-11-09; judgment):** SIO's
       firmware stopped and CPU0 sent straight down changed nothing (RESEARCH.md, "M1 run 11"). Next, needing
       Corey's OK: the remaining 20 power words at macOS's state, in one run (the list and values are in that

@@ -12,7 +12,8 @@ and stops on one that differs, so a stage's directory must not change after
 its save. It also runs the position read's stages (a-h, one word each but a), the
 launcher's --position (saved after each, then done.txt and the mark run-floor
 needs) and --position-after (a regular boot, only with a collected done.txt),
-and stage 6, the ten words that say where A2's WD2 bite is (recfg_bite.h).
+stage 6, the ten words that say where A2's WD2 bite is (recfg_bite.h), and
+stage 7, that word alone.
 
   python3 -I tests/recfg_peek_test.py
 """
@@ -326,8 +327,31 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     check(not [pa for pa in TEN if 0x28e0802d8 <= pa < 0x28e0802e0 or 0x28e700000 <= pa < 0x28e700008],
           "none of stage 6's words is on the never-write list")
 
+    # Stage 7: the bite word alone, for the regular boot after the run: one read, and which value.
+    BITE = SRAM + 0x2010
+    for value, rc_, text in ((0x2aea5400, 0, "the old value, 30 s"), (0x405f7e00, 0, "the new value, 45 s"), (0x405f7e01, 3, "neither the old value nor the new one"),
+                             (0, 3, "neither"), (0xffffffff, 3, "neither")):
+        ten(GOOD[:8] + [value, 4])
+        r, a = run(7, out7)
+        check(r.returncode == rc_ and a == [BITE] and r.stdout.rstrip().endswith("0x292f02010 = 0x%08x  A2's WD2 bite word: %s" % (value, text)
+              if text != "neither" else "neither the old value nor the new one"),
+              f"stage 7 reads the one word and nothing else, and says {value:#x} is {text} (exit {rc_})", r.stdout + str([hex(x) for x in a]))
+    ten([0xffffffff] * 8 + [0x2aea5400, 0xffffffff])
+    r, a = run(7, out7)
+    check(r.returncode == 0 and a == [BITE], "stage 7 goes by that word whatever the other nine read: it never reads them", r.stdout)
+    seen = subprocess.run([inline, "7", out7], capture_output=True, text=True).stdout
+    check(seen.index("reading 0x292f02010\n") < seen.index("\n0x292f02010\n") < seen.index("0x292f02010 = 0x"), "stage 7 prints its \"reading\" line before the read", seen)
+    check(not os.listdir(out7), "stage 7 writes no dump", os.listdir(out7))
+
+    # Started with stdout closed, the device would become this program's stdout: it stops before any read.
+    ten(GOOD)
+    if os.path.exists(trace):
+        os.unlink(trace)
+    r = subprocess.run([binary, "6", out7], stderr=subprocess.PIPE, preexec_fn=lambda: os.close(1))
+    check(r.returncode == 1 and not os.path.exists(trace), "with stdout closed, the device isn't used as stdout: exit 1 before any read", r.stderr)
+
     # Its arguments: no address can be asked for.
-    for args in (["0", tmp], ["7", tmp], ["12", tmp], ["x", tmp], ["i", tmp], ["A", tmp], ["ab", tmp], ["1"],
+    for args in (["0", tmp], ["8", tmp], ["12", tmp], ["x", tmp], ["i", tmp], ["A", tmp], ["ab", tmp], ["1"],
                  ["0x2925c0200", tmp], []):
         r = subprocess.run([binary] + args, capture_output=True, text=True)
         check(r.returncode == 2, "refuses arguments " + repr(args), r.stdout + r.stderr)

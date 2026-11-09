@@ -74,11 +74,13 @@
 # --m1-recfg-bite (the feasibility run for instrumenting the engine: PLAN.md; RESEARCH.md, "A different
 # approach") is that with one word of the engine's reconfig SRAM changed first: A2's WD2 bite, 30 s to 45 s
 # (e1-hook/recfg-bite: a read-only check, saved, then the one write, saved; Corey's OK of 2026-11-09), and
-# recfg_bite=1, which has CPU0 read WD2 and PHASE once right after the commit and record them (stage 0xc7).
-# If the word can't be changed, that's the result: nothing is loaded and nothing replays. A write that
-# faults restarts the Mac about 10 s later (kernel.panic, below), with the check's record saved. Every way
-# out before the floor puts the old value back. Its reset, if the engine ran the changed word and A2 is
-# what stalls, comes about 45 s after the screen goes dark, not 30. Its label is floor-m1-recfg-bite.
+# recfg_bite=1, which has CPU0, once it has let the others go after the commit, read WD2 and PHASE and record
+# them (stage 0xc7, or 0xc6 with an exception pending). If the word can't be changed, that's the result:
+# nothing is loaded and nothing replays. A write that faults restarts the Mac about 10 s later (kernel.panic,
+# below), with the check's record saved. Nothing puts the old value back by itself: the OK is for one write,
+# so once it's made the word reads 45 s on every way out, and this says so (recfg-bite --restore, by hand
+# in a safe boot, writes 30 s again). Its reset, if the engine ran the changed word and A2 is what stalls,
+# comes about 45 s after the screen goes dark, not 30. Its label is floor-m1-recfg-bite.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
@@ -99,9 +101,11 @@
 #     After --m1-position, also, in that same boot, once m1-crumbs and collect
 #     are done (the next restart would lose what the reset left):
 #       pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek --position-after
-#     After --m1-recfg-bite, also, once m1-crumbs and collect are done:
+#     After --m1-recfg-bite, also, once m1-crumbs and collect are done (and after the dark ending's
+#     power key too):
 #       pkexec /home/corey/src/sleep-drain/e1-hook/recfg-bite --after
-#     (does A2's bite word read 30 s again, or did the 45 s survive the restart?)
+#     (does A2's bite word read 30 s again, or did the 45 s survive the restart? If it reads 45 s: no
+#     other one-way recipe, and no macOS, before recfg-bite --restore in the next safe boot, Corey's call)
 #   - Dark for good: the screen goes dark, if it isn't already, and it and
 #     the keyboard (dark since the reading began) stay dark past 2 minutes.
 #     Nothing wakes the Mac from it. If that's new (it's a candidate for a
@@ -151,8 +155,7 @@
 # module again, so nothing stays armed without its saved reading. After that,
 # a way out calls the replay off instead: an unload then would let the
 # suspend already asked for sleep as a plain s2idle, dark like the floor.
-# With --m1-recfg-bite, either way then puts A2's bite word back (recfg_poke
-# restore).
+# With --m1-recfg-bite, either way leaves A2's bite word at 45 s, and says so.
 set -euo pipefail
 
 SAFE_FLAG=${FLOOR_SAFE_FLAG:-/run/sleep-drain-safe/active}
@@ -168,6 +171,8 @@ KBD=${FLOOR_KBD:-/sys/class/leds/kbd_backlight}
 RUNDIR=${FLOOR_RUNDIR:-/run}
 PMP=${FLOOR_PMP:-/usr/local/bin/sleep-drain-pmp}
 PMP_KO=${FLOOR_PMP_KO:-/usr/local/lib/sleep-drain/pmp_sleep_release.ko}
+USB=${FLOOR_USB:-/sys/bus/usb/devices}
+TYPEC=${FLOOR_TYPEC:-/sys/class/typec}
 # How long, awake, the suspend may take to begin after the reading asks.
 WATCH_S=${FLOOR_WATCH_S:-120}
 
@@ -332,9 +337,8 @@ fi
 
 here=$(cd "$(dirname "$0")" && pwd)
 ko=$here/e1_hook.ko
-# --m1-recfg-bite: the launcher that changes A2's bite word, and the writer itself, for putting it back.
+# --m1-recfg-bite: the launcher that changes A2's bite word.
 BITE=${FLOOR_BITE:-$here/recfg-bite}
-POKE=${FLOOR_POKE:-$here/recfg_poke}
 [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
 [[ -f $SAFE_FLAG ]] || die "the floor runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
 [[ -f $ko ]] || die "no $ko: make -C $here"
@@ -358,13 +362,26 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!siostop)) || [[ $parms == *$'\n'sio_stop:* ]] || die "$ko is an older build, without sio_stop: make -C $here"
 ((!pwords)) || [[ $parms == *$'\n'ps_words:* ]] || die "$ko is an older build, without ps_words: make -C $here"
 ((!recfg)) || [[ $parms == *$'\n'recfg_bite:* ]] || die "$ko is an older build, without recfg_bite: make -C $here"
-((!recfg)) || [[ -x $BITE && -x $POKE ]] || die "no $BITE or no $POKE: cc -O2 -Wall -o $here/recfg_poke $here/recfg_poke.c (and recfg_peek the same way)"
+((!recfg)) || [[ -x $BITE ]] || die "no $BITE"
 # sleep-drain-pmp's module is built by install.sh for one kernel. After a kernel update it's the old kernel's until
 # install.sh runs again, which a safe boot can't do: better to say so now than after the load.
 ((!sio)) || [[ $(modinfo -F vermagic "$PMP_KO" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] ||
   die "$PMP_KO isn't built for $(uname -r): restart into the regular boot and run pkexec bash install.sh there"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
+# --m1-recfg-bite: what the reading would refuse for (sleep-drain-reading's attached(): a USB device that isn't a root
+# hub, a USB-C partner), refused here, before the SRAM write and not after it.
+if ((recfg)); then
+  stuff=()
+  for d in "$USB"/*; do
+    [[ -f $d/idVendor && $(< "$d/idVendor") != 1d6b ]] || continue
+    stuff+=("${d##*/}=$(< "$d/idVendor"):$(< "$d/idProduct")")
+  done
+  for d in "$TYPEC"/port*-partner; do
+    [[ ! -e $d ]] || stuff+=("${d##*/}")
+  done
+  ((${#stuff[@]} == 0)) || die "unplug everything first (attached: ${stuff[*]})"
+fi
 [[ $(cat "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none, so the suspend wouldn't be a real one: echo none > $PM_TEST"
 # The awake pass first, in this boot: a bad address faults there, not after the commit. --m1-sio-pmp doesn't
 # need it: run 6 read every one of its addresses after the commit, and its load log has them awake.
@@ -397,15 +414,10 @@ disarm() {
     ;;
   esac
   armed=0
-  # --m1-recfg-bite: A2's bite word back at 30 s, after the unload or the cancel, so that nothing can replay
-  # with it half-way. One program, which has run once already.
+  # --m1-recfg-bite: the one write isn't undone here (its header says why). Say what's left.
   if ((patched)); then
     patched=0
-    if "$POKE" restore > /dev/null 2>&1; then
-      echo "run-floor: A2's bite word is back at 30 s" >&2 2> /dev/null || true
-    else
-      echo "run-floor: A2's BITE WORD MAY STILL READ 45 s: restart the Mac before anything else" >&2 2> /dev/null || true
-    fi
+    echo "run-floor: A2's bite word was changed and still reads 45 s (recfg-bite --restore, in a safe boot, writes 30 s again; run-floor --m1-recfg-bite can simply be run again)" >&2 2> /dev/null || true
   fi
 }
 cancel() {
@@ -440,16 +452,25 @@ grep -F x /dev/null || true
 
 # --m1-recfg-bite: the one SRAM write, before anything is loaded (recfg-bite: the check, saved, then the write,
 # saved). kernel.panic is set by now, so a write that faults restarts the Mac 10 s later. If the word can't be
-# changed, that's the run's result, and nothing else happens. From here on every way out puts the word back.
+# changed, that's the run's result, and nothing else happens.
 if ((recfg)); then
-  patched=1
+  # A line of this script's own first: with a broken stdout it fails here, and set -e stops before anything is written.
+  echo "run-floor: A2's bite word first (recfg-bite), then the module and the reading"
   rc=0
   "$BITE" || rc=$?
-  if ((rc != 0)); then
-    # 3: the check found the SRAM not as expected, and nothing was written, so there's nothing to put back.
-    ((rc != 3)) || patched=0
-    die "A2's bite word wasn't changed (recfg-bite exit $rc: 3, the SRAM isn't as expected; 5, the write didn't read back). Nothing is loaded and nothing replays. That's a result, and its record is saved: restart the Mac"
-  fi
+  case $rc in
+  0) patched=1 ;;
+  3 | 5)
+    die "A2's bite word wasn't changed (recfg-bite exit $rc: 3, the SRAM isn't as expected; 5, the write didn't read back as meant). Nothing is loaded and nothing replays. That's a result, and what was saved of it is on the boot partition: restart the Mac"
+    ;;
+  4)
+    die "recfg-bite stopped before its write (exit 4, above: a tool to rebuild, or a save that failed). Nothing was written and nothing is loaded. Once that's fixed this can be run again, in this same boot"
+    ;;
+  *)
+    # recfg-bite says itself, in capitals, when the writer ran and the word may read 45 s.
+    die "recfg-bite failed (exit $rc), above. Nothing is loaded and nothing replays: restart the Mac"
+    ;;
+  esac
 fi
 
 params=(replay=15 oneway=1)
@@ -471,9 +492,12 @@ params=(replay=15 oneway=1)
 ((!recfg)) || params+=(recfg_bite=1)
 armed=1
 if ! insmod "$ko" "${params[@]}"; then
-  # The module says why in the kernel log, which a safe boot loses at the restart: show it now.
-  echo "run-floor: e1_hook didn't load; nothing replayed. The kernel's last lines from it:" >&2
-  dmesg 2> /dev/null | grep -F e1_hook | tail -n 6 >&2 || true
+  # The module says why in the kernel log, which a safe boot loses at the restart: show it now, and keep it.
+  {
+    echo "run-floor: e1_hook didn't load; nothing replayed. The kernel's last lines from it:"
+    dmesg 2> /dev/null | grep -F e1_hook | tail -n 6 || true
+  } 2>&1 | tee -a "$out" >&2 || true
+  "$SAVE" save "$out" > /dev/null 2>&1 || echo "run-floor: (that wasn't saved: the lines above are the record)" >&2
   exit 1
 fi
 # A build that doesn't know them would load with them ignored, and only warn.
@@ -568,10 +592,8 @@ log "  (replay_done: 1 = ran and stopped short, 2 = called off; replay_ret: MBSE
 log "kernel log, e1_hook:"
 klog e1_hook
 if ((patched)); then
-  # The replay is called off, so nothing runs the word any more: back to 30 s, with the writer's own lines.
   patched=0
-  log "A2's bite word, back to 30 s (recfg_poke restore):"
-  if "$POKE" restore 2> /dev/null >> "$out"; then log "  done"; else log "  NOT DONE: it may still read 45 s until the restart"; fi
+  log "A2's bite word was changed and still reads 45 s: nothing here puts it back (recfg-bite's header says why)"
 fi
 log "================================================================================="
 log "Saving to the boot partition (this fails if the NVMe is gone)..."

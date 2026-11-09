@@ -183,7 +183,7 @@ def sysctl(tmp):
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
           takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
-          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, restore_rc=0, insmod_rc=0, tools=True, pmp_stale=False):
+          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -202,6 +202,15 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     for k, v in (("success", "0"), ("fail", "0"), ("last_failed_errno", "0"), ("last_failed_step", "")):
         write(os.path.join(tmp, "stats", k), v + "\n")
     os.makedirs(os.path.join(tmp, "log"))
+    # What's attached, as sleep-drain-reading sees it: a root hub is always there and doesn't count.
+    write(os.path.join(tmp, "usb", "usb1", "idVendor"), "1d6b\n")
+    write(os.path.join(tmp, "usb", "usb1", "idProduct"), "0002\n")
+    os.makedirs(os.path.join(tmp, "typec", "port0"))
+    if attached == "usb":
+        write(os.path.join(tmp, "usb", "1-1", "idVendor"), "05ac\n")
+        write(os.path.join(tmp, "usb", "1-1", "idProduct"), "1234\n")
+    elif attached == "typec":
+        os.makedirs(os.path.join(tmp, "typec", "port0-partner"))
     write(os.path.join(tmp, "kbd", "max_brightness"), "255\n")
     write(os.path.join(tmp, "kbd", "brightness"), "0\n")
     if loaded:
@@ -235,20 +244,17 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
                f' done && : > cancel\n')
     write(os.path.join(stubs, "insmod"),
           f'#!/bin/sh\necho "insmod $*" >> {calls}\n[ {insmod_rc} = 0 ] || exit {insmod_rc}\nmkdir -p {moddir}/parameters\n{params}', 0o755)
-    # --m1-recfg-bite's two programs, logged to a file of their own with what was true when each ran: kernel.panic, whether
-    # e1_hook had been loaded or unloaded, and whether the replay had been called off.
+    # --m1-recfg-bite's launcher, logged to a file of its own with what was true when it ran: its arguments, kernel.panic,
+    # and whether e1_hook had been loaded by then. run-floor runs nothing else of the kind: no writer, no restore.
     if tools:
         count = f'count() {{ if [ -f {calls} ]; then grep -c "^$1" {calls}; else echo 0; fi; }}\n'
-        state = (f'panic=$(cat {tmp}/sysctl/panic) insmod=$(count insmod) rmmod=$(count rmmod)'
-                 f' cancel=$(cat {moddir}/parameters/cancel 2>/dev/null | tr -d "\\n")')
+        state = f'panic=$(cat {tmp}/sysctl/panic) insmod=$(count insmod)'
         write(os.path.join(stubs, "recfg-bite"),
-              f'#!/bin/sh\n{count}echo "bite $* {state}" >> {tmp}/recfg-calls\necho "the bite launcher ran"\nexit {bite_rc}\n', 0o755)
-        write(os.path.join(stubs, "recfg_poke"),
-              f'#!/bin/sh\n{count}echo "poke $* {state}" >> {tmp}/recfg-calls\necho "the writer ran: $*"\nexit {restore_rc}\n', 0o755)
+              f'#!/bin/sh\n{count}echo "bite [$*] {state}" >> {tmp}/recfg-calls\necho "the bite launcher ran"\nexit {bite_rc}\n', 0o755)
     write(os.path.join(stubs, "rmmod"), f'#!/bin/sh\necho "rmmod $*" >> {calls}\n', 0o755)
     # The PMP's release: logged to a file of its own, and whether the reading had begun by then.
     write(os.path.join(stubs, "pmp"), f'#!/bin/sh\necho "$*" >> {tmp}/pmp-calls\ngrep -q "^reading" {calls} 2>/dev/null && echo LATE >> {tmp}/pmp-calls\nexit {pmp_rc}\n', 0o755)
-    write(os.path.join(stubs, "save"), f'#!/bin/sh\necho "sleep-drain-safe $*" >> {calls}\n', 0o755)
+    write(os.path.join(stubs, "save"), f'#!/bin/sh\necho "sleep-drain-safe $*" >> {calls}\nexit {save_rc}\n', 0o755)
     write(os.path.join(stubs, "dmesg"), '#!/bin/sh\necho "[   12.345678] e1_hook: replay: a stub line"\n', 0o755)
     # pmp_sleep_release.ko is install.sh's, built for one kernel: pmp_stale is the one a kernel update leaves behind.
     stale = 'case "$3" in *pmp_sleep_release.ko) echo "0.0.0-0-OLD SMP preempt mod_unload aarch64"; exit 0 ;; esac\n' if pmp_stale else ""
@@ -298,8 +304,8 @@ def env(tmp, launcher, watch_s=3):
         e.update(FLOOR_SAVE=os.path.join(tmp, "stubs", "save"), FLOOR_STATS=os.path.join(tmp, "stats"),
                  FLOOR_LOGDIR=os.path.join(tmp, "log"), FLOOR_RUNDIR=tmp, FLOOR_WATCH_S=str(watch_s),
                  FLOOR_KBD=os.path.join(tmp, "kbd"), FLOOR_PMP=os.path.join(tmp, "stubs", "pmp"),
-                 FLOOR_BITE=os.path.join(tmp, "stubs", "recfg-bite"), FLOOR_POKE=os.path.join(tmp, "stubs", "recfg_poke"),
-                 FLOOR_PMP_KO=os.path.join(tmp, "stubs", "pmp_sleep_release.ko"))
+                 FLOOR_BITE=os.path.join(tmp, "stubs", "recfg-bite"), FLOOR_PMP_KO=os.path.join(tmp, "stubs", "pmp_sleep_release.ko"),
+                 FLOOR_USB=os.path.join(tmp, "usb"), FLOOR_TYPEC=os.path.join(tmp, "typec"))
     return e
 
 
@@ -485,6 +491,12 @@ def test_broken_stdout(launcher):
         finally:
             os.close(wfd)
         c = calls(tmp)
+        if "--m1-recfg-bite" in launcher[4]:
+            # Its first line of output comes before recfg-bite, so that nothing is written to the SRAM for a run that can't be seen.
+            check(r.returncode != 0 and c == [] and recfg_calls(tmp) == [],
+                  f"{name(launcher)}: a broken stdout stops it before recfg-bite and before any load",
+                  f"exit {r.returncode}\n" + r.stderr + "\n".join(c + recfg_calls(tmp)))
+            return
         check(r.returncode != 0 and c[-1:] == ["rmmod e1_hook"] and not any(x.startswith("reading") for x in c),
               f"{name(launcher)}: a broken stdout after insmod unloads the module before any reading",
               f"exit {r.returncode}\n" + r.stderr + "\n".join(c))
@@ -555,7 +567,9 @@ def test_floor_refusals(launcher):
         cases.append(("a build without ps_words", dict(build="floor-nopwords"), None, "without ps_words"))
     if recfg:
         cases += [("a build without recfg_bite", dict(build="floor-norecfg"), None, "without recfg_bite"),
-                  ("without recfg-bite and recfg_poke", dict(tools=False), None, "recfg_poke.c")]
+                  ("without recfg-bite", dict(tools=False), None, "stubs/recfg-bite"),
+                  ("with a USB device attached, as the reading would after the write", dict(attached="usb"), None, "unplug everything first (attached: 1-1=05ac:1234)"),
+                  ("with a USB-C partner attached", dict(attached="typec"), None, "unplug everything first (attached: port0-partner)")]
     if plain:
         # The floor's build before quiet still runs the floor itself.
         usage = "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite]"
@@ -668,69 +682,70 @@ def recfg_calls(tmp):
 
 
 def test_insmod_fails(launcher):
-    """A module that refuses to load: the kernel's reason shown, nothing read, and (--m1-recfg-bite) the word put back."""
+    """A module that refuses to load: the kernel's reason shown and saved, and nothing read."""
+    recfg = "--m1-recfg-bite" in launcher[4]
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, insmod_rc=1)
         r = run(tmp, d, launcher)
         c = calls(tmp)
         rc_ = recfg_calls(tmp)
-        recfg = "--m1-recfg-bite" in launcher[4]
+        logs = os.listdir(os.path.join(tmp, "log"))
+        logged = open(os.path.join(tmp, "log", logs[0])).read() if len(logs) == 1 else ""
         check(r.returncode == 1 and "e1_hook didn't load" in r.stderr and "e1_hook: replay: a stub line" in r.stderr
-              and "didn't take" not in r.stderr and not any(x.startswith("reading") for x in c)
-              and ([x.split()[:2] for x in rc_] == ([["bite", "panic=10"], ["poke", "restore"]] if recfg else [])),
-              f"{name(launcher)}: a module that refuses to load: the kernel's lines shown, no reading"
-              + (", and the bite word put back" if recfg else ""), r.stdout + r.stderr + "\n".join(c + rc_))
+              and "didn't take" not in r.stderr and len(c) == 3 and c[0].startswith("insmod ")
+              and c[1] == "sleep-drain-safe save " + os.path.join(tmp, "log", logs[0] if logs else "") and c[2] == "rmmod e1_hook"
+              and "e1_hook didn't load" in logged and "e1_hook: replay: a stub line" in logged and "wasn't saved" not in r.stderr
+              and rc_ == ([BITE] if recfg else []) and (STILL in r.stderr) == recfg,
+              f"{name(launcher)}: a module that refuses to load: the kernel's lines shown and saved, no reading"
+              + (", and it says the bite word still reads 45 s" if recfg else ""), r.stdout + r.stderr + "\n".join(c + rc_))
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, launcher, insmod_rc=1, save_rc=1)
+        r = run(tmp, d, launcher)
+        check(r.returncode == 1 and "e1_hook: replay: a stub line" in r.stderr and "(that wasn't saved: the lines above are the record)" in r.stderr,
+              f"{name(launcher)}: and it says so when those lines couldn't be saved", r.stdout + r.stderr)
+
+
+# recfg-bite as run-floor must run it: no arguments, kernel.panic set, nothing loaded yet.
+BITE = "bite [] panic=10 insmod=0"
+STILL = "A2's bite word was changed and still reads 45 s"
 
 
 def test_recfg(launcher):
-    """--m1-recfg-bite: the SRAM word changed before anything is loaded, with kernel.panic set; put back on every way out
-    but the floor; and nothing loaded if it can't be changed."""
+    """--m1-recfg-bite: the SRAM word changed before anything is loaded, with kernel.panic set, by recfg-bite and nothing else;
+    nothing loaded if it can't be changed; and no store to undo it on any way out, only the word that it still reads 45 s."""
     script = name(launcher)
-    BITE = "bite  panic=10 insmod=0 rmmod=0 cancel="
 
-    # No suspend comes: NO FLOOR, the replay called off, then the word put back, once.
+    # No suspend comes: NO FLOOR, the replay called off, and the block says the word is still changed.
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="handoff")
         r = run(tmp, d, launcher)
         rc_ = recfg_calls(tmp)
-        check(r.returncode == 2 and rc_ == [BITE, "poke restore panic=10 insmod=1 rmmod=0 cancel=1"]
-              and "A2's bite word, back to 30 s (recfg_poke restore):\n  done\n" in r.stdout and "NO FLOOR" in r.stdout
-              and r.stdout.index("the bite launcher ran") < r.stdout.index("e1_hook loaded with"),
-              f"{script}: recfg-bite runs first, with kernel.panic set and nothing loaded; after NO FLOOR's cancel the word is put back, once",
-              r.stdout + r.stderr + "\n".join(rc_))
         logs = os.listdir(os.path.join(tmp, "log"))
         logged = open(os.path.join(tmp, "log", logs[0])).read() if len(logs) == 1 else ""
-        check("the writer ran: restore" in logged and "back to 30 s" in logged, f"{script}: the restore's own lines are in the saved log", logged)
-    with tempfile.TemporaryDirectory() as tmp:
-        d = setup(tmp, launcher, reading="handoff", restore_rc=5)
-        r = run(tmp, d, launcher)
-        check(r.returncode == 2 and "  NOT DONE: it may still read 45 s until the restart\n" in r.stdout and len(recfg_calls(tmp)) == 2,
-              f"{script}: NO FLOOR with a restore that fails says so, and doesn't try twice", r.stdout + r.stderr + "\n".join(recfg_calls(tmp)))
+        check(r.returncode == 2 and rc_ == [BITE] and "NO FLOOR" in r.stdout
+              and STILL + ": nothing here puts it back" in r.stdout and STILL in logged and r.stderr.count(STILL) == 0
+              and r.stdout.index("run-floor: A2's bite word first") < r.stdout.index("the bite launcher ran") < r.stdout.index("e1_hook loaded with"),
+              f"{script}: recfg-bite runs once, first, with kernel.panic set and nothing loaded; NO FLOOR says, on the screen and in its saved log,"
+              " that the word still reads 45 s, and nothing stores again", r.stdout + r.stderr + "\n".join(rc_))
 
-    # The word can't be changed: nothing is loaded.
-    for bite_rc, restored in ((3, False), (5, True), (1, True)):
+    # The word can't be changed: nothing is loaded, and nothing claims it was changed.
+    for bite_rc, msg in ((3, "A2's bite word wasn't changed (recfg-bite exit 3:"), (4, "recfg-bite stopped before its write (exit 4, above"),
+                         (5, "A2's bite word wasn't changed (recfg-bite exit 5:"), (1, "recfg-bite failed (exit 1)"), (143, "recfg-bite failed (exit 143)")):
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, bite_rc=bite_rc)
             r = run(tmp, d, launcher)
             rc_ = recfg_calls(tmp)
-            check(r.returncode == 1 and f"A2's bite word wasn't changed (recfg-bite exit {bite_rc}:" in r.stderr and calls(tmp) == []
-                  and rc_ == [BITE] + (["poke restore panic=10 insmod=0 rmmod=0 cancel="] if restored else []),
-                  f"{script}: recfg-bite exit {bite_rc}: nothing loaded, nothing read; "
-                  + ("the old value is asked for again" if restored else "nothing was written, so nothing is put back"),
+            check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [] and rc_ == [BITE] and STILL not in r.stderr,
+                  f"{script}: recfg-bite exit {bite_rc}: nothing loaded, nothing read, and recfg-bite's own account of the word stands",
                   r.stdout + r.stderr + "\n".join(calls(tmp) + rc_))
 
-    # A failed reading, and a signal during it: the unload first, then the word.
+    # A failed reading, a signal during it, a build that ignored the parameter: the unload as ever, and the word left as it is, said so.
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="fail")
         r = run(tmp, d, launcher)
         rc_ = recfg_calls(tmp)
-        check(r.returncode == 1 and rc_ == [BITE, "poke restore panic=10 insmod=1 rmmod=1 cancel="] and "A2's bite word is back at 30 s" in r.stderr,
-              f"{script}: a failed reading: the module unloaded, then the word put back", r.stdout + r.stderr + "\n".join(rc_))
-    with tempfile.TemporaryDirectory() as tmp:
-        d = setup(tmp, launcher, reading="fail", restore_rc=5)
-        r = run(tmp, d, launcher)
-        check(r.returncode == 1 and "A2's BITE WORD MAY STILL READ 45 s: restart the Mac before anything else" in r.stderr,
-              f"{script}: a restore that fails on the way out says the word may still be changed", r.stdout + r.stderr)
+        check(r.returncode == 1 and rc_ == [BITE] and calls(tmp)[-1:] == ["rmmod e1_hook"] and r.stderr.count(STILL) == 1,
+              f"{script}: a failed reading: the module unloaded, and it says once that the word still reads 45 s", r.stdout + r.stderr + "\n".join(rc_))
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="wait")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -739,18 +754,16 @@ def test_recfg(launcher):
         os.kill(launcher_pid, signal.SIGTERM)
         out, err = p.communicate(timeout=30)
         rc_ = recfg_calls(tmp)
-        check(p.returncode == 143 and rc_ == [BITE, "poke restore panic=10 insmod=1 rmmod=1 cancel="],
-              f"{script}: SIGTERM during the reading: the module unloaded, then the word put back", out + err + "\n".join(rc_))
-
-    # A build that ignored recfg_bite: unloaded, and the word put back.
+        check(p.returncode == 143 and rc_ == [BITE] and calls(tmp)[-1:] == ["rmmod e1_hook"] and err.count(STILL) == 1,
+              f"{script}: SIGTERM during the reading: the module unloaded, and it says the word still reads 45 s", out + err + "\n".join(rc_))
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, takes_recfg=False)
         r = run(tmp, d, launcher)
         rc_ = recfg_calls(tmp)
-        check(r.returncode == 1 and "didn't take" in r.stderr and rc_ == [BITE, "poke restore panic=10 insmod=1 rmmod=1 cancel="],
-              f"{script}: a build that ignored recfg_bite: unloaded, then the word put back", r.stdout + r.stderr + "\n".join(rc_))
+        check(r.returncode == 1 and "didn't take" in r.stderr and rc_ == [BITE] and r.stderr.count(STILL) == 1,
+              f"{script}: a build that ignored recfg_bite: unloaded, and it says the word still reads 45 s", r.stdout + r.stderr + "\n".join(rc_))
 
-    # The floor itself (the launcher killed while it waits): the word stays changed, for the engine to run.
+    # The floor itself (the launcher killed while it waits), and a signal while it watches: recfg-bite ran once and nothing else did.
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="handoff")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher, watch_s=30), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -762,8 +775,7 @@ def test_recfg(launcher):
         except ProcessLookupError:
             pass
         out, err = p.communicate(timeout=30)
-        check(recfg_calls(tmp) == [BITE], f"{script}: while it waits for the floor, the word stays changed: no restore", out + err + "\n".join(recfg_calls(tmp)))
-    # A signal while it watches: the replay called off, then the word put back.
+        check(recfg_calls(tmp) == [BITE], f"{script}: while it waits for the floor, the word stays changed", out + err + "\n".join(recfg_calls(tmp)))
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="handoff")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher, watch_s=30), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -776,8 +788,12 @@ def test_recfg(launcher):
             pass
         out, err = p.communicate(timeout=30)
         rc_ = recfg_calls(tmp)
-        check(p.returncode == 143 and rc_ == [BITE, "poke restore panic=10 insmod=1 rmmod=0 cancel=1"],
-              f"{script}: SIGTERM while it watches: the replay called off, then the word put back", out + err + "\n".join(rc_))
+        check(p.returncode == 143 and rc_ == [BITE] and cancelled(tmp) == "1\n" and err.count(STILL) == 1,
+              f"{script}: SIGTERM while it watches: the replay called off, and it says the word still reads 45 s", out + err + "\n".join(rc_))
+    # The launcher itself: recfg-bite is the only program of the kind it runs, and it never asks for a restore.
+    text = open(os.path.join(E1_HOOK, "run-floor")).read()
+    check(text.count('"$BITE"') == 1 and '"$BITE" || rc=$?' in text and "POKE" not in text and "--restore" in text and '"$BITE" --' not in text,
+          "run-floor runs recfg-bite once, with no arguments, and has no writer and no restore of its own")
 
 
 def test_quick(launcher):

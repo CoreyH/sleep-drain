@@ -13,14 +13,17 @@
  * 30 s, control := 4 (RESET_EN). The words expected here are built from that,
  * not copied from the dump, which stays out of this repository.
  *
- * The sample, recfg_bite=1's byte at 0x6005, sent in one command with stage
- * 0x47 right after the commit and the alarm's commands:
- *   bits 1:0  WD2's bite (0x2922b0024): 0 another value, 1 the old 30 s, 2 the
- *             new 45 s, 3 the value it read awake at load (if that's neither)
- *   bits 5:2  PHASE (0x2922c0110) bits 3:0 (the sequences write 0 to 0xd; A2
- *             writes 4, 5 and 7)
- *   bit 6     WD2's control (0x2922b002c) has RESET_EN and its count
- *             (0x2922b0020) is within 0.25 s of CPU0's time since the commit
+ * The sample, recfg_bite=1's byte at 0x6005, sent in one command with its
+ * stage (0x47, or 0x46 if CPU0 had an exception pending after the reads), once
+ * CPU0 has let the other cores go after the commit:
+ *   bits 1:0  WD2's bite (0x2922b0024): 0 another value, 1 the new 45 s, 2 the
+ *             old 30 s, 3 the value it read awake at load. The codes are chosen
+ *             so that 0xfe, the parked cores, which stage 0x4e leaves in this
+ *             byte, can't read as the new bite
+ *   bits 5:2  PHASE (0x2922c0110) bits 3:0, read after the bite (the sequences
+ *             write 0 to 0xd; A2 writes 4, 5 and 7)
+ *   bit 6     WD2's control (0x2922b002c) showed RESET_EN: CPU0 waits for it,
+ *             up to 0.3 s, before it reads the bite
  *   bit 7     A2's bite word in the SRAM still read the new value in step 8,
  *             just before the commit
  */
@@ -132,8 +135,8 @@ static const struct recfg_word {
 #endif
 
 #define M1_BITE_OTHER	0
-#define M1_BITE_OLD	1
-#define M1_BITE_NEW	2
+#define M1_BITE_NEW	1
+#define M1_BITE_OLD	2
 #define M1_BITE_AWAKE	3
 
 /* awake: WD2's bite as the load read it. */
@@ -146,11 +149,11 @@ static inline u8 m1_bite_class(u32 bite, u32 awake)
 	return bite == awake ? M1_BITE_AWAKE : M1_BITE_OTHER;
 }
 
-/* count_near: m1_pos_count_near() of WD2's count; sram: A2's bite word as step 8 read it. */
-static inline u8 m1_recfg_sample(u32 bite, u32 awake, u32 phase, u32 wd_ctrl, bool count_near, u32 sram)
+/* wd_ctrl: WD2's control as last read in the wait for RESET_EN; sram: A2's bite word as step 8 read it. */
+static inline u8 m1_recfg_sample(u32 bite, u32 awake, u32 phase, u32 wd_ctrl, u32 sram)
 {
 	return (u8)(m1_bite_class(bite, awake) | (phase & 0xf) << 2 |
-		    ((wd_ctrl & RECFG_WD_RESET_EN) && count_near ? 1U << 6 : 0) |
+		    (wd_ctrl & RECFG_WD_RESET_EN ? 1U << 6 : 0) |
 		    (sram == RECFG_BITE_NEW ? 1U << 7 : 0));
 }
 
