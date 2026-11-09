@@ -2991,3 +2991,67 @@ DISPEXT1's two, SEP, NUB_SPMI1, AFNC3_LW0), the PMP's word, which is never writt
 macOS has the internal PCIe ports down before it gets here, and this recipe doesn't, so the PCIe and fabric
 words are the ones most likely to behave differently here. maralcbr's own table has these words as macOS's
 state at sleep entry; whether their runs wrote this exact set isn't established here.
+
+### M1 run 12: macOS's remaining power words: the same reset (2026-11-09)
+
+`e1-hook/run-floor --quick --m1-power-words` (run 11's parameters and `ps_words=1`, #60; the module built at
+0c28390; kernel 7.2.11-14; flag `radios-off`; `pmp_sleep_release` with 0xc and 0xd), in a safe boot, on
+battery at about 40%. Raw data: `results/m1-run12-20261109/`.
+
+**The facts:** stage 0xcf. 0x6012 = 0xff as in run 11 (both DCPs, the SMC's ack, SIO's firmware stopped), `qto`
+0x00. 0x6013 = 0xdf: the sixteen target-0 words (UARTs, MSG, ATC USB_AON, PCIE and COMMON) all read actual 0
+within 10 ms; of the four fabric and PCIe words, at least one didn't read back its target and auto fields as
+written (one bit for the group, so which isn't known). The restart: about 30 s by Corey's count. `m1-crumbs`
+couldn't time it: a system update restarted the Mac once more before the read (`boots.txt`; the journal puts
+it at roughly 28-34 s). The alarm was disarmed by `--clear`.
+
+**The kernel changed after this run:** linux-aurora 7.2.11.aurora14 to aurora15 (2026-11-09 20:17). The module
+needs a rebuild, and later runs compare against this one across a kernel update.
+
+**What that shows:** sixteen more domains at macOS's state didn't move the reset. Twelve runs have now ended
+the same way, the last two with nothing able to see past the commit.
+
+### A different approach: instrument the engine instead of guessing (2026-11-09; step 1 has Corey's OK of that day, the rest is proposed)
+
+Every rung since run 6 has been a guess at what the engine waits for, at about 1 in 6 each, and the only
+observer, a core left up, may itself hold the gate. The one thing that survives a run is the time of the
+reset, and the engine's own sequences set it: each A sequence writes WD2's bite (0x2aea5400, 30 s) from the
+reconfig SRAM. PongoOS's `recfg.c` exists to modify these sequences, and the table's lock analogue reads 0
+here. So, if the SRAM is writable and the engine runs it live:
+
+1. **Feasibility, one run:** change A2's bite word alone to 45 s. Right after the commit, before its deep
+   WFI, CPU0 reads WD2's bite and `PHASE` once and records them (with `HS_A`'s two bits, and whether the
+   SRAM word still read the new value just before the commit). No reset time enters the test:
+   - **the new bite in WD2** says the SRAM is writable and that the engine ran the changed word. That's
+     the feasibility result, whenever the reset then comes;
+   - **the old bite while `PHASE` reads 4 or 5**, A2 before its last phase, says A2 itself armed WD2 from
+     something other than the word as it reads: the edit isn't what the engine runs. Only this rejects
+     the approach;
+   - **the old bite with any other `PHASE`** decides nothing about the edit: a later A sequence may have
+     re-armed WD2 before CPU0 looked. That includes 7, A2's last code, which stays until the next
+     sequence writes its own, and that sequence's opening re-arms WD2 first (Pullfrog's point). A later
+     sequence that soon would be news of its own: the entry finished within milliseconds;
+   - **the awake bite** says A2 hadn't armed WD2 yet, and decides nothing.
+
+   The reset time is a second fact, read with those (Pullfrog's two points on #61). Every A sequence
+   zeroes WD2's count and arms it with its own bite, so the reset comes one bite after the last sequence
+   to start: at 45 s if that's A2, at t + 30 s if a later A sequence started t after the commit. So:
+   - an unchanged reset near 30 s is inconclusive by itself. With the new bite read it fits a later
+     sequence arming right after the commit (the entry completing and a wake stalling, the case the SRAM
+     section leaves open) or a reset from something else. It's no evidence against the edit;
+   - a reset at 45 s fits A2 as the last to arm, the entry never finishing with every core down, and
+     equally a later sequence that started 15 s in. A second run with another bite tells them apart (the
+     reset follows A2's bite or it doesn't), with no other word changed;
+   - any other time T fits a later sequence that started at T - 30 s.
+2. **Then markers:** a write of a different bite placed at chosen points (in place of an unpolled write,
+   or in a relocated copy of a sequence with the table repointed). The reset time then says how far the
+   engine got with every core down: the first measurement past the gate. The same caution holds: a later
+   A sequence's preamble overwrites a marker's bite and restarts the count, so a marker's reset time alone
+   doesn't name the op the engine stopped at. It's read against step 1's result and against the same
+   marker at another bite, and the other A sequences' bites can be given values of their own to say which
+   armed last (more SRAM words, each needing the OK). Whether a marker can go in B2 depends on what executes table
+   B, which isn't known; one in A2 right after its first handshake needs no such knowledge, and says
+   whether B2's first gate ever opens.
+
+New writes to the engine's SRAM: Corey's OK first, word by word. Undone by a restart if iBoot rewrites the
+SRAM at boot, which a read of the word in the boot after step 1 confirms (inferred until then).
