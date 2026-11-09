@@ -81,6 +81,7 @@
  *   pkexec e1-hook/run-floor --m1-pmp             (--m1-hold's and pmp_out=1: PLAN.md, rung 3)
  *   pkexec e1-hook/run-floor --m1-pmp-idle        (the same and pmp_stop=0: the idle pair alone)
  *   pkexec e1-hook/run-floor --m1-position        (--m1-hold's and position=1: PLAN.md, the position read)
+ *   pkexec e1-hook/run-floor --m1-sio-pmp         (--m1-pmp's, position=1 and sio_on=1: PLAN.md, the combined rung)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -286,7 +287,11 @@ MODULE_PARM_DESC(pmp_stop, "With pmp_out=1: 0 leaves out the write that stops th
 /* E2's position read: where the engine stops (PLAN.md). */
 static bool position;
 module_param(position, bool, 0444);
-MODULE_PARM_DESC(position, "With hold=1, without hold_nowatch=1 and pmp_out=1: after reading the others down, CPU0 stays up, every exception masked, and reads the engine's phase, handshake, state and gate words, WD2 and SIO_CPU about 1 s and about 25 s after the third commit, recording each sample at once, then goes down as hold=1 does. Reads only; Corey's OK of 2026-11-09");
+MODULE_PARM_DESC(position, "With hold=1, without hold_nowatch=1, and with pmp_out=1 only alongside sio_on=1 (one sample then): after reading the others down, CPU0 stays up, every exception masked, and reads the engine's phase, handshake, state and gate words, WD2 and SIO_CPU about 1 s and about 25 s after the third commit, recording each sample at once, then goes down as hold=1 does. Reads only; Corey's OK of 2026-11-09");
+/* E2's combined rung: SIO_CPU's parents up for the entry (PLAN.md, rungs 5 and 3). */
+static bool sio_on;
+module_param(sio_on, bool, 0444);
+MODULE_PARM_DESC(sio_on, "With position=1 and pmp_out=1: in step 5, just before entry 61, ps_sio, UART_P and SPI_P on with the words genpd's resume writes, each polled up to 10 ms for actual f. Corey's OK of 2026-11-09");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -1105,7 +1110,8 @@ static void e1_after_slpa(void)
  * idles the same pair and clears the same bit before its last mile.
  *
  * position=1 (run-floor --m1-position, E2's position read; PLAN.md; on hold=1,
- * without hold_nowatch=1 or pmp_out=1): hold=1's recipe and one change. CPU0,
+ * without hold_nowatch=1, and with pmp_out=1 only in sio_on=1's run, below):
+ * hold=1's recipe and one change. CPU0,
  * having read the others down, stays up, every exception still masked, and
  * samples where the engine is, about 1 s and about 25 s after the third commit
  * (two, so that a stop can be told from slow progress; the second late, since
@@ -1141,6 +1147,23 @@ static void e1_after_slpa(void)
  *   0x6007  from 0x44, sample 2's byte A; 0x6015 its byte B (two commands, so
  *           neither is read below 0x44)
  *   0x6016  the alarm's byte, as hold=1's
+ *
+ * sio_on=1 (run-floor --m1-sio-pmp, E2's combined rung; PLAN.md, rungs 5 and 3;
+ * only with position=1 and pmp_out=1): the one run so far with new PMGR writes
+ * of its own. In step 5, just before entry 61's SIO_CPU word, ps_sio := 0x0f00000f
+ * (0x28e580180), UART_P := 0xf (0x28e580230) and SPI_P := 0xf (0x28e5801e8), Corey's
+ * OK of 2026-11-09, in genpd's resume order and with its words
+ * (safe-journal-20261106T201952.txt L6172-L6260), each polled up to 10 ms for
+ * actual f: the state macOS leaves them in (B1 raises the three before SIO_CPU).
+ * Linux's noirq has them all off by then, and B2 raises SIO_CPU itself and
+ * waits for its actual f at op 50. A raise that never finishes doesn't stop
+ * the run: 0x6007's bit 0, which no core uses (CPU0 never holds), says all
+ * three read on. At stages 0xc0-0xc5 a clear bit says they didn't; before
+ * those, it can also mean a plain pmp_out=1 run. With pmp_out=1, 0x6015 stays
+ * K4's byte, so position=1 takes sample 1 alone (0x6012-0x6013, about 1 s after
+ * the third commit), not sample 2, and CPU0 goes down right after it, leaving
+ * the engine about 29 s: its stages are 0x40, 0x41, 0x42, 0x44 and 0x45, with
+ * bit 7 set from K4 on (0xc0-0xc5).
  *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
@@ -1239,6 +1262,11 @@ static void e1_after_slpa(void)
 #define M1_PS_SIO_PAGE		0x28e580000ULL
 #define M1_PS_SIO		0x180
 #define M1_PS_SIO_CPU		0x188
+/* sio_on=1: SIO_CPU's two other parents that B1 raises (reg[2] + 0x1e8, + 0x230; AUDIO_P stays at its target 0). */
+#define M1_PS_SPI_P		0x1e8
+#define M1_PS_UART_P		0x230
+/* sio_on=1 raises them just before this entry of e1_post_slpa, SIO_CPU's word (checked at load). */
+#define M1_SIO_ENTRY		61
 /* wdt reg[0]: WD0, WD1 (apple_wdt's) and WD2 (the S2R engine's): count, bite, control (bit 2 RESET_EN). */
 #define M1_WD_CUR(n)		(0x10 * (n))
 #define M1_WD_BITE(n)		(0x10 * (n) + 0x4)
@@ -2040,7 +2068,8 @@ static void m1_position(u8 off, u8 qto, u8 held, u8 flags)
 		m1_crumb(0x6012, s, 2);
 		m1_stage(0x42);
 	}
-	if (m1_raw) {
+	/* With pmp_out=1, 0x6015 is K4's byte: sample 1 alone, and CPU0 goes down sooner. */
+	if (m1_raw && !pmp_out) {
 		m1_pos_wait(m1_t_third + 25 * m1_tps);
 		m1_stage(0x43);
 		m1_pos_sample(s);
@@ -2170,6 +2199,39 @@ static u8 m1_pmp_out(void)
 	return res;
 }
 
+/*
+ * sio_on=1, step 5, just before entry 61: ps_sio, UART_P and SPI_P on, in genpd's
+ * resume order and with its words, up to 10 ms each for actual f (the m1 comment
+ * says why, and what Corey OK'd). Goes on past a raise that doesn't finish, since
+ * the writes are harmless under an off parent. True if all three read on.
+ */
+static bool m1_sio_raise(void)
+{
+	static const struct {
+		u16 off;
+		u32 val;
+	} on[] = {
+		{ M1_PS_SIO, 0x0f00000f }, { M1_PS_UART_P, 0xf }, { M1_PS_SPI_P, 0xf },
+	};
+	bool ok = true;
+	unsigned int i;
+	u64 t0;
+
+	for (i = 0; i < ARRAY_SIZE(on); i++) {
+		writel(on[i].val, m1_sio + on[i].off);
+		dsb(sy);
+		t0 = m1_now();
+		while (((readl(m1_sio + on[i].off) >> 4) & 0xf) != 0xf) {
+			if (m1_now() - t0 > m1_tps / 100) {
+				ok = false;
+				break;
+			}
+			cpu_relax();
+		}
+	}
+	return ok;
+}
+
 /* Steps K3, K4 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
 {
@@ -2226,6 +2288,8 @@ static void __noreturn m1_after_slpa(void)
 
 		if (e1_post_early(w))
 			continue;
+		if (sio_on && i == M1_SIO_ENTRY && m1_sio_raise())
+			held |= BIT(0);	/* 0x6007's bit 0, unused by the cores: CPU0 never holds */
 		if (w->width == 8)
 			writeq_relaxed(w->val, post_map[i]);
 		else
@@ -2520,6 +2584,17 @@ static int __init m1_position_init(void)
 		readl(m1_pos + M1_POS_PHASE), readl(hs_a), readl(m1_wdx + M1_WDX_STATE),
 		readl(m1_pos + M1_POS_GATE44), readl(m1_pos + M1_POS_GATE40),
 		readl(m1_wdt + M1_WD_CTRL(2)), readl(m1_wdt + M1_WD_CUR(2)), readl(m1_sio + M1_PS_SIO_CPU));
+	if (sio_on) {
+		if (e1_post_slpa[M1_SIO_ENTRY].addr != M1_PS_SIO_PAGE + M1_PS_SIO_CPU ||
+		    e1_never_write(M1_PS_SIO_PAGE + M1_PS_SIO) || e1_never_write(M1_PS_SIO_PAGE + M1_PS_UART_P) ||
+		    e1_never_write(M1_PS_SIO_PAGE + M1_PS_SPI_P)) {
+			pr_err("m1: sio_on: entry %u isn't SIO_CPU's word, or a raise would touch the never-write list; refusing\n",
+			       M1_SIO_ENTRY);
+			return -EINVAL;
+		}
+		pr_info("m1: sio_on: awake: SIO %08x UART_P %08x SPI_P %08x SIO_CPU %08x\n", readl(m1_sio + M1_PS_SIO),
+			readl(m1_sio + M1_PS_UART_P), readl(m1_sio + M1_PS_SPI_P), readl(m1_sio + M1_PS_SIO_CPU));
+	}
 	return 0;
 }
 
@@ -3046,8 +3121,12 @@ static int __init e1_check_params(void)
 		pr_err("hold_nowatch=1 only changes hold=1\n");
 		return -EINVAL;
 	}
-	if (position && (!hold || hold_nowatch || pmp_out)) {
-		pr_err("position=1 needs hold=1 and no hold_nowatch=1 or pmp_out=1 (its samples follow CPU0's watch, and 0x6015 holds one)\n");
+	if (position && (!hold || hold_nowatch || (pmp_out && !sio_on))) {
+		pr_err("position=1 needs hold=1, no hold_nowatch=1, and sio_on=1 if pmp_out=1 (its samples follow CPU0's watch, and 0x6015 holds one)\n");
+		return -EINVAL;
+	}
+	if (sio_on && (!position || !pmp_out)) {
+		pr_err("sio_on=1 needs position=1 and pmp_out=1 (0x6007's bit 0 says how it went, and only stages 0xc0-0xc5 read it)\n");
 		return -EINVAL;
 	}
 	if ((replay & (2 | 8)) && !oneway) {
@@ -3210,11 +3289,11 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
-		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "");
+		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "");
 	return 0;
 
 unmap:

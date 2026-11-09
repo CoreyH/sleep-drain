@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp]
 #
 # THIS IS ONE WAY: THE MAC NEVER WAKES FROM IT. It loads e1_hook with
 # replay=15 oneway=1, so the next suspend's prepare_late runs maralcbr's
@@ -49,7 +49,13 @@
 # reads only, and writes no PMU byte --m1-hold doesn't. pkexec
 # /home/corey/src/sleep-drain/e1-hook/recfg-peek --position must have read every
 # word awake first, in this boot, and this refuses without its mark in /run; its
-# label is floor-m1-position. What's said of --m1, --m1-alarm and --m1-hold
+# label is floor-m1-position. --m1-sio-pmp (E2's combined rung, PLAN.md) is --m1-pmp
+# with position=1 and sio_on=1: right before the table's SIO_CPU word, ps_sio, UART_P
+# and SPI_P on (new PMGR writes, Corey's OK of 2026-11-09); it also withdraws the PMP's
+# display report requests (sleep-drain-pmp release 0xc 0xd), and takes one position
+# sample at about 1 s, CPU0 then going down at once. A hang in those raises is dark at
+# stage 0x90 (0x10 with bit 7). No awake pass needed; its label is floor-m1-sio-pmp.
+# What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
 #     itself into the regular boot. That's most likely the S2R entry's
@@ -63,7 +69,7 @@
 #     After --m1, also, before anything else touches the PMU:
 #       /home/corey/src/sleep-drain/e1-hook/m1-crumbs, for a photo or a copy,
 #       then pkexec /home/corey/src/sleep-drain/e1-hook/m1-crumbs --clear
-#       (after --m1-alarm, --m1-hold and --m1-position, --clear also disarms the alarm the run armed, 0x1401
+#       (after --m1-alarm, --m1-hold, --m1-position and --m1-sio-pmp, --clear also disarms the alarm the run armed, 0x1401
 #       back to 0x01, so that it can't power the Mac on an hour later; every
 #       m1 run refuses to load while it reads armed).
 #     After --m1-position, also, in that same boot, once m1-crumbs and collect
@@ -73,7 +79,7 @@
 #     the keyboard (dark since the reading began) stay dark past 2 minutes.
 #     Nothing wakes the Mac from it. If that's new (it's a candidate for a
 #     completed entry), leave it at least 30 minutes, then the steps below.
-#     After --m1-alarm, --m1-hold or --m1-position, do them before about 55 minutes: the alarm fires 60
+#     After --m1-alarm, --m1-hold, --m1-position or --m1-sio-pmp, do them before about 55 minutes: the alarm fires 60
 #     minutes after the commit, and if it wakes the SoC, the wake lands in
 #     m1n1 with no way back and the Mac hangs, at an unknown draw, until the
 #     power key. If it's dark past that, expect that and end it the same way.
@@ -90,7 +96,7 @@
 #          after --m1-late, floor-m1-alarm after --m1-alarm, floor-m1-hold
 #          and floor-m1-hold-nowatch after those, floor-m1-pmp and
 #          floor-m1-pmp-idle after --m1-pmp and --m1-pmp-idle, floor-m1-position
-#          after --m1-position: --clear before
+#          after --m1-position, floor-m1-sio-pmp after --m1-sio-pmp: --clear before
 #          the reading, since a PMU write can't change BQCC). After --m1-position,
 #          collect on its own first, then, before the reading, recfg-peek
 #          --position-after as above. --m1 can also hang
@@ -131,6 +137,7 @@ SYSCTL=${FLOOR_SYSCTL:-/proc/sys/kernel}
 LOGDIR=${FLOOR_LOGDIR:-/var/log}
 KBD=${FLOOR_KBD:-/sys/class/leds/kbd_backlight}
 RUNDIR=${FLOOR_RUNDIR:-/run}
+PMP=${FLOOR_PMP:-/usr/local/bin/sleep-drain-pmp}
 # How long, awake, the suspend may take to begin after the reading asks.
 WATCH_S=${FLOOR_WATCH_S:-120}
 
@@ -146,6 +153,7 @@ nowatch=0
 pmp=0
 nostop=0
 position=0
+sio=0
 label=floor
 if (($# == 1)) && [[ $1 == --quiet ]]; then
   quiet=1
@@ -202,8 +210,18 @@ elif (($# == 1)) && [[ $1 == --m1-position ]]; then
   hold=1
   position=1
   label=floor-m1-position
+elif (($# == 1)) && [[ $1 == --m1-sio-pmp ]]; then
+  quiet=1
+  m1=1
+  late=1
+  alarm=1
+  hold=1
+  pmp=1
+  position=1
+  sio=1
+  label=floor-m1-sio-pmp
 elif (($# != 0)); then
-  die "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position]"
+  die "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -225,11 +243,13 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!hold)) || [[ $parms == *$'\n'hold:* ]] || die "$ko is an older build, without hold: make -C $here"
 ((!pmp)) || [[ $parms == *$'\n'pmp_out:* ]] || die "$ko is an older build, without pmp_out: make -C $here"
 ((!position)) || [[ $parms == *$'\n'position:* ]] || die "$ko is an older build, without position: make -C $here"
+((!sio)) || [[ $parms == *$'\n'sio_on:* ]] || die "$ko is an older build, without sio_on: make -C $here"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 [[ $(cat "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none, so the suspend wouldn't be a real one: echo none > $PM_TEST"
-# The awake pass first, in this boot: a bad address faults there, not after the commit.
-((!position)) || [[ -f $RUNDIR/sleep-drain-position-awake ]] ||
+# The awake pass first, in this boot: a bad address faults there, not after the commit. --m1-sio-pmp doesn't
+# need it: run 6 read every one of its addresses after the commit, and its load log has them awake.
+((!position || sio)) || [[ -f $RUNDIR/sleep-drain-position-awake ]] ||
   die "the awake pass hasn't run in this boot: pkexec $here/recfg-peek --position first"
 
 # Disarm on every way out but the floor itself. Before the hand-off
@@ -299,6 +319,7 @@ params=(replay=15 oneway=1)
 ((!pmp)) || params+=(pmp_out=1)
 ((!nostop)) || params+=(pmp_stop=0)
 ((!position)) || params+=(position=1)
+((!sio)) || params+=(sio_on=1)
 armed=1
 insmod "$ko" "${params[@]}"
 # A build that doesn't know them would load with them ignored, and only warn.
@@ -312,8 +333,14 @@ insmod "$ko" "${params[@]}"
   { ((!nowatch)) || [[ $(cat "$MODDIR/parameters/hold_nowatch") == Y ]]; } &&
   { ((!pmp)) || [[ $(cat "$MODDIR/parameters/pmp_out") == Y ]]; } &&
   { ((!nostop)) || [[ $(cat "$MODDIR/parameters/pmp_stop") == N ]]; } &&
-  { ((!position)) || [[ $(cat "$MODDIR/parameters/position") == Y ]]; } ||
+  { ((!position)) || [[ $(cat "$MODDIR/parameters/position") == Y ]]; } &&
+  { ((!sio)) || [[ $(cat "$MODDIR/parameters/sio_on") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
+# --m1-sio-pmp: the PMP's display report requests withdrawn at this suspend's noirq (Corey's pick of 2026-11-09), as
+# T8140's driver does before it idles the PMP. A reboot undoes it; the module stays loaded on the ways out here.
+if ((sio)); then
+  "$PMP" release 0xc 0xd > /dev/null || die "couldn't load the PMP report-release module: nothing replayed"
+fi
 echo "e1_hook loaded with ${params[*]}. Leave the Mac alone: in about 10 minutes the reading ends and the Mac suspends into the floor, one way (this script's header says how it can end)"
 "$READING" take --label "$label" --then suspend &
 reader=$!

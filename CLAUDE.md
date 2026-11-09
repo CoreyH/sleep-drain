@@ -135,7 +135,11 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   CPU0 stays up after watching the others go down and samples where the engine
   is, about 1 s and 25 s after the third commit, in the same breadcrumbs (stages
   0x40-0x45); run-floor refuses it without `recfg-peek --position` having run in
-  that boot. `13` is the floor with the CPUs left up. `13`
+  that boot. `sio_on=1` (`run-floor --m1-sio-pmp`, with `position=1 pmp_out=1`) is its
+  combined rung: ps_sio, UART_P and SPI_P raised just before the table's SIO_CPU word
+  (Corey's OK of 2026-11-09), the launcher withdrawing the PMP's display report
+  requests, and one sample at about 1 s (stages 0xc0-0xc5; 0x6007's bit 0 says the
+  raises read on). `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
   (a `suspend_resume` tracepoint probe counts suspends from `enter_state()`'s

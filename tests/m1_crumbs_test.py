@@ -1200,9 +1200,9 @@ def position_tests(g, src):
 
         LONE = "sample 1 alone, about 1 s after the commit: only stages 0x44 and 0x45 say whether a read failed"
         rc, out, err = decoded(0x45, both)
-        check(rc == 0 and "0x6004 = 0x45 (pmgr_late=1): position=1: both samples recorded, CPU0 had nothing pending" in out
+        check(rc == 0 and "0x6004 = 0x45 (pmgr_late=1): position=1: the samples recorded, CPU0 had nothing pending" in out
               and "read off after the release (0x6005 = 0xfe, up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
-              and "0x6005 bit 0: SIO_CPU's bits 27:24 did not read f at entry 61's wait, the reference for its class (the expected case)\n" in out
+              and "0x6005 bit 0: SIO_CPU's bits 27:24 did not read f at entry 61's wait, the reference for its class\n" in out
               and "macOS's waits that timed out after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)\n" in out
               and f"position sample 1 (0x6012 = 0x{s1a:02x}, 0x6013 = 0x{s1b:02x}):\n" in out
               and "  PHASE 0x4 (the entry pair's first (A2)); HS_A bit 31 up, bit 24 up; state word 0xa03 (a sequence's start)\n" in out
@@ -1221,7 +1221,7 @@ def position_tests(g, src):
               and "observe=1" not in out and "PLAN.md has the reading guide" in out and LONE not in out,
               "position=1's 0x45: both samples decoded from the module's own bytes", out + err)
         rc, out, err = decoded(0x44, both)
-        check(rc == 0 and "0x44 (pmgr_late=1): position=1: both samples recorded, but CPU0 had an interrupt or SError pending" in out
+        check(rc == 0 and "0x44 (pmgr_late=1): position=1: the samples recorded, but CPU0 had an interrupt or SError pending" in out
               and "position sample 2" in out and LONE not in out, "position=1's 0x44: the same, with something pending", out + err)
 
         # Each sample's own lines, exact, with every field differing between the two and the other branch of each taken.
@@ -1303,6 +1303,64 @@ def position_tests(g, src):
             got = lines(1, 0x6012, phase, 0x6013, 0)[1]
             check(f"PHASE {phase:#x} ({text}" in got, f"PHASE {phase:#x} is named for {text}", got)
 
+    # sio_on=1's run: position=1 with pmp_out=1, so the stages have bit 7, one sample, and 0x6007's bit 0 is the raises.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+        cnt = "4800000000 24000000"
+        alarm = (0x41, 125144, 0, 0)
+        run7 = dict(parked=0xfe, left=0x50, down=0xff, secs=121544, flags=0xb0, isrs=0x8d, drained=0xbd, prog=(0x14, 0xdc))
+        ONE = "one sample by design (pmp_out=1 keeps 0x6015), about 1 s after the commit: it can't tell a stop from slow progress"
+        ALONE = "sample 1 alone, about 1 s after the commit"
+        HELD = "wrote their stop bit and held (0x6007 = 0xff): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n"
+        RAISED = "0x6007 bit 0 (sio_on=1): ps_sio, UART_P and SPI_P all read actual f within 10 ms\n"
+        NOT_RAISED = "0x6007 bit 0 (sio_on=1): ps_sio, UART_P and SPI_P did NOT all read actual f within 10 ms\n"
+
+        def dec(stage, kw):
+            fake(path, scratch(stage, **kw), rtc_secs=121761, alarm=alarm)
+            r = run(path, cnt=cnt)
+            return r.returncode, r.stdout, r.stderr
+
+        rc, out, err = dec(0xc5, run7)
+        check(rc == 0 and "stage 0x6004 = 0xc5 (pmp_out=1: bit 7, so the stage is 0x45) (pmgr_late=1): position=1: the samples recorded, CPU0 had nothing pending" in out
+              and "position sample 1 (0x6012 = 0x14, 0x6013 = 0xdc):\n" in out and "position sample 2" not in out
+              and ONE + "\n" in out and ALONE not in out
+              and HELD in out and RAISED in out
+              and "0x6015 = 0x8d: K4 ran" in out and "cores with an interrupt pending" not in out
+              and "0x6016 = 0xbd: every alarm command was acked" in out
+              and "from its low two bytes and the run's alarm: 121544" in out,
+              "sio_on=1's 0xc5: one sample, the raises read on, K4's byte, the alarm's", out + err)
+        rc, out, err = dec(0xc5, dict(run7, down=0xfe))
+        check(rc == 0 and NOT_RAISED in out and RAISED not in out and "CPU0" not in out.split("held (0x6007")[1].split("\n")[0],
+              "sio_on=1's 0xc5 with 0x6007's bit 0 clear: the raises did not all read on", out + err)
+        rc, out, err = dec(0xc4, run7)
+        check(rc == 0 and "so the stage is 0x44" in out and "CPU0 had an interrupt or SError pending" in out and "position sample 2" not in out and ONE + "\n" in out,
+              "sio_on=1's 0xc4: the same, with something pending", out + err)
+        rc, out, err = dec(0xc2, run7)
+        check(rc == 0 and "so the stage is 0x42" in out and "there's no sample 2" in out and "position sample 1" in out and "position sample 2" not in out
+              and ONE + ", and only stages 0x44 and 0x45 say whether a read failed\n" in out and ALONE not in out and HELD in out and RAISED in out,
+              "sio_on=1's 0xc2: sample 1 landed, but no last check", out + err)
+        rc, out, err = dec(0xc1, run7)
+        check(rc == 0 and "so the stage is 0x41" in out and "position sample" not in out and "not decoded" in out and RAISED in out,
+              "sio_on=1's 0xc1: its bytes not read as a sample", out + err)
+        rc, out, err = dec(0xc0, run7)
+        check(rc == 0 and "so the stage is 0x40" in out and "no sample recorded yet" in out and HELD in out and RAISED in out,
+              "sio_on=1's 0xc0: the watch's bytes, no sample", out + err)
+        at_8 = dict(run7, prog=None)  # 0xda comes before the release: 0x6012-0x6013 are still the RTC second's
+        rc, out, err = dec(0xda, at_8)
+        check(rc == 0 and "so the stage is 0x5a" in out and RAISED in out and HELD in out, "sio_on=1's 0xda: the raises seen before the commit", out + err)
+        rc, out, err = dec(0xda, dict(at_8, down=0xfe))
+        check(rc == 0 and "sio_on=1" not in out, "a plain pmp_out=1 run's 0xda says nothing of the raises", out + err)
+        for stage in (0xc0, 0xc1, 0xc2, 0xc4, 0xc5, 0xda):
+            before = fake(path, scratch(stage, **(at_8 if stage == 0xda else run7)), rtc_secs=121761, alarm=alarm)
+            r = run(path, "--clear", cnt=cnt)
+            after = open(path, "rb").read()
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                  f"--clear after sio_on=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
+
     # e1_hook.c's side.
     def in_order(text, pieces):
         at = 0
@@ -1324,7 +1382,7 @@ def position_tests(g, src):
     sample = sample[:sample.index("\n}\n")]
     order = ["m1_crumb(0x6014, &flags, 1);", "b[0] = 0x40;", "b[1] = off | (m1_sio_ref ? BIT(0) : 0);", "b[2] = qto;", "b[3] = held;",
              "m1_crumb(0x6004, b, 4);", "if (m1_raw) {\n\t\tm1_pos_wait(m1_t_third + m1_tps);", "m1_stage(0x41);", "m1_pos_sample(s);", "m1_crumb(0x6012, s, 2);",
-             "m1_stage(0x42);", "if (m1_raw) {\n\t\tm1_pos_wait(m1_t_third + 25 * m1_tps);", "m1_stage(0x43);", "m1_pos_sample(s);", "m1_crumb(0x6007, s, 1);",
+             "m1_stage(0x42);", "if (m1_raw && !pmp_out) {\n\t\tm1_pos_wait(m1_t_third + 25 * m1_tps);", "m1_stage(0x43);", "m1_pos_sample(s);", "m1_crumb(0x6007, s, 1);",
              "m1_crumb(0x6015, s + 1, 1);", "? 0x44 : 0x45);", "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));"]
     check(in_order(pos, order), "m1_position() sends the stages and samples in the order m1-crumbs reads them, each wait only with raw SPMI up", pos)
     release = src[src.index("static void m1_hold_release("):]
@@ -1351,7 +1409,29 @@ def position_tests(g, src):
     commit = commit[:commit.index("m1_t_third = m1_now();")]
     check(commit.count("writel_relaxed(1, commit);") == 3 and commit.index("writel_relaxed(1, commit);") > 0,
           "the time since the first commit starts before its first write, the 25 s after its third", commit)
-    check('position && (!hold || hold_nowatch || pmp_out)' in src, "e1_check_params refuses position=1 off hold=1, with hold_nowatch or pmp_out")
+    check('position && (!hold || hold_nowatch || (pmp_out && !sio_on))' in src and 'sio_on && (!position || !pmp_out)' in src,
+          "e1_check_params refuses position=1 off hold=1, with hold_nowatch, or with pmp_out and no sio_on; and sio_on=1 without position=1 and pmp_out=1")
+
+    # sio_on=1's own code.
+    raises = src[src.index("static bool m1_sio_raise(void)"):]
+    raises = raises[:raises.index("\n}\n")]
+    check(in_order(raises, ["{ M1_PS_SIO, 0x0f00000f }, { M1_PS_UART_P, 0xf }, { M1_PS_SPI_P, 0xf },", "writel(on[i].val, m1_sio + on[i].off);", "dsb(sy);",
+                            "((readl(m1_sio + on[i].off) >> 4) & 0xf) != 0xf", "m1_now() - t0 > m1_tps / 100"]) and raises.count("writel(") == 1,
+          "m1_sio_raise() writes the three OK'd words, in genpd's order, and only those, polling each up to 10 ms for actual f", raises)
+    d2 = {k: int(v, 0) for k, v in re.findall(r"#define (M1_PS_\w+|M1_SIO_ENTRY)\s+(0x[0-9a-fA-F]+|\d+)", src)}
+    check(d2.get("M1_PS_SIO") == 0x180 and d2.get("M1_PS_UART_P") == 0x230 and d2.get("M1_PS_SPI_P") == 0x1e8 and d2.get("M1_SIO_ENTRY") == 61
+          and "#define M1_PS_SIO_PAGE\t\t0x28e580000ULL" in src, "the raises are at 0x28e580180, 0x28e580230 and 0x28e5801e8, before entry 61", str(d2))
+    step5 = src[src.index("/* 5: the table's other entries"):]
+    step5 = step5[:step5.index("/* 6: release")]
+    check(in_order(step5, ["if (sio_on && i == M1_SIO_ENTRY && m1_sio_raise())", "held |= BIT(0);", "writel_relaxed(w->val, post_map[i]);"]),
+          "the raises come just before entry 61's own write, and 0x6007's bit 0 records them", step5)
+    table = re.findall(r"\{ (0x[0-9a-f]+)ULL, \d, 0x[0-9a-f]+ULL \},", src[src.index("e1_post_slpa[] = {"):src.index("e1_post_slpa[] = {") + 12000])
+    check(len(table) > 61 and int(table[61], 16) == 0x28e580188, "e1_post_slpa[61] is SIO_CPU's word", str(table[59:63]))
+    check("e1_post_slpa[M1_SIO_ENTRY].addr != M1_PS_SIO_PAGE + M1_PS_SIO_CPU" in src
+          and all(f"e1_never_write(M1_PS_SIO_PAGE + M1_PS_{n})" in src for n in ("SIO", "UART_P", "SPI_P")),
+          "the load refuses if entry 61 isn't SIO_CPU's word, or a raise would touch the never-write list")
+    never = (0x28e0802d8, 0x28e700000)
+    check(not {0x28e580180, 0x28e580230, 0x28e5801e8} & set(never), "none of the three raises is on the never-write list")
     check("0x6004 && end <= 0x6008" in src and "0x6010 && end <= 0x6017" in src, "the breadcrumb range is unchanged")
     others = set(g["STAGES"]) | set(g["OBSERVE_STAGES"]) | set(g["LATE"]) | set(range(0x21, 0x28)) | set(range(0x31, 0x3a)) | {0x5a, 0x5b, 0x5c, 0x5d, 0x5e}
     check(not set(g["POSITION"]) & others, "position=1's stages collide with no other run's")
