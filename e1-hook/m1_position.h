@@ -19,6 +19,13 @@
  *   bit 5     0x2922c0044 bit 2
  *   bit 6     0x2922c0044 bit 3
  *   bit 7     0x2922c0040 bit 1
+ *
+ * disp_off=1's byte B (m1_pos_byte_d) keeps the top three bits and has, below them:
+ *   bit 0     the internal DCP stopped (idle read, RUN read 1 then 0)
+ *   bit 1     the external DCP stopped
+ *   bit 2     disp0's two domains read off
+ *   bit 3     dispext0's two domains read off
+ *   bit 4     an idle pair failed
  */
 #ifndef M1_POSITION_H
 #define M1_POSITION_H
@@ -84,6 +91,12 @@ static inline u8 m1_pos_byte_b(u32 sio, u32 wd_ctrl, bool count_near, u32 gate44
 	return (u8)(m1_pos_sio_class(sio) | (wd_ctrl & M1_POS_RESET_EN ? 1U << 3 : 0) |
 		    (count_near ? 1U << 4 : 0) | ((gate44 >> 2) & 1) << 5 | ((gate44 >> 3) & 1) << 6 |
 		    ((gate40 >> 1) & 1) << 7);
+}
+
+/* k3b: K3b's five bits (above); the gate's three, as in byte B. */
+static inline u8 m1_pos_byte_d(u8 k3b, u32 gate44, u32 gate40)
+{
+	return (u8)((k3b & 0x1f) | ((gate44 >> 2) & 1) << 5 | ((gate44 >> 3) & 1) << 6 | ((gate40 >> 1) & 1) << 7);
 }
 
 #endif /* M1_POSITION_H */

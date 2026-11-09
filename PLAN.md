@@ -412,14 +412,41 @@ steps, and restarting the DCP and the PMP afterwards.
       a cumulative rung.
       **The order after run 7 (2026-11-09; judgment; this is the only place it's kept):**
       SIO's subtree and the PMP are out of the way, and DISPLAY is the one macOS wait left
-      unmet, so the display chain (rung 6) is next, on top of run 7's recipe: both DCPs
-      treated as K4 treats the PMP (the idle pair, CPU_STATUS idle, RUN cleared, through the
-      RTKit the mailbox's drvdata gives), then disp0's and dispext0's domains to target 0, and
-      entry 58's wait saying for the first time whether DISPLAY settles. New RTKit messages, ASC
-      writes and PMGR writes, so Corey's OK first. T6020's display-off runs reset, so about 1 in
-      5 that it ends the reset (judgment); keep the sample, since if DISPLAY is what holds
-      B2's gate, the sample shows the gate open. Beside it, free and independent: one commit
-      write instead of three (macOS's T6000 table has one).
+      unmet, so the display chain (rung 6) is next, on top of run 7's recipe. Beside it, free
+      and independent: one commit write instead of three (macOS's T6000 table has one).
+
+      **Next (built, not run): the display rung, `pkexec e1-hook/run-floor --quick
+      --m1-disp-off`** (`e1_hook disp_off=1`, on `--m1-sio-pmp`'s recipe). Corey's OK of
+      2026-11-09, as asked:
+      - Step K3b, right after `slpa` and before K4, interrupts on: both DCPs Linux keeps
+        running through s2idle, the internal one (dcp@38bc00000) and the external one
+        (dcp@289c00000), the display firmware first as T8140 has it: RTKit's idle pair once
+        each, then, only if CPU_STATUS then reads idle, one read-modify-write clearing RUN
+        (0x38bc00044, 0x289c00044), read back.
+      - Only for a DCP that stopped: its two domains to target 0, child first, as the
+        power-state driver asks for it, each polled up to 10 ms (disp0_cpu0 0x28e580350,
+        disp0_fe 0x28e580328, dispext0_cpu0 0x28e080280, dispext0_fe 0x28e080258; the last
+        two on ps_pmp's page, never its word).
+      - Bytes: sample 1's byte B holds K3b's outcome in its low five bits (internal stopped,
+        external stopped, disp0's domains off, dispext0's off, an idle pair failed) under the
+        gate's three, no SIO class, RESET_EN or count, so the position stages are 0xc8,
+        0xc9, 0xca, 0xcc and 0xcd (bit 3 up). `m1-crumbs` decodes them, and `--clear` disarms
+        the alarm at each. Stage 0x84 is K3b done, before K4's 0x83.
+      - `--quick` (`run-floor`, any recipe): a 1-minute reading, and no 20 minutes off the
+        charger. For a run whose question is how it ends. A run that goes dark for good is
+        repeated without it before any drain number from it counts.
+      - How to read it, in this order:
+        - Stage below 0x80 in a position run, or 0x02: K3b stalled before its breadcrumb;
+          the power key.
+        - `qto` (0x6006) bit 4: clear for the first time on any chip means DISPLAY's
+          power-down settled with the chain off.
+        - The display bits: anything other than 0x0f means a DCP or a domain didn't
+          stop; that DCP's load-log line has the baseline.
+        - The gate bits against run 7's: `PHASE` past 4, `HS_A` bit 24 up, or 0x2922c0040 bit
+          1 clear means the gate opened with CPU0 up, so the display was what held it.
+        - The ending: a reset 30-32 s after the commit is the same ending, and then the
+          known differences from macOS are used up: back to the desk rather than another
+          rung. A reset well away from 30 s, or dark past 2 minutes, is new.
       **Earlier, the order after the position read (2026-11-09; judgment):** the read stopped at the row no rung addresses, with CPU0
       up, and neither a sample from a core still up nor the next boot can show where
       the engine stops with every core down. About 2 in 3 that CPU0 being up is what

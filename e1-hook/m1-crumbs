@@ -1,8 +1,8 @@
 #!/usr/bin/python3 -I
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
---m1-pmp-idle, --m1-position or --m1-sio-pmp; e1_hook m1=1, observe=1, pmgr_late=1,
-alarm=1, hold=1, pmp_out=1, position=1, sio_on=1) leaves in the PMU, read and decoded, and cleared
+--m1-pmp-idle, --m1-position, --m1-sio-pmp or --m1-disp-off; e1_hook m1=1, observe=1, pmgr_late=1,
+alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1) leaves in the PMU, read and decoded, and cleared
 again.
 
   e1-hook/m1-crumbs               read them (no root needed)
@@ -50,10 +50,11 @@ ALARM_CTRL, ALARM, ALARM_EVENT, ALARM_MASK = 0x1401, 0x140c, 0x14c0, 0x14c2
 # position=1 (run-floor --m1-position): the stages after the commit. 0x6012-0x6013 hold
 # sample 1 from 0x42 on, 0x6007 and 0x6015 sample 2 from 0x44 on. With pmp_out=1 (sio_on=1's run: the stages with
 # bit 7), sample 1 alone: 0x6007 stays the cores that held, its bit 0 saying ps_sio, UART_P and SPI_P read on, and
-# 0x6015 stays K4's byte.
+# 0x6015 stays K4's byte. disp_off=1's stages are those with bit 3 set too: sample 1's byte B is then K3b's.
 POSITION = (0x40, 0x41, 0x42, 0x43, 0x44, 0x45)
 POS_S1 = (0x42, 0x43, 0x44, 0x45)
 POS_S2 = (0x44, 0x45)
+DISP_STAGES = (0x48, 0x49, 0x4a, 0x4c, 0x4d)  # disp_off=1: POSITION's with bit 3
 # alarm=1 (0x59, 0x5f), hold=1 (0x5a-0x5e) and position=1: 0x6016 is the alarm's byte, and the alarm may be armed
 ALARM_STAGES = (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e) + POSITION
 ALARM_SECS = 3600  # e1_hook's M1_ALARM_SECS
@@ -69,6 +70,8 @@ STAGES = {
     0x02: "K3: MBSE=slpa was accepted; nothing after it reached the PMU (not all 7 cores parked, or raw SPMI failed;"
           " in a pmp_out=1 run, instead: K4 didn't finish, CPU0 stalled or faulted in it, a fault restarting the"
           " Mac about 10 s later, or its kernel-path stage write failed)",
+    0x04: "K3b (disp_off=1): both DCPs and their domains were handled (sample 1's byte says how, if it landed); nothing"
+          " after it reached the PMU (K4 didn't finish, or not all 7 cores parked, or raw SPMI failed)",
     0x03: "K4 (pmp_out=1): the PMP's idle pair and its stop are over (0x6015 says how); nothing after it reached the"
           " PMU (not all 7 cores parked, or raw SPMI failed)",
     0x10: "4: all 7 other cores parked, raw SPMI working; step 5's writes came next under this stage (with"
@@ -213,24 +216,30 @@ SIO_CLASSES = ("all ones: a failed read", "target 0, bit 11 set (B2 at op 91, in
                "not a class e1_hook sends (6)", "not a class e1_hook sends (7)")
 
 
-def sample_lines(n, addr_a, a, addr_b, b):
-    """position=1: one sample's two bytes, one line per word (m1_position.h has the layout)."""
+def sample_lines(n, addr_a, a, addr_b, b, disp=False):
+    """position=1: one sample's two bytes, one line per word (m1_position.h has the layout). disp: disp_off=1's byte B."""
     phase = a & 0xf
+    middle = (f"  display (K3b): internal DCP {'stopped' if b & 1 else 'NOT stopped'}, external DCP"
+              f" {'stopped' if b & 2 else 'NOT stopped'}; disp0's domains {'read off' if b & 4 else 'did NOT read off'},"
+              f" dispext0's {'read off' if b & 8 else 'did NOT read off'}; idle pair"
+              f" {'FAILED on at least one' if b & 0x10 else 'returned 0 on both'}") if disp else (
+             f"  SIO_CPU: {SIO_CLASSES[b & 7]}; WD2 RESET_EN {'set' if b & 8 else 'clear'}; WD2's count"
+             f" {'within' if b & 0x10 else 'NOT within'} 0.25 s of CPU0's time since the first commit write")
     return [f"position sample {n} (0x{addr_a:04x} = 0x{a:02x}, 0x{addr_b:04x} = 0x{b:02x}):",
             f"  PHASE {phase:#x} ({PHASES.get(phase, 'not a phase the sequences read so far write')}); HS_A bit 31"
             f" {'up' if a & 0x10 else 'down'}, bit 24 {'up' if a & 0x20 else 'clear'}; state word"
             f" {STATE_WORDS[a >> 6]}",
-            f"  SIO_CPU: {SIO_CLASSES[b & 7]}; WD2 RESET_EN {'set' if b & 8 else 'clear'}; WD2's count"
-            f" {'within' if b & 0x10 else 'NOT within'} 0.25 s of CPU0's time since the first commit write",
+            middle,
             f"  gate words: 0x2922c0044 bit 2 {'set' if b & 0x20 else 'clear'}, bit 3 {'set' if b & 0x40 else 'clear'};"
             f" 0x2922c0040 bit 1 {'set' if b & 0x80 else 'clear'}"]
 
 
-def position_lines(s, b, pmp=False):
-    """position=1, stages 0x40-0x45: which samples these bytes are, and what they say. pmp: sio_on=1's layout, one sample."""
+def position_lines(s, b, pmp=False, disp=False):
+    """position=1, stages 0x40-0x45: which samples these bytes are, and what they say. pmp: sio_on=1's layout, one sample;
+    disp: disp_off=1's byte B."""
     out = []
     if s in POS_S1:
-        out += sample_lines(1, 0x6012, b[0x12], 0x6013, b[0x13])
+        out += sample_lines(1, 0x6012, b[0x12], 0x6013, b[0x13], disp)
     elif s == 0x41:
         out.append(f"0x6012 0x6013 = {b[0x12]:02x} {b[0x13]:02x}: step 8's second's upper bytes or sample 1's, its"
                    " bytes' stage didn't follow: not decoded")
@@ -249,7 +258,7 @@ def position_lines(s, b, pmp=False):
         out.append("  sample 1 alone, about 1 s after the commit: only stages 0x44 and 0x45 say whether a read failed, and one"
                    " sample can't tell a stop from slow progress, so no rung from it")
     if s in POS_S1:
-        out.append("  (compare each word with the awake pass, recfg-peek-*-p*/; a word still at its awake value says"
+        out.append("  (compare each word with the awake pass, recfg-peek-*-p*/, or the load log's position line; a word still at its awake value says"
                    " nothing. PLAN.md has the reading guide)")
     return out
 
@@ -396,6 +405,9 @@ def decode(b, rtc, cnt=None, alarm=None):
     per fact."""
     pmp = bool(b[4] & PMP_TAG)
     s = b[4] & 0x7f
+    disp = s in DISP_STAGES  # disp_off=1: read as the position stage, with its own byte B
+    if disp:
+        s &= ~0x08
     hold = s in HOLD
     late = s in LATE or hold
     base = HOLD.get(s, LATE.get(s, s))  # the stage of runs 1 and 2 it stands for
@@ -408,7 +420,7 @@ def decode(b, rtc, cnt=None, alarm=None):
         f"boot stage 0x6001 = 0x{b[1]:02x} (0x30 after a boot); boot-error stage 0x6003 = 0x{b[3]:02x}"
         " (the stage the last unclean end found; sticky, so it says nothing about this boot by itself;"
         " this boot's journal says, macsmc-reboot's \"PMU logged N boot error(s)\")",
-        f"stage 0x6004 = 0x{b[4]:02x}{' (pmp_out=1: bit 7, so the stage is ' + hex(s) + ')' if pmp else ''}"
+        f"stage 0x6004 = 0x{b[4]:02x}{' (pmp_out=1: bit 7' + ('; disp_off=1: bit 3' if disp else '') + ', so the stage is ' + hex(s) + ')' if pmp else ''}"
         f"{' (pmgr_late=1)' if late else ''}: {text}",
     ]
     if s:
@@ -555,7 +567,7 @@ def decode(b, rtc, cnt=None, alarm=None):
                    " or CPU7's (it was rewriting them): not decoded")
     elif base >= 0x50:
         if s in POSITION:
-            out += position_lines(s, b, pmp)
+            out += position_lines(s, b, pmp, disp)
         elif hold and s in HOLD_AFTER:
             if s == 0x5c:
                 out.append("0x6012-0x6014: being rewritten when the breadcrumbs stopped: not decoded")
@@ -615,6 +627,8 @@ def main():
         # 3600, or, with that second lost, 0x6016 says 0x1401's write was acked.
         secs = int.from_bytes(b[0x10:0x14], "little")
         st = b[4] & 0x7f  # pmp_out=1's bit 7 off
+        if st in DISP_STAGES:  # and disp_off=1's bit 3
+            st &= ~0x08
         if st in HOLD_AFTER:  # hold=1: the second's upper bytes are rewritten; its low two bytes stay
             now_s = int.from_bytes(rtc[2:6], "little")
             low = int.from_bytes(b[0x10:0x12], "little")

@@ -57,6 +57,8 @@ LAUNCHERS = (
      ("--m1-position",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 pmp_out=1 position=1 sio_on=1", "floor-m1-sio-pmp",
      ("--m1-sio-pmp",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 pmp_out=1 position=1 sio_on=1 disp_off=1", "floor-m1-disp-off",
+     ("--m1-disp-off",)),
 )
 
 failed = 0
@@ -69,7 +71,7 @@ def name(launcher):
 def is_m1(launcher):
     """--m1, --m1-observe, --m1-late, --m1-alarm, the two --m1-hold, the two --m1-pmp and --m1-position: all load m1=1."""
     return any(a in ("--m1", "--m1-observe", "--m1-late", "--m1-alarm", "--m1-hold", "--m1-hold-nowatch", "--m1-pmp",
-                     "--m1-pmp-idle", "--m1-position", "--m1-sio-pmp") for a in launcher[4])
+                     "--m1-pmp-idle", "--m1-position", "--m1-sio-pmp", "--m1-disp-off") for a in launcher[4])
 
 
 def check(cond, what, detail=""):
@@ -99,7 +101,13 @@ PARMS = {
              "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
              "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
              "alarm:With m1=1 and pmgr_late=1 (bool)\nhold:With alarm=1 (bool)\nhold_nowatch:With hold=1 only (bool)\n"
-             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\nreplay:LAB ONLY (uint)\n",
+             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\nreplay:LAB ONLY (uint)\n",
+    "floor-nodisp": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
+                    "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
+                    "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
+                    "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
+                    "alarm:With m1=1 and pmgr_late=1 (bool)\nhold:With alarm=1 (bool)\nhold_nowatch:With hold=1 only (bool)\n"
+                    "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\nreplay:LAB ONLY (uint)\n",
     "floor-nosio": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                    "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
                    "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
@@ -152,7 +160,7 @@ def sysctl(tmp):
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
           takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
-          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0):
+          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -190,6 +198,7 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     quiet += f' pmp_stop=0) echo N > {moddir}/parameters/pmp_stop ;;' if takes_nostop else ""
     quiet += f' position=1) echo Y > {moddir}/parameters/position ;;' if takes_position else ""
     quiet += f' sio_on=1) echo Y > {moddir}/parameters/sio_on ;;' if takes_sio else ""
+    quiet += f' disp_off=1) echo Y > {moddir}/parameters/disp_off ;;' if takes_disp else ""
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
               f' oneway=1) echo Y > {moddir}/parameters/oneway ;;{quiet} esac; done\n') if takes else ""
     # The rest of the floor's parameters, as before any suspend; cancel is
@@ -450,7 +459,8 @@ def test_refusals(launcher):
 def test_floor_refusals(launcher):
     quiet = "--quiet" in launcher[4]
     m1 = is_m1(launcher)
-    sio = "--m1-sio-pmp" in launcher[4]
+    disp = "--m1-disp-off" in launcher[4]
+    sio = "--m1-sio-pmp" in launcher[4] or disp
     pmp = "--m1-pmp" in launcher[4] or "--m1-pmp-idle" in launcher[4] or sio
     nostop = "--m1-pmp-idle" in launcher[4]
     position = "--m1-position" in launcher[4] or sio
@@ -485,9 +495,11 @@ def test_floor_refusals(launcher):
         cases.append(("without the awake pass's mark", dict(awake_mark=False), None, "the awake pass hasn't run in this boot"))
     if sio:
         cases.append(("a build without sio_on", dict(build="floor-nosio"), None, "without sio_on"))
+    if disp:
+        cases.append(("a build without disp_off", dict(build="floor-nodisp"), None, "without disp_off"))
     if plain:
         # The floor's build before quiet still runs the floor itself.
-        usage = "usage: run-floor [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp]"
+        usage = "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off]"
         cases += [("an unknown argument", {}, ["--loud"], usage),
                   ("a second argument", {}, ["--quiet", "--quiet"], usage),
                   ("--quiet and --m1 together", {}, ["--quiet", "--m1"], usage),
@@ -536,6 +548,8 @@ def test_floor_refusals(launcher):
         ignored.append(("position", dict(takes_position=False)))
     if sio:
         ignored.append(("sio_on", dict(takes_sio=False)))
+    if disp:
+        ignored.append(("disp_off", dict(takes_disp=False)))
     for what, kw in ignored:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)
@@ -578,6 +592,24 @@ def test_sio_release(launcher):
               "run-floor --m1-sio-pmp: a failed release unloads e1_hook before any reading", r.stdout + r.stderr + "\n".join(c))
 
 
+def test_quick(launcher):
+    """--quick ahead of the recipe: a 1-minute reading, and nothing else changes."""
+    _, _, args, label, own = launcher
+    argv = ["--quick"] + list(own)
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, launcher)
+        r = run(tmp, d, launcher, argv=argv)
+        c = calls(tmp)
+        check(c[:2] == ["insmod " + os.path.join(d, "e1_hook.ko") + " " + args, f"reading take --minutes 1 --label {label} --then suspend"]
+              and "in about 1 minutes" in r.stdout,
+              f"run-floor {' '.join(argv)}: a 1-minute reading, the same parameters", r.stdout + r.stderr + "\n".join(c))
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, launcher)
+        r = run(tmp, d, launcher, argv=["--quick", "--quick"] + list(own))
+        check(r.returncode == 1 and "usage:" in r.stderr and calls(tmp) == [], f"run-floor --quick twice before {' '.join(own) or 'nothing'} is refused",
+              r.stdout + r.stderr)
+
+
 def main():
     if not shutil.which("bwrap"):
         print("skip: needs bwrap")
@@ -593,8 +625,10 @@ def main():
         test_refusals(launcher)
         if launcher[0] == "run-floor":
             test_floor_refusals(launcher)
-        if "--m1-sio-pmp" in launcher[4]:
+        if "--m1-sio-pmp" in launcher[4] or "--m1-disp-off" in launcher[4]:
             test_sio_release(launcher)
+        if launcher[0] == "run-floor":
+            test_quick(launcher)
     print(f"{failed} failed" if failed else "all ok")
     return 1 if failed else 0
 
