@@ -2773,9 +2773,11 @@ Mac went dark and restarted by itself into the regular boot (Corey's report; `up
 - With SIO's subtree up and the PMP stopped, the engine at about 1 s with CPU0 up is where it was in
   run 6: A2 at its first handshake, B2's gate words at their awake values. Neither change opens the
   gate while a core is up.
-- Neither change, nor both, ends the reset. CPU0 went down about 1 s after the commit (stage 0xc5:
-  nothing pending before its deep WFI; the WFI itself isn't recorded), so the engine had about 29 s
-  with every core down and A2 still didn't close WD2.
+- Neither change, nor both, ends the reset. The record stops at stage 0xc5, before CPU0's acks and its
+  deep WFI, and the engine was sampled only at about 1 s. If CPU0's deep WFI took (no byte records it),
+  the engine had about 29 s with every core down. A2's own WD2 is the likely source of the reset, but the
+  30.0-31.5 s window doesn't exclude A2 closing after the sample and a later sequence re-arming WD2 within
+  about the next half second, as in runs 1-5 (the SRAM section).
 - DISPLAY is now the one macOS wait left unmet (`qto` bit 4).
 
 **What it doesn't settle.** Where the engine stops with every core down: run 6's limit stands, and
