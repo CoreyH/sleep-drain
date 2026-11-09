@@ -1239,12 +1239,12 @@ static void e1_after_slpa(void)
  * clearing RUN, read back: both completing Linux drivers refuse a sleep without it
  * (aurora-silicon/linux ae8686a0bcf4, DJ's, for T8140). Corey's OK of 2026-11-09.
  * With hold_nowatch=1, CPU0 takes its deep WFI as soon as it has let the others go
- * after the commit, so no sample carries K3b's and K5's outcomes: step 8 writes
- * them with SIO's to 0x6012 (the second's upper bytes, which the alarm's compare
- * value makes spare), bits 4:0 K3b's five bits, bit 5 the SMC's ack, bits 7:6 SIO's
- * outcome (0 its idle pair timed out, 1 failed another way, 2 returned 0 but RUN
- * didn't read 1 then 0, 3 stopped). Stage 0x4e replaces 0x5a and 0x4f 0x5b, with
- * bit 7 from K4 on.
+ * after the commit, so no sample carries K3b's and K5's outcomes: they go with
+ * SIO's in 0x6005, in the same command as stage 0x4e, which replaces 0x5a (parked
+ * is all seven by then, or raw SPMI wouldn't be running): bits 4:0 K3b's five bits,
+ * bit 5 the SMC's ack, bits 7:6 SIO's outcome (0 its idle pair timed out, 1 failed
+ * another way, 2 returned 0 but RUN didn't read 1 then 0, 3 stopped). Stage 0x4f
+ * replaces 0x5b. Both have bit 7 from K4 on.
  *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
@@ -2622,15 +2622,10 @@ static void __noreturn m1_after_slpa(void)
 	b[5] = pmp_out ? pmpb | (isrs ? BIT(6) : 0) : isrs;
 	b[6] = alarm ? 0 : min(drained, 255U);	/* alarm=1: 0x6016 is m1_alarm_arm()'s */
 	m1_crumb(0x6010, b, 7);
-	if (sio_stop) {
-		/* No sample carries these with hold_nowatch=1: the second's upper byte is spare (the m1 comment). */
-		u8 k = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;
-
-		m1_crumb(0x6012, &k, 1);
-	}
 	if (pmgr_late) {
 		b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;
-		b[1] = parked | (obs ? BIT(0) : 0);
+		/* sio_stop=1: the steps' outcomes, in the one command that also says they're there (the m1 comment). */
+		b[1] = sio_stop ? m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6 : parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
 		b[3] = hold ? held : down;
 		m1_crumb(0x6004, b, 4);
@@ -3515,7 +3510,7 @@ static int __init e1_check_params(void)
 		return -EINVAL;
 	}
 	if (sio_stop && (!hold_nowatch || !disp_off || !one_commit || !smc_idle || position)) {
-		pr_err("sio_stop=1 needs hold_nowatch=1 disp_off=1 one_commit=1 smc_idle=1 and no position=1 (its outcomes go in 0x6012 in that layout)\n");
+		pr_err("sio_stop=1 needs hold_nowatch=1 disp_off=1 one_commit=1 smc_idle=1 and no position=1 (0x6005 holds its outcomes; a CPU0 that reads the others down would rewrite it)\n");
 		return -EINVAL;
 	}
 	if ((one_commit || smc_idle) && !disp_off) {

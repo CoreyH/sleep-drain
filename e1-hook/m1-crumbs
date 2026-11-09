@@ -56,7 +56,7 @@ POSITION = (0x40, 0x41, 0x42, 0x43, 0x44, 0x45)
 POS_S1 = (0x42, 0x43, 0x44, 0x45)
 POS_S2 = (0x44, 0x45)
 DISP_STAGES = (0x48, 0x49, 0x4a, 0x4c, 0x4d)  # disp_off=1: POSITION's with bit 3
-SIO_STOP_STAGES = (0x4e, 0x4f)  # sio_stop=1, in place of 0x5a and 0x5b: 0x6012 has the K steps' outcomes
+SIO_STOP_STAGES = (0x4e, 0x4f)  # sio_stop=1, in place of 0x5a and 0x5b: 0x6005 has the K steps' outcomes
 # alarm=1 (0x59, 0x5f), hold=1 (0x5a-0x5e) and position=1: 0x6016 is the alarm's byte, and the alarm may be armed
 ALARM_STAGES = (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e) + POSITION + SIO_STOP_STAGES
 ALARM_SECS = 3600  # e1_hook's M1_ALARM_SECS
@@ -140,7 +140,7 @@ BUCKETS = tuple(f"first read clear {t} after the hand-over" for t in ("under 5 m
 # PCPM1's bits now read after the release; only the second's low two bytes stay).
 HOLD = {**{0x31 + i: 0x21 + i for i in range(7)}, 0x39: 0x30, 0x5a: 0x50, 0x5b: 0x50, 0x5c: 0x50, 0x5d: 0x50, 0x5e: 0x50,
         **{s: 0x50 for s in POSITION + SIO_STOP_STAGES}}
-HOLD_AFTER = (0x5c, 0x5d, 0x5e) + POSITION + SIO_STOP_STAGES
+HOLD_AFTER = (0x5c, 0x5d, 0x5e) + POSITION
 OBSERVED = (0x61, 0x62, 0x6e, 0x6f)  # 0x6005-0x6007 are CPU7's
 FULL = (0x6e, 0x6f)  # 0x6012-0x6013 and 0x6015-0x6016 are CPU7's too
 SHORT = (0x62, 0x6e, 0x6f)  # only 0x6010-0x6011 of the commit's second are sure
@@ -244,9 +244,9 @@ def sample_lines(n, addr_a, a, addr_b, b, disp=False):
 
 
 def k_lines(b):
-    """sio_stop=1: 0x6012, the steps before the commit (e1_hook.c's m1 comment has the layout)."""
-    k = b[0x12]
-    return [f"0x6012 = 0x{k:02x}, the steps before the commit:",
+    """sio_stop=1: 0x6005, the steps before the commit (e1_hook.c's m1 comment has the layout)."""
+    k = b[5]
+    return [f"0x6005 = 0x{k:02x}, the steps before the commit:",
             f"  internal DCP: {DCP_CODES[k & 3]}; external DCP: {DCP_CODES[k >> 2 & 3]}; the domains of the DCPs that stopped:"
             f" {'all read off' if k & 0x10 else 'NOT all read off, or none stopped'}",
             f"  SMC's AP idle notice: {'acked within 200 ms' if k & 0x20 else 'NOT acked'}; SIO's firmware: {SIO_CODES[k >> 6]}"]
@@ -430,7 +430,7 @@ def decode(b, rtc, cnt=None, alarm=None):
     late = s in LATE or hold
     base = HOLD.get(s, LATE.get(s, s))  # the stage of runs 1 and 2 it stands for
     obs = base in OBSERVED
-    mark = s not in POSITION and 0x10 <= base <= 0x60 and bool(b[5] & 1)  # an observe=1 run, below CPU7's own stages
+    mark = s not in POSITION and s not in SIO_STOP_STAGES and 0x10 <= base <= 0x60 and bool(b[5] & 1)  # an observe=1 run, below CPU7's own stages
     text = HOLD_TEXT.get(s) or LATE_TEXT.get(s) or stage(base, mark)
     out = [
         f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
@@ -464,7 +464,9 @@ def decode(b, rtc, cnt=None, alarm=None):
         out.append(f"0x6007 = {b[7]}: " + ("no watchdog was armed to reset the SoC" if b[7] == 255 else
                                          f"{b[7]} s until the first armed watchdog's reset, as CPU7 read it"))
     elif base >= 0x10:
-        if s in HOLD_AFTER and s not in SIO_STOP_STAGES:
+        if s in SIO_STOP_STAGES:
+            pass  # 0x6005 is the steps' outcomes: k_lines()
+        elif s in HOLD_AFTER:
             out.append(f"read off after the release (0x6005 = 0x{b[5]:02x}, up to 10 ms each): {cpus(b[5] & 0xfe)}")
             if s in POSITION:
                 if disp:
