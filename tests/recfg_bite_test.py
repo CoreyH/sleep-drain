@@ -239,10 +239,11 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
             return res
 
         def sandbox(*, args=(), safe=True, uid=0, peek_rc=0, patch_rc=0, restore_rc=0, save_fail_at=None, tee_fails=False, sync_fails=False,
-                    old=None, checks=()):
+                    old=None, checks=(), term_at=None):
             """Runs the launcher with stubs; returns (rc, output, calls, the log root, manifests at each save).
             old: which built file is older than a source ("peek", "poke", "peek-header", "poke-header").
-            checks: earlier check directories on record, as (time, has a verdict line)."""
+            checks: earlier check directories on record, as (time, has a verdict line).
+            tee_fails: True, or "write" for the write's log alone. term_at: "patch" or a save's number: SIGTERM to the launcher there."""
             root = tempfile.mkdtemp(dir=tmp)
             calls = os.path.join(root, "calls")
             log_root = os.path.join(root, "log")
@@ -263,7 +264,8 @@ exit {peek_rc}'''}
 echo "poke $*" >> {calls}
 echo "the writer's $1"
 case $1 in
-patch) {'kill -SEGV $$' if patch_rc == 'segv' else f'exit {patch_rc}'} ;;
+patch) {f'kill -TERM $PPID; sleep 0.5; echo "poke patch returns" >> {calls}' if term_at == 'patch' else ''}
+  {'kill -SEGV $$' if patch_rc == 'segv' else f'exit {patch_rc}'} ;;
 restore) exit {restore_rc} ;;
 esac
 exit 9
@@ -273,6 +275,7 @@ exit 9
 echo "save $*" >> {calls}
 n=$(ls {snaps} | wc -l)
 cp -a {log_root} {snaps}/$n
+{f'[[ $n != {term_at - 1} ]] || {{ kill -TERM $PPID; sleep 0.3; }}' if isinstance(term_at, int) else ''}
 {f'[[ $n != {save_fail_at - 1} ]] || exit 1' if save_fail_at else ''}
 exit 0
 """)
@@ -310,7 +313,9 @@ exit 0
                     if on:
                         p = os.path.join(bindir, name)
                         with open(p, "w") as f:
-                            f.write("#!/bin/bash\n" + ("cat > /dev/null\n" if name == "tee" else "") + "exit 1\n")
+                            # "write": only the write's log can't be written, as when the overlay fills between the two steps.
+                            only = 'case "$*" in *-write/log.txt) ;; *) exec /usr/bin/tee "$@" ;; esac\n' if on == "write" else ""
+                            f.write("#!/bin/bash\n" + only + ("cat > /dev/null\n" if name == "tee" else "") + "exit 1\n")
                         os.chmod(p, 0o755)
                 env.append("PATH=" + bindir + ":" + os.environ["PATH"])
             r = subprocess.run(["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-user", "--uid", str(uid), "--gid", "0", "--"]
@@ -347,18 +352,37 @@ exit 0
         check(rc == 1 and calls == FULL[:2] and "couldn't save the check; nothing written" in out, "a check that can't be saved: no write", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(tee_fails=True)
         check(rc == 1 and "poke patch" not in calls and "couldn't write" in out, "a check whose log can't be written: no write", (rc, calls, out))
+        # From the write on, every way out but a finished, saved patch puts the old value back, once, after the writer has returned.
+        BACK = "the old value is back (recfg_poke restore)"
+        NOT_BACK = "THE OLD VALUE MAY NOT BE BACK (recfg_poke restore failed)"
+        rc, out, calls, logs, snaps = sandbox()
+        check(rc == 0 and calls == FULL and BACK not in out and NOT_BACK not in out, "a patch that's done and saved isn't undone", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(patch_rc=5)
-        check(rc == 5 and calls == FULL and "THE WRITE DIDN'T READ BACK" in out, "a write that doesn't read back: exit 5, saved", (rc, calls, out))
+        check(rc == 5 and calls == FULL + ["poke restore"] and "THE WRITE DIDN'T READ BACK" in out and BACK in out,
+              "a write that doesn't read back: exit 5, saved, and the old value asked for once more", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(patch_rc=3)
-        check(rc == 3 and calls == FULL and "changed between the check and the write" in out, "a writer that refuses: exit 3, saved", (rc, calls, out))
+        check(rc == 3 and calls == FULL and "changed between the check and the write" in out and BACK not in out,
+              "a writer that refuses: exit 3, saved; nothing was written, so nothing is put back", (rc, calls, out))
         for bad in (2, 9, "segv"):
             rc, out, calls, logs, snaps = sandbox(patch_rc=bad)
-            check(rc == 1 and calls == FULL and "recfg_poke failed" in out, f"a writer that fails ({bad}): exit 1, saved", (rc, calls, out))
+            check(rc == 1 and calls == FULL + ["poke restore"] and "recfg_poke failed" in out and BACK in out,
+                  f"a writer that fails ({bad}): exit 1, saved, and the old value put back", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(save_fail_at=2)
-        check(rc == 1 and calls == FULL + ["poke restore"] and "the old value was put back (recfg_poke restore exit 0)" in out,
+        check(rc == 1 and calls == FULL + ["poke restore"] and "couldn't save the write's record" in out and BACK in out,
               "a write whose record can't be saved: the old value goes back, exit 1", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(save_fail_at=2, restore_rc=5)
-        check(rc == 1 and calls == FULL + ["poke restore"] and "(recfg_poke restore exit 5)" in out, "and it says so if that restore fails", (rc, calls, out))
+        check(rc == 1 and calls == FULL + ["poke restore"] and NOT_BACK in out and BACK not in out, "and it says so if that restore fails", (rc, calls, out))
+        rc, out, calls, logs, snaps = sandbox(tee_fails="write")
+        check(rc == 1 and calls == FULL + ["poke restore"] and "couldn't write" in out and BACK in out,
+              "a write whose log can't be written: the old value goes back, exit 1", (rc, calls, out))
+        rc, out, calls, logs, snaps = sandbox(term_at="patch")
+        check(rc == 143 and calls == ["peek 6", "save save", "poke patch", "poke patch returns", "poke restore"] and BACK in out,
+              "SIGTERM while the writer runs: only once it has returned does the old value go back; exit 143", (rc, calls, out))
+        rc, out, calls, logs, snaps = sandbox(term_at=2)
+        check(rc == 143 and calls == FULL + ["poke restore"] and BACK in out and "done: A2's WD2 bite word reads 45 s" not in out,
+              "SIGTERM during the write's save: the old value goes back; exit 143", (rc, calls, out))
+        rc, out, calls, logs, snaps = sandbox(term_at=1)
+        check(rc == 143 and calls == FULL[:2] and BACK not in out, "SIGTERM during the check's save: no write, so nothing to put back; exit 143", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(safe=False)
         check(rc == 1 and "safe boot only" in out and calls == [], "refuses outside a safe boot", out)
         rc, out, calls, logs, snaps = sandbox(uid=1000)

@@ -15,8 +15,11 @@
 # comes next, are saved to the boot partition (sleep-drain-safe save) before anything is
 # written, so a crash at the write keeps them. The write is recfg_poke patch: it reads
 # the ten words again, writes only if they're as expected with the bite at 30 s, and
-# reads the word back. Its output is saved too. If that save fails, the old value goes
-# back: a run whose record can't be kept isn't made.
+# reads the word back. Its output is saved too. From the write on, every way out but a
+# write that read back and was saved puts the old value back (recfg_poke restore), and
+# says so, or says that it couldn't: a log or a save that fails, a signal (bash runs the
+# trap once the writer has returned), a writer that fails. A run whose record can't be
+# kept isn't made.
 #
 # --after is the one read outside a safe boot, as recfg-peek --position-after is: stage
 # 6 once more, to see whether a restart brought the old value back. It refuses in a
@@ -124,6 +127,22 @@ restore)
   ;;
 esac
 
+# From the write on: the old value back on every way out but a finished, saved patch.
+written=0
+undo() {
+  ((written)) || return 0
+  written=0
+  if "$POKE" restore > /dev/null 2>&1; then
+    echo "recfg-bite: the old value is back (recfg_poke restore)" >&2
+  else
+    echo "recfg-bite: THE OLD VALUE MAY NOT BE BACK (recfg_poke restore failed): recfg-bite --restore, or restart the Mac" >&2
+  fi
+}
+trap undo EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 echo "recfg-bite: saving under $LOG_ROOT/recfg-bite-$now-*/"
 dir check
 run "$PEEK" 6 "$out"
@@ -141,17 +160,17 @@ echo "next: recfg_poke patch, one write, 0x292f02010 := 0x405f7e00 (45 s), if th
 keep "$log" || die "couldn't save the check; nothing written"
 
 dir write
+written=1
 run "$POKE" patch
-if ! keep "$log"; then
-  # Not into $log: its directory may be in a save already.
-  "$POKE" restore > /dev/null 2>&1
-  die "couldn't save the write's record; the old value was put back (recfg_poke restore exit $?)"
-fi
+keep "$log" || die "couldn't save the write's record"
 case $rc in
 0)
+  written=0
   echo "recfg-bite: done: A2's WD2 bite word reads 45 s. Until a restart, or recfg-bite --restore."
   ;;
 3)
+  # The writer read the ten words again and refused: nothing to put back.
+  written=0
   echo "recfg-bite: the SRAM changed between the check and the write: nothing written." >&2
   ;;
 5)
