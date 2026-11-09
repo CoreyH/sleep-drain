@@ -296,7 +296,7 @@ MODULE_PARM_DESC(sio_on, "With position=1 and pmp_out=1: in step 5, just before 
 /* E2's display rung: both DCPs stopped and their domains off before the entry (PLAN.md). */
 static bool disp_off;
 module_param(disp_off, bool, 0444);
-MODULE_PARM_DESC(disp_off, "With sio_on=1: right after slpa, before K4, both DCPs' firmware shut down through RTKit (SetAPPower 0x10, then SetIOPPower 0x01) and, if that returned 0, its CPU stopped (RUN, read-modify-write), then, only if RUN read 1 then 0, disp0's and dispext0's domains to target 0, child first, each polled up to 10 ms. Corey's OK of 2026-11-09");
+MODULE_PARM_DESC(disp_off, "With sio_on=1: at the first suspend's prepare, before noirq and slpa, both DCPs' firmware shut down through RTKit (SetAPPower 0x10, then SetIOPPower 0x01) and, if that returned 0, its CPU stopped (RUN, read-modify-write); then in K3b, right after slpa, only for a DCP whose RUN read 1 then 0, disp0's and dispext0's domains to target 0, child first, each polled up to 10 ms. Corey's OK of 2026-11-09");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -614,6 +614,8 @@ static int e1_begin(void)
 }
 
 /* Step 2, before the noirq pass: the control for prepare_late's read. */
+static void m1_dcp_shutdown(void);
+
 static int e1_prepare(void)
 {
 	u64 t = trace_clock_local();
@@ -622,6 +624,9 @@ static int e1_prepare(void)
 	prepare_t_ns = t;
 	prepare_ret = read_b0av(&prepare_mv, &prepare_read_ns);
 	log_read("prepare", n, t, prepare_ret, prepare_mv, prepare_read_ns);
+	/* disp_off=1: only the suspend that will replay can get here with n == 1 and replay_done 0. */
+	if (disp_off && n == 1 && !READ_ONCE(replay_done))
+		m1_dcp_shutdown();
 	return 0;
 }
 
@@ -1172,16 +1177,17 @@ static void e1_after_slpa(void)
  * bit 7 set from K4 on (0xc0-0xc5).
  *
  * disp_off=1 (run-floor --m1-disp-off, E2's display rung; PLAN.md, rung 6; only
- * with sio_on=1): step K3b, right after slpa and before K4, with interrupts
- * still on and this task able to sleep, as at K4. The two DCPs Linux keeps
- * running through s2idle (dcp@38bc00000 and dcp@289c00000) are shut down through
- * RTKit, display firmware first as T8140's driver has it: apple_rtkit_shutdown()
- * (SetAPPower 0x10, then SetIOPPower 0x01, acks awaited), as Linux's NVMe suspend
- * does and as JJRPF's DeepIdle test_sleep_off (GPL-2.0, T6020) did for its DCPs.
- * Run 8 tried K4's idle pair and it didn't stop them. If that returned 0, one
- * read-modify-write of CPU_CONTROL clearing RUN, read back, with no idle gate
- * (the shutdown's acks are the handshake, as there). Only for a DCP whose RUN read
- * 1 then 0, a 2 ms wait for anything it posted, and its two domains to target 0,
+ * with sio_on=1): two parts. At the first suspend's prepare, after the DCP
+ * driver's own suspend and before noirq and slpa (where macOS stops them, and
+ * where DeepIdle's patch did), the two DCPs Linux keeps running through s2idle
+ * (dcp@38bc00000 and dcp@289c00000) are shut down through RTKit:
+ * apple_rtkit_shutdown() (SetAPPower 0x10, then SetIOPPower 0x01, acks awaited),
+ * as Linux's NVMe suspend does and as JJRPF's DeepIdle test_sleep_off (GPL-2.0,
+ * T6020) did for its DCPs. Run 8 tried K4's idle pair after slpa and it didn't
+ * stop them. If that returned 0, one read-modify-write of CPU_CONTROL clearing
+ * RUN, read back, with no idle gate (the shutdown's acks are the handshake, as
+ * there). Then step K3b, right after slpa and before K4, with interrupts still
+ * on: only for a DCP whose RUN read 1 then 0, its two domains to target 0,
  * child first (disp0_cpu0 0x28e580350, disp0_fe 0x28e580328; dispext0_cpu0
  * 0x28e080280, dispext0_fe 0x28e080258, on ps_pmp's page but not its word), each
  * read-modify-written with the fields the power-state driver clears cleared,
@@ -2215,16 +2221,44 @@ static bool m1_ps_off(void __iomem *p)
 	return true;
 }
 
-/*
- * disp_off=1, step K3b, right after K3 and before K4 (the m1 comment says what,
- * in what order, and what Corey OK'd). Interrupts are on and this task can sleep.
- * A DCP that doesn't stop keeps its domains. Returns byte B's five bits.
- */
 #define M1_DCP_TIMEOUT		0	/* apple_rtkit_shutdown() timed out */
 #define M1_DCP_FAILED		1	/* it failed another way, or RTKit wasn't running */
 #define M1_DCP_NOT_STOPPED	2	/* it returned 0, but RUN didn't read 1 then 0 */
 #define M1_DCP_STOPPED		3
+/* disp_off=1: each DCP's outcome, from the first prepare to K3b; 0 until then is a timeout, but K3b only runs after it. */
+static u8 m1_dcp_code[ARRAY_SIZE(m1_dcp_info)];
 
+/*
+ * disp_off=1, at the first suspend's prepare, after the DCP driver's own suspend
+ * and before noirq and slpa (the m1 comment says why there, and what Corey OK'd).
+ * Interrupts are on and this task can sleep. Everything this leaves is one-way.
+ */
+static void m1_dcp_shutdown(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(m1_dcp_info); i++) {
+		u32 ctrl;
+		int ret;
+
+		ret = apple_rtkit_is_running(m1_dcp_rtk[i]) ? apple_rtkit_shutdown(m1_dcp_rtk[i]) : -ENODEV;
+		if (ret) {
+			m1_dcp_code[i] = ret == -ETIME ? M1_DCP_TIMEOUT : M1_DCP_FAILED;
+			continue;
+		}
+		ctrl = readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);
+		writel(ctrl & ~M1_ASC_CPU_RUN, m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);
+		dsb(sy);
+		m1_dcp_code[i] = (ctrl & M1_ASC_CPU_RUN) && !(readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN) ?
+				 M1_DCP_STOPPED : M1_DCP_NOT_STOPPED;
+	}
+}
+
+/*
+ * disp_off=1, step K3b, right after K3 and before K4: the domains of the DCPs
+ * that stopped at prepare. A DCP that didn't keeps its domains. Returns byte B's
+ * five bits.
+ */
 static u8 m1_disp_stop(void)
 {
 	static const u8 stage = 0x84;
@@ -2234,32 +2268,14 @@ static u8 m1_disp_stop(void)
 
 	for (i = 0; i < ARRAY_SIZE(m1_dcp_info); i++) {
 		const struct m1_dcp *d = &m1_dcp_info[i];
-		unsigned int code = M1_DCP_NOT_STOPPED;
-		u32 ctrl;
-		int ret;
 
-		ret = apple_rtkit_is_running(m1_dcp_rtk[i]) ? apple_rtkit_shutdown(m1_dcp_rtk[i]) : -ENODEV;
-		if (ret) {
-			res |= (ret == -ETIME ? M1_DCP_TIMEOUT : M1_DCP_FAILED) << (2 * i);
-			continue;
-		}
-		ctrl = readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);
-		writel(ctrl & ~M1_ASC_CPU_RUN, m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);
-		dsb(sy);
-		if ((ctrl & M1_ASC_CPU_RUN) && !(readl(m1_dcp_asc[i] + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN)) {
-			code = M1_DCP_STOPPED;
-			/*
-			 * Its mailbox is in the domain that goes off next, and RTKit's RX path is
-			 * attached again after the shutdown: let the mailbox IRQ and RTKit's ordered
-			 * queue finish whatever it posted before its CPU stopped, which can post no more.
-			 */
-			msleep(2);
+		if (m1_dcp_code[i] == M1_DCP_STOPPED) {
 			turned = true;
 			if (!m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK)) ||
 			    !m1_ps_off(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK)))
 				all_off = false;
 		}
-		res |= code << (2 * i);
+		res |= m1_dcp_code[i] << (2 * i);
 	}
 	if (turned && all_off)
 		res |= BIT(4);
