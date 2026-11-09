@@ -410,8 +410,17 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after the position read (2026-11-09; judgment; this is the only
-      place it's kept):** the read stopped at the row no rung addresses, with CPU0
+      **The order after run 7 (2026-11-09; judgment; this is the only place it's kept):**
+      SIO's subtree and the PMP are out of the way, and DISPLAY is the one macOS wait left
+      unmet, so the display chain (rung 6) is next, on top of run 7's recipe: both DCPs
+      treated as K4 treats the PMP (the idle pair, CPU_STATUS idle, RUN cleared, through the
+      RTKit the mailbox's drvdata gives), then disp0's and dispext0's domains to target 0, and
+      entry 58's wait saying for the first time whether DISPLAY settles. New RTKit messages, ASC
+      writes and PMGR writes, so Corey's OK first. T6020's display-off runs reset, so about 1 in
+      5 that it ends the reset (judgment); keep the sample, since if DISPLAY is what holds
+      B2's gate, the sample shows the gate open. Beside it, free and independent: one commit
+      write instead of three (macOS's T6000 table has one).
+      **Earlier, the order after the position read (2026-11-09; judgment):** the read stopped at the row no rung addresses, with CPU0
       up, and neither a sample from a core still up nor the next boot can show where
       the engine stops with every core down. About 2 in 3 that CPU0 being up is what
       holds B2's gate (T8140's and T8103's statements; 0x2922c0044 bit 2 reads clear
@@ -427,8 +436,11 @@ steps, and restarting the DCP and the PMP afterwards.
       different ending: subtract one at a time. The same reset: the display chain
       (rung 6) goes on top. `--m1-hold-nowatch` stays behind these.
 
-      **Next (built, not run): the combined rung, `pkexec e1-hook/run-floor
-      --m1-sio-pmp`** (`e1_hook sio_on=1`, on `--m1-pmp`'s recipe with `position=1`).
+      **Done 2026-11-09 (M1 run 7, RESEARCH.md): the combined rung, `pkexec
+      e1-hook/run-floor --m1-sio-pmp`** (`e1_hook sio_on=1`, on `--m1-pmp`'s recipe with
+      `position=1`): stage 0xc5, SIO_CPU's wait met for the first time (`qto` 0x10), the PMP's
+      CPU stopped (0x6015 = 0x8e), the sample as run 6's but for SIO_CPU's class, and the reset
+      30.0-31.5 s after the commit. What follows is the plan as it ran.
       Corey's OK and picks of 2026-11-09, "let's be ambitious":
       - Three new PMGR writes, in step 5 just before entry 61, each with genpd's own
         resume word (`safe-journal-20261106T201952.txt` L6172-L6260): `ps_sio`

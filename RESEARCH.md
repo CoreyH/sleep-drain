@@ -2734,3 +2734,54 @@ no timeout, but says nothing about this word.
 read has reached the limit of what a core still up can see, and the next-boot pass adds
 nothing. It confirmed the pairing and put a floor under the engine's progress, but it
 can't choose a rung by itself.
+
+### M1 run 7: the combined rung: SIO's parents up and the PMP stopped, and the SoC still resets at about 30 s (2026-11-09)
+
+`e1-hook/run-floor --m1-sio-pmp` (`replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1
+hold=1 pmp_out=1 position=1 sio_on=1`, #50; the module built at ff3f208; flag
+`radios-off`; the launcher also loaded `pmp_sleep_release` with 0xc and 0xd, "withdrawing
+0x3000 for sleep" in the journal), in a safe boot, on battery at 75%
+(`reading-summary.txt`). Against run 6 it has several changes at once, by Corey's pick:
+SIO, UART_P and SPI_P raised just before entry 61; the PMP's report requests withdrawn at
+noirq; K4, the PMP's idle pair and its CPU stopped; one position sample at about 1 s, and
+CPU0 then down. Raw data: `results/m1-run7-20261109/`.
+
+The module loaded at 14:18:27. The reading ended at 14:28:27 and was saved at 14:28:28. The
+Mac went dark and restarted by itself into the regular boot (Corey's report; `uptime -s`
+14:29:25; "PMU logged 1 boot error(s) and 0 panic(s)", as after runs 4-6).
+
+**The facts:**
+- **Stage 0xc5** (0x45 with K4's bit 7): the sample landed and CPU0 had nothing pending just
+  before its acks and its own deep WFI.
+- **SIO's raises:** 0x6007 = 0xff: all seven cores held, and bit 0 says ps_sio, UART_P and SPI_P
+  all read actual f within 10 ms. **`qto` 0x10: SIO_CPU's wait at entry 61 was met for the
+  first time on this Mac,** and only DISPLAY's wait timed out.
+- **The PMP:** 0x6015 = 0x8e: the idle pair returned 0, CPU_STATUS's low bits read 10 (idle by
+  macOS's mask; awake, over 19,299 reads, the low bits' AND was 0 and OR 1, so bit 1 is new), and RUN
+  read 1 before the write and 0 after it. The first time the PMP's CPU has been stopped at the
+  commit on this Mac.
+- **The sample, about 1 s after the commit** (0x14 0xdd): `PHASE` 4, `HS_A` bit 31 up, bit 24
+  clear, state word 0xa03, WD2 armed with its count within 0.25 s of the time since the first
+  commit write, 0x2922c0044 bit 2 clear and bit 3 set, 0x2922c0040 bit 1 set. The same as run 6's
+  except SIO_CPU's class, now bits 27:24 f with actual f.
+- **The restart:** 30.0-31.5 s after the commit (30.0-32.0 from `m1-crumbs`' first read, 29.5-31.5
+  from `--clear`'s). The armed alarm survived it, and `--clear` disarmed it.
+
+**What that shows:**
+- SIO_CPU's failed wait in runs 3-6 was its parents being off: with SIO, UART_P and SPI_P on, it
+  settles, so B2's op 50 would now be met if B2 gets there.
+- With SIO's subtree up and the PMP stopped, the engine at about 1 s with CPU0 up is where it was in
+  run 6: A2 at its first handshake, B2's gate words at their awake values. Neither change opens the
+  gate while a core is up.
+- Neither change, nor both, ends the reset. CPU0 went down about 1 s after the commit (stage 0xc5:
+  nothing pending before its deep WFI; the WFI itself isn't recorded), so the engine had about 29 s
+  with every core down and A2 still didn't close WD2.
+- DISPLAY is now the one macOS wait left unmet (`qto` bit 4).
+
+**What it doesn't settle.** Where the engine stops with every core down: run 6's limit stands, and
+this run adds no sensor past B2's gate. A stop past B2's gate, op 51 (SIO's ASC word) or later, would
+look the same from here.
+
+**What it changes** (judgment; the order is in PLAN.md, and only there): the two known mismatches
+that could be fixed from the hook are gone, and the display chain is the rung left. T6020 had every
+display domain off from its R6 on and still reset, so don't expect it alone to end the reset.

@@ -1,0 +1,1 @@
+time=2026-11-09T14:28:27+01:00 ts=1794230907 label=floor-m1-sio-pmp boot=safe then=suspend boot_id=e4d57e7b-4253-4d7d-862b-43762bbbe27b minutes=10 samples=61 window=1794230847-1794230907 charge_now_uah=3807000 voltage_uv=11834000 current_ua=-541000 charge_counter=-389942 capacity=75 uptime_s=672.00 ac=0
