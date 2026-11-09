@@ -2897,3 +2897,56 @@ suspend's `prepare`, before noirq and `slpa`, not given the idle pair after `slp
 **What it changes** (judgment; the order is in PLAN.md, and only there): this is the first run with
 every known PMGR-level difference from macOS gone. What's left is what the working chips do that this
 recipe doesn't, and they can now be read: the desk comparison comes before more rungs.
+
+### M1 run 10: the commit written once and the SMC told: the same reset (2026-11-09)
+
+`e1-hook/run-floor --quick --m1-macos-end` (run 9's parameters and `one_commit=1 smc_idle=1`, #56; the
+module built at b157386; flag `radios-off`; the launcher also loaded `pmp_sleep_release` with 0xc
+and 0xd), in a safe boot, on battery at 72%, with a 1-minute reading. Against run 9 it has two changes:
+the commit written once, as macOS's T6000 table has it, and SetAPPower 0x201 alone to the SMC after K4.
+Raw data: `results/m1-run10-20261109/`.
+
+**The facts:** stage 0xcd. 0x6005 bit 0: the SMC acked the AP idle notice within 200 ms. `qto` 0x00, every
+macOS wait met, as in run 9; both DCPs stopped and their domains off (byte B 0xdf); SIO's raises read on;
+the PMP's CPU stopped (0x6015 = 0x8e). The sample at about 1 s (0x14) is as in runs 6-9: `PHASE` 4, `HS_A`
+bit 31 up, bit 24 clear, state word 0xa03; 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 set.
+The restart: 29.8-31.7 s after the commit (29.8-31.8 and 29.7-31.7 from the two reads). Corey timed
+it at about 30 s of black. The armed alarm survived it, and `--clear` disarmed it.
+
+**What that shows:** a single commit write is enough to start the sequence: A2 was at its first
+handshake with one write as with three. The SMC takes the notice and answers it here. Neither moved the
+gate words at about 1 s with CPU0 up, or the reset.
+
+### The working drivers against this recipe (2026-11-09)
+
+A desk comparison of run 9's recipe with the two Linux entries that complete, DJ's (Diljit Singh)
+T8140 driver (aurora-silicon/linux#1208, `t8140-sleep.c` at 5b30b8ddbad6) and niteria's (Bartosz Nitka)
+T8132 (#1314, at f745c6707845), with Naeem Malik's T8103 driver and maralcbr's J314s trace for this
+Mac. A subagent's reading: the two facts Corey's next choice turns on were checked against this repo
+(no code here touches SIO's ASC or RTKit; `sio_on` needs `position`), the rest wasn't. T8140 and T8132
+facts may not carry over. The odds are judgment, each as "is a blocker", not "fixes it alone".
+
+- **SIO's firmware stopped, about 1 in 4.** Both drivers refuse a sleep unless the DCPs, the PMP and SIO
+  have stopped, and a T8140 comment says a commit with the PMP and SIO running "reset the SoC 5.5 s later",
+  this Mac's symptom with T8140's shorter WD2. DJ's ae8686a0bcf4 sends the idle pair, turns the mailbox's
+  receive off and clears RUN twice, about 64 ms before the commit by macOS's timing on T8140. Here
+  `apple-sio` runs its firmware (run 9's journal) and aurora's `sio_suspend` is a stub ("TODO: SIO coproc
+  sleep state"), so genpd cuts its power at noirq with the firmware running, and `sio_on` only brings the
+  domains back. B2's ops 50-51 are where it would bite, past the gate, so the 1 s sample wouldn't show
+  it. Against: no T8140 passage tests SIO alone, and T6020 sent SIO messages and still reset.
+- **CPU0 straight to its deep WFI with this recipe, about 1 in 6.** `sio_on` needs `position`, so
+  runs 7-10 all kept CPU0 up about 1 s after the commit. DJ's comment gives "under 33 ms from the complex
+  words to the WFI (the engine's bound for the cores to go idle)", T8140 and unmeasured there. No new
+  address, but it loses the sample.
+- **The internal PCIe ports down, about 1 in 6.** DJ's `t8140_apcie_port_stop`; macOS does it on this Mac
+  between `slpw` and `slpa` (maralcbr's `lab_pcie_ports_down`). New register writes, about 13 per port.
+- **Every power word at macOS's state, about 1 in 6.** Both drivers bring the domains to a measured macOS
+  state. This Mac's list is in RESEARCH's power-state notes (`lab_ps_off`): AFNC1_LW2, AFNC2_LW1, APCIE_GP_SYS,
+  PCIE0_REF, ATC COMMON, PCIE and USB_AON, five UARTs, MSG. So "the known differences at the PMGR level
+  are used up" was true of macOS's waits, not its power words.
+- **Lower:** the stop bits first (about 1 in 10), the SEP told (1 in 10; it already reads macOS's state here),
+  an MCC step-down (1 in 10, no T6000 source), the AOP told (1 in 12), the PMP's third request 0xe (1 in 20).
+- **Not real or not carrying over:** DJ's display-off preamble (run 9's shutdown met DISPLAY's wait without
+  it), the PMC voters and DCS step (the PMP manages those here and A2 writes them), CPM gates, the AMCC enables
+  (no early wake here), T8132's WD2 resume stub (wake side).
+
