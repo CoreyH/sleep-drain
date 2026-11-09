@@ -1377,6 +1377,16 @@ def position_tests(g, src):
         rc, out, err = dec(0xcd, dict(run8, prog=(0x14, 0xd3)))
         check(rc == 0 and "  display (K3b): internal DCP: stopped; external DCP: its RTKit shutdown TIMED OUT; the domains of the DCPs that stopped: all read off\n" in out,
               "disp_off=1: a timeout on one DCP, and the other's domains off", out + err)
+        rc, out, err = dec(0xcd, dict(run8, parked=0xff))
+        check(rc == 0 and "0x6005 bit 0 (smc_idle=1): the SMC acked the AP idle notice within 200 ms\n" in out and "SIO_CPU's bits 27:24" not in out
+              and "up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out,
+              "disp_off=1: 0x6005 bit 0 is the SMC's ack, not CPU0 and not SIO_CPU's reference", out + err)
+        rc, out, err = dec(0xcd, run8)
+        check(rc == 0 and "0x6005 bit 0 (smc_idle=1): the SMC did NOT ack an AP idle notice, or this run sent none\n" in out,
+              "disp_off=1: 0x6005 bit 0 clear: no ack, or none sent", out + err)
+        fake(path, scratch(0x85, down=0, isrs=0, parked=0, left=0, secs=0, flags=0, drained=0), rtc_secs=121761, alarm=alarm)
+        r = run(path, cnt=cnt)
+        check(r.returncode == 0 and "K5 (smc_idle=1): the AP idle notice to the SMC is over" in r.stdout, "stage 0x85: K5 finished, nothing later", r.stdout + r.stderr)
         rc, out, err = dec(0xcc, run8)
         check(rc == 0 and "disp_off=1: bit 3, so the stage is 0x44" in out and "CPU0 had an interrupt or SError pending" in out and DISP in out,
               "disp_off=1's 0xcc: the same, with something pending", out + err)
@@ -1439,7 +1449,7 @@ def position_tests(g, src):
     pos = pos[:pos.index("\n}\n")]
     sample = src[src.index("static void m1_pos_sample(u8 *s)"):]
     sample = sample[:sample.index("\n}\n")]
-    order = ["m1_crumb(0x6014, &flags, 1);", "b[0] = M1_POS_ST(0x40);", "b[1] = off | (m1_sio_ref ? BIT(0) : 0);", "b[2] = qto;", "b[3] = held;",
+    order = ["m1_crumb(0x6014, &flags, 1);", "b[0] = M1_POS_ST(0x40);", "b[1] = off | ((disp_off ? m1_smc_acked : m1_sio_ref) ? BIT(0) : 0);", "b[2] = qto;", "b[3] = held;",
              "m1_crumb(0x6004, b, 4);", "if (m1_raw) {\n\t\tm1_pos_wait(m1_t_third + m1_tps);", "m1_stage(M1_POS_ST(0x41));", "m1_pos_sample(s);", "m1_crumb(0x6012, s, 2);",
              "m1_stage(M1_POS_ST(0x42));", "if (m1_raw && !pmp_out) {\n\t\tm1_pos_wait(m1_t_third + 25 * m1_tps);", "m1_stage(0x43);", "m1_pos_sample(s);", "m1_crumb(0x6007, s, 1);",
              "m1_crumb(0x6015, s + 1, 1);", "? 0x44 : 0x45));", "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));"]
@@ -1530,6 +1540,21 @@ def position_tests(g, src):
     check('disp_off && !sio_on' in src, "e1_check_params refuses disp_off=1 without sio_on=1")
     check(all(f"m1_never(d->{w}" in src for w in ("asc + M1_ASC_CPU_CONTROL", "ps[0]", "ps[1]")),
           "the load refuses if a DCP's word would touch the never-write list")
+    # smc_idle=1 and one_commit=1.
+    smc = src[src.index("static bool m1_smc_idle(void)"):]
+    smc = smc[:smc.index("\n}\n")]
+    check(in_order(smc, ["msleep(6);", "apple_rtkit_is_running(m1_smc_rtk)", "apple_rtkit_send_message(m1_smc_rtk, M1_RTKIT_EP_MGMT, M1_RTKIT_SET_AP_PWR | M1_RTKIT_PWR_IDLE, NULL, false)",
+                         "!apple_rtkit_is_running(m1_smc_rtk)", "m1_tps / 5", "msleep(30);", "m1_kwrite(0x6004, &stage, 1);"]) and smc.count("apple_rtkit_send_message(") == 1,
+          "K5: one SetAPPower 0x201 to the SMC, between the gaps, the ack read as RTKit no longer running", smc)
+    check("#define M1_RTKIT_EP_MGMT\t0" in src and "#define M1_RTKIT_SET_AP_PWR\t(0xbULL << 52)" in src and "#define M1_RTKIT_PWR_IDLE\t0x201ULL" in src
+          and '#define M1_SMC_MBOX_NODE\t"/soc/mbox@290408000"' in src, "the notice's encoding and the SMC's mailbox are RTKit's and this Mac's")
+    check(in_order(after, ["pmpb = m1_pmp_out();", "if (smc_idle)\n\t\tm1_smc_acked = m1_smc_idle();", "preempt_disable();"]), "K5 comes after K4, with interrupts still on", after[:2000])
+    com = src[src.index("m1_t_first = m1_now();"):]
+    com = com[:com.index("m1_t_third = m1_now();")]
+    check("if (!one_commit) {\n\t\twritel_relaxed(1, commit);\n\t\twritel_relaxed(1, commit);\n\t}" in com
+          and in_order(com, ["writel_relaxed(1, commit);", "m1_alarm_arm(rtc);", "if (!one_commit) {"]),
+          "one_commit=1 skips the second and third commit writes; the alarm stays after the first", com)
+    check("(one_commit || smc_idle) && !disp_off" in src, "e1_check_params refuses one_commit=1 or smc_idle=1 without disp_off=1")
     never = (0x28e0802d8, 0x28e700000)
     check(not {0x38bc00044, 0x289c00044, 0x28e580350, 0x28e580328, 0x28e080280, 0x28e080258} & set(never), "none of the display writes is on the never-write list")
     check(not {0x28e580180, 0x28e580230, 0x28e5801e8} & set(never), "none of the three raises is on the never-write list")
