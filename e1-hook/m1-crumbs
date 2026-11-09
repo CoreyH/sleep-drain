@@ -1,9 +1,9 @@
 #!/usr/bin/python3 -I
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
---m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop or --m1-power-words; e1_hook m1=1,
-observe=1, pmgr_late=1, alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1, one_commit=1, smc_idle=1,
-sio_stop=1, ps_words=1) leaves in the PMU, read and decoded, and cleared
+--m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words or
+--m1-recfg-bite; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1,
+one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1) leaves in the PMU, read and decoded, and cleared
 again.
 
   e1-hook/m1-crumbs               read them (no root needed)
@@ -56,7 +56,8 @@ POSITION = (0x40, 0x41, 0x42, 0x43, 0x44, 0x45)
 POS_S1 = (0x42, 0x43, 0x44, 0x45)
 POS_S2 = (0x44, 0x45)
 DISP_STAGES = (0x48, 0x49, 0x4a, 0x4c, 0x4d)  # disp_off=1: POSITION's with bit 3
-SIO_STOP_STAGES = (0x4e, 0x4f)  # sio_stop=1, in place of 0x5a and 0x5b: 0x6012 has the K steps' outcomes
+RECFG_STAGE = 0x47  # recfg_bite=1, in place of 0x4f: 0x6005 is the sample after the commit (e1_hook's M1_RECFG_STAGE)
+SIO_STOP_STAGES = (0x4e, 0x4f, RECFG_STAGE)  # sio_stop=1, in place of 0x5a and 0x5b: 0x6012 has the K steps' outcomes
 # alarm=1 (0x59, 0x5f), hold=1 (0x5a-0x5e) and position=1: 0x6016 is the alarm's byte, and the alarm may be armed
 ALARM_STAGES = (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e) + POSITION + SIO_STOP_STAGES
 ALARM_SECS = 3600  # e1_hook's M1_ALARM_SECS
@@ -162,7 +163,9 @@ HOLD_TEXT = {
     0x5e: "hold=1: everything recorded, CPU0 had nothing pending just before its acks and its own deep WFI (it goes"
           " down last, by design)",
     0x4e: "8 (sio_stop=1): the steps' outcomes (0x6012) follow it, the last SPMI command before the commit; next came nub-spmi0's acks, the first commit, the"
-          " alarm's commands and stage 0x4f",
+          " alarm's commands and stage 0x4f (recfg_bite=1: one read of A2's bite word in the SRAM before those, and stage 0x47 for 0x4f)",
+    RECFG_STAGE: "recfg_bite=1: the commit and the alarm are done, and CPU0 read WD2 and PHASE once (0x6005), the run's last breadcrumb"
+                 " by design: CPU0 then released the others and took its deep WFI at once, unrecorded",
     0x4f: "sio_stop=1: the commit and the alarm are done, the run's last breadcrumb by design: CPU0 then released the others"
           " and took its deep WFI at once, unrecorded",
     0x40: "position=1: the release went out and CPU0's watch ended (0x6005 = the cores it read off); CPU0 stays up,"
@@ -222,6 +225,7 @@ STATE_WORDS = ("0xa03 (a sequence's start)", "1 (a sequence's end)", "0xa02 (A1'
 K_MARK = 0xa5  # e1_hook's M1_K_MARK: 0x6013, when 0x6012 has sio_stop=1's outcomes
 W_MARK = 0xc0  # e1_hook's M1_W_MARK: 0x6013's top two bits in a ps_words=1 run, one bit per group below them
 W_GROUPS = ("the five UARTs", "MSG", "ATC1-3_USB_AON", "ATC0-3_PCIE", "ATC1-3_COMMON")  # bits 0-4; e1_hook's M1_PW_*
+BITE_CLASSES = ("another value", "the old value, 30 s", "the new value, 45 s", "its awake value")  # recfg_bite.h's M1_BITE_*
 DCP_CODES = ("its RTKit shutdown TIMED OUT", "its RTKit shutdown FAILED another way", "shut down, but RUN didn't read 1 then 0", "stopped")
 SIO_CODES = ("its RTKit idle pair TIMED OUT", "its RTKit idle pair FAILED another way", "idle returned 0, but RUN didn't read 1 then 0", "stopped")
 SIO_CLASSES = ("all ones: a failed read", "target 0, bit 11 set (B2 at op 91, inferred)",
@@ -244,6 +248,35 @@ def sample_lines(n, addr_a, a, addr_b, b, disp=False):
             middle,
             f"  gate words: 0x2922c0044 bit 2 {'set' if b & 0x20 else 'clear'}, bit 3 {'set' if b & 0x40 else 'clear'};"
             f" 0x2922c0040 bit 1 {'set' if b & 0x80 else 'clear'}"]
+
+
+def recfg_lines(v):
+    """recfg_bite=1, stage 0x47: 0x6005, what CPU0 read right after the commit (recfg_bite.h has the layout)."""
+    cls, phase, armed, sram = v & 3, v >> 2 & 0xf, bool(v & 0x40), bool(v & 0x80)
+    if cls == 2:
+        so = "the SRAM is writable and the engine ran the changed word: feasibility shown, whenever the reset came"
+    elif cls == 1 and not sram:
+        so = ("the edit wasn't in place at the commit, so it wasn't tested: something put the old value back between the load"
+              " and the commit")
+    elif cls == 1 and phase in (4, 5):
+        so = "A2, before its last phase, armed WD2 from something other than the word as it read: the edit isn't what the engine runs"
+    elif cls == 1:
+        so = (f"nothing decided about the edit: with PHASE {phase:#x}, a later sequence's opening may have re-armed WD2 with its"
+              " own 30 s before CPU0 looked")
+    elif cls == 3:
+        so = "nothing decided: no sequence had armed WD2 when CPU0 looked, so the reset time is all there is"
+    else:
+        so = "nothing decided: not a bite any sequence read so far writes"
+    what = "its awake value, or pair 0's" if phase == 0 else PHASES.get(phase, "not a phase the sequences read so far write")
+    return [f"0x6005 = 0x{v:02x}: recfg_bite=1, right after the commit and the alarm's commands (A2's bite word in the SRAM was"
+            " changed to 45 s before the load):",
+            f"  WD2's bite: {BITE_CLASSES[cls]}; WD2 "
+            + ("armed and counting from the commit (RESET_EN set, its count within 0.25 s of CPU0's time since the commit)"
+               if armed else "NOT armed and counting from the commit (RESET_EN clear, or its count off by more than 0.25 s)"),
+            f"  PHASE {phase:#x} ({what}); A2's bite word in the SRAM, read in step 8 just before the commit:"
+            f" {'the new value' if sram else 'NOT the new value'}",
+            f"  so: {so}",
+            "  (the reset time is a second fact, never the test: RESEARCH.md, \"A different approach\")"]
 
 
 def k_lines(b):
@@ -444,7 +477,8 @@ def decode(b, rtc, cnt=None, alarm=None):
     late = s in LATE or hold
     base = HOLD.get(s, LATE.get(s, s))  # the stage of runs 1 and 2 it stands for
     obs = base in OBSERVED
-    mark = s not in POSITION and 0x10 <= base <= 0x60 and bool(b[5] & 1)  # an observe=1 run, below CPU7's own stages
+    # An observe=1 run, below CPU7's own stages. Not recfg_bite=1's stage: its 0x6005 is the sample.
+    mark = s not in POSITION and s != RECFG_STAGE and 0x10 <= base <= 0x60 and bool(b[5] & 1)
     text = HOLD_TEXT.get(s) or LATE_TEXT.get(s) or stage(base, mark)
     out = [
         f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
@@ -478,7 +512,9 @@ def decode(b, rtc, cnt=None, alarm=None):
         out.append(f"0x6007 = {b[7]}: " + ("no watchdog was armed to reset the SoC" if b[7] == 255 else
                                          f"{b[7]} s until the first armed watchdog's reset, as CPU7 read it"))
     elif base >= 0x10:
-        if s in HOLD_AFTER and s not in SIO_STOP_STAGES:
+        if s == RECFG_STAGE:
+            pass  # 0x6005 is the sample: recfg_lines(), below
+        elif s in HOLD_AFTER and s not in SIO_STOP_STAGES:
             out.append(f"read off after the release (0x6005 = 0x{b[5]:02x}, up to 10 ms each): {cpus(b[5] & 0xfe)}")
             if s in POSITION:
                 if disp:
@@ -605,6 +641,8 @@ def decode(b, rtc, cnt=None, alarm=None):
     elif base >= 0x50:
         if s in SIO_STOP_STAGES:
             out += k_lines(b)
+            if s == RECFG_STAGE:
+                out += recfg_lines(b[5])
         elif s in POSITION:
             out += position_lines(s, b, pmp, disp)
         elif hold and s in HOLD_AFTER:
@@ -628,7 +666,7 @@ def decode(b, rtc, cnt=None, alarm=None):
             out.append(alarm_byte(b[0x16]))
             if s in (0x59, 0x5a, 0x4e) and b[0x16] in ALARM_ACKED:
                 out.append(f"  stage 0x{s:02x}, so nothing records {'the commit' if s == 0x4e else 'the two commit writes'} after those commands ("
-                           f"{'0x5f' if s == 0x59 else '0x4f' if s == 0x4e else '0x5b'} comes after them): inconclusive about the rest of the entry")
+                           f"{'0x5f' if s == 0x59 else '0x4f, or 0x47 with recfg_bite=1,' if s == 0x4e else '0x5b'} comes after them): inconclusive about the rest of the entry")
         elif b[0x14] & 0x80:
             out.append(f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
     if commit is not None and cnt and cnt[1]:

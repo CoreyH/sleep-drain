@@ -86,6 +86,7 @@
  *   pkexec e1-hook/run-floor --m1-macos-end       (--m1-disp-off's, one_commit=1 and smc_idle=1: PLAN.md)
  *   pkexec e1-hook/run-floor --m1-sio-stop        (--m1-macos-end's, hold_nowatch=1 for position=1, and sio_stop=1: PLAN.md)
  *   pkexec e1-hook/run-floor --m1-power-words     (--m1-sio-stop's and ps_words=1: PLAN.md)
+ *   pkexec e1-hook/run-floor --m1-recfg-bite      (--m1-power-words' and recfg_bite=1, after recfg-bite's one SRAM write: PLAN.md)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -123,6 +124,7 @@
 #include <trace/events/power.h>
 
 #include "m1_position.h"
+#include "recfg_bite.h"
 
 #if IS_ENABLED(CONFIG_ACPI)
 #error "ACPI registers s2idle ops of its own, and this module would replace them"
@@ -315,6 +317,10 @@ MODULE_PARM_DESC(sio_stop, "With hold_nowatch=1, disp_off=1, one_commit=1 and sm
 static bool ps_words;
 module_param(ps_words, bool, 0444);
 MODULE_PARM_DESC(ps_words, "With sio_stop=1: at the end of step 5, the 20 PMGR power words in m1_pw[] written with macOS's values at sleep entry");
+/* The feasibility run for the engine's SRAM: A2's WD2 bite, changed by run-floor's recfg-bite (PLAN.md). */
+static bool recfg_bite;
+module_param(recfg_bite, bool, 0444);
+MODULE_PARM_DESC(recfg_bite, "With ps_words=1: e1-hook/recfg-bite has changed A2's WD2 bite word in the engine's reconfig SRAM to 45 s (this module never writes the SRAM). The load refuses unless the word reads that; step 8 reads it again; right after the commit and the alarm's commands CPU0 reads WD2's bite, control and count and PHASE, and records them at 0x6005 with stage 0x47. Corey's OK of 2026-11-09");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -1266,6 +1272,22 @@ static void e1_after_slpa(void)
  * (M1_PW_*), set if the whole group did, in place of M1_K_MARK (the second's top byte
  * can't reach 0xc0 either: that's 102 years).
  *
+ * recfg_bite=1 (run-floor --m1-recfg-bite; with ps_words=1) is the feasibility run
+ * for instrumenting the engine (RESEARCH.md, "A different approach"). The engine's
+ * entry sequence, A2, in the reconfig SRAM, opens by arming WD2 with a 30 s bite.
+ * Before this module loads, e1-hook/recfg-bite changes that one word to 45 s
+ * (recfg_bite.h has where and what; Corey's OK of 2026-11-09). This module writes
+ * nothing there. The load refuses unless the word reads the new value. Step 8 reads
+ * it once more, after the stage 0x4e crumbs and with SError still unmasked, so a read
+ * that faulted would panic before the commit and leave 0x4e as the last stage. Then,
+ * where sio_stop=1 sends stage 0x4f, after the commit and the alarm's commands, CPU0
+ * reads WD2's bite, control and count and PHASE (0x2922c0110, one of the position
+ * read's words), once, and sends stage 0x47 with the sample at 0x6005 in one command
+ * (recfg_bite.h has the byte; parked is all seven by then, as held says). The bite
+ * read is the test: the new value in WD2 says the engine ran the changed word. The
+ * old value says it didn't only while PHASE reads 4 or 5, A2 before its last phase:
+ * from 7 on, a later sequence's opening may have re-armed WD2 with its own 30 s.
+ *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
  * clusters to the
@@ -1515,6 +1537,12 @@ static bool m1_smc_acked;
 #define M1_SIO_ASC		0x39bc00000ULL
 #define M1_K_MARK		0xa5	/* 0x6013, with the steps' outcomes at 0x6012 (the m1 comment) */
 #define M1_W_MARK		0xc0	/* ps_words=1: 0x6013's top two bits, in place of M1_K_MARK */
+#define M1_RECFG_STAGE		0x47	/* recfg_bite=1: in place of 0x4f, with the sample at 0x6005 (the m1 comment) */
+/* recfg_bite=1: A2's bite word in the SRAM, mapped read-only in effect (never written here), and WD2's bite as the load read it. */
+static void __iomem *m1_recfg_word;
+static u32 m1_wd2_bite_awake;
+static_assert(RECFG_WDT == M1_WDT && RECFG_WD2_COUNT == M1_WD_CUR(2) && RECFG_WD2_BITE == M1_WD_BITE(2) &&
+	      RECFG_WD2_CTRL == M1_WD_CTRL(2) && RECFG_WD_RESET_EN == M1_WD_RESET_EN);
 
 /* ps_words=1: the groups, one bit each in 0x6013 (the m1 comment). */
 #define M1_PW_UART	0
@@ -2573,7 +2601,7 @@ static void __noreturn m1_after_slpa(void)
 	u8 parked = 0, left = 0, down = 0, held = 0, isrs = 0, flags = BIT(7), qto = 0, b[7], rtc[6] = {}, pmpb = 0;
 	struct m1_core *o = &m1_core[7];
 	unsigned int i, k, cpu, drained = 0;
-	u32 v, dcs = 0, pacc0 = 0;
+	u32 v, dcs = 0, pacc0 = 0, sram = 0;
 	bool obs;
 	u64 t0;
 
@@ -2731,6 +2759,9 @@ static void __noreturn m1_after_slpa(void)
 	} else {
 		m1_stage(0x50);
 	}
+	/* recfg_bite=1: A2's bite word once more, SError still unmasked, so a read that faulted panics here, before the commit (the m1 comment). */
+	if (recfg_bite)
+		sram = readl(m1_recfg_word);
 
 	/* 9 */
 	for (i = 0; i < M1_SPMI_WORDS; i++)
@@ -2749,7 +2780,7 @@ static void __noreturn m1_after_slpa(void)
 		if (pmgr_late)
 			pacc0 = readl(m1_soc + M1_SOC_PACC0) & BIT(4);
 	}
-	if (position)
+	if (position || recfg_bite)
 		m1_t_first = m1_now();
 	writel_relaxed(1, commit);
 	if (alarm) {
@@ -2765,10 +2796,21 @@ static void __noreturn m1_after_slpa(void)
 		m1_t_third = m1_now();
 	if (alarm) {
 		/* The last SPMI command before the release (hold=1) or the deep WFI: every one leaves a vector to ack before that WFI. */
-		if (hold)
+		if (recfg_bite) {
+			/* What the engine made of the changed word: read once, and sent with the stage that says it's there (the m1 comment). */
+			u32 bite = readl(m1_wdt + M1_WD_BITE(2)), wctl = readl(m1_wdt + M1_WD_CTRL(2));
+			u32 count = readl(m1_wdt + M1_WD_CUR(2));
+			u64 now = m1_now();
+
+			b[0] = M1_RECFG_STAGE;
+			b[1] = m1_recfg_sample(bite, m1_wd2_bite_awake, readl(m1_pos + M1_POS_PHASE), wctl,
+					       m1_pos_count_near(count, now - m1_t_first, m1_tps), sram);
+			m1_crumb(0x6004, b, 2);
+		} else if (hold) {
 			m1_stage(sio_stop ? 0x4f : 0x5b);
-		else
+		} else {
 			m1_stage(0x5f);
+		}
 		for (i = 0; i < M1_SPMI_WORDS; i++)
 			writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
 		dsb(sy);
@@ -3013,6 +3055,39 @@ static int __init m1_pw_init(void)
 		}
 		m1_pw_map[i] += m1_pw[i].addr & ~PAGE_MASK;
 		pr_info("m1: ps_words: %#llx awake %08x, will write %08x\n", m1_pw[i].addr, readl(m1_pw_map[i]), m1_pw[i].val);
+	}
+	return 0;
+}
+
+/*
+ * recfg_bite=1 at load, reads only: e1-hook/recfg-bite has changed A2's WD2 bite word
+ * in the engine's SRAM already, and this refuses unless it reads the new value. WD2
+ * and PHASE are logged awake, the baseline for the sample after the commit.
+ */
+static int __init m1_recfg_init(void)
+{
+	const u64 pa = RECFG_SRAM + RECFG_BITE;
+	void __iomem *p = ioremap_np(pa & PAGE_MASK, PAGE_SIZE);
+	u32 v;
+
+	if (!m1_pos)
+		m1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);
+	if (!p || !m1_pos) {
+		if (p)
+			iounmap(p);
+		pr_err("m1: recfg_bite: a mapping failed; refusing\n");
+		return -ENOMEM;
+	}
+	m1_recfg_word = p + (pa & ~PAGE_MASK);
+	v = readl(m1_recfg_word);
+	m1_wd2_bite_awake = readl(m1_wdt + M1_WD_BITE(2));
+	pr_info("m1: recfg_bite: A2's WD2 bite word 0x%llx reads %08x; awake: WD2 ctrl %x count %08x bite %08x, PHASE %08x\n",
+		pa, v, readl(m1_wdt + M1_WD_CTRL(2)), readl(m1_wdt + M1_WD_CUR(2)), m1_wd2_bite_awake,
+		readl(m1_pos + M1_POS_PHASE));
+	if (v != RECFG_BITE_NEW) {
+		pr_err("m1: recfg_bite: the word isn't the new bite, %08x: e1-hook/recfg-bite changes it first; refusing\n",
+		       RECFG_BITE_NEW);
+		return -EINVAL;
 	}
 	return 0;
 }
@@ -3288,6 +3363,12 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
+	if (recfg_bite) {
+		int ret = m1_recfg_init();
+
+		if (ret)
+			return ret;
+	}
 	return 0;
 }
 
@@ -3319,6 +3400,8 @@ static void m1_unmap(void)
 		iounmap(m1_cpm);
 	if (m1_pos)
 		iounmap(m1_pos);
+	if (m1_recfg_word)
+		iounmap((void __iomem *)((unsigned long)m1_recfg_word & PAGE_MASK));
 	if (m1_pmp_asc)
 		iounmap(m1_pmp_asc);
 	if (m1_pmp_mbox_pdev)
@@ -3646,6 +3729,10 @@ static int __init e1_check_params(void)
 		pr_err("ps_words=1 needs sio_stop=1 (0x6013 has its outcome in that layout)\n");
 		return -EINVAL;
 	}
+	if (recfg_bite && !ps_words) {
+		pr_err("recfg_bite=1 needs ps_words=1 (stage 0x47 and its byte at 0x6005 are in that run's layout)\n");
+		return -EINVAL;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -3814,13 +3901,13 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
 		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "",
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
-		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "");
+		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "");
 	return 0;
 
 unmap:

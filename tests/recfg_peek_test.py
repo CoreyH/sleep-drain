@@ -11,7 +11,8 @@ held at each save: sleep-drain-safe collect keeps the first copy of a directory
 and stops on one that differs, so a stage's directory must not change after
 its save. It also runs the position read's stages (a-h, one word each but a), the
 launcher's --position (saved after each, then done.txt and the mark run-floor
-needs) and --position-after (a regular boot, only with a collected done.txt).
+needs) and --position-after (a regular boot, only with a collected done.txt),
+and stage 6, the ten words that say where A2's WD2 bite is (recfg_bite.h).
 
   python3 -I tests/recfg_peek_test.py
 """
@@ -278,8 +279,47 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     check(not [pa for pa in sum(WORDS.values(), []) if 0x28e0802d8 <= pa < 0x28e0802e0 or 0x28e700000 <= pa < 0x28e700008],
           "no position word is on the never-write list")
 
+    # Stage 6: the ten words that say where A2's WD2 bite is, read in order and never followed, and its verdict.
+    # Built here from the format and WD2's register map, as recfg_bite.h builds them: nothing is copied from the dump.
+    HEAD = ((0x2922b0000 >> 10) << 6) | (4 - 1) << 2 | 1
+    OFFS = int.from_bytes(bytes(reg >> 2 for reg in (0x2c, 0x20, 0x24, 0x2c)), "little")
+    TEN = [CFG, LOCK, SRAM + 0x1010, SRAM + 0x1014] + [SRAM + 0x2000 + 4 * i for i in range(6)]
+    GOOD = [0x1000, 0, (SRAM + 0x2000) >> 4, 0, HEAD, OFFS, 0, 0, 0x2aea5400, 4]
+
+    def ten(values):
+        m = Mem(fake)
+        for pa, v in zip(TEN, values):
+            m.word(pa, v)
+
+    out7 = fresh("o7")
+    ten(GOOD)
+    r, a = run(6, out7)
+    check(r.returncode == 0 and a == TEN, "stage 6 reads exactly the ten words, in order", str([hex(x) for x in a]))
+    check(r.stdout.rstrip().endswith("A2's WD2 bite word, 0x292f02010: the old value, 30 s"), "stage 6's last line is the verdict: the old bite", r.stdout)
+    check(all("0x%x = 0x%08x" % (pa, v) in r.stdout and r.stdout.index("reading 0x%x\n" % pa) < r.stdout.index("0x%x = 0x%08x" % (pa, v))
+              for pa, v in zip(TEN, GOOD)), "stage 6 says what it's reading before each read, and prints each word", r.stdout)
+    ten(GOOD[:8] + [0x405f7e00, 4])
+    r, a = run(6, out7)
+    check(r.returncode == 0 and a == TEN and r.stdout.rstrip().endswith("0x292f02010: the new value, 45 s"), "stage 6 says when the bite is the new one", r.stdout)
+    for i, text in ((0, "the table offset register's analogue doesn't read 0x1000"), (1, "the lock's analogue reads non-zero"),
+                    (2, "table A's entry 2 doesn't point at the SRAM + 0x2000"), (3, "table A's entry 2 doesn't point"),
+                    (4, "A2 doesn't open with the op that arms WD2"), (5, "A2 doesn't open"), (6, "A2 doesn't open"), (7, "A2 doesn't open"),
+                    (8, "neither the old value nor the new one"), (9, "A2 doesn't open")):
+        values = list(GOOD)
+        values[i] ^= 0x10
+        ten(values)
+        r, a = run(6, out7)
+        check(r.returncode == 3 and a == TEN and text in r.stdout.splitlines()[-1],
+              f"stage 6 stops (exit 3) when word {i} isn't as expected, having read the same ten and no more", r.stdout)
+    ten([0xffffffff] * 10)
+    r, a = run(6, out7)
+    check(r.returncode == 3 and a == TEN, "stage 6 on all ones: the same ten reads, and it stops", r.stdout)
+    check(not os.listdir(out7), "stage 6 writes no dump", os.listdir(out7))
+    check(not [pa for pa in TEN if 0x28e0802d8 <= pa < 0x28e0802e0 or 0x28e700000 <= pa < 0x28e700008],
+          "none of stage 6's words is on the never-write list")
+
     # Its arguments: no address can be asked for.
-    for args in (["0", tmp], ["6", tmp], ["12", tmp], ["x", tmp], ["i", tmp], ["A", tmp], ["ab", tmp], ["1"],
+    for args in (["0", tmp], ["7", tmp], ["12", tmp], ["x", tmp], ["i", tmp], ["A", tmp], ["ab", tmp], ["1"],
                  ["0x2925c0200", tmp], []):
         r = subprocess.run([binary] + args, capture_output=True, text=True)
         check(r.returncode == 2, "refuses arguments " + repr(args), r.stdout + r.stderr)
