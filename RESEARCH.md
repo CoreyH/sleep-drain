@@ -2975,7 +2975,7 @@ and second RUN clear of DJ's T8140 driver, so "SIO doesn't matter" goes further 
 CPU0 straight down ends the same way as keeping it up about 1 s (runs 6-10), but with no sample this run
 can't say whether the engine got further.
 
-**Proposed next, not built and not OK'd:** the remaining power words at macOS's state, in one run. From
+**Next, Corey's OK of 2026-11-09 (built as `--m1-power-words`, not yet run):** the remaining power words at macOS's state, in one run. From
 maralcbr's `lab_ps_off` (`drivers/power/reset/macsmc-reboot.c` at 37be2668, GPL-2.0, macOS's values on a
 J314s), leaving out what's handled or already matches (the four display words `disp_off` turns off,
 DISPEXT1's two, SEP, NUB_SPMI1, AFNC3_LW0), the PMP's word, which is never written, and PMS_SRAM.
