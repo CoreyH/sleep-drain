@@ -2950,3 +2950,44 @@ facts may not carry over. The odds are judgment, each as "is a blocker", not "fi
   it), the PMC voters and DCS step (the PMP manages those here and A2 writes them), CPM gates, the AMCC enables
   (no early wake here), T8132's WD2 resume stub (wake side).
 
+### M1 run 11: SIO's firmware stopped and CPU0 straight down: the same reset (2026-11-09)
+
+`e1-hook/run-floor --quick --m1-sio-stop` (run 10's parameters, with `hold_nowatch=1` in place of
+`position=1`, and `sio_stop=1`, #58; the module built at 85c695b; flag `radios-off`; the launcher also
+loaded `pmp_sleep_release` with 0xc and 0xd), in a safe boot, on battery at 54%, with a 1-minute reading.
+Against run 10 it has two changes, as Corey chose: SIO's RTKit idle pair and a RUN clear at the first
+`prepare`, and CPU0 sent to its deep WFI as soon as it has let the others go after the commit, with no sample.
+Raw data: `results/m1-run11-20261109/`.
+
+**The facts:** stage 0xcf, the run's last breadcrumb by design. 0x6012 = 0xff with its marker at 0x6013:
+both DCPs stopped and their domains off, the SMC acked its notice, and SIO's firmware stopped (the idle
+pair returned 0, and RUN read 1 before the clear and 0 after it). `qto` 0x00, every macOS wait met; all
+seven other cores wrote their stop bit and held; SIO's raises read on; the PMP's CPU stopped
+(0x6015 = 0x8e). The restart: 29.8-31.3 s after the commit (29.8-31.8 and 29.3-31.3 from the two reads).
+Corey counted about 30 s of black. The armed alarm survived it, and `--clear` disarmed it.
+
+**Not recorded:** with `hold_nowatch=1` nothing is written after stage 0x4f, so neither the deep WFIs nor the
+engine's position were observed in this run.
+
+**What that shows:** the two leads rated highest in the comparison above didn't move the reset, in the form
+tested. SIO's stop here came at the first `prepare`, well before the commit, and without the mailbox step
+and second RUN clear of DJ's T8140 driver, so "SIO doesn't matter" goes further than this run does. Sending
+CPU0 straight down ends the same way as keeping it up about 1 s (runs 6-10), but with no sample this run
+can't say whether the engine got further.
+
+**Proposed next, not built and not OK'd:** the remaining power words at macOS's state, in one run. From
+maralcbr's `lab_ps_off` (`drivers/power/reset/macsmc-reboot.c` at 37be2668, GPL-2.0, macOS's values on a
+J314s), leaving out what's handled or already matches (the four display words `disp_off` turns off,
+DISPEXT1's two, SEP, NUB_SPMI1, AFNC3_LW0), the PMP's word, which is never written, and PMS_SRAM.
+20 words:
+
+| Value | Words |
+|---|---|
+| 0x1000030f | AFNC1_LW2 0x28e080220, APCIE_GP_SYS 0x28e080320, AFNC2_LW1 0x28e580160 |
+| 0x1400024f | PCIE0_REF 0x28e080138 |
+| 0x00000300 | ATC1-3_COMMON 0x28e080240, 0x28e0802f8, 0x28e080300; ATC0-3_PCIE 0x28e080330, 0x340, 0x350, 0x360; ATC1-3_USB_AON 0x292280090, 0x98, 0xa0 |
+| 0x00000200 | UART2, 3, 4, 6, 7 0x28e580250, 0x258, 0x260, 0x268, 0x270; MSG 0x292280078 |
+
+macOS has the internal PCIe ports down before it gets here, and this recipe doesn't, so the PCIe and fabric
+words are the ones most likely to behave differently here. maralcbr's own table has these words as macOS's
+state at sleep entry; whether their runs wrote this exact set isn't established here.
