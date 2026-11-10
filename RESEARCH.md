@@ -3458,8 +3458,13 @@ Aura. The sequences' listing stays off the repository.
   150 s, the count at 60 s and running. A marker that doesn't stand makes the run's time unreadable for
   B2's progress, and it's to be read that way, not as a result. With WD2 at 120 s as in runs 15 and 16,
   the reset's time then reads the pair's progress:
-  - **about 90 s after the commit:** WD1, its count never zeroed. B2 didn't reach op 223: the stall is
-    at the gate, in the first handshake (A2's three steps) or in B2's power-down.
+  - **about 90 s after the commit:** WD1, its count never zeroed, is what fits. B2 then didn't reach
+    op 223: the stall is at the gate, in the first handshake (A2's three steps) or in B2's power-down.
+    It supports that and doesn't prove it: the same time comes out if B2 zeroed WD1's count, the pair
+    finished, and a later A sequence started about 60 s after the commit and armed WD2 with its own
+    30 s, the delayed re-arm that run 15 left open (Pullfrog on #72). Runs 15 and 16 saw no sequence
+    start then, but they aren't this run. A second run with another count would separate the two: WD1's
+    time moves with the count, and a later sequence's doesn't.
   - **about 120 s:** WD2. B2 zeroed WD1's count, so the gate opened, A2's three steps settled and B2's
     power-down ran, and the pair then stopped in its last twenty-odd ops: the second handshake, the
     PMU command, the third handshake.
@@ -3470,8 +3475,10 @@ Aura. The sequences' listing stays off the repository.
 - It also ends a completed entry by itself: no power key, and no wait in the dark. A floor reading
   would be a later run, with WD1 left out.
 - Nothing is armed while the Mac is awake: step 4 is past `slpa`, where the replay has no way back.
-- A reset at about 90 s would also settle what runs 15 and 16 left open with their one bite value: it
-  would be WD1's, with WD2 still armed behind it, so no later A sequence would be needed to explain it.
+- What the restart's time can't say by itself is which watchdog fired. Each reading above is the one
+  that fits with nothing else assumed; the 90 s one has the alternative given there, and the 120 s one
+  has its own: a WD1 that can't reset the SoC in that state would leave WD2's 120 s whatever B2 did,
+  which a run with WD1's bite below WD2's would show.
 
 **Why both in one run** (judgment): the marker reads the same whether the fabric is the cause or not.
 With the fabric at 3, 90 s says the early stall isn't the fabric's, 120 s says the pair got past it to

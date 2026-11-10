@@ -425,7 +425,11 @@ steps, and restarting the DCP and the PMP afterwards.
         reads the three back and records whether the marker stands; if it doesn't, the restart's time
         says nothing about B2. B2 zeroes WD1's count at op 223 of 246, so the restart reads: about
         90 s after the commit, B2 never got there; about 120 s (WD2), it did, and the pair stopped in
-        its last ops; about 150 s or dark, the entry completed.
+        its last ops; about 150 s or dark, the entry completed. Each is the reading that fits with
+        nothing else assumed, not a proof of which watchdog fired: 90 s is also a pair that finished
+        and a later A sequence starting about 60 s in (run 15's delayed re-arm), and 120 s is also a
+        WD1 that can't reset the SoC there. A second run with another count, or with WD1's bite below
+        WD2's, separates them, if the first one's time calls for it.
       - **The fabric back at 3 before the table's DCS entries:** 0x28e20c000, low nibble := 3, its awake
         value, which this kernel's `suspend_noirq` lowers to 1 where macOS has 3 (inferred) and A2 then
         asks for 2; up to 10 ms for it to settle; the word read before the write, after it, and at the
