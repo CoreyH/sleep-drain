@@ -435,6 +435,19 @@ steps, and restarting the DCP and the PMP afterwards.
         run"). What they poll is the best lead on B2's first poll that needs no write. `recfg-peek
         --rest` stops at table A's last sequence + 0x10000, so it needs a stage that reads on to the
         SRAM's end, 0x70000, the same way: 16 KiB pieces, each saved. Then the decode, at the desk.
+        Built in #68 as `recfg-peek --to-end` (not run yet): `recfg_peek`'s stage 8, a piece by its
+        index, 24 times, each in a directory of its own, saved after every fourth piece and at any
+        stop, with `kernel.panic` set to 10 first. A piece that reads all ones stops the pass, as a
+        result. A read whose fault panics the kernel restarts the Mac 10 s later with the pieces up to
+        the last save kept; a reader that's only killed ends the pass, saved. What `collect` brings in
+        reads differently in the two cases. After a panic the saves end at a group's boundary (r03,
+        r07, ...): the read that faulted is one of the four pieces after it, and the others of those
+        four were lost with it, read or not (the screen's last "reading" line may be a piece early
+        too). After a reader that was killed, the last directory saved is the piece it died in, with
+        the failure in its log and a dump that may be short. The run: in a safe boot, `pkexec
+        e1-hook/recfg-peek --to-end`; before it, in the merged checkout, `cc -O2 -Wall -o
+        e1-hook/recfg_peek e1-hook/recfg_peek.c`; after it a normal restart and `collect`. The dumps
+        go beside the first one, off the repository.
       - **A marker run that needs no SRAM write: WD1.** Past its power-downs, B2 zeroes WD0's and WD1's
         counts. CPU0 would arm WD1 before it goes down, with a bite of 60 s and its count set 20 s short
         of it, and WD2 at 120 s behind it as in run 15. A reset 20 s after the commit: B2 didn't reach
