@@ -3914,9 +3914,12 @@ three times), the load's look (`gate-load.txt`), and the clear and collect.
 What it settles, all of it in Linux's suspended state:
 - **The lane lead is closed.** Linux's lane and macOS's read alike once everything below is off: there
   is no floor for the recipe to fix, and the gate doesn't follow the lane.
-- **"Didn't all read back as written"** (0x6013 = 0xdf since run 12) probably has a dull cause:
-  0x1000030f is what the word reads when it's gated (actual 0 and the two flags), which no write makes
-  it read while it's up. Inferred from this run; the runs' own read-backs aren't on file word by word.
+- **"Didn't all read back as written"** (0x6013 = 0xdf since run 12) **stays unexplained.** That check
+  compares auto-enable, the auto floor and the target only (`m1_pw_write()`, 0x1f00000f), so a lane
+  that is up where macOS's is gated passes it: at least one of the four words differed in those fields,
+  and this run doesn't say which or how (Pullfrog on #81). What the run adds: the lane's floor read 0
+  here before anything of ours wrote it, where Linux has f awake, so that field isn't simply what was
+  last written. When it changed was in the lost log.
 - **Something else holds 0x28e5a0050 open,** and it isn't on SIO's page: the look's run read every word
   there off after noirq but these five UARTs (SIO and SIO_CPU 0x0f000200). What it is isn't known.
 - **So B2's poll of that gate (op 140) stands higher as the stall than before.** Unless something in
