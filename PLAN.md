@@ -1,6 +1,6 @@
 # Plan
 
-Last updated 2026-11-08. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-10. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
@@ -55,9 +55,11 @@ the PR with that session's work.
     all of SIO's subtree off, the gate B2 waits on there (0x28e5a0050) stayed open, and the fabric
     lane above SIO read as macOS has it before the test wrote it. So the lane isn't what holds
     that gate, nothing on SIO's page is, and B2's poll of it (op 140) stands higher as the stall.
-  - **Next, not built: read the six gate words in the recipe's state,** in a one-way run of
-    `--m1-mark`'s recipe, right before the commit, their bit 30s left in the PMU. Reads only. Then
-    A2's three moves made by the AP before the commit, not built. "The order after the look", in
+  - **Next, built and not run: the six gate words read in the recipe's state** (`pkexec
+    e1-hook/run-floor --quick --m1-gates` in a safe boot, on battery, nothing attached; RESEARCH.md,
+    "The gates read as built"). Run 17's recipe with seven reads right before the commit and their
+    byte in the PMU; no new write. After the restart, `e1-hook/m1-crumbs` says what each gate read.
+    Then A2's three moves made by the AP before the commit, not built. "The order after the look", in
     Track A below, is the place to start.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
@@ -463,7 +465,9 @@ steps, and restarting the DCP and the PMP afterwards.
       gate stayed open through both polls; the lane read 0x1000030f, macOS's value, before the
       test wrote it; the Mac didn't resume (black, a restart by itself at about 30 s), so the PMU's
       record is all there is. The lane lead is closed, and `--gate` is one-way in practice.
-      Next, **not built: `gates_mark=1`, the six gate words read in the recipe's state.** On
+      Next, **built and not run: `gates_mark=1`, the six gate words read in the recipe's state**
+      (`run-floor --quick --m1-gates`; RESEARCH.md, "The gates read as built"; the byte is at 0x6016, in
+      the alarm's result's place, and the lane has its bit 6). As planned: on
       `--m1-mark`'s recipe, after its last step and right before the commit, CPU0 reads
       0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338 and 0x28e09c34c and leaves
       their bit 30s in one byte of the PMU's scratch, with the lane's word packed beside it if a

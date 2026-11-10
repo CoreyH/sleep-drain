@@ -103,6 +103,23 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   against it only at the run's last stage and as far as `wd2_bite=1`'s sample bears a reading out, and says
   what else 90 s and 120 s could be. With the marker set, a hang anywhere from step 4 to the commit ends in
   WD1's restart about 90 s later, not in a dark Mac.
+- `gates_mark=1` (`run-floor --m1-gates`, on `wd1_mark=1`, never with `probe=1`; `e1-hook/gates_mark.h` has the
+  words, the byte and the stages) only reads, and writes no register: in step 8, after the stage and the steps'
+  outcomes and right before the commit, CPU0 reads the six gate-status words B2 polls (0x28e5a0050, 0x28e5a0064,
+  0x28e5a030c, 0x28e09c310, 0x28e09c338, 0x28e09c34c, `look.h`'s order) and AFNC2_LW1, the fabric lane above SIO,
+  in the state the recipe leaves, which nothing had read them in, and sends one byte to 0x6016: bits 0-5 bit 30 of
+  each gate (set is closed), bit 6 the lane at exactly macOS's 0x1000030f, bit 7 always. 0x6016 was the alarm's
+  result, the byte the ending needs least: the alarm's last command, after the commit, sends the gate byte again
+  in its place, so nothing after the commit changes but that value, and the alarm's own registers at the next
+  boot say whether it was written. So from step 8 on the run has stages of its own, fabric_up=1's with that one
+  difference: 0x4b, 0x55 and 0x54 for 0x52, 0x53 and 0x51 (0xcb, 0xd5, 0xd4 with K4's bit). The load maps the two
+  gate pages, refuses unless they and SIO's page are mapped, and logs the seven words awake. `m1-crumbs` reads the
+  byte only at those stages, with K4's bit, the outcomes' marker at 0x6013 and its own bit 7, and says what each
+  gate read and, for 0x28e5a0050 (B2's op 140), what follows: open there too, op 140 is the stall's likeliest
+  place; closed, `a2_pre=1` is next. A read that faults or never returns leaves stage 0xcb with 0x6016 still 0,
+  which `m1-crumbs` calls out, and a restart about 10 s later (the SError's panic, if its restart works) or about
+  90 s after step 4 (WD1's marker); a byte whose own command failed leaves the same record, and the run then went
+  on unrecorded. The rest of the ending reads as `--m1-mark`'s.
 - `run-floor --quick` ahead of any recipe makes the reading 1 minute. `13` is the floor with the CPUs left up.
 
 ## The probe that isn't a run
