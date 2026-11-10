@@ -4,7 +4,8 @@
 --m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words,
 --m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up or --m1-mark; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1,
 hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1, one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1,
-wd2_bite=1, cluster_ack=1, fabric_up=1, wd1_mark=1) leaves in the PMU, read and decoded, and cleared again.
+wd2_bite=1, cluster_ack=1, fabric_up=1, wd1_mark=1) leaves in the PMU, read and decoded, and cleared again. And the three bytes
+e1-hook/probe (probe=1) leaves, which isn't a run: stage 0x0e.
 
   e1-hook/m1-crumbs               read them (no root needed)
   pkexec e1-hook/m1-crumbs --clear   zero them, after reading (root)
@@ -535,8 +536,126 @@ def qto(q, ack=False):
 # the count, WD2's bite if it did and the pair then stopped, WD1's bite if the pair finished.
 WD1_STANDS = 0xc0
 WD1_BITE_S, WD1_COUNT_S, WD2_BITE_S = 150, 60, 120
+# probe=1 (e1-hook/probe; e1-hook/asc_probe.h has the bytes): not a run. Stage 0x0e, which no run sends, and at
+# 0x6005-0x6007 what bit 1 of SIO's, the PMP's and ANS's ASC + 0x8000 read around the recipe's steps on them.
+PROBE_STAGE = 0x0e
+PROBE_MARK = 0x80
 FAB_WAS = ("another value: neither 0x333 nor asked down to 1", "0x111: asked down to 1 by the kernel's suspend, and there",
            "asked down to 1 by the kernel's suspend, and not there yet", "0x333, as awake: this suspend hadn't lowered it")
+
+
+# probe=1's steps, by the number it leaves at 0x6010 before taking each (asc_probe.h's enum asc_at).
+PROBE_AT = ("nothing marked",
+            "prepare begun: SIO_CPU's table word written",
+            "SIO's word read, its firmware running",
+            "ANS's word read, its firmware shut down by the NVMe driver's suspend, ANS2 still on",
+            "the PMP's word read, its firmware running",
+            "SIO's idle pair",
+            "SIO's word read after its idle pair",
+            "SIO's RUN cleared",
+            "SIO's word read after RUN was cleared",
+            "prepare done: the kernel's noirq pass",
+            "prepare_late begun: the power words read",
+            "ANS2 raised",
+            "ANS's word read",
+            "ANS2 written back",
+            "the PMP's word read before its idle pair",
+            "the PMP's idle pair",
+            "the PMP's word read after its idle pair",
+            "the PMP's RUN cleared",
+            "the PMP's word read after RUN was cleared",
+            "SIO's parents and SIO_CPU raised",
+            "SIO's word read",
+            "every step taken: the three bytes written")
+PROBE_DONE = len(PROBE_AT) - 1
+
+
+def probe_final(who, b):
+    """What a probe byte says bit 1 read in the state B2 finds: True set, False clear, None not read there (the byte
+    didn't land, the domain didn't read actual f for that read, or the PMP's RUN wasn't cleared). asc_probe.h's
+    asc_sio_final() and the two beside it, which the probe's own SUMMARY line goes by."""
+    if not b & PROBE_MARK:
+        return None
+    if who == "SIO":
+        return bool(b & 8) if b & 0x40 else None
+    if who == "PMP":
+        return bool(b & 8) if b & 0x40 and b & 0x20 else None
+    return bool(b & 4) if b & 0x0a else None
+
+
+def probe_at_line(at, landed):
+    """0x6010, the step the probe was about to take when it last wrote there. landed: all three bytes did."""
+    step = PROBE_AT[at] if at <= PROBE_DONE else "not a step's number"
+    if landed:
+        return f"0x6010 = 0x{at:02x}: {step}" + ("" if at == PROBE_DONE else ": NOT the last step's number, though the bytes landed")
+    if at == PROBE_DONE:
+        return f"0x6010 = 0x{at:02x}: every step was taken, and the write of the three bytes didn't land, or not all of it"
+    return (f"0x6010 = 0x{at:02x}: THE PROBE BEGAN AND DIDN'T FINISH. The last step it marked: {step}. The Mac went down in that"
+            " step, or after it and before the next was marked (a mark that didn't land looks the same)")
+
+
+def probe_lines(sio, pmp, ans, at):
+    """probe=1's record (e1-hook/asc_probe.h): the step it reached and its three bytes. The kernel log, which e1-hook/probe
+    saves, has every word in full: this is what's left of it when the log didn't make it back."""
+    def bit(v, n, made=None):
+        """One step's bit. made: whether the byte says that read was made; None when it can't say, and then a 0 is
+        "clear, or not read" (a word is read only while its domain reads actual f)."""
+        if made is False:
+            return "not read"
+        return "SET" if v >> n & 1 else "clear" if made else "clear, or not read (the byte doesn't say which)"
+
+    out = [probe_at_line(at, bool(sio & pmp & ans & PROBE_MARK))]
+    final = {"SIO": probe_final("SIO", sio), "PMP": probe_final("PMP", pmp), "ANS": probe_final("ANS", ans)}
+    if sio & PROBE_MARK:
+        on = bool(sio & 0x40)
+        out += [f"0x6005 = 0x{sio:02x}: SIO, bit 1 of its ASC + 0x8000 (0x39bc08000), which B2's op 51 waits for:",
+                f"  at prepare, its firmware running: {bit(sio, 0)}",
+                f"  after its idle pair, which {'returned 0' if sio & 0x10 else 'FAILED'}: {bit(sio, 1)}",
+                "  after RUN was cleared: " + (bit(sio, 2) if sio & 0x10 else "not done, the idle pair having failed")
+                + ("" if not sio & 0x10 or sio & 0x20 else " (RUN did NOT read 1 and then 0)"),
+                "  after noirq, its parents and SIO_CPU raised again, the state B2's op 51 finds: "
+                + (bit(sio, 3, True) if on else "not read, SIO_CPU not reading actual f")]
+    else:
+        out.append(f"0x6005 = 0x{sio:02x}: SIO's byte didn't land (bit 7 clear): not read")
+    if pmp & PROBE_MARK:
+        on = bool(pmp & 0x40)
+        out += [f"0x6006 = 0x{pmp:02x}: the PMP, bit 1 of its ASC + 0x8000 (0x28ec08000), which B2's op 159 waits for"
+                + ("" if on else "; ps_pmp did NOT read actual f for every read after noirq") + ":",
+                f"  at prepare, its firmware running: {bit(pmp, 0)}",
+                f"  after noirq, before its idle pair: {bit(pmp, 1, True if on else None)}",
+                f"  after its idle pair, which {'returned 0' if pmp & 0x10 else 'FAILED'}: {bit(pmp, 2, True if on else None)}",
+                "  after RUN was cleared, the state B2's op 159 finds: "
+                + (bit(pmp, 3, on) if pmp & 0x20 else "not reached: RUN wasn't cleared (the idle pair failed, the PMP didn't read idle,"
+                   " or RUN didn't read 1 and then 0)")]
+    else:
+        out.append(f"0x6006 = 0x{pmp:02x}: the PMP's byte didn't land (bit 7 clear): not read")
+    if ans & PROBE_MARK:
+        was_on, raised = bool(ans & 2), bool(ans & 8)
+        out += [f"0x6007 = 0x{ans:02x}: ANS, bit 1 of its ASC + 0x8000 (0x38f408000), which B2's op 151 waits for:",
+                f"  awake, at the module's load, its firmware running: {bit(ans, 4, bool(ans & 0x20))}",
+                f"  at prepare, its firmware shut down by the NVMe driver's suspend, ANS2 still on: {bit(ans, 0)}",
+                "  after noirq, " + ("ANS2 still on" if was_on else "ANS2 off, raised as B2's op 149 raises it" if raised else
+                                     "ANS2 off, and the raise did NOT reach actual f")
+                + ", the state B2's op 151 finds: " + bit(ans, 2, was_on or raised)]
+        if not ans & 0x40:
+            out.append("  ANS2's target and actual state did NOT read as found within 10 ms of being written back")
+    else:
+        out.append(f"0x6007 = 0x{ans:02x}: ANS's byte didn't land (bit 7 clear): not read")
+    clear = [k for k, v in final.items() if v is False]
+    unread = [k for k in ("SIO", "ANS", "PMP") if final.get(k) is None]
+    if clear:
+        out.append(f"  so: in the state the recipe leaves, bit 1 read CLEAR for {', '.join(clear)}, for 100 ms. That's a lead for where"
+                   " B2 stops, not its location: B2 polls later, after its own raise. The next run leaves that coprocessor"
+                   " differently and reads the marker"
+                   + (f". Not read: {', '.join(unread)}" if unread else ""))
+    elif unread:
+        out.append("  so: " + ("nothing was read in the state the recipe leaves" if len(unread) == 3 else
+                               "bit 1 read set where it was read in the state the recipe leaves")
+                   + f"; not read for {', '.join(unread)}: nothing decided for " + ("any of them" if len(unread) == 3 else "those"))
+    else:
+        out.append("  so: bit 1 read SET for all three in the state the recipe leaves: that makes B2's three coprocessor waits less"
+                   " likely to be where the pair stops, and doesn't exclude them (B2 polls later, after its own raises)")
+    return out
 
 
 def fab_lines(v):
@@ -758,6 +877,14 @@ def decode(b, rtc, cnt=None, alarm=None):
     """b: 0x6000-0x601f; rtc: 6 bytes at 0x1406; cnt: (CNTVCT, CNTFRQ) or
     None; alarm: the RTC alarm's registers (alarm_lines()), or None. One line
     per fact."""
+    if b[4] == PROBE_STAGE:
+        # Not a run: no commit, no alarm, no restart to time.
+        return [f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
+                f"0x6010: {b[0x10:0x18].hex(' ')}  {b[0x18:0x20].hex(' ')}",
+                f"stage 0x6004 = 0x{b[4]:02x}: probe=1 (e1-hook/probe), not a run: nothing replayed and nothing was committed. The"
+                " step it reached and its three bytes follow; the kernel log it saved has every word in full, if the Mac came back"
+                " to save it"
+                ] + probe_lines(b[5], b[6], b[7], b[0x10])
     pmp = bool(b[4] & PMP_TAG)
     s = b[4] & 0x7f
     disp = s in DISP_STAGES  # disp_off=1: read as the position stage, with its own byte B

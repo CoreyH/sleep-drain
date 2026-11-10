@@ -1,10 +1,11 @@
 #!/usr/bin/python3 -I
-"""tests/mutants.py: break the one-way runs' code one way at a time and see that tests/m1_crumbs_test.py notices.
+"""tests/mutants.py: break the one-way runs' code one way at a time and see that the tests notice (tests/m1_crumbs_test.py;
+tests/e1_hook_probe_test.py for the launcher e1-hook/probe).
 
   python3 -I -B tests/mutants.py            every mutant (a few minutes: six at a time)
   python3 -I -B tests/mutants.py wd1 fab    only those whose name has one of these words
 
-Each mutant is one change to e1-hook/e1_hook.c, one of its headers or e1-hook/m1-crumbs: a wrong value, a write
+Each mutant is one change to e1-hook/e1_hook.c, one of its headers, e1-hook/m1-crumbs or e1-hook/probe: a wrong value, a write
 that isn't gated, a check dropped, a bit read wrong. It's applied in a copy of e1-hook/ and tests/, never in the
 tree, and the tests run there. A mutant is caught if a check fails or the tests can't build what they compile; it
 survived if they still say "all ok", and then the tests have a hole. A mutant whose text isn't in the file any more
@@ -21,7 +22,9 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 E1 = os.path.realpath(os.path.join(HERE, "..", "e1-hook"))
-C, CRUMBS, FAB, WD1 = "e1_hook.c", "m1-crumbs", "fabric_up.h", "wd1_mark.h"
+C, CRUMBS, FAB, WD1, ASC, PROBE = "e1_hook.c", "m1-crumbs", "fabric_up.h", "wd1_mark.h", "asc_probe.h", "probe"
+# The test that has to notice a mutant of each file: the launcher e1-hook/probe has its own.
+TESTS = {PROBE: "e1_hook_probe_test.py"}
 
 # (name, file, the text to change, what it becomes); the text must occur exactly once.
 MUTANTS = [
@@ -145,6 +148,97 @@ MUTANTS = [
     ("wd1 decoder: a count of 30 s", CRUMBS, "WD1_BITE_S, WD1_COUNT_S, WD2_BITE_S = 150, 60, 120", "WD1_BITE_S, WD1_COUNT_S, WD2_BITE_S = 150, 30, 120"),
     ("wd1 decoder: 90 s without its other reading", CRUMBS, "                \" a later A sequence starting about 60 s after the commit and arming WD2 with its own 30 s, gives the same time\")",
      "                \"\")"),
+    # probe=1: it must never replay, never let the Mac sleep, and leave ANS2 as it found it
+    ("probe: on by default", C, "static bool probe;", "static bool probe = true;"),
+    ("probe: the replay can still run", C, "\tif (probe) {\n\t\tpr_info(\"replay: probe=1 is loaded: no replay\\n\");\n\t\treturn false;\n\t}\n", ""),
+    ("probe: the replay's guard after it marks itself run", C, "\t\treturn false;\n\t}\n\treplay_done = 1;\n", "\t}\n\treplay_done = 1;\n"),
+    ("probe: prepare_late goes on to the replay", C, "\t\t\t\"it ran at an earlier suspend\");\n\t\treturn -EIO;\n\t}", "\t\t\t\"it ran at an earlier suspend\");\n\t}"),
+    ("probe: the suspend isn't failed, so the Mac sleeps", C, "\t\t\t\"it ran at an earlier suspend\");\n\t\treturn -EIO;", "\t\t\t\"it ran at an earlier suspend\");\n\t\treturn 0;"),
+    ("probe: the second half in a later suspend than the first", C, "\t\tbool same = n == 1 && READ_ONCE(prepare_calls) == 1;", "\t\tbool same = n == 1;"),
+    ("probe: a second suspend calls the replay off, and replay_done reads 2", C, "\tif (n > 1 && !probe && !READ_ONCE(replay_done)) {", "\tif (n > 1 && !READ_ONCE(replay_done)) {"),
+    ("probe: a line at pr_emerg, broadcast over the photo", C, "\tpr_info(\"probe: SUMMARY: bit 1 in the state B2 finds", "\tpr_emerg(\"probe: SUMMARY: bit 1 in the state B2 finds"),
+    ("probe: prepare takes the replay's steps too", C, "\t\t\tm1_probe_prepare();\n\t\treturn 0;\n\t}", "\t\t\tm1_probe_prepare();\n\t}"),
+    ("probe: it runs at every suspend", C, "\t\tif (same)\n\t\t\tm1_probe_late();", "\t\tm1_probe_late();"),
+    ("probe: ANS2 isn't put back", C, "\t\twritel(ps & ~ASC_PS_NOT_WRITTEN, m1_sio + M1_PS_ANS2);\n", ""),
+    ("probe: ANS2 raised though it read on", C, "\toff = !asc_ps_on(ps);", "\toff = true;"),
+    ("probe: ps_pmp written", C, "\tps = readl(m1_ps + M1_PS_PMP_RO);\n\tm1_pr.pmp_on = asc_ps_on(ps);", "\twritel(0x0f00024f, m1_ps + M1_PS_PMP_RO);\n\tps = readl(m1_ps + M1_PS_PMP_RO);\n\tm1_pr.pmp_on = asc_ps_on(ps);"),
+    ("probe: a word read with its domain off", C, "\tif (!asc_ps_on(ps)) {\n\t\tpr_info(\"probe: %s, %s: its power word reads", "\tif (0) {\n\t\tpr_info(\"probe: %s, %s: its power word reads"),
+    ("probe: a word polled for a second", C, "n < ASC_TRIES && m1_now() - t0 < m1_tps / 10) {", "n < ASC_TRIES && m1_now() - t0 < m1_tps) {"),
+    ("probe: SIO's RUN cleared after a failed idle pair", C, "\tif (!ret) {\n\t\tm1_probe_at(ASC_AT_SIO_STOP);", "\tif (1) {\n\t\tm1_probe_at(ASC_AT_SIO_STOP);"),
+    ("probe: no stage at the start, so a Mac that goes down in it says nothing", C, "\tm1_kwrite(0x6004, &stage, 1);\n\tm1_probe_at(ASC_AT_PREPARE);\n", "\tm1_probe_at(ASC_AT_PREPARE);\n"),
+    ("probe: loads without the latest recipe", C, "\tif (probe && (!wd1_mark || !pmp_stop)) {", "\tif (0) {"),
+    ("probe: the load ignores its refusal", C, "\tif (probe) {\n\t\tint ret = m1_probe_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n", "\tif (probe)\n\t\tm1_probe_init();\n"),
+    ("probe: the SUMMARY calls a read that wasn't made clear", C, "asc_final_str(asc_sio_final(b[0])), asc_final_str(asc_ans_final(b[2])), asc_final_str(asc_pmp_final(b[1]))",
+     "m1_pr.sio_late ? \"SET\" : \"clear\", m1_pr.ans_late ? \"SET\" : \"clear\", m1_pr.pmp_stopped ? \"SET\" : \"clear\""),
+    ("probe: the SUMMARY has ANS's and the PMP's the wrong way round", C, "asc_final_str(asc_ans_final(b[2])), asc_final_str(asc_pmp_final(b[1]))", "asc_final_str(asc_ans_final(b[1])), asc_final_str(asc_pmp_final(b[2]))"),
+    ("probe: ANS's word read on a later look at ANS2 than the byte's", C, "\t\t\t\t       m1_ans_mbox, up, true);", "\t\t\t\t       m1_ans_mbox, readl(m1_sio + M1_PS_ANS2), true);"),
+    ("probe: ANS2 written back as raised", C, "\t\twritel(ps & ~ASC_PS_NOT_WRITTEN, m1_sio + M1_PS_ANS2);\n", "\t\twritel(up & ~ASC_PS_NOT_WRITTEN, m1_sio + M1_PS_ANS2);\n"),
+    ("probe: the PMP's RUN cleared though it never read idle", C, "\tif (!ret && (st & M1_ASC_IDLE)) {\n\t\tm1_probe_at(ASC_AT_PMP_STOP);", "\tif (!ret) {\n\t\tm1_probe_at(ASC_AT_PMP_STOP);"),
+    ("probe: the PMP's idle pair sent to an RTKit that isn't running", C, "\tret = apple_rtkit_is_running(m1_pmp_rtk) ? apple_rtkit_idle(m1_pmp_rtk) : -ENODEV;\n\tm1_pr.pmp_idle_ok = !ret;", "\tret = apple_rtkit_idle(m1_pmp_rtk);\n\tm1_pr.pmp_idle_ok = !ret;"),
+    ("probe: SIO's word read after noirq whatever SIO_CPU reads", C, "m1_sio_mbox, ps, true);\n\tm1_probe_at(ASC_AT_DONE);", "m1_sio_mbox, 0xf0, true);\n\tm1_probe_at(ASC_AT_DONE);"),
+    ("probe: SIO's parents not raised before SIO_CPU", C, "\traised = m1_sio_raise();\n", "\traised = true;\n"),
+    ("probe: a step taken before its mark", C, "\t\tm1_probe_at(ASC_AT_ANS_UP);\n\t\twritel(ASC_ANS2_UP, m1_sio + M1_PS_ANS2);", "\t\twritel(ASC_ANS2_UP, m1_sio + M1_PS_ANS2);\n\t\tm1_probe_at(ASC_AT_ANS_UP);"),
+    ("probe: the PMP's last read counted without RUN cleared (header)", ASC, "\treturn !(b & ASC_PROBE_MARK) || !(b & (1U << 6)) || !(b & (1U << 5)) ? -1 : !!(b & (1U << 3));", "\treturn !(b & ASC_PROBE_MARK) || !(b & (1U << 6)) ? -1 : !!(b & (1U << 4));"),
+    ("probe: ANS's last read counted though ANS2 never read on (header)", ASC, "\treturn !(b & ASC_PROBE_MARK) || !(b & ((1U << 1) | (1U << 3))) ? -1 : !!(b & (1U << 2));", "\treturn !(b & ASC_PROBE_MARK) ? -1 : !!(b & (1U << 2));"),
+    ("probe: SIO's last read counted with SIO_CPU off (header)", ASC, "\treturn !(b & ASC_PROBE_MARK) || !(b & (1U << 6)) ? -1 : !!(b & (1U << 3));\n}\n\nstatic inline int asc_pmp_final", "\treturn !(b & ASC_PROBE_MARK) ? -1 : !!(b & (1U << 3));\n}\n\nstatic inline int asc_pmp_final"),
+    ("probe: not read spelt clear", ASC, "\treturn final < 0 ? \"NOT READ\" : final ? \"SET\" : \"clear\";", "\treturn final > 0 ? \"SET\" : \"clear\";"),
+    ("probe: a domain is on by its target", ASC, "\treturn ((ps >> 4) & 0xf) == 0xf;", "\treturn (ps & 0xf) == 0xf;"),
+    ("probe: the stage is the observer's", ASC, "#define ASC_PROBE_STAGE\t\t0x0e", "#define ASC_PROBE_STAGE\t\t0x71"),
+    ("probe: SIO's byte with two bits swapped", ASC, "(late ? 1U << 3 : 0) |\n\t\t    (idle_ok ? 1U << 4 : 0) | (stop_ok ? 1U << 5 : 0) | (on ? 1U << 6 : 0));\n}\n\nstatic inline u8 asc_pmp_byte",
+     "(late ? 1U << 6 : 0) |\n\t\t    (idle_ok ? 1U << 4 : 0) | (stop_ok ? 1U << 5 : 0) | (on ? 1U << 3 : 0));\n}\n\nstatic inline u8 asc_pmp_byte"),
+    ("probe decoder: its stage is the observer's", CRUMBS, "PROBE_STAGE = 0x0e", "PROBE_STAGE = 0x71"),
+    ("probe decoder: SIO's last read counted with SIO_CPU off", CRUMBS, "        return bool(b & 8) if b & 0x40 else None\n    if who == \"PMP\":", "        return bool(b & 8)\n    if who == \"PMP\":"),
+    ("probe decoder: the PMP's last read counted without RUN cleared", CRUMBS, "        return bool(b & 8) if b & 0x40 and b & 0x20 else None", "        return bool(b & 8) if b & 0x40 else None"),
+    ("probe decoder: ANS's last read counted though ANS2 never read on", CRUMBS, "    return bool(b & 4) if b & 0x0a else None", "    return bool(b & 4)"),
+    ("probe decoder: a byte that didn't land read all the same", CRUMBS, "    if not b & PROBE_MARK:\n        return None\n    if who == \"SIO\":", "    if who == \"SIO\":"),
+    ("probe decoder: all three set with one unread", CRUMBS, "    elif unread:\n        out.append(\"  so: \" + (\"nothing was read", "    elif False:\n        out.append(\"  so: \" + (\"nothing was read"),
+    ("probe decoder: a byte read without its mark", CRUMBS, "    if sio & PROBE_MARK:", "    if True:"),
+    ("probe: a word polled past B2's count", C, "\twhile (poll && !(w & ASC_READY) && n < ASC_TRIES && ", "\twhile (poll && !(w & ASC_READY) && "),
+    ("probe: a word never polled", C, "\twhile (poll && !(w & ASC_READY)", "\twhile (0 && !(w & ASC_READY)"),
+    ("probe: ANS's word polled at load, its firmware in use", C, "m1_ans_mbox, ps, false);", "m1_ans_mbox, ps, true);"),
+    ("probe: ANS2 written back with BUSY and the two flags", C, "\t\twritel(ps & ~ASC_PS_NOT_WRITTEN, m1_sio + M1_PS_ANS2);\n", "\t\twritel(ps, m1_sio + M1_PS_ANS2);\n"),
+    ("probe: a write-back that didn't take passed as taken", C, "\t\tm1_pr.ans_back = !((up ^ ps) & ASC_PS_STATE);", "\t\tm1_pr.ans_back = true;"),
+    ("probe: a step never marked", C, "\tm1_probe_at(ASC_AT_PMP_IDLE);\n", ""),
+    ("probe: the steps marked at a PMU byte the module may not write", C, "\tm1_kwrite(ASC_PROBE_AT, &step, 1);", "\tm1_kwrite(0x6017, &step, 1);"),
+    ("probe: the steps marked somewhere else", C, "\tm1_kwrite(ASC_PROBE_AT, &step, 1);", "\tm1_kwrite(0x6011, &step, 1);"),
+    ("probe: ANS's late read by SIO_CPU's power word", C, "\tup = readl(m1_sio + M1_PS_ANS2);\n\tm1_pr.ans_was_on = !off && asc_ps_on(up);", "\tup = readl(m1_sio + M1_PS_SIO_CPU);\n\tm1_pr.ans_was_on = !off && asc_ps_on(up);"),
+    ("probe: the PMP's prepare read made on ANS's page", C, "\"at prepare, its firmware running\", m1_pmp_mbox, readl(m1_ps + M1_PS_PMP_RO), true);", "\"at prepare, its firmware running\", m1_ans_mbox, readl(m1_ps + M1_PS_PMP_RO), true);"),
+    ("probe: the PMP's page mapped at SIO's", C, "\tm1_pmp_mbox = ioremap_np(ASC_PMP_MBOX, PAGE_SIZE);", "\tm1_pmp_mbox = ioremap_np(ASC_SIO_MBOX, PAGE_SIZE);"),
+    ("probe: the PMP's byte where ANS's goes", C, "\tret = m1_kwrite(0x6005, b, 3);", "\tb[0] ^= b[1] ^ b[2]; b[1] ^= b[2]; b[2] ^= b[1]; b[1] ^= b[2]; b[0] ^= b[1] ^ b[2];\n\tret = m1_kwrite(0x6005, b, 3);"),
+    ("probe: ANS2's raise passed as made", C, "\tm1_pr.ans_raised = off && asc_ps_on(up);", "\tm1_pr.ans_raised = off;"),
+    ("probe: ps_pmp passed as on", C, "\tm1_pr.pmp_on = asc_ps_on(ps);\n\tm1_pr.pmp_late", "\tm1_pr.pmp_on = true;\n\tm1_pr.pmp_late"),
+    ("probe: ps_pmp's later reads not counted", C, "\t\tm1_pr.pmp_on = m1_pr.pmp_on && asc_ps_on(ps);\n\t\tm1_pr.pmp_stopped", "\t\tm1_pr.pmp_stopped"),
+    ("probe: SIO_CPU passed as on", C, "\tm1_pr.sio_on = asc_ps_on(ps);", "\tm1_pr.sio_on = true;"),
+    ("probe: the load's never-write check of ANS2 dropped", C, "\tif (m1_never(M1_PS_SIO_PAGE + M1_PS_ANS2, 1)) {", "\tif (0) {"),
+    ("probe: ANS2's and ps_pmp's addresses unpinned", C, "static_assert(M1_PS_SIO_PAGE + M1_PS_ANS2 == 0x28e5803b8ULL && M1_PMGR_PS + M1_PS_PMP_RO == 0x28e0802d8ULL);\n", ""),
+    ("probe: the load's check of the table's entry dropped", C, "\tif (w->addr != M1_PS_SIO_PAGE + M1_PS_SIO_CPU || w->width != 4 || (w->val & 0xf) != 0xf) {", "\tif (0) {"),
+    ("probe: ANS's load read not kept", C, "\tm1_pr.ans_load = m1_probe_word(\"ANS\", ", "\tm1_probe_word(\"ANS\", "),
+    ("probe: the PMP's idle poll without its last read", C, "\tif (!ret && !(st & M1_ASC_IDLE))\n\t\tst = readl(m1_pmp_asc + M1_ASC_CPU_STATUS);\n\tpr_info(\"probe: PMP: its idle pair", "\tpr_info(\"probe: PMP: its idle pair"),
+    ("probe: more tries than B2's", ASC, "#define ASC_TRIES\t\t255", "#define ASC_TRIES\t\t1000"),
+    ("probe: BUSY written back", ASC, "#define ASC_PS_NOT_WRITTEN\t((1U << 11) | (1U << 9) | (1U << 8))", "#define ASC_PS_NOT_WRITTEN\t((1U << 9) | (1U << 8))"),
+    ("probe: ANS's byte with two bits swapped", ASC, "(load ? 1U << 4 : 0) | (load_read ? 1U << 5 : 0) | (back ? 1U << 6 : 0));", "(load ? 1U << 6 : 0) | (load_read ? 1U << 5 : 0) | (back ? 1U << 4 : 0));"),
+    ("probe decoder: a step off by one", CRUMBS, "    step = PROBE_AT[at] if at <= PROBE_DONE else", "    step = PROBE_AT[at - 1] if at <= PROBE_DONE else"),
+    ("probe decoder: an unfinished probe not said", CRUMBS, "    if at == PROBE_DONE:\n        return f\"0x6010 = 0x{at:02x}: every step was taken, and the write", "    if True:\n        return f\"0x6010 = 0x{at:02x}: every step was taken, and the write"),
+    ("probe decoder: ANS's load read counted though it wasn't made", CRUMBS, "{bit(ans, 4, bool(ans & 0x20))}", "{bit(ans, 4, True)}"),
+    ("probe decoder: a write-back that didn't take not said", CRUMBS, "        if not ans & 0x40:\n", "        if False:\n"),
+    ("probe decoder: the step read from another byte", CRUMBS, "] + probe_lines(b[5], b[6], b[7], b[0x10])", "] + probe_lines(b[5], b[6], b[7], b[0x11])"),
+    ("probe launcher: says unloaded of a module that didn't unload", PROBE, "  rmmod e1_hook 2> /dev/null && die \"e1_hook didn't take probe=1, and was unloaded", "  rmmod e1_hook 2> /dev/null; die \"e1_hook didn't take probe=1, and was unloaded"),
+    ("probe launcher: the replay not called off before the unload", PROBE, "  if printf 1 > \"$MODDIR/parameters/cancel\" 2> /dev/null; then", "  if true; then"),
+    ("probe launcher: a suspend asked for though another has run the probe", PROBE, "for try in 1 2 3; do\n  [[ $(get \"$MODDIR/parameters/prepare_calls\") == 0 ]] || break\n", "for try in 1 2 3; do\n"),
+    ("probe launcher: klog's programs not in memory before the suspend", PROBE, "dmesg 2>&1 | grep -F -- \"e1_hook: probe:\" > /dev/null; sleep 0\n", ""),
+    ("probe launcher: the PMP idled with its display report requests asserted, as no run has", PROBE, "\"$PMP\" release 0xc 0xd > /dev/null 2>&1 || die ", ": || die "),
+    ("probe launcher: goes on without the release module", PROBE, "\"$PMP\" release 0xc 0xd > /dev/null 2>&1 || die ", "\"$PMP\" release 0xc 0xd > /dev/null 2>&1 || : "),
+    ("probe launcher: no probe=1 in the parameters", PROBE, " fabric_up=1 wd1_mark=1 probe=1)", " fabric_up=1 wd1_mark=1)"),
+    ("probe launcher: goes on with a module that didn't take probe=1", PROBE, "  die \"e1_hook didn't take probe=1 and DID NOT UNLOAD", "  : \"e1_hook didn't take probe=1 and DID NOT UNLOAD"),
+    ("probe launcher: the check for probe=Y reads another parameter", PROBE, "if [[ $(get \"$MODDIR/parameters/probe\") != Y ]]; then", "if [[ $(get \"$MODDIR/parameters/replay_done\") != 0 ]]; then"),
+    ("probe launcher: outside a safe boot", PROBE, "[[ -f $SAFE_FLAG ]] || die", "[[ -f $SAFE_FLAG ]] || echo"),
+    ("probe launcher: with breadcrumbs left", PROBE, "grep -q \"^stage 0x6004 = 0x00:\" || die", "grep -q \"^stage 0x6004 = 0x00:\" || echo"),
+    ("probe launcher: a stale module", PROBE, "  [[ $ko -nt $here/$src ]] || die", "  [[ $ko -nt $here/$src ]] || echo"),
+    ("probe launcher: a second suspend after the module's prepare ran", PROBE, "  rc=$?\n  [[ $(get \"$MODDIR/parameters/prepare_calls\") == 0 ]] || break\n", "  rc=$?\n"),
+    ("probe launcher: one try only", PROBE, "for try in 1 2 3; do", "for try in 1; do"),
+    ("probe launcher: a photo of nothing", PROBE, "if [[ $pc == 0 ]]; then", "if false; then"),
+    ("probe launcher: the module left loaded with nothing probed", PROBE, "  if rmmod e1_hook; then", "  if true; then"),
+    ("probe launcher: a part-run passed off as whole", PROBE, "[[ $pc == 1 && $plc == 1 ]] || log", "[[ $pc == 1 ]] || log"),
 ]
 
 
@@ -153,14 +247,15 @@ def one(mutant, base):
     with tempfile.TemporaryDirectory(dir=base) as copy:
         shutil.copytree(E1, os.path.join(copy, "e1-hook"), ignore=shutil.ignore_patterns("*.o", "*.ko", "*.mod*", ".*", "Module.symvers", "modules.order"))
         os.makedirs(os.path.join(copy, "tests"))
-        shutil.copy(os.path.join(HERE, "m1_crumbs_test.py"), os.path.join(copy, "tests"))
+        test = TESTS.get(rel, "m1_crumbs_test.py")
+        shutil.copy(os.path.join(HERE, test), os.path.join(copy, "tests"))
         path = os.path.join(copy, "e1-hook", rel)
         text = open(path).read()
         if text.count(old) != 1:
             return name, f"STALE (its text is in {rel} {text.count(old)} times): fix the list"
         with open(path, "w") as f:
             f.write(text.replace(old, new))
-        r = subprocess.run([sys.executable, "-I", "-B", os.path.join(copy, "tests", "m1_crumbs_test.py")], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, "-I", "-B", os.path.join(copy, "tests", test)], capture_output=True, text=True)
     fails = sum(line.startswith("FAIL ") for line in r.stdout.splitlines())
     if fails:
         return name, f"caught ({fails} failing)"

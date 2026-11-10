@@ -1,0 +1,340 @@
+#!/usr/bin/python3 -I
+"""tests/e1_hook_probe_test.py: e1-hook/probe, the launcher of the probe that isn't a run, as uid 0 in a bubblewrap
+user namespace against stubs: insmod, rmmod, modinfo, dmesg, sleep, m1-crumbs and sleep-drain-safe, with files standing
+in for /sys/power and /sys/module.
+
+The one thing it must never do is ask for a suspend with a module that hasn't said it's in probe mode: the parameters
+it loads are a one-way run's, and probe=1 is all that keeps the replay from running. So every case checks what was, or
+wasn't, written to the suspend file.
+
+The suspend file and the module's prepare_calls are FIFOs with a thread here at their other ends, standing in for the
+kernel: what prepare_calls reads depends on how many suspends the launcher has asked for by then, as it does on the
+Mac, where the write to /sys/power/state returns only when the suspend is over.
+"""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+E1_HOOK = os.path.realpath(os.path.join(HERE, "..", "e1-hook"))
+RELEASE = os.uname().release
+# run-floor --m1-mark's parameters (tests/e1a_launcher_test.py has them for the launcher itself), and probe=1.
+PARAMS = ("replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1"
+          " smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 probe=1")
+SOURCES = ("e1_hook.c", "asc_probe.h", "fabric_up.h", "wd1_mark.h", "wd2_bite.h", "recfg_bite.h", "m1_position.h")
+KLOG = ("[  100.1] e1_hook: m1: probe: no replay with this load; awake: SIO_CPU 1400024f ANS2 0f0000ff ps_pmp 1f0f03ff\n"
+        "[  100.2] e1_hook: probe: ANS, awake, at load, its firmware running: power word 0f0000ff; ASC+0x8000 read 00000002 at first and 00000002 after 1 reads in 0 ms: bit 1 SET\n"
+        "[  130.1] e1_hook: probe: SIO, at prepare, its firmware running: power word 0400024f; ASC+0x8000 read 00000000 at first and 00000000 after 250 reads in 100 ms: bit 1 clear\n"
+        "[  131.4] e1_hook: probe: SUMMARY: bit 1 in the state B2 finds: SIO clear, ANS SET, PMP SET; bytes f0 ff fd, written to the PMU: 0\n"
+        "[  131.5] e1_hook: probe: done; this suspend fails with -EIO: with probe=1 loaded nothing sleeps and nothing replays\n"
+        "[  131.6] some other driver: unrelated\n")
+
+failed = 0
+
+
+def check(cond, what, detail=""):
+    global failed
+    print(("ok   " if cond else "FAIL ") + what)
+    if not cond:
+        failed += 1
+        for line in detail.splitlines()[-40:]:
+            print("     " + line)
+
+
+def write(path, text, mode=0o644):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+    os.chmod(path, mode)
+
+
+def setup(tmp, safe=True, loaded=False, ko=True, vermagic=RELEASE, newer=None, parms=True, takes="Y", insmod_rc=0, pm_test="[none] freezer",
+          mem_sleep="[s2idle]", crumbs="stage 0x6004 = 0x00: none: no M1 run since the last clear", save_rc=0, klog=KLOG, plc=1, rmmod_rc=0,
+          pmp_rc=0):
+    """plc is the module's prepare_late_calls once loaded; its prepare_calls comes from run()'s pc."""
+    d = os.path.join(tmp, "e1-hook")
+    stubs = os.path.join(tmp, "stubs")
+    moddir = os.path.join(tmp, "module")
+    calls = os.path.join(tmp, "calls")
+    os.makedirs(d)
+    shutil.copy(os.path.join(E1_HOOK, "probe"), os.path.join(d, "probe"))
+    for n in SOURCES:
+        write(os.path.join(d, n), "")
+        os.utime(os.path.join(d, n), (3000, 3000) if newer == n else (1000, 1000))
+    if ko:
+        write(os.path.join(d, "e1_hook.ko"), "not a module\n")
+        os.utime(os.path.join(d, "e1_hook.ko"), (2000, 2000))
+    if safe:
+        write(os.path.join(tmp, "run", "active"), "")
+    if loaded:
+        os.makedirs(os.path.join(moddir, "parameters"))
+    write(os.path.join(tmp, "pm_test"), pm_test + "\n")
+    write(os.path.join(tmp, "mem_sleep"), mem_sleep + "\n")
+    os.mkfifo(os.path.join(tmp, "state"))
+    plist = "replay:LAB ONLY (uint)\nwd1_mark:With fabric_up=1 (bool)\n" + ("probe:With wd1_mark=1: no replay, ever (bool)\n" if parms else "")
+    write(os.path.join(stubs, "modinfo"),
+          f'#!/bin/sh\ncase "$1" in -F) echo "{vermagic} SMP preempt mod_unload aarch64" ;; -p) printf "%s" "{plist}" ;; esac\n', 0o755)
+    made = (f'mkdir -p {moddir}/parameters && echo 0 > {moddir}/parameters/replay_done && mkfifo {moddir}/parameters/prepare_calls'
+            f' && echo {plc} > {moddir}/parameters/prepare_late_calls')
+    if takes is not None:
+        made += f' && echo {takes} > {moddir}/parameters/probe'
+    write(os.path.join(stubs, "insmod"), f'#!/bin/sh\necho "insmod $*" >> {calls}\n[ {insmod_rc} = 0 ] || exit {insmod_rc}\n{made}\n', 0o755)
+    # rmmod says what the module's cancel read when it was called: the replay has to be called off before the unload is tried.
+    write(os.path.join(stubs, "rmmod"), f'#!/bin/sh\necho "rmmod $* cancel=$(cat {moddir}/parameters/cancel 2> /dev/null)" >> {calls}\n'
+          f'[ {rmmod_rc} = 0 ] || exit {rmmod_rc}\nrm -rf {moddir}\n', 0o755)
+    write(os.path.join(stubs, "sleep"), f'#!/bin/sh\necho "sleep $*" >> {calls}\n', 0o755)
+    write(os.path.join(stubs, "dmesg"), f'#!/bin/sh\necho "dmesg" >> {calls}\ncat {tmp}/klog\n', 0o755)
+    write(os.path.join(tmp, "klog"), klog)
+    write(os.path.join(stubs, "m1-crumbs"), f'#!/bin/sh\necho "0x6000: 00 30 00 50"\necho "{crumbs}"\n', 0o755)
+    write(os.path.join(stubs, "save"), f'#!/bin/sh\necho "sleep-drain-safe $*" >> {calls}\nexit {save_rc}\n', 0o755)
+    write(os.path.join(stubs, "pmp"), f'#!/bin/sh\necho "sleep-drain-pmp $*" >> {calls}\nexit {pmp_rc}\n', 0o755)
+    return d
+
+
+def kernel(tmp, pc, stop, seen):
+    """The kernel's side of the two FIFOs. A read of prepare_calls gets pc[n], n being how many times "mem" has been
+    written to the suspend file by then (pc's last value from there on). seen gets everything written to the suspend file."""
+    param = os.path.join(tmp, "module", "parameters", "prepare_calls")
+    sfd = os.open(os.path.join(tmp, "state"), os.O_RDONLY | os.O_NONBLOCK)
+    data = b""
+
+    def drain():
+        got = b""
+        while True:
+            try:
+                more = os.read(sfd, 4096)
+            except BlockingIOError:
+                return got
+            if not more:
+                return got
+            got += more
+
+    seen.append(None)   # the suspend file has its reader: the launcher may start
+    while not stop.is_set():
+        try:
+            wfd = os.open(param, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError:  # no reader waiting, or no module loaded
+            time.sleep(0.001)
+            continue
+        # A reader has the FIFO open. The launcher does one thing at a time, so whatever it wrote to the suspend file is in the
+        # pipe by now. The value is written and the FIFO closed at once: holding it open until the reader has gone could hold
+        # the next reader's open too. If this reader has had its line already, it leaves this one unread, and it goes with the pipe.
+        data += drain()
+        try:
+            os.write(wfd, f"{pc[min(data.count(b'mem'), len(pc) - 1)]}\n".encode())
+        except OSError:
+            pass
+        os.close(wfd)
+        time.sleep(0.001)
+    data += drain()
+    os.close(sfd)
+    seen.append(data.decode())
+
+
+def run(tmp, d, argv=(), pc=(0, 1)):
+    """Runs the launcher. pc: prepare_calls after 0, 1, 2... suspends asked for. Returns its result and what it wrote to the suspend file."""
+    env = dict(os.environ, PATH=os.path.join(tmp, "stubs") + ":" + os.environ["PATH"],
+               PROBE_SAFE_FLAG=os.path.join(tmp, "run", "active"), PROBE_MODDIR=os.path.join(tmp, "module"),
+               PROBE_STATE=os.path.join(tmp, "state"), PROBE_PM_TEST=os.path.join(tmp, "pm_test"),
+               PROBE_MEM_SLEEP=os.path.join(tmp, "mem_sleep"), PROBE_LOGDIR=os.path.join(tmp, "log"),
+               PROBE_SAVE=os.path.join(tmp, "stubs", "save"), PROBE_CRUMBS=os.path.join(tmp, "stubs", "m1-crumbs"),
+               PROBE_PMP=os.path.join(tmp, "stubs", "pmp"))
+    stop, seen = threading.Event(), []
+    t = threading.Thread(target=kernel, args=(tmp, pc, stop, seen))
+    t.start()
+    while not seen:
+        time.sleep(0.001)
+    try:
+        r = subprocess.run(["bwrap", "--unshare-user", "--uid", "0", "--dev-bind", "/", "/", "bash", os.path.join(d, "probe")] + list(argv),
+                           env=env, capture_output=True, text=True, timeout=60)
+    finally:
+        stop.set()
+        t.join()
+    return r, seen[-1]
+
+
+def calls(tmp):
+    try:
+        return open(os.path.join(tmp, "calls")).read().split("\n")[:-1]
+    except FileNotFoundError:
+        return []
+
+
+def main():
+    if not shutil.which("bwrap"):
+        print("skip: needs bwrap")
+        return 0
+
+    # The probe as it's meant to go: the load with the recipe's parameters and probe=1, one suspend asked for, the module's lines
+    # printed for a photo and saved.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp)
+        r, state = run(tmp, d)
+        c = calls(tmp)
+        logs = os.listdir(os.path.join(tmp, "log")) if os.path.isdir(os.path.join(tmp, "log")) else []
+        saved = open(os.path.join(tmp, "log", logs[0])).read() if len(logs) == 1 else ""
+        check(r.returncode == 0 and c[:4] == ["sleep-drain-pmp release 0xc 0xd", "insmod " + os.path.join(d, "e1_hook.ko") + " " + PARAMS, "dmesg", "sleep 0"]
+              and state == "mem" and c[4:] == ["dmesg", "sleep-drain-safe save " + os.path.join(tmp, "log", logs[0] if logs else "")]
+              and r.stdout.count("asking for the suspend") == 1 and "(1 of 3 at most)" in r.stdout,
+              "the PMP's display report requests are set to be withdrawn, as run-floor does; the load is --m1-mark's parameters with probe=1; dmesg,"
+              " grep and sleep run once before the suspend; one suspend is asked for; the record is saved; the module stays loaded",
+              r.stdout + r.stderr + "\n".join(c))
+        check("==================== TAKE A PHOTO OF THIS SCREEN ====================" in r.stdout
+              and "replay_done=0 (0 is right: nothing replayed) prepare_calls=1 prepare_late_calls=1" in r.stdout
+              and "this script's last suspend returned 0 " in r.stdout
+              and "e1_hook: probe: SUMMARY: bit 1 in the state B2 finds: SIO clear, ANS SET, PMP SET; bytes f0 ff fd" in r.stdout
+              and r.stdout.count("e1_hook: probe: ANS, awake, at load, its firmware running:") == 1 and "some other driver" not in r.stdout
+              and "Saved. Now restart the Mac" in r.stdout and "NOT SAVED" not in r.stdout and "ONLY PART" not in r.stdout
+              and r.stdout.index("asking for the suspend") < r.stdout.index("TAKE A PHOTO") < r.stdout.index("SUMMARY") < r.stdout.index("Saved."),
+              "it prints the module's probe lines, the load's among them, once each, between the photo's two rules, and says it's saved",
+              r.stdout + r.stderr)
+        check(saved and all(line in saved for line in r.stdout.splitlines() if "SUMMARY" in line or "TAKE A PHOTO" in line or "loading e1_hook" in line),
+              "the saved file has what the screen had", saved)
+
+    # The one that matters: a module that doesn't say probe=Y is a one-way run waiting for its suspend. Its replay is called off,
+    # it's unloaded, and no suspend is asked for.
+    for takes, what in ((None, "has no probe parameter once loaded"), ("N", "reads probe=N once loaded")):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, takes=takes)
+            r, state = run(tmp, d)
+            c = calls(tmp)
+            check(r.returncode == 1 and not state and c[2:] == ["rmmod e1_hook cancel=1"] and "didn't take probe=1, and was unloaded" in r.stderr
+                  and "TAKE A PHOTO" not in r.stdout,
+                  f"a module that {what}: its replay called off, then unloaded, and no suspend is ever asked for", r.stdout + r.stderr + "\n".join(c))
+    # And if it won't unload: said in capitals, with the replay called off all the same, and still no suspend.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, takes="N", rmmod_rc=1)
+        r, state = run(tmp, d)
+        c = calls(tmp)
+        check(r.returncode == 1 and not state and c[2:] == ["rmmod e1_hook cancel=1"]
+              and "didn't take probe=1 and DID NOT UNLOAD (its replay is called off): restart the Mac now, and don't let it suspend first" in r.stderr
+              and "was unloaded" not in r.stderr and open(os.path.join(tmp, "module", "parameters", "cancel")).read() == "1",
+              "a module without probe=Y that won't unload: its replay called off, no suspend, and it says the module is still loaded",
+              r.stdout + r.stderr + "\n".join(c))
+
+    # A load that fails: the kernel's lines shown and saved, no suspend.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, insmod_rc=1)
+        r, state = run(tmp, d)
+        c = calls(tmp)
+        check(r.returncode == 1 and not state and "e1_hook didn't load; nothing was probed" in r.stdout and len(c) == 4
+              and c[3].startswith("sleep-drain-safe save "),
+              "a module that refuses to load: said, its lines saved, and no suspend", r.stdout + r.stderr + "\n".join(c))
+    # The release module that doesn't load: e1_hook isn't loaded either, and no suspend.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, pmp_rc=1)
+        r, state = run(tmp, d)
+        c = calls(tmp)
+        check(r.returncode == 1 and not state and c == ["sleep-drain-pmp release 0xc 0xd"]
+              and "couldn't load the PMP report-release module" in r.stderr and "nothing loaded, nothing probed" in r.stderr,
+              "the PMP's report-release module doesn't load: e1_hook isn't loaded, and no suspend", r.stdout + r.stderr + "\n".join(c))
+
+    # Everything it refuses before loading anything.
+    refusals = [("outside a safe boot", dict(safe=False), "safe boot only"),
+                ("with e1_hook loaded already", dict(loaded=True), "e1_hook is loaded already"),
+                ("without a built module", dict(ko=False), "make -C"),
+                ("with a module built for another kernel", dict(vermagic="6.1.0-other"), "isn't built for"),
+                ("with a build that has no probe parameter", dict(parms=False), "an older build, without probe"),
+                ("with pm_test set", dict(pm_test="none [platform]"), "pm_test isn't none"),
+                ("when s2idle isn't the sleep mode", dict(mem_sleep="s2idle [deep]"), "s2idle isn't the sleep mode"),
+                ("with breadcrumbs left in the PMU", dict(crumbs="stage 0x6004 = 0xd3 (pmp_out=1: bit 7, so the stage is 0x53)"),
+                 "the PMU's breadcrumbs aren't clear"),
+                ("with a probe's breadcrumbs left in the PMU", dict(crumbs="stage 0x6004 = 0x0e: probe=1 (e1-hook/probe), not a run"),
+                 "the PMU's breadcrumbs aren't clear")]
+    refusals += [(f"with a module older than {n}", dict(newer=n), f"e1_hook.ko is older than {n}") for n in SOURCES]
+    for what, kw, msg in refusals:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, **kw)
+            r, state = run(tmp, d)
+            check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [] and not state,
+                  f"refused {what}: nothing loaded, no suspend", r.stdout + r.stderr + "\n".join(calls(tmp)))
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp)
+        r, state = run(tmp, d, ["--now"])
+        check(r.returncode == 1 and "usage: probe (no arguments)" in r.stderr and calls(tmp) == [] and not state,
+              "refused with an argument: nothing loaded, no suspend", r.stdout + r.stderr)
+
+    # A suspend that ends before the module's prepare has probed and stopped nothing: asked for again, twice at most, and only
+    # while prepare hasn't run. Here the second try gets there.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp)
+        r, state = run(tmp, d, pc=(0, 0, 1))
+        c = calls(tmp)
+        check(r.returncode == 0 and state == "memmem" and r.stdout.count("asking for the suspend") == 2 and c.count("sleep 3") == 1
+              and "rmmod" not in "".join(c) and r.stdout.count("ended before the module's prepare") == 1
+              and "prepare_calls=1 prepare_late_calls=1" in r.stdout and "TAKE A PHOTO" in r.stdout and "ONLY PART" not in r.stdout
+              and "Saved. Now restart the Mac" in r.stdout,
+              "a first suspend that ends before the module: one wait, a second suspend, and then the probe's record as usual",
+              r.stdout + r.stderr + "\n".join(c))
+    # None of three gets there: said, the module unloaded, so that the command can be run again in the same boot.
+    for rmmod_rc, said in ((0, "e1_hook is unloaded again. Run the same command once more: no restart is needed."),
+                           (1, "e1_hook didn't unload: restart into a fresh safe boot before trying again.")):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, rmmod_rc=rmmod_rc, klog="[  9.0] PM: Some devices failed to suspend, or early wake event detected\n")
+            r, state = run(tmp, d, pc=(0,))
+            c = calls(tmp)
+            check(r.returncode == 1 and state == "memmemmem" and r.stdout.count("asking for the suspend") == 3 and c.count("sleep 3") == 2
+                  and "NOTHING WAS PROBED: three suspends ended before the module ran, and nothing was stopped" in r.stdout
+                  and "PM: Some devices failed to suspend" in r.stdout and said in r.stdout and "TAKE A PHOTO" not in r.stdout
+                  and c[-2] == "rmmod e1_hook cancel=" and c[-1].startswith("sleep-drain-safe save "),
+                  f"three suspends that end before the module (rmmod returns {rmmod_rc}): no fourth, nothing claimed, the module unloaded, the record saved",
+                  r.stdout + r.stderr + "\n".join(c))
+    # Once prepare has run there is no second suspend, whatever the first did after it: the first half's lines are the record.
+    for pc, plc in (((0, 1), 0), ((0, 2), 1)):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, plc=plc)
+            r, state = run(tmp, d, pc=pc)
+            c = calls(tmp)
+            check(r.returncode == 0 and state == "mem" and r.stdout.count("asking for the suspend") == 1 and "sleep 3" not in c
+                  and "rmmod" not in "".join(c) and "ONLY PART OF THE PROBE RAN (1 and 1 is a whole one)" in r.stdout
+                  and f"prepare_calls={pc[1]} prepare_late_calls={plc}" in r.stdout and "TAKE A PHOTO" in r.stdout,
+                  f"prepare_calls {pc[1]} and prepare_late_calls {plc}: one suspend only, and it says only part of the probe ran",
+                  r.stdout + r.stderr + "\n".join(c))
+    # A suspend that something else asked for, and that ran the probe: before this script's first ask, or during its wait after a
+    # first that ended early. Either way it asks for no other.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp)
+        r, state = run(tmp, d, pc=(1,))
+        check(r.returncode == 0 and not state and "asking for the suspend" not in r.stdout and "this script's last suspend returned none " in r.stdout
+              and "prepare_calls=1 prepare_late_calls=1" in r.stdout and "TAKE A PHOTO" in r.stdout and "ONLY PART" not in r.stdout,
+              "the probe already run by another suspend before this script's first: none is asked for, and the record is printed as a whole one",
+              r.stdout + r.stderr)
+
+    # A save that fails, and a kernel log with nothing of the probe's in it: both said.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, save_rc=1)
+        r, state = run(tmp, d)
+        check(r.returncode == 0 and state == "mem" and "NOT SAVED: the photo is the result" in r.stdout and "Saved. Now" not in r.stdout,
+              "a save that fails: the photo is the result, and it says so", r.stdout + r.stderr)
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, klog="[  1.0] nothing of ours\n")
+        r, state = run(tmp, d)
+        check(r.returncode == 0 and '(no line with "e1_hook: probe:" in the kernel log, or dmesg failed:' in r.stdout,
+              "a kernel log without the probe's lines: said, not left blank", r.stdout + r.stderr)
+
+    # The parameters are the launcher's of the latest recipe, and probe=1 is among them, last.
+    src = open(os.path.join(E1_HOOK, "probe")).read()
+    floor = open(os.path.join(E1_HOOK, "run-floor")).read()
+    check(PARAMS.split()[-1] == "probe=1" and all(f"params+=({p})" in floor or p in ("replay=15", "oneway=1", "one_commit=1", "smc_idle=1")
+                                                   or "params=(replay=15 oneway=1)" in floor and p.split("=")[0] in floor
+                                                   for p in PARAMS.split()[:-1])
+          and 'if [[ $(get "$MODDIR/parameters/probe") != Y ]]; then\n  if printf 1 > "$MODDIR/parameters/cancel" 2> /dev/null; then' in src
+          and src.index('!= Y ]]; then') < src.index('printf mem > "$STATE"') and src.count('> "$STATE"') == 1
+          and ('  [[ $(get "$MODDIR/parameters/prepare_calls") == 0 ]] || break\n  log "$(now) asking for the suspend' in src)
+          and '  printf mem > "$STATE" 2> /dev/null\n  rc=$?\n  [[ $(get "$MODDIR/parameters/prepare_calls") == 0 ]] || break\n' in src
+          and src.index('!= Y ]]; then') < src.index('dmesg 2>&1 | grep -F -- "e1_hook: probe:" > /dev/null; sleep 0\n') < src.index("for try in 1 2 3; do")
+          and 'if lines=$(dmesg 2>&1 | grep -F -- "$1"); then' in src
+          and '"$PMP" release 0xc 0xd > /dev/null' in floor and src.index('"$PMP" release 0xc 0xd > /dev/null 2>&1 || die ') < src.index('insmod "$ko"'),
+          "probe's parameters are run-floor's and probe=1; the suspend is asked for in one place, after the check that the module took probe=1, "
+          "and only while the module's prepare hasn't run, checked before and after each; klog's own pipeline and sleep are in memory before it")
+
+    print(f"{failed} failed" if failed else "all ok")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

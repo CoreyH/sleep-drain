@@ -44,8 +44,9 @@ the PR with that session's work.
     90 s (run 17): B2, the second sequence of the entry pair, doesn't reach its op 224 with every core
     down. The stall is at its gate, in the first handshake or in its power-down.
   - **Next: a probe, not a one-way run,** of the three coprocessor status words B2 polls in that
-    power-down, which nothing has read. Not built: "The order after run 17", in Track A below, is the
-    place to start.
+    power-down, which nothing has read. Built, not run: `pkexec e1-hook/probe` in a safe boot (the
+    charger may stay in); the Mac comes back awake, and is restarted afterwards. "The order after run
+    17", in Track A below, is the place to start.
 
 ## Picking this up
 
@@ -419,13 +420,23 @@ steps, and restarting the DCP and the PMP afterwards.
       (RESEARCH.md, "M1 run 17"). So B2 doesn't reach its op 224 with every core down: the stall is at
       its gate, in the first handshake or in its power-down. `fabric_up=1` and `wd1_mark=1` stay in the
       recipe, and from here a change that gets B2 further shows as a restart at 120 s or later.
-      Next, not built: **a probe of the three coprocessor words B2 polls** (RESEARCH.md, "After run 17"):
-      SIO's, ANS's and the PMP's ASC + 0x8000, bit 1, which the engine waits for after powering each
-      domain up, and which nothing has read. Not a one-way run: a suspend under `pm_test=platform` in a
-      safe boot, in which the module takes the recipe's own steps on SIO and the PMP (the idle pair, RUN
-      cleared, SIO's parents raised: writes the runs already make) and reads the three words around each,
-      into the kernel log and, as a fallback if the resume fails, a few bits in the breadcrumbs. It reads
-      three addresses that are new to the hook, in mailbox blocks Linux's own driver has mapped.
+      Next, **built and not run: a probe of the three coprocessor words B2 polls** (RESEARCH.md, "After
+      run 17", has what it is and "The probe as built" how): SIO's, ANS's and the PMP's ASC + 0x8000,
+      bit 1, which the engine waits for after powering each domain up, and which nothing has read. Not a
+      one-way run: `pkexec e1-hook/probe` in a safe boot loads `e1_hook` with `--m1-mark`'s parameters
+      and `probe=1` and asks for one suspend, which the module fails with -EIO from `prepare_late`
+      (not `pm_test=platform`, as first planned: nothing outside the module has to be set). In it the
+      module takes the recipe's own steps on SIO and the PMP (the idle pair, RUN cleared, SIO's parents
+      raised: writes the runs already make) and reads the three words around each, into the kernel log
+      and, as a fallback if the resume fails, a record in the breadcrumbs under stage 0x0e: the step it
+      has reached, at 0x6010, and three bytes at the end. New as reads: the three mailbox words, in
+      blocks Linux's own driver has mapped, and ANS2's and `ps_pmp`'s power words. It writes one word no
+      run has: ANS2, raised as B2 raises it and written back as found. The PMP's display report
+      requests are withdrawn at noirq as in the runs (`sleep-drain-pmp release 0xc 0xd`); that module
+      asserts them again at resume, here to a stopped PMP, which times out and is logged. The charger
+      may stay in. Afterwards SIO's firmware and the PMP's are stopped,
+      so the Mac is restarted; then `m1-crumbs --clear` and `sleep-drain-safe collect` as after a run.
+      If the Mac goes dark in the probe instead, `m1-crumbs` after the restart says at which step.
       After it, by its reading, which is a lead and not the stall's location (the probe samples the
       recipe's state before any commit, and B2 polls later, after its own raises): a word that never
       shows bit 1 is the next run's change, that coprocessor left differently (idled but not stopped,
