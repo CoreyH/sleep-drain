@@ -3301,9 +3301,11 @@ blocks are the tables of two kinds of sequencer, the clusters' and DCS's.
   AVEMSR), macOS's table waits on the busy bit, and since run 9 each of those waits is met within 10 ms
   (`qto` 0). That isn't the same test as the sequences' own waits, and nothing has read 0x28e09a000 + 4n.
 - **The CPU complexes' sequences are untested where it matters.** `qto` doesn't cover them, and it's
-  taken before the cores are let go. What has been seen: with CPU7 up, EACC's and PACC0's busy bits
-  cleared (runs 2 and 3), and with CPU0 up, both P complexes' power read off (runs 5 and 6). Nothing has
-  seen the E complex's sequence finish in a run where CPU0 goes down last, which is every run since.
+  taken before the cores are let go. What has been seen: with CPU7 up, CPU0's and the E complex's power
+  read off in runs 2 and 3, and EACC's and PACC0's busy bits read clear in run 3 alone (in run 2, with
+  the PMGR quiesce early and unwaited, both still read busy at the end of CPU7's watch); with CPU0 up,
+  both P complexes' power read off (runs 5 and 6). Nothing has seen the E complex's sequence finish in
+  a run where CPU0 goes down last, which is every run since.
   Its two untimed waits are the newest candidates for what's ahead of B2's first poll.
 - A2's three settle waits (DCS, fabric and 0x28e20c400, each with no timeout) run sequences that are now
   on file. Whether DCS reaches p-state 2 from the state this recipe leaves is something the AP can try
