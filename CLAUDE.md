@@ -110,10 +110,16 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   developers or agents in the codebase so make it comfortable for you and you
   alone." So the code, the tests, the docs and these conventions are Claude's
   to shape, for its own use from one session to the next, without asking.
-  Three things stay Corey's, because they're about Corey's Mac and the world
-  outside (Claude's reading of the hand-over): an OK for each new write to the
-  Mac's hardware (which register, which value) before a run is built on it;
-  the go for each attended run; and anything posted outside this repo.
+  And later that day, asked to approve a changed register write: "you can
+  continue here without waiting for my approval to build new steps/phases. let
+  me know when I need to run the safe boot side of things." So a new step of
+  the experiments, its register writes included, is built, reviewed and merged
+  without waiting, and RESEARCH.md and PLAN.md record what each write is and
+  why. What stays Corey's (Claude's reading): they run every safe-boot run
+  themselves, so the steps Claude hands over say in plain words what's new in
+  that run; and anything posted outside this repo needs their OK each time.
+  Claude still asks first before building anything that could outlast a
+  restart or damage the Mac (persistent PMU or NVRAM state, the SEP, firmware).
 - **Branch → PR → merge**, on CoreyH/sleep-drain. No direct pushes to `main`.
   Pullfrog reviews every PR. Merge with a merge commit, not a squash: commit
   SHAs are cited in RESEARCH.md and in the code. A build that writes to
