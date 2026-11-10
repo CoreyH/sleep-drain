@@ -93,6 +93,7 @@
  *   pkexec e1-hook/run-floor --m1-mark            (--m1-fabric-up's and wd1_mark=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
+ *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -133,6 +134,7 @@
 #include "recfg_bite.h"
 #include "asc_probe.h"
 #include "look.h"
+#include "gate_test.h"
 #include "fabric_up.h"
 #include "wd1_mark.h"
 #include "wd2_bite.h"
@@ -356,6 +358,10 @@ MODULE_PARM_DESC(probe, "With wd1_mark=1: no replay, ever. At the prepare and pr
 static bool look;
 module_param(look, bool, 0444);
 MODULE_PARM_DESC(look, "With probe=1: none of the probe's steps. It stops no firmware and writes no register: awake at the load and again after the noirq pass of the first suspend to get that far, it reads the words the entry pair's remaining waits depend on (the clock generators', six gate-status words, eight words of the engine's page, the three p-state words and the power words B2 polls), logs each in full, and fails every suspend with -EIO as probe=1 does. Stage 0x0f and the group being read at 0x6010 in the PMU while it reads, with 0x10 set at the load (look.h)");
+/* look=1's one test with writes: does the gate B2 waits on after SIO's subtree close? (PLAN.md, "The order after the look") */
+static bool gate;
+module_param(gate, bool, 0444);
+MODULE_PARM_DESC(gate, "With look=1: after the look that follows noirq, the five UARTs Linux leaves at 4 := 0x200 (0x28e580250-270, ps_words=1's value), up to 100 ms for bit 30 of the gate word 0x28e5a0050, then the fabric lane AFNC2_LW1 := 0x1000030f (0x28e580160, macOS's value, ps_words=1's), read back, and the gate again; then all six words written back as found. Logged in full, a byte at 0x6005, the step at 0x6010 with 0x20 set (gate_test.h)");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -3860,6 +3866,176 @@ static_assert(ARRAY_SIZE(((u16[])LOOK_AON_OFFS)) == 6 && ARRAY_SIZE(((u16[])LOOK
 static_assert((LOOK_LOAD & LOOK_AT_DONE) == 0 && LOOK_AT_DONE < LOOK_LOAD);
 static_assert(ARRAY_SIZE(((u16[])LOOK_GATE_A_OFFS)) == 3 && ARRAY_SIZE(((u16[])LOOK_GATE_B_OFFS)) == 3);
 
+/* gate=1: the six gate words, on one line. */
+static void m1_gate_log(const char *when)
+{
+	static const u16 ga[] = LOOK_GATE_A_OFFS, gb[] = LOOK_GATE_B_OFFS;
+	unsigned int i;
+	u32 v[6];
+
+	for (i = 0; i < ARRAY_SIZE(ga); i++)
+		v[i] = readl(m1_look_ga + ga[i]);
+	for (i = 0; i < ARRAY_SIZE(gb); i++)
+		v[3 + i] = readl(m1_look_gb + gb[i]);
+	pr_info("look: gate: %s: gates 0x28e5a0000: +050 %08x +064 %08x +30c %08x; 0x28e09c000: +310 %08x +338 %08x +34c %08x\n", when, v[0],
+		v[1], v[2], v[3], v[4], v[5]);
+}
+
+/* gate=1: up to 100 ms for bit 30 of the gate word B2 polls after SIO's subtree, then all six. True if it read set. */
+static bool m1_gate_wait(const char *when)
+{
+	u64 t0 = m1_now();
+	u32 v;
+
+	while (!((v = readl(m1_look_ga + GATE_SIO)) & GATE_CLOSED) && m1_now() - t0 < m1_tps / 10)
+		cpu_relax();
+	pr_info("look: gate: %s: 0x28e5a0050 reads %08x after %llu ms: bit 30 %s\n", when, v, div64_u64((m1_now() - t0) * 1000, m1_tps),
+		v & GATE_CLOSED ? "SET" : "clear");
+	m1_gate_log(when);
+	return v & GATE_CLOSED;
+}
+
+/*
+ * gate=1: one power word, written once, then read until done(read, want) or 10 ms have gone. Returns the last
+ * read, and the first in *first.
+ */
+static u32 m1_gate_write(void __iomem *p, u32 val, bool (*done)(u32, u32), u32 want, u32 *first)
+{
+	u64 t0;
+	u32 v;
+
+	writel(val, p);
+	dsb(sy);
+	*first = v = readl(p);
+	t0 = m1_now();
+	while (!done(v, want) && m1_now() - t0 < m1_tps / 100) {
+		cpu_relax();
+		v = readl(p);
+	}
+	return v;
+}
+
+/*
+ * gate=1, right after the look that follows noirq (gate_test.h has the steps, why, and what it risks): Linux's
+ * suspend has all of SIO's subtree off but five UARTs. Those go off, the gate B2 waits on is watched, the lane above
+ * SIO gets macOS's value, the gate is watched again, and all six words are written back as found. Each step's mark
+ * first. What the adversarial review of #80 changed is marked.
+ */
+static void m1_gate_test(void)
+{
+	static const u16 uart[GATE_UART_N] = GATE_UARTS, kid[GATE_KID_N] = GATE_KIDS;
+	static const u8 zero, zero6[6];
+	bool uarts_off = true, closed1, lane_took, closed2, lane_gated, lane_back, uarts_back = true, made = true;
+	u32 was[GATE_UART_N], k[GATE_KID_N], lane, first, v, g;
+	u8 res, rec[1 + 6], *pack = rec + 1, snap_bit;
+	int z5, z6, snap;
+	unsigned int i;
+	u64 t0;
+
+	m1_look_at(GATE_PASS | GATE_AT_READ);
+	/* Bytes left there from before would read as this test's (the review; Pullfrog on #80 for the lane's reads): zeroed first. */
+	z5 = m1_kwrite(0x6005, &zero, 1);
+	z6 = m1_kwrite(0x6011, zero6, sizeof(zero6));
+	pr_info("look: gate: the PMU's 0x6005 and 0x6011-0x6016 zeroed first: %d %d\n", z5, z6);
+	for (i = 0; i < GATE_UART_N; i++)
+		was[i] = readl(m1_sio + uart[i]);
+	for (i = 0; i < GATE_KID_N; i++)
+		k[i] = readl(m1_sio + kid[i]);
+	lane = readl(m1_sio + GATE_LANE);
+	pr_info("look: gate: as found: UART2,3,4,6,7 %08x %08x %08x %08x %08x; AFNC2_LW1 %08x; below it: SIO %08x DISPDFR_FE %08x DISPDFR_BE %08x MIPI_DSI %08x ISP_SYS %08x\n",
+		was[0], was[1], was[2], was[3], was[4], lane, k[0], k[1], k[2], k[3], k[4]);
+	m1_gate_log("as found");
+	/* The test is of SIO's subtree off (the review): not made if SIO itself reads on, or something has one of the UARTs on. */
+	if (!gate_actual(k[0], 0))
+		made = false;
+	for (i = 0; i < GATE_UART_N; i++) {
+		if (gate_wanted(was[i]))
+			made = false;
+	}
+	if (!made) {
+		m1_look_at(GATE_PASS | GATE_AT_NOT_MADE);
+		res = gate_byte(false, false, false, false, false, true, true);
+		i = m1_kwrite(0x6005, &res, 1);
+		pr_info("look: gate: SUMMARY: NOT MADE: after noirq SIO reads on, or a UART has a target of f, which isn't the state this test is for; nothing was written; byte %02x, written to the PMU: %d\n",
+			res, (int)i);
+		return;
+	}
+
+	m1_look_at(GATE_PASS | GATE_AT_UARTS);
+	for (i = 0; i < GATE_UART_N; i++) {
+		v = m1_gate_write(m1_sio + uart[i], GATE_UART_VAL, gate_actual, 0, &first);
+		pr_info("look: gate: 0x28e580%03x := %08x: it read %08x at once and reads %08x\n", uart[i], GATE_UART_VAL, first, v);
+		if (!gate_actual(v, 0))
+			uarts_off = false;
+	}
+	m1_look_at(GATE_PASS | GATE_AT_WAIT1);
+	closed1 = m1_gate_wait("SIO's subtree all off");
+
+	m1_look_at(GATE_PASS | GATE_AT_LANE);
+	/*
+	 * The lane and the gate once more, right before the write (the review): a lane that had gated at Linux's own
+	 * floor, or a gate that closed late by itself, isn't then put down to macOS's value.
+	 */
+	v = readl(m1_sio + GATE_LANE);
+	g = readl(m1_look_ga + GATE_SIO);
+	gate_pack(v, pack);
+	if (g & GATE_CLOSED)
+		closed1 = true;
+	pr_info("look: gate: right before AFNC2_LW1's write: it reads %08x, its actual state %s; 0x28e5a0050 reads %08x: bit 30 %s\n", v,
+		gate_actual(v, 0) ? "0 already" : "not 0", g, g & GATE_CLOSED ? "SET" : "clear");
+	v = m1_gate_write(m1_sio + GATE_LANE, GATE_LANE_VAL, gate_took, GATE_LANE_VAL, &first);
+	lane_took = gate_took(v, GATE_LANE_VAL);
+	gate_pack(v, pack + 2);
+	pr_info("look: gate: AFNC2_LW1 found %08x, := %08x: it read %08x at once and reads %08x: auto-enable, auto floor and target %s\n", lane,
+		GATE_LANE_VAL, first, v, lane_took ? "as written" : "NOT as written within 10 ms");
+	m1_look_at(GATE_PASS | GATE_AT_WAIT2);
+	closed2 = m1_gate_wait("AFNC2_LW1 at macOS's value");
+	v = readl(m1_sio + GATE_LANE);
+	lane_gated = gate_actual(v, 0);
+	gate_pack(v, pack + 4);
+	pr_info("look: gate: AFNC2_LW1 reads %08x then: its actual state %s\n", v, lane_gated ? "0" : "not 0");
+	/*
+	 * The lane's three reads to the PMU before anything is written back (the review): if the resume doesn't come,
+	 * they're what's left. In one command with the next step's mark, so that the mark says the reads are this
+	 * test's; if that command isn't acked, the mark goes out alone and every mark after it says so (Pullfrog on #80).
+	 */
+	rec[0] = GATE_PASS | GATE_AT_LANE_BACK;
+	snap = m1_kwrite(LOOK_AT, rec, sizeof(rec));
+	snap_bit = snap ? GATE_NO_SNAP : 0;
+	if (snap)
+		m1_look_at(GATE_PASS | GATE_NO_SNAP | GATE_AT_LANE_BACK);
+	pr_info("look: gate: AFNC2_LW1's three reads, with the next step's mark, to the PMU's 0x6010-0x6016 in one command: %d\n", snap);
+
+	/* Back as found, the lane first, each less what the kernel's driver never writes back either. */
+	v = m1_gate_write(m1_sio + GATE_LANE, lane & ~ASC_PS_NOT_WRITTEN, gate_took, lane, &first);
+	pr_info("look: gate: AFNC2_LW1 written back %08x: it reads %08x\n", lane & ~ASC_PS_NOT_WRITTEN, v);
+	m1_look_at(GATE_PASS | snap_bit | GATE_AT_UARTS_BACK);
+	for (i = 0; i < GATE_UART_N; i++) {
+		v = m1_gate_write(m1_sio + uart[i], was[i] & ~ASC_PS_NOT_WRITTEN, gate_back, was[i], &first);
+		pr_info("look: gate: 0x28e580%03x written back %08x: it reads %08x\n", uart[i], was[i] & ~ASC_PS_NOT_WRITTEN, v);
+		if (!gate_back(v, was[i]))
+			uarts_back = false;
+	}
+	/* The lane is judged last, with the UARTs back (the review): its actual state follows what's below it. */
+	t0 = m1_now();
+	while (!gate_back(v = readl(m1_sio + GATE_LANE), lane) && m1_now() - t0 < m1_tps / 100)
+		cpu_relax();
+	lane_back = gate_back(v, lane);
+	pr_info("look: gate: AFNC2_LW1 reads %08x with everything written back: %s\n", v, lane_back ? "as found" : "NOT as found within 10 ms");
+	m1_look_at(GATE_PASS | snap_bit | GATE_AT_DONE);
+	m1_gate_log("after both were put back");
+	res = gate_byte(uarts_off, closed1, lane_took, closed2, lane_gated, lane_back, uarts_back);
+	i = m1_kwrite(0x6005, &res, 1);
+	/* A UART that didn't go off means neither poll was of the state B2 polls in: said first, so the rest isn't read as a result. */
+	pr_info("look: gate: SUMMARY: %s; bit 30 of 0x28e5a0050 before AFNC2_LW1's write: %s; AFNC2_LW1 %s macOS's value, and bit 30 after that: %s; put back: AFNC2_LW1 %s, the UARTs %s; byte %02x, written to the PMU: %d\n",
+		uarts_off ? "SIO's subtree all off" : "INCONCLUSIVE: the five UARTs did NOT all go off, so SIO's subtree wasn't all off",
+		closed1 ? "SET" : "clear", lane_took ? "took" : "did NOT take", closed2 ? "SET" : "clear", lane_back ? "as found" : "NOT as found",
+		uarts_back ? "as found" : "NOT all as found", res, (int)i);
+}
+static_assert(LOOK_SIO_PAGE + GATE_LANE == 0x28e580160ULL && LOOK_GATE_A + GATE_SIO == 0x28e5a0050ULL && GATE_PASS > LOOK_LOAD);
+static_assert(GATE_LANE < LOOK_SIO_FIRST && (LOOK_GATE_A & PAGE_MASK) == LOOK_GATE_A);
+static_assert(LOOK_AT == 0x6010 && GATE_AT_NOT_MADE < LOOK_LOAD && !(GATE_NO_SNAP & (GATE_PASS | LOOK_LOAD | (LOOK_LOAD - 1))));
+
 /*
  * look=1 at load, the last of m1_init()'s steps: its three mappings, the engine's page if nothing has mapped it yet,
  * and the look awake. It refuses unless every page m1_look() reads through is there: the first build looked before
@@ -3883,6 +4059,20 @@ static int __init m1_look_init(void)
 	if (!m1_sio || !m1_ps || !post_map[m1_waits[0].idx]) {
 		pr_err("m1: look: SIO's page, the first power page or the p-state page isn't mapped; refusing\n");
 		return -ENODEV;
+	}
+	/* gate=1: the six words it writes, off the never-write list, as every other writer here checks its own at load. */
+	if (gate) {
+		static const u16 uart[GATE_UART_N] = GATE_UARTS;
+		unsigned int i;
+
+		for (i = 0; i < GATE_UART_N; i++) {
+			if (m1_never(LOOK_SIO_PAGE + uart[i], 1))
+				break;
+		}
+		if (i < GATE_UART_N || m1_never(LOOK_SIO_PAGE + GATE_LANE, 1)) {
+			pr_err("m1: gate: one of its six words is on the never-write list; refusing\n");
+			return -EPERM;
+		}
 	}
 	m1_look("awake, at load", LOOK_LOAD);
 	m1_look_at(LOOK_AT_NONE);
@@ -4418,10 +4608,13 @@ static int e1_prepare_late(void)
 		bool same = n == 1 && READ_ONCE(prepare_calls) == 1;
 
 		/* The look takes no step at prepare, so it has no first half to belong to: the first prepare_late has it. */
-		if (look && n == 1)
+		if (look && n == 1) {
 			m1_look("after noirq", 0);
-		else if (!look && same)
+			if (gate)
+				m1_gate_test();
+		} else if (!look && same) {
 			m1_probe_late();
+		}
 		pr_info("probe: %s; this suspend fails with -EIO: with probe=1 loaded nothing sleeps and nothing replays\n",
 			look ? (n == 1 ? "the look is done" : "the look ran at an earlier suspend") :
 			same ? "done" : n == 1 ? "its first half ran in an earlier suspend, so its second half doesn't run" :
@@ -4688,6 +4881,10 @@ static int __init e1_check_params(void)
 		pr_err("look=1 only changes probe=1\n");
 		return -EINVAL;
 	}
+	if (gate && !look) {
+		pr_err("gate=1 only adds to look=1\n");
+		return -EINVAL;
+	}
 	if (probe && (!wd1_mark || !pmp_stop)) {
 		pr_err("probe=1 needs wd1_mark=1 and no pmp_stop=0 (it takes the latest recipe's steps on SIO and the PMP, with everything that recipe maps and checks at load)\n");
 		return -EINVAL;
@@ -4881,7 +5078,8 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
+		wd1_mark ? " wd1_mark=1" : "", gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
+		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;
 
 unmap:

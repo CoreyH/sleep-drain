@@ -559,6 +559,116 @@ LOOK_AT = ("nothing marked",
 LOOK_DONE = len(LOOK_AT) - 1
 
 
+# gate=1 (e1-hook/probe --gate): its steps, by the number it leaves at 0x6010 with GATE_PASS set (gate_test.h's enum
+# gate_at), and the mark of its byte at 0x6005.
+GATE_PASS = 0x20
+GATE_NO_SNAP = 0x40  # in a mark from step 6 on: the write that carries the lane's three reads wasn't acked
+GATE_MARK = 0x80
+GATE_UNMADE = 0xe0  # the byte of a test that wasn't made
+GATE_AT = ("nothing marked",
+           "everything read as found",
+           "the five UARTs written 0x200",
+           "the gate polled, SIO's subtree all off",
+           "AFNC2_LW1 written 0x1000030f, macOS's value",
+           "the gate polled again",
+           "AFNC2_LW1 written back as found",
+           "the five UARTs written back as found",
+           "every step taken: the byte written",
+           "the test wasn't made: after noirq SIO read on, or a UART had a target of f, and nothing was written")
+GATE_LANE_BACK, GATE_DONE, GATE_NOT_MADE = 6, 8, 9
+
+
+def gate_word(p):
+    """gate_test.h's gate_pack(): two bytes of a power word, read back into words."""
+    lo, hi = p
+    flags = [n for bit, n in ((0x20, "was power-gated"), (0x40, "was clock-gated"), (0x80, "BUSY")) if hi & bit]
+    return (f"target {lo & 0xf:x}, actual state {lo >> 4:x}, auto-enable {'on' if hi & 0x10 else 'off'}, auto floor {hi & 0xf:x}"
+            + (", " + ", ".join(flags) if flags else ""))
+
+
+def gate_lines(at, v, pack):
+    """gate=1's record: the step it was about to take when it last wrote 0x6010, its byte at 0x6005 if that landed, and
+    the lane's three reads at 0x6011-0x6016, if the mark says they're this test's. The kernel log e1-hook/probe saves
+    has every word in full."""
+    n = at & ~(GATE_PASS | GATE_NO_SNAP)
+    step = GATE_AT[n] if n <= GATE_NOT_MADE else "not a step's number"
+    if n in (GATE_DONE, GATE_NOT_MADE):
+        out = [f"0x6010 = 0x{at:02x}: the gate test, after both looks: {step}"]
+    elif v & GATE_MARK:
+        # The byte is zeroed when the test starts and written after its last step, write-backs and all: with it there, an
+        # earlier mark is a later mark lost.
+        out = [f"0x6010 = 0x{at:02x}: the gate test, after both looks. The last step it marked: {step}; but its byte landed, and that is"
+               " written after the last step, so the test reached its end and a later mark didn't land (Pullfrog on #80)"]
+    else:
+        out = [f"0x6010 = 0x{at:02x}: THE GATE TEST BEGAN AND DIDN'T FINISH, after both looks. The last step it marked: {step}."
+               " The Mac went down in that step, or after it and before the next mark"
+               + (". From step 2 to step 7 a word it had changed may not have been written back: the restart since has put"
+                  " every power word back where the boot leaves it" if 2 <= n <= 7 else "")]
+    # The lane's three reads are written in one command with step 6's mark, so only that mark, or a later one that
+    # doesn't say the command failed, makes 0x6011-0x6016 this test's: bytes left there from before are never read
+    # as its own (Pullfrog on #80). The byte at 0x6005 is another command's, and has no say in this.
+    if GATE_LANE_BACK <= n <= GATE_DONE and not at & GATE_NO_SNAP:
+        if any(pack):
+            out += ["0x6011-0x6016: AFNC2_LW1 (0x28e580160), read three times before anything was written back:",
+                    f"  right before its write, SIO's subtree off: {gate_word(pack[0:2])}",
+                    f"  after the write of macOS's 0x1000030f: {gate_word(pack[2:4])}",
+                    f"  after the second poll of the gate: {gate_word(pack[4:6])}"]
+        else:
+            out.append("0x6011-0x6016 read 0 though the mark says their write was acked: nothing is read from them")
+    else:
+        why = ("the test wasn't made" if n == GATE_NOT_MADE else
+               "the mark says the write that carries them wasn't acked" if GATE_LANE_BACK <= n <= GATE_DONE else
+               "the last mark that landed is from before their write" if n < GATE_LANE_BACK else "the mark isn't a step's")
+        if any(pack):
+            out.append(f"0x6011-0x6016 hold {bytes(pack).hex(' ')}: NOT this test's reads of the lane ({why}): left from before, and"
+                       " nothing is read from them")
+        else:
+            out.append(f"0x6011-0x6016 read 0: the lane's three reads weren't written ({why})")
+    if n == GATE_NOT_MADE:
+        return out + [f"0x6005 = 0x{v:02x}: " + ("the byte a test that wasn't made leaves" if v == GATE_UNMADE else
+                                                "NOT the 0xe0 a test that wasn't made leaves: nothing is read from it"),
+                      "  so: nothing was switched off, nothing had to be put back, and nothing is decided about the gate"]
+    if not v & GATE_MARK:
+        return out + [f"0x6005 = 0x{v:02x}: the test's byte didn't land (bit 7 clear), or the test stopped before it: nothing is read"
+                      " from it"]
+    off, c1, took, c2, gated, lback, uback = (bool(v >> i & 1) for i in range(7))
+    out += [f"0x6005 = 0x{v:02x}: the gate test's byte:",
+            "  the five UARTs: " + ("all read actual 0 within 10 ms of being written 0x200" if off else
+                                    "did NOT all read actual 0 within 10 ms of being written 0x200, or the test wasn't made (SIO read on,"
+                                    " or a UART was in use): the kernel log says which"),
+            f"  bit 30 of 0x28e5a0050, the gate B2 polls after SIO's subtree, before the lane's write: {'SET' if c1 else 'clear'}"
+            + (" (within 100 ms of the subtree going off, or at the read right before the write)" if c1 else
+               ", through 100 ms and at the read right before the write"),
+            f"  AFNC2_LW1, written macOS's 0x1000030f: {'took it' if took else 'did NOT take it'} within 10 ms"
+            f"; its actual state after the second poll: {'0' if gated else 'not 0'}",
+            f"  bit 30 of 0x28e5a0050 after that: {'SET' if c2 else 'clear'}" + ("" if c2 else ", through 100 ms"),
+            f"  read as found with everything written back: AFNC2_LW1 {'yes' if lback else 'NOT within 10 ms'}; the UARTs"
+            f" {'yes' if uback else 'NOT all within 10 ms'}"]
+    if not off:
+        out.append("  so: SIO's subtree wasn't all off, so neither poll was of the state B2 polls in: nothing decided about the gate")
+    elif c1:
+        out.append("  so: in Linux's suspended state the gate B2 waits on closes once SIO's subtree is all off, before the lane was"
+                   " given macOS's value: this poll isn't where B2 stops in that state. The recipe's state is further on, and B2"
+                   " polls after its own writes")
+    elif took and c2:
+        out.append("  so: the gate read open with SIO's subtree all off, up to the read right before the lane's write, and set within"
+                   " 100 ms after the lane took macOS's value" + (", with the lane's actual state then 0" if gated else
+                                                                " though the lane's actual state wasn't 0 then")
+                   + ". Closed after it: one before and one after can't tell that from a gate that closes late by itself. If it's the"
+                   " lane's floor, whether the recipe's own write of it takes is the next thing to read")
+    elif c2:
+        out.append("  so: the gate read open with SIO's subtree all off, and set at the second poll though the lane did NOT take"
+                   " macOS's value: it closed late and by itself, or the write did something its read-back doesn't show. The"
+                   " lane's three reads above, and the kernel log, have the words")
+    elif took:
+        out.append("  so: the gate stayed open with SIO's subtree all off and the lane at macOS's value: something else is behind it,"
+                   + (" though the lane's actual state read 0" if gated else " and the lane's actual state didn't read 0"))
+    else:
+        out.append("  so: the gate stayed open with SIO's subtree all off, and the lane did NOT take macOS's value: the write that"
+                   " ps_words=1 makes in every run doesn't land in this state. The lane's three reads above have what it read")
+    return out
+
+
 def look_lines(at):
     """look=1's record: which of its two looks, and the group it was about to read when it last wrote 0x6010. Its
     words are in the kernel log e1-hook/probe saves; the PMU has only how far it got."""
@@ -912,9 +1022,11 @@ def decode(b, rtc, cnt=None, alarm=None):
         return [f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
                 f"0x6010: {b[0x10:0x18].hex(' ')}  {b[0x18:0x20].hex(' ')}",
                 f"stage 0x6004 = 0x{b[4]:02x}: probe=1 look=1 (e1-hook/probe --look), not a run: nothing replayed, nothing was"
-                " committed, nothing was stopped and no register was written. What it read is in the kernel log it saved, if"
-                " the Mac was up to save it"
-                ] + look_lines(b[0x10])
+                " committed, nothing was stopped and "
+                + ("the looks wrote no register; gate=1's test, after them, changes six power words and writes them back (--gate): how"
+                   " far it got is below" if b[0x10] & GATE_PASS else "no register was written")
+                + ". What it read is in the kernel log it saved, if the Mac was up to save it"
+                ] + (gate_lines(b[0x10], b[5], b[0x11:0x17]) if b[0x10] & GATE_PASS else look_lines(b[0x10]))
     if b[4] == PROBE_STAGE:
         # Not a run: no commit, no alarm, no restart to time.
         return [f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
@@ -1213,7 +1325,9 @@ def main():
                     " written: the breadcrumbs stay, and clearing it needs Corey's word")
             elif alarm[0] & 0x40:
                 print(f"0x1401 reads armed (0x{alarm[0]:02x}) and was left alone: nothing shows this run armed it")
-            for off, n in CRUMBS:
+            # The stage's block last: a clear that stops halfway then leaves the stage, and the launchers, which go by a
+            # zero stage, refuse (Pullfrog on #80: a run's bytes at 0x6011-0x6016 left under a zero stage).
+            for off, n in reversed(CRUMBS):
                 if os.pwrite(fd, bytes(n), off) != n:
                     die(f"short write at {off:#x}")
             after = [os.pread(fd, n, off) for off, n in CRUMBS]

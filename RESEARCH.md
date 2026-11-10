@@ -3822,6 +3822,71 @@ the lane above SIO gates itself, a lane that never takes macOS's floor would lea
 op 224. That's a chain of two inferences, each of which one read can test: PLAN.md, "The order after the
 look".
 
+### The gate test as built: six power words out and back, and the gate B2 waits on watched (2026-11-10)
+
+`pkexec e1-hook/probe --gate` in a safe boot loads `e1_hook` with the look's parameters and `gate=1`
+(`e1-hook/gate_test.h` has the steps and the record). Not run yet.
+- **It's the look, and one test after it.** Both looks run as before and write no register. Then, in the
+  same failed suspend, after noirq:
+  0. Everything read as found: the five UARTs, AFNC2_LW1, SIO's own word and the lane's other children
+     (DISPDFR_FE and BE, MIPI_DSI, ISP_SYS). **The test isn't made, and nothing is written, if SIO reads
+     on or a UART has a target of f:** that isn't the state it's for.
+  1. UART2, 3, 4, 6 and 7 := 0x200, `ps_words=1`'s value for them, up to 10 ms each for actual 0. Linux's
+     suspend leaves those five at 4, the only words of SIO's subtree not off; with them off the subtree is
+     as B2 has it after its op 138.
+  2. Up to 100 ms for bit 30 of 0x28e5a0050, the gate word B2 polls there.
+  3. AFNC2_LW1 and the gate word read once more; then AFNC2_LW1 := 0x1000030f, macOS's value and
+     `ps_words=1`'s, read back at once and for up to 10 ms.
+  4. The gate again, up to 100 ms, and AFNC2_LW1 once more, to see whether it gated itself.
+  5. AFNC2_LW1 written back as found, then the five UARTs, each less the bits the kernel's driver never
+     writes back, up to 10 ms each to read as found; the lane read last, with everything back, since its
+     actual state follows what's below it.
+- **What it writes:** those six words, each once out and once back, with values the runs already write
+  and then the values found. Nothing else: no firmware is touched, and `ps_pmp` is neither read nor
+  written by it. The load refuses if one of the six is on the never-write list.
+- **What it risks, and this is by design.** If the gate does close, SIO's island loses power with SIO's
+  firmware running. Linux's own suspend hasn't been seen to do that here (the gate read open after it).
+  The island also holds SPI3 (the keyboard and trackpad), the I2C buses and SIO's DART, and the kernel has
+  no way to bring SIO's firmware back; the one resume tried with a firmware gone, the probe's, didn't come
+  back. So the result the test is after may be the one it doesn't resume from. In a safe boot that costs
+  the kernel log and nothing else: the disk is read-only, and a restart puts every power word back.
+- **The record, made to stand without the kernel log:** the look's stage 0x0f; the step about to be taken
+  at 0x6010, with 0x20 set; 0x6005 and 0x6011-0x6016 zeroed when the test starts, and the result byte at
+  0x6005 at the end; and at 0x6011-0x6016, AFNC2_LW1 three times in two bytes each (target, actual state,
+  auto-enable, auto floor, its three flags): right before its write, after it, and after the second poll.
+  Those six bytes go out before anything is put back, in one command with the mark of the step that
+  follows (6), so the mark is what says they're this test's: `m1-crumbs` reads them only under that mark
+  or a later one, and a later mark carries 0x40 if the command wasn't acked. A test that isn't made
+  leaves a mark of its own (9). The kernel log has every word in full, with the six gate words at four
+  points.
+- **What it can show, in Linux's suspended state:** the gate closes with the subtree off (then this poll
+  isn't the stall there, and the lane's floor isn't needed for it); it reads closed only after the lane
+  has macOS's value; the lane doesn't take the value, with what it reads instead, which would be the "not
+  read back as written" of runs 12 to 17 found; or the gate stays open either way.
+- **What it can't:** "after" isn't "because of". There is one poll before the lane's write and one after,
+  and a gate that closes late by itself would look the same; the read right before the write narrows
+  that and doesn't end it. And the recipe's state is further on (the PMP and SIO's firmware stopped, the
+  cores parked, macOS's table out), and B2 polls after its own writes. A result here is a lead for the
+  next one-way run.
+- **Checked:** the test compiles the function as it stands against a model in twenty scenarios (a gate
+  that closes at step 2, only at step 4, late by itself, or never; a lane that doesn't take the value, or
+  had gated at Linux's own floor; SIO on, or a UART in use; words that don't go off, or don't come back, or
+  come back in their settings and not their actual state; each UART found its own way; an earlier test's
+  bytes still in the PMU, with and without the PMU acking this test's writes): twelve writes and no other
+  in each test that's made, none in one that isn't, and always the write-back.
+- **What the adversarial review of #80 changed** (one pass by a subagent, set on breaking it; it found no
+  way for the test to write a wrong word or to skip a write-back): the risk above, said plainly where the
+  first build called the test safe to come back from; the precondition of step 0; 0x6005 zeroed first, so
+  that a byte left there isn't read as this test's; the reads of step 3 before the write, and the "after,
+  not because" in every verdict; the lane's three reads in the PMU; the lane judged back last; the
+  never-write check at load; and the launcher printing the look's thirty lines above the photo's block
+  where they don't push the result off the screen. Pullfrog's three: a UART that didn't go off makes the
+  SUMMARY say INCONCLUSIVE first; a result byte that landed means the test reached its end even if its
+  last mark didn't; and bytes left at 0x6011-0x6016 by an earlier test can't be read as this one's reads
+  of the lane. For the last, besides the mark rule above: `m1-crumbs --clear` now zeroes the stage's
+  block last, so a clear that stops halfway leaves the stage and no launcher takes the PMU for clear, and
+  `e1-hook/probe` refuses if 0x6010-0x6016 aren't zero under a zero stage.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

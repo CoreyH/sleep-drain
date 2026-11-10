@@ -26,7 +26,7 @@ RELEASE = os.uname().release
 # run-floor --m1-mark's parameters (tests/e1a_launcher_test.py has them for the launcher itself), and probe=1.
 PARAMS = ("replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1"
           " smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 probe=1")
-SOURCES = ("e1_hook.c", "asc_probe.h", "look.h", "fabric_up.h", "wd1_mark.h", "wd2_bite.h", "recfg_bite.h", "m1_position.h")
+SOURCES = ("e1_hook.c", "asc_probe.h", "look.h", "gate_test.h", "fabric_up.h", "wd1_mark.h", "wd2_bite.h", "recfg_bite.h", "m1_position.h")
 KLOG = ("[  100.1] e1_hook: m1: probe: no replay with this load; awake: SIO_CPU 1400024f ANS2 0f0000ff ps_pmp 1f0f03ff\n"
         "[  100.2] e1_hook: probe: ANS, awake, at load, its firmware running: power word 0f0000ff; ASC+0x8000 read 00000002 at first and 00000002 after 1 reads in 0 ms: bit 1 SET\n"
         "[  130.1] e1_hook: probe: SIO, at prepare, its firmware running: power word 0400024f; ASC+0x8000 read 00000000 at first and 00000000 after 250 reads in 100 ms: bit 1 clear\n"
@@ -35,7 +35,10 @@ KLOG = ("[  100.1] e1_hook: m1: probe: no replay with this load; awake: SIO_CPU 
         "[  131.6] some other driver: unrelated\n"
         "[  100.3] e1_hook: look: awake, at load: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c 80040308; 0x28e09c000: +310 8004031d +338 8004030f +34c 8004030e\n"
         "[  131.2] e1_hook: look: after noirq: AON 0x2922c0000: +038 00000000 +03c 00000101 +040 00000003 +044 00000008 +10c 80000000 +110 00000000\n"
-        "[  131.3] e1_hook: look: after noirq: done\n")
+        "[  131.3] e1_hook: look: after noirq: done\n"
+        "[  131.31] e1_hook: look: gate: as found: UART2,3,4,6,7 00000244 00000244 00000244 00000244 00000244; AFNC2_LW1 1f0000ff\n"
+        "[  131.35] e1_hook: look: gate: SUMMARY: SIO's subtree all off; bit 30 of 0x28e5a0050 before AFNC2_LW1's write: clear; AFNC2_LW1 took macOS's value,"
+        " and bit 30 after that: SET; put back: AFNC2_LW1 as found, the UARTs as found; byte fd, written to the PMU: 0\n")
 
 failed = 0
 
@@ -58,7 +61,8 @@ def write(path, text, mode=0o644):
 
 def setup(tmp, safe=True, loaded=False, ko=True, vermagic=RELEASE, newer=None, parms=True, takes="Y", insmod_rc=0, pm_test="[none] freezer",
           mem_sleep="[s2idle]", crumbs="stage 0x6004 = 0x00: none: no M1 run since the last clear", save_rc=0, klog=KLOG, plc=1, rmmod_rc=0,
-          pmp_rc=0, look_takes="Y", look=False, parms_look=True, pmpmod=False, pc_file=1):
+          pmp_rc=0, look_takes="Y", look=False, parms_look=True, pmpmod=False, pc_file=1, gate_takes="Y", parms_gate=True,
+          crumbs10="0x6010: 00 00 00 00 00 00 00 5a  00 00 00 00 00 00 00 00"):
     """look: the launcher will be run with --look, so the count it goes by, the FIFO, is prepare_late_calls, and prepare_calls is a
     file with pc_file in it; otherwise the FIFO is prepare_calls and prepare_late_calls a file with plc. The FIFO's values are run()'s."""
     d = os.path.join(tmp, "e1-hook")
@@ -81,7 +85,8 @@ def setup(tmp, safe=True, loaded=False, ko=True, vermagic=RELEASE, newer=None, p
     write(os.path.join(tmp, "mem_sleep"), mem_sleep + "\n")
     os.mkfifo(os.path.join(tmp, "state"))
     plist = ("replay:LAB ONLY (uint)\nwd1_mark:With fabric_up=1 (bool)\n" + ("probe:With wd1_mark=1: no replay, ever (bool)\n" if parms else "")
-             + ("look:With probe=1: none of the probe's steps (bool)\n" if parms_look else ""))
+             + ("look:With probe=1: none of the probe's steps (bool)\n" if parms_look else "")
+             + ("gate:With look=1: after the look that follows noirq (bool)\n" if parms_gate else ""))
     if pmpmod:
         os.makedirs(os.path.join(tmp, "pmpmod"))
     write(os.path.join(stubs, "modinfo"),
@@ -94,6 +99,8 @@ def setup(tmp, safe=True, loaded=False, ko=True, vermagic=RELEASE, newer=None, p
     if look_takes is not None:
         # The look parameter says Y only if look=1 was among the load's.
         made += f' && case " $* " in *" look=1 "*) echo {look_takes} ;; *) echo N ;; esac > {moddir}/parameters/look'
+    if gate_takes is not None:
+        made += f' && case " $* " in *" gate=1 "*) echo {gate_takes} ;; *) echo N ;; esac > {moddir}/parameters/gate'
     write(os.path.join(stubs, "insmod"), f'#!/bin/sh\necho "insmod $*" >> {calls}\n[ {insmod_rc} = 0 ] || exit {insmod_rc}\n{made}\n', 0o755)
     # rmmod says what the module's cancel read when it was called: the replay has to be called off before the unload is tried.
     write(os.path.join(stubs, "rmmod"), f'#!/bin/sh\necho "rmmod $* cancel=$(cat {moddir}/parameters/cancel 2> /dev/null)" >> {calls}\n'
@@ -101,7 +108,7 @@ def setup(tmp, safe=True, loaded=False, ko=True, vermagic=RELEASE, newer=None, p
     write(os.path.join(stubs, "sleep"), f'#!/bin/sh\necho "sleep $*" >> {calls}\n', 0o755)
     write(os.path.join(stubs, "dmesg"), f'#!/bin/sh\necho "dmesg" >> {calls}\ncat {tmp}/klog\n', 0o755)
     write(os.path.join(tmp, "klog"), klog)
-    write(os.path.join(stubs, "m1-crumbs"), f'#!/bin/sh\necho "0x6000: 00 30 00 50"\necho "{crumbs}"\n', 0o755)
+    write(os.path.join(stubs, "m1-crumbs"), f'#!/bin/sh\necho "0x6000: 00 30 00 50"\necho "{crumbs10}"\necho "{crumbs}"\n', 0o755)
     # The saver also notes every file in the log directory as it stands at that save: sleep-drain-safe save archives each new one
     # as it finds it, and collect never replaces a file with a different copy of itself, so none may change between two saves.
     write(os.path.join(stubs, "save"), f'#!/bin/sh\necho "sleep-drain-safe $*" >> {calls}\n'
@@ -163,7 +170,7 @@ def run(tmp, d, argv=(), pc=(0, 1)):
                PROBE_PMP=os.path.join(tmp, "stubs", "pmp"), PROBE_PMPMOD=os.path.join(tmp, "pmpmod"),
                PROBE_RUNDIR=os.path.join(tmp, "rundir"))
     stop, seen = threading.Event(), []
-    t = threading.Thread(target=kernel, args=(tmp, pc, stop, seen, "prepare_late_calls" if "--look" in argv else "prepare_calls"))
+    t = threading.Thread(target=kernel, args=(tmp, pc, stop, seen, "prepare_late_calls" if set(argv) & {"--look", "--gate"} else "prepare_calls"))
     t.start()
     while not seen:
         time.sleep(0.001)
@@ -284,7 +291,13 @@ def main():
                 ("with breadcrumbs left in the PMU", dict(crumbs="stage 0x6004 = 0xd3 (pmp_out=1: bit 7, so the stage is 0x53)"),
                  "the PMU's breadcrumbs aren't clear"),
                 ("with a probe's breadcrumbs left in the PMU", dict(crumbs="stage 0x6004 = 0x0e: probe=1 (e1-hook/probe), not a run"),
-                 "the PMU's breadcrumbs aren't clear")]
+                 "the PMU's breadcrumbs aren't clear"),
+                # A clear that stopped halfway: the stage zero, an earlier gate test's reads of the lane still there (Pullfrog on #80).
+                ("with bytes left beside a zero stage", dict(crumbs10="0x6010: 00 ff 1f 0f 10 0f 10 00  00 00 00 00 00 00 00 00"),
+                 "the PMU's 0x6010-0x6016 aren't clear, though the stage is"),
+                ("with the last of those bytes left", dict(crumbs10="0x6010: 00 00 00 00 00 00 10 00  00 00 00 00 00 00 00 00"),
+                 "the PMU's 0x6010-0x6016 aren't clear, though the stage is"),
+                ("when m1-crumbs prints no 0x6010 row", dict(crumbs10="0x6018: 00"), "the PMU's 0x6010-0x6016 aren't clear, though the stage is")]
     refusals += [(f"with a module older than {n}", dict(newer=n), f"e1_hook.ko is older than {n}") for n in SOURCES]
     for what, kw, msg in refusals:
         with tempfile.TemporaryDirectory() as tmp:
@@ -292,11 +305,11 @@ def main():
             r, state = run(tmp, d)
             check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [] and not state,
                   f"refused {what}: nothing loaded, no suspend", r.stdout + r.stderr + "\n".join(calls(tmp)))
-    for argv in (["--now"], ["--look", "again"], ["x", "--look"]):
+    for argv in (["--now"], ["--look", "again"], ["x", "--look"], ["--gate", "--look"], ["--look", "--gate"]):
         with tempfile.TemporaryDirectory() as tmp:
-            d = setup(tmp)
+            d = setup(tmp, look=True)
             r, state = run(tmp, d, argv)
-            check(r.returncode == 1 and "usage: probe [--look]" in r.stderr and calls(tmp) == [] and not state,
+            check(r.returncode == 1 and "usage: probe [--look | --gate]" in r.stderr and calls(tmp) == [] and not state,
                   f"refused with {' '.join(argv)}: nothing loaded, no suspend", r.stdout + r.stderr)
 
     # --look: look=1 on top of the probe's parameters, no PMP release, the load's look printed and saved before the one suspend,
@@ -375,6 +388,46 @@ def main():
         check(r.returncode == 0 and state == "mem" and "THE LOOK AFTER NOIRQ RAN AT ANOTHER SUSPEND THAN THIS SCRIPT'S LAST" in r.stdout
               and "prepare_late_calls=2" in r.stdout and "TAKE A PHOTO" in r.stdout,
               "--look with prepare_late_calls 2 after its suspend: said", r.stdout + r.stderr)
+    # --gate: --look's load with gate=1 as well; the look after noirq above the photo block, the gate test's lines in it.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, look=True)
+        r, state = run(tmp, d, ["--gate"])
+        c = calls(tmp)
+        check(r.returncode == 0 and c[0] == "insmod " + os.path.join(d, "e1_hook.ko") + " " + PARAMS + " look=1 gate=1" and state == "mem"
+              and not any(x.startswith("sleep-drain-pmp") for x in c) and c[4].endswith("-load.txt") and c[-1] == c[4].replace("-load.txt", ".txt")
+              and r.stdout.count("asking for the suspend") == 1 and not changed(tmp),
+              "--gate: the probe's parameters with look=1 and gate=1, no PMP release, the load's look saved before the one suspend, the record"
+              " after it", r.stdout + r.stderr + "\n".join(c))
+        check(r.stdout.count("e1_hook: look: gate: SUMMARY: SIO's subtree all off; bit 30 of 0x28e5a0050 before AFNC2_LW1's write: clear; AFNC2_LW1 took") == 1
+              and r.stdout.index("kernel log, the look after noirq, which came before the gate test:") < r.stdout.index("look: after noirq: AON")
+              < r.stdout.index("look: after noirq: done") < r.stdout.index("TAKE A PHOTO") < r.stdout.index("look: gate: as found")
+              < r.stdout.index("look: gate: SUMMARY") < r.stdout.index("=====\n\n") < r.stdout.index("Saved.")
+              and r.stdout.count("look: after noirq: AON") == 1 and r.stdout.count("look: gate: as found") == 1 and "e1_hook: probe: SUMMARY" not in r.stdout
+              # What to do if the screen stays dark, said before the suspend is asked for.
+              and r.stdout.index("(saved: the look at the load is on the boot partition)") < r.stdout.index("THE GATE TEST MAY NOT COME BACK. If the screen goes dark")
+              < r.stdout.index("asking for the suspend") and "hold the power key until the Mac restarts" in r.stdout,
+              "--gate prints the look after noirq above the photo's block, and between the block's two rules the gate test's lines and no"
+              " other of the kernel's, its SUMMARY among them: the result fits the photo",
+              r.stdout + r.stderr)
+    # A module that doesn't say gate=Y would run a plain look and leave the test undone: unloaded, no suspend. And a build without it.
+    for kw, said, loaded in ((dict(gate_takes="N"), "didn't take gate=1, and was unloaded", True),
+                             (dict(gate_takes="N", rmmod_rc=1), "didn't take gate=1 and DID NOT UNLOAD", True),
+                             (dict(parms_gate=False), "an older build, without gate", False)):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, look=True, **kw)
+            r, state = run(tmp, d, ["--gate"])
+            c = calls(tmp)
+            check(r.returncode == 1 and not state and said in r.stderr and "TAKE A PHOTO" not in r.stdout
+                  and (c[1:] == ["rmmod e1_hook cancel="] if loaded else c == []),
+                  f"--gate refused ({said}): no suspend", r.stdout + r.stderr + "\n".join(c))
+    # --look doesn't ask for the gate test, and a module of --look's doesn't run it.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, look=True)
+        r, state = run(tmp, d, ["--look"])
+        check(r.returncode == 0 and "gate=1" not in calls(tmp)[0] and open(os.path.join(tmp, "module", "parameters", "gate")).read().strip() == "N"
+              and "kernel log, the gate test" not in r.stdout and "MAY NOT COME BACK" not in r.stdout,
+              "--look loads no gate=1 and prints no gate test", r.stdout + "\n".join(calls(tmp)))
+
     # Without --look nothing of the look's: no look=1, and the module's look reads N.
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp)

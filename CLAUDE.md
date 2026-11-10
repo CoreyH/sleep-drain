@@ -91,7 +91,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   restart, and `--clear` zeroes it. `probe` is the one launcher that isn't one-way: it loads the module
   with `probe=1`, which reads three coprocessor words in the recipe's state and fails the suspend, so
   the Mac is meant to come back (it didn't: with two firmwares stopped the kernel doesn't resume);
-  `probe --look` adds `look=1`, which stops nothing and writes no register, only reads. The rest are one-purpose tools for single reads and
+  `probe --look` adds `look=1`, which stops nothing and writes no register, only reads; `probe --gate`
+  adds one test to the look that changes six power words and writes them back (it may not come back
+  either: the PMU carries its result). The rest are one-purpose tools for single reads and
   writes (`recfg-peek`, `recfg-bite`, `wd2-bite`). **`e1-hook/README.md` says what every parameter, option
   and tool does: read it before working here.** What always holds: a one-way run loads only in a
   safe boot and with `oneway=1`; the module won't build or load if a write would touch the

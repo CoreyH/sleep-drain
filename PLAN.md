@@ -53,9 +53,12 @@ the PR with that session's work.
     leaves them. Nothing out of place there.
   - **Next: the gate test,** a second look with six power words changed and put back: does the gate
     B2 waits on after SIO's subtree close in Linux's state, and does the fabric lane above SIO take
-    macOS's value (the group that hasn't read back as written since run 12)? Then A2's three moves
-    made by the AP before the commit. Neither is built: "The order after the look", in Track A
-    below, is the place to start.
+    macOS's value (the group that hasn't read back as written since run 12)? Built, not run:
+    `pkexec e1-hook/probe --gate` in a safe boot (the charger may stay in). If the gate stays open
+    it should come back as the look did; if it closes, SIO's island loses power under its running
+    firmware and the Mac may stay dark, and then the PMU's record is the result (`m1-crumbs`).
+    Then A2's three moves made by the AP before the commit, not built. "The order
+    after the look", in Track A below, is the place to start.
 
 ## Picking this up
 
@@ -431,8 +434,11 @@ steps, and restarting the DCP and the PMP afterwards.
       itself. So the state the entry starts from isn't visibly wrong, and what's left before op 224
       is: the gate (0x2922c0044 bit 2), never read with every core down; A2's three moves, each an
       untimed wait; and B2's polls after its own writes.
-      Next, **not built: the gate test** (`probe=1 look=1 gate=1`; not a one-way run). Two things on
-      file point at one of B2's polls. Since run 12 every run has recorded that `ps_words=1`'s last
+      Next, **built and not run: the gate test** (`pkexec e1-hook/probe --gate` in a safe boot;
+      `probe=1 look=1 gate=1`; `e1-hook/gate_test.h`; RESEARCH.md, "The gate test as built"; not a
+      one-way run, though it may not come back: if the gate closes, SIO's island loses power under
+      its running firmware, and the PMU's record is then the result). Two things on file point at
+      one of B2's polls. Since run 12 every run has recorded that `ps_words=1`'s last
       group, four power words given macOS's auto floor, "didn't all read back as written" (0x6013 =
       0xdf); which word, and what it read, one bit doesn't say, and nobody followed it up. One of the
       four is AFNC2_LW1 (0x28e580160), the fabric lane that is SIO's parent: macOS has it at

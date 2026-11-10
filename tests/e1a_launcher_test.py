@@ -226,7 +226,7 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     # The module's sources beside it, as in the checkout: older than the build ("fresh"), or the named one newer.
     if srcs:
         os.utime(os.path.join(d, "e1_hook.ko"), (2000, 2000))
-        for n in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h", "fabric_up.h", "wd1_mark.h", "asc_probe.h", "look.h"):
+        for n in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h", "fabric_up.h", "wd1_mark.h", "asc_probe.h", "look.h", "gate_test.h"):
             write(os.path.join(d, n), "")
             os.utime(os.path.join(d, n), (3000, 3000) if srcs == n else (1000, 1000))
     if safe:
@@ -666,7 +666,7 @@ def test_floor_refusals(launcher):
                   ("--m1-fabric-up and --m1-mark together", {}, ["--m1-fabric-up", "--m1-mark"], usage),
                   ("--mark alone", {}, ["--mark"], usage)]
     # A build older than one of its sources: another version's, perhaps, whose breadcrumbs this version's m1-crumbs would misread.
-    cases += [(f"a module older than {src}", dict(srcs=src), None, f"e1_hook.ko is older than {src}: make -C") for src in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h", "fabric_up.h", "wd1_mark.h", "asc_probe.h", "look.h")]
+    cases += [(f"a module older than {src}", dict(srcs=src), None, f"e1_hook.ko is older than {src}: make -C") for src in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h", "fabric_up.h", "wd1_mark.h", "asc_probe.h", "look.h", "gate_test.h")]
     for what, kw, argv, msg in cases:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)
