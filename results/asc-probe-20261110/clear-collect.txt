@@ -1,0 +1,21 @@
+0x6000: 00 30 00 50 0e ff fc fd  00 00 00 00 00 00 00 00
+0x6010: 15 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00
+stage 0x6004 = 0x0e: probe=1 (e1-hook/probe), not a run: nothing replayed and nothing was committed. The step it reached and its three bytes follow; the kernel log it saved has every word in full, if the Mac came back to save it
+0x6010 = 0x15: every step taken: the three bytes written
+0x6005 = 0xff: SIO, bit 1 of its ASC + 0x8000 (0x39bc08000), which B2's op 51 waits for:
+  at prepare, its firmware running: SET
+  after its idle pair, which returned 0: SET
+  after RUN was cleared: SET
+  after noirq, its parents and SIO_CPU raised again, the state B2's op 51 finds: SET
+0x6006 = 0xfc: the PMP, bit 1 of its ASC + 0x8000 (0x28ec08000), which B2's op 159 waits for:
+  at prepare, its firmware running: clear, or not read (the byte doesn't say which)
+  after noirq, before its idle pair: clear
+  after its idle pair, which returned 0: SET
+  after RUN was cleared, the state B2's op 159 finds: SET
+0x6007 = 0xfd: ANS, bit 1 of its ASC + 0x8000 (0x38f408000), which B2's op 151 waits for:
+  awake, at the module's load, its firmware running: SET
+  at prepare, its firmware shut down by the NVMe driver's suspend, ANS2 still on: SET
+  after noirq, ANS2 off, raised as B2's op 149 raises it, the state B2's op 151 finds: SET
+  so: bit 1 read SET for all three in the state the recipe leaves: that makes B2's three coprocessor waits less likely to be where the pair stops, and doesn't exclude them (B2 polls later, after its own raises)
+cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros
+--- collect
