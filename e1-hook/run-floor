@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack]
 #
 # --quick, ahead of the recipe, makes the reading 1 minute instead of 10, with no need to wait
 # 20 minutes off the charger: for a run whose question is how it ends. If one ever goes dark for
@@ -96,6 +96,19 @@
 # before, comes about 120 s after the screen goes dark, not 30: for this run, "dark for good" below starts
 # at 3 minutes, not 2. A reset at about 30 s, or no reset, would each be news (PLAN.md has the readings).
 # Its label is floor-m1-wd2-bite.
+# --m1-cluster-ack (PLAN.md, "The order after the sweep of 2026-11-10"; RESEARCH.md, "Related work, swept
+# 2026-11-10") is --m1-wd2-bite's, all of it, wd2-bite's store and the 120 s included, with three of the
+# table's values changed: cluster_ack=1 writes the soc-cluster words of ANE0, AFR and AVEMSR (0x28e09800c,
+# 0x28e098014, 0x28e098020) as 0x20, not macOS's 0: target 0, and a 1 to the cluster's "up done" flag, which
+# is how such a flag is cleared (Corey's OK of 2026-11-10 for those three words and that value). Under macOS
+# those clusters are off and acked long before the sleep; here they're up with the flag set, and the plain 0
+# is thought to leave it (inferred: no run has read the words after it). CPU0 then waits up to 10 ms for each
+# of the four cluster words, DISPLAY's too, to read 0, and records whose flag stayed and whether anything
+# else was left in a word (m1-crumbs: 0x6006's bits 2-5 and 0x6014's bits 4 and 5). The run goes on either
+# way, and it ends as --m1-wd2-bite's does: a reset about 120 s after the screen goes dark, or "dark for
+# good" from 3 minutes. What a reset says about the flags depends on that record: only if every word read 0
+# does it say the flags weren't what stalls the entry, or not alone (PLAN.md). Its label is
+# floor-m1-cluster-ack.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
@@ -110,7 +123,7 @@
 #     After --m1, also, before anything else touches the PMU:
 #       /home/corey/src/sleep-drain/e1-hook/m1-crumbs, for a photo or a copy,
 #       then pkexec /home/corey/src/sleep-drain/e1-hook/m1-crumbs --clear
-#       (after --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words, --m1-recfg-bite and --m1-wd2-bite, --clear also disarms the alarm the run armed, 0x1401
+#       (after --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words, --m1-recfg-bite, --m1-wd2-bite and --m1-cluster-ack, --clear also disarms the alarm the run armed, 0x1401
 #       back to 0x01, so that it can't power the Mac on an hour later; every
 #       m1 run refuses to load while it reads armed).
 #     After --m1-position, also, in that same boot, once m1-crumbs and collect
@@ -125,7 +138,7 @@
 #     the keyboard (dark since the reading began) stay dark past 2 minutes.
 #     Nothing wakes the Mac from it. If that's new (it's a candidate for a
 #     completed entry), leave it at least 30 minutes, then the steps below.
-#     After --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words, --m1-recfg-bite or --m1-wd2-bite, do them before about 55 minutes: the alarm fires 60
+#     After --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words, --m1-recfg-bite, --m1-wd2-bite or --m1-cluster-ack, do them before about 55 minutes: the alarm fires 60
 #     minutes after the commit, and if it wakes the SoC, the wake lands in
 #     m1n1 with no way back and the Mac hangs, at an unknown draw, until the
 #     power key. If it's dark past that, expect that and end it the same way.
@@ -171,8 +184,9 @@
 # a way out calls the replay off instead: an unload then would let the
 # suspend already asked for sleep as a plain s2idle, dark like the floor.
 # With --m1-recfg-bite, either way leaves A2's bite word at 45 s, and says so.
-# With --m1-wd2-bite, either way leaves WD2's bite at 120 s if wd2-bite's store took, and says so: WD2 isn't
-# armed awake, and a restart undoes it.
+# With --m1-wd2-bite or --m1-cluster-ack, either way leaves WD2's bite at 120 s if wd2-bite's store took, and
+# says so: WD2 isn't armed awake, and a restart undoes it. --m1-cluster-ack's three words are only written in
+# the replay itself, after slpa: a way out before that leaves them as they were.
 set -euo pipefail
 
 SAFE_FLAG=${FLOOR_SAFE_FLAG:-/run/sleep-drain-safe/active}
@@ -212,6 +226,7 @@ siostop=0
 pwords=0
 recfg=0
 wd2=0
+ack=0
 quick=()
 label=floor
 # --quick, ahead of the rest: a 1-minute reading, for a run whose question is how it ends, not what it draws.
@@ -364,8 +379,24 @@ elif (($# == 1)) && [[ $1 == --m1-wd2-bite ]]; then
   pwords=1
   wd2=1
   label=floor-m1-wd2-bite
+elif (($# == 1)) && [[ $1 == --m1-cluster-ack ]]; then
+  quiet=1
+  m1=1
+  late=1
+  alarm=1
+  hold=1
+  nowatch=1
+  pmp=1
+  sio=1
+  disp=1
+  macend=1
+  siostop=1
+  pwords=1
+  wd2=1
+  ack=1
+  label=floor-m1-cluster-ack
 elif (($# != 0)); then
-  die "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite]"
+  die "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -405,6 +436,7 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!recfg)) || [[ -x $BITE ]] || die "no $BITE"
 ((!wd2)) || [[ $parms == *$'\n'wd2_bite:* ]] || die "$ko is an older build, without wd2_bite: make -C $here"
 ((!wd2)) || [[ -x $WD2BITE ]] || die "no $WD2BITE"
+((!ack)) || [[ $parms == *$'\n'cluster_ack:* ]] || die "$ko is an older build, without cluster_ack: make -C $here"
 # sleep-drain-pmp's module is built by install.sh for one kernel. After a kernel update it's the old kernel's until
 # install.sh runs again, which a safe boot can't do: better to say so now than after the load.
 ((!sio)) || [[ $(modinfo -F vermagic "$PMP_KO" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] ||
@@ -444,6 +476,9 @@ fi
 armed=0
 patched=0
 wd2took=0
+# The option that ran wd2-bite, for the message about what its store left.
+wd2opt=--m1-wd2-bite
+((!ack)) || wd2opt=--m1-cluster-ack
 reader=
 disarm() {
   local again
@@ -469,7 +504,7 @@ disarm() {
   # --m1-wd2-bite: nothing writes the 90 s back (the OK is for one value). Say what's left.
   if ((wd2took)); then
     wd2took=0
-    again="run-floor --m1-wd2-bite can simply be run again"
+    again="run-floor $wd2opt can simply be run again"
     [[ ! -d $MODDIR ]] || again="e1_hook is still loaded, so restart before another run"
     echo "run-floor: WD2's bite still reads 120 s from wd2-bite's write (WD2 isn't armed awake, so that changes nothing by itself, and a restart undoes it; $again)" >&2 2> /dev/null || true
   fi
@@ -583,6 +618,7 @@ params=(replay=15 oneway=1)
 ((!pwords)) || params+=(ps_words=1)
 ((!recfg)) || params+=(recfg_bite=1)
 ((!wd2)) || params+=(wd2_bite=1)
+((!ack)) || params+=(cluster_ack=1)
 armed=1
 if ! insmod "$ko" "${params[@]}"; then
   # The module says why in the kernel log, which a safe boot loses at the restart: show it now, and keep it.
@@ -611,7 +647,8 @@ fi
   { ((!siostop)) || [[ $(cat "$MODDIR/parameters/sio_stop") == Y ]]; } &&
   { ((!pwords)) || [[ $(cat "$MODDIR/parameters/ps_words") == Y ]]; } &&
   { ((!recfg)) || [[ $(cat "$MODDIR/parameters/recfg_bite") == Y ]]; } &&
-  { ((!wd2)) || [[ $(cat "$MODDIR/parameters/wd2_bite") == Y ]]; } ||
+  { ((!wd2)) || [[ $(cat "$MODDIR/parameters/wd2_bite") == Y ]]; } &&
+  { ((!ack)) || [[ $(cat "$MODDIR/parameters/cluster_ack") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
 # --m1-sio-pmp: the PMP's display report requests withdrawn at this suspend's noirq (Corey's pick of 2026-11-09), as
 # T8140's driver does before it idles the PMP. A reboot undoes it; the module stays loaded on the ways out here.

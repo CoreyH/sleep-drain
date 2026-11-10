@@ -3371,6 +3371,10 @@ third perf-state word (its awake 0x222 has the shape of fabric's 0x333; T8140 br
 down before DCS). The fabric is at p-state 1 at the commit here, deeper than RJ's sequence for T6021
 leaves it, and A2 then asks for 2.
 
+Corey's OK came on 2026-11-10, for 0x20 in place of the table's 0 in those three words, and it's built
+(`run-floor --m1-cluster-ack`: run 15's recipe with `cluster_ack=1`; not run yet). PLAN.md has what the
+build does and how its endings read.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

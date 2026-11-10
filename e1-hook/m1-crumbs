@@ -2,9 +2,9 @@
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
 --m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words,
---m1-recfg-bite or --m1-wd2-bite; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1,
-one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1, wd2_bite=1) leaves in the PMU, read and decoded, and cleared
-again.
+--m1-recfg-bite, --m1-wd2-bite or --m1-cluster-ack; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1, hold=1, pmp_out=1, position=1,
+sio_on=1, disp_off=1, one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1, wd2_bite=1, cluster_ack=1) leaves in the
+PMU, read and decoded, and cleared again.
 
   e1-hook/m1-crumbs               read them (no root needed)
   pkexec e1-hook/m1-crumbs --clear   zero them, after reading (root)
@@ -131,6 +131,19 @@ WAITS = ("DCS's p-state after entry 49 (to 7), after 50 (to 5), or both (its bus
          " and actual = target, e1_hook's own)", "AFR's power state (51)", "ANE0's power-down (55)",
          "AFR's power-down (57)", "DISPLAY's power-down (58)", "AVEMSR's power-down (60)",
          "SIO_CPU's power state (61)", "a ClkGen mux (62-66) or PLL-off (69, 72)")
+# cluster_ack=1 (run-floor --m1-cluster-ack): step 5 wrote ANE0's, AFR's and AVEMSR's soc-cluster words as 0x20, and the
+# four cluster waits asked for the whole word to read 0. For one that wasn't met, its qto bit (2-5) says the word's up-done
+# flag, bit 5, was still set at the wait's last read, and 0x6014's bit 5 says something else was left in one of the four
+# (busy, the target, another bit). 0x6014's bit 4 marks the run (e1_hook's M1_F_ACK and M1_F_ACK_REST): bits that are
+# PCPM0's and PCPM1's elsewhere, and that a sio_stop=1 run, hold_nowatch=1 always, never sets for those.
+F_ACK, F_ACK_REST = 0x10, 0x20
+CLUSTER_WAITS = 0x3c  # qto's bits 2-5
+ACK_WORDS = {2: "ANE0's (55)", 3: "AFR's (57)", 4: "DISPLAY's (58: the table's own 0x20, the control)", 5: "AVEMSR's (60)"}
+ACK_WROTE = 0x2c  # the three words cluster_ack=1 writes 0x20 itself: all but DISPLAY's
+# The stages a cluster_ack=1 run can leave, all with pmp_out=1's bit 7: those before 0x6014 is sent (the table's, and
+# hold=1's stop requests), and those after (sio_stop=1's last before the commit, and wd2_bite=1's two).
+ACK_EARLY = (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39)
+ACK_MARKED = (0x4e, 0x56, 0x57)
 # 0x6013's buckets: when CPU7 first read a power-down's bit 4 clear after the
 # hand-over. Its first read is at the hand-over itself, so bucket 0 can't say
 # the bit was ever set, and bit 5 isn't recorded: clear isn't "down".
@@ -487,11 +500,52 @@ def counter():
         return None
 
 
-def qto(q):
-    """pmgr_late's waits that timed out."""
-    timed = [w for i, w in enumerate(WAITS) if q >> i & 1]
+def qto(q, ack=False):
+    """pmgr_late's waits that timed out. ack: a cluster_ack=1 run, whose bits 2-5 are the cluster words' flags that stayed."""
+    timed = [w for i, w in enumerate(WAITS) if q >> i & 1 and not (ack and CLUSTER_WAITS >> i & 1)]
+    if ack:
+        stuck = [n for i, n in ACK_WORDS.items() if q >> i & 1]
+        return (f"0x{q:02x}: " + ("macOS's other waits were all met within 10 ms" if not timed else
+                                 "macOS's waits that timed out after 10 ms: " + "; ".join(timed))
+                + "; bits 2-5 (cluster_ack=1), the soc-cluster words whose up-done flag was still set at their wait's last read: "
+                + (", ".join(stuck) or "none"))
     return f"0x{q:02x}: " + ("every one of macOS's waits was met within 10 ms" if not timed else
                             "macOS's waits that timed out after 10 ms: " + "; ".join(timed))
+
+
+def ack_lines(f, q, held):
+    """cluster_ack=1: 0x6014's bits 4 and 5 with qto's bits 2-5 (e1_hook.c's m1 comment). f has bits 7 and 4 set; held is
+    0x6007, sent in one command with qto: non-zero, it shows that command's last bytes landed. It says what the words
+    read, and leaves the ending to the stage and wd2_bite=1's sample."""
+    out = [f"0x6014 bit 4 (cluster_ack=1): step 5 wrote ANE0's, AFR's and AVEMSR's soc-cluster words (0x28e09800c, 0x28e098014,"
+           " 0x28e098020) as 0x20, target 0 with a 1 to bit 5, their up-done flag, not the table's 0; the four cluster waits"
+           " asked for the whole word to read 0"]
+    rest = bool(f & F_ACK_REST)
+    c = q & CLUSTER_WAITS
+    stuck = [n for i, n in ACK_WORDS.items() if c >> i & 1]
+    more = ("; and at least one of the four words had something else left too (0x6014 bit 5: bit 4, busy, the target or another"
+            " bit), which word and which bit isn't recorded" if rest else "")
+    if not held and not q:
+        out.append("  so: 0x6006 and 0x6007 both read 0. That's also what bytes that didn't land read, and 0x6007 would otherwise say"
+                   " no core held: whose flag stayed isn't known from this record. 0x6014, another command's, says "
+                   + ("something other than a flag was left in at least one of the four words" if rest else
+                      "nothing other than a flag was left in any of the four words"))
+    elif c & ACK_WROTE:
+        out.append(f"  so: the up-done flag STAYED SET, 10 ms after the write, in {', '.join(stuck)}: the 0x20 didn't clear it there"
+                   f"{more}. With a flag left in a word this run wrote, the ending says nothing about cleared flags")
+    elif c:
+        out.append("  so: ANE0's, AFR's and AVEMSR's flags read clear after their 0x20, and the flag STAYED SET in DISPLAY's, 10 ms"
+                   f" after the table's own 0x20, which the earlier runs wrote there too{more}. The three words this run"
+                   " changed took the ack; DISPLAY's flag is new: no earlier run looked at it")
+    elif rest:
+        out.append("  so: no flag stayed: bit 5 read clear in all four words. But at least one of them didn't read 0 within 10 ms of"
+                   " its write (0x6014 bit 5): bit 4, busy, the target or another bit was left, and which word and which bit"
+                   " isn't recorded. The acks took; what was left is new")
+    else:
+        out.append("  so: each of the four words read 0 within 10 ms of its write, before the commit: target 0, not busy, and the"
+                   " flag clear")
+    out.append("  (how the run ended is the stage's and wd2_bite=1's sample's to say; PLAN.md has how an ending reads with this)")
+    return out
 
 
 def run_second(low, compare, now, res):
@@ -583,6 +637,12 @@ def decode(b, rtc, cnt=None, alarm=None):
     # An observe=1 run, below CPU7's own stages. Not recfg_bite=1's or wd2_bite=1's stage: its 0x6005 is the sample.
     mark = s not in POSITION and s not in SAMPLE_STAGES and 0x10 <= base <= 0x60 and bool(b[5] & 1)
     text = HOLD_TEXT.get(s) or LATE_TEXT.get(s) or stage(base, mark)
+    # cluster_ack=1's mark is in 0x6014, sent just before stage 0x4e. None: this record can't say whether it was such a
+    # run (a stage one passes before that, or the byte lost). False: a stage, or a run without pmp_out=1, that isn't one's.
+    if pmp and s in ACK_MARKED:
+        ack = bool(b[0x14] & F_ACK) if b[0x14] & 0x80 else None
+    else:
+        ack = None if pmp and s in ACK_EARLY else False
     out = [
         f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
         f"0x6010: {b[0x10:0x18].hex(' ')}  {b[0x18:0x20].hex(' ')}",
@@ -628,7 +688,11 @@ def decode(b, rtc, cnt=None, alarm=None):
         else:
             out.append(f"parked (0x6005 = 0x{b[5]:02x}): {cpus(b[5] & 0xfe)}")
         if late and base >= 0x20:
-            out.append(f"0x6006 = {qto(b[6])}")
+            out.append(f"0x6006 = {qto(b[6], bool(ack))}")
+            if ack is None:
+                out.append("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before"
+                           " stage 0x4e" + (", and that byte didn't survive" if s in ACK_MARKED else "") + ". In one, bits 2-5 are"
+                           " the cluster words whose flag stayed, not the waits on bit 4 that timed out)")
         if base >= 0x30:
             if not late:
                 out.append(f"left their spin to stop (0x6006 = 0x{b[6]:02x}): {cpus(b[6])}")
@@ -684,6 +748,11 @@ def decode(b, rtc, cnt=None, alarm=None):
                        f" PCPM0 {pcpm0}, PCPM1 {pcpm1};"
                        f" WD1 {'was running (stopped)' if f & 0x40 else 'was off'};"
                        f" K3's kernel-path write after slpa {'FAILED' if f & 0x08 else 'worked'}")
+            if ack:
+                out += ack_lines(f, b[6], b[7])
+            elif s in SIO_STOP_STAGES and f & (F_ACK | F_ACK_REST):
+                out.append("  0x6014's bits 4 and 5 are cluster_ack=1's alone in a sio_stop=1 run: bit 5 only with bit 4, and only at"
+                           " that run's stages (0x4e, 0x56, 0x57, with pmp_out=1's bit 7). Here they aren't that: don't read them")
         else:
             cmd = ("its own one-byte command" if s in POSITION else
                    "the 3-byte command it went in (0x6012-0x6014)" if s in (0x5d, 0x5e) else
