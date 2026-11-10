@@ -1,0 +1,8 @@
+reading 0x2922b002c
+0x2922b002c = 0x00000000  WD2's control
+reading 0x2922b0020
+0x2922b0020 = 0x358701fd  WD2's count
+reading 0x2922b0024
+0x2922b0024 = 0x80befc00  WD2's bite
+WD2: as it is awake: not armed, its bite 90 s
+next: wd2_poke patch, one 32-bit store from user space, 0x2922b0024 := 0xaba95000 (120 s), if the check above still holds

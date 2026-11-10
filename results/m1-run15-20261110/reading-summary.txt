@@ -1,0 +1,1 @@
+time=2026-11-10T10:00:13+01:00 ts=1794301213 label=floor-m1-wd2-bite boot=safe then=suspend boot_id=3eed962d-80e0-416e-9a37-6b2bd42a5902 minutes=1 samples=7 window=1794301153-1794301213 charge_now_uah=3831000 voltage_uv=11889000 current_ua=-541000 charge_counter=-368618 capacity=76 uptime_s=619.93 ac=0
