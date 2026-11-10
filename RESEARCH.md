@@ -3151,9 +3151,17 @@ and A2 writes it once, in its opening. A core that changes it after that opening
 resets the SoC, and nothing else: every later A sequence writes its own 30 s and zeroes the count, and
 every A sequence clears RESET_EN at its close. So with the bite moved to 120 s by CPU0 right after the
 commit:
-- a reset about 120 s after the commit says A2 armed last and never closed: the entry is stuck, not slow;
-- no reset says A2 closed: an entry that completed, which no run has shown (or that the write itself
-  kept WD2 from biting: the read-backs say the register took the value, not that it still counts);
+- a reset about 120 s after the commit fits A2 arming last and never closing, an entry that's stuck and
+  not slow. It doesn't prove it: A2 closing and a later A sequence starting at about 90 s would reset
+  at the same time, the collision the 45 s proposal had at 15 s. Nothing gives a reason for a sequence
+  to start just then, so it's the far less likely reading (judgment), and a second run with another bite
+  settles it: the reset follows the bite, or it doesn't;
+- no reset is a candidate for A2 closing, an entry that completed, which no run has shown. It's no more
+  than a candidate, because the reset that's missing is the one this write changes: the write may itself
+  have kept WD2 from biting, and a read-back says the register took the value, not that it still counts
+  or bites. What would stand beside it: CPU0 reading, after its write, that RESET_EN is still set and
+  the count still moves; the battery's drain over the dark stretch; and a run that does reset at its
+  moved bite, which shows a moved WD2 still bites;
 - a reset at about 30 s says a later A sequence re-armed WD2 within a second or two of the commit, the
   completed entry and stalled wake the SRAM section left open, or that WD2's bite isn't compared live.
   WD1's is: `apple_wdt` sets its timeout by writing the bite with the watchdog running, and restarts the
@@ -3161,7 +3169,8 @@ commit:
   same is inferred;
 - a reset at another time T says a later sequence started T - 30 s after the commit.
 
-That's step 1's reading with the engine's own program left alone, and it's one new register write. WD2
+That's step 1's reading with the engine's own program left alone, with step 1's limits: one run's reset
+time narrows the cases and a second bite value decides between them. It's one new register write. WD2
 has been on e1_hook's never-written list so far, so it needs Corey's OK. PLAN.md has the order.
 
 ### Before the feasibility run: what the desk says (2026-11-09)

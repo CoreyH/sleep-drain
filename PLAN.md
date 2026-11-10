@@ -426,13 +426,21 @@ steps, and restarting the DCP and the PMP afterwards.
         and the same SRAM word stored from the kernel becomes the next test (its own OK).
       - **The run.** Run 12's recipe, with CPU0, once it has let the others go after the commit and has
         seen RESET_EN (so A2's opening has written its 30 s), writing the bite once, reading it back,
-        recording that, and going down. The sample is `recfg_bite=1`'s, which never ran on the Mac.
-      WD2 has been on e1_hook's never-written list until now. It stays armed here: only its timeout
-      changes, so a stuck entry still ends in a reset, at 120 s. The dark-for-good rule moves from 2
-      minutes to 3.
-      How the ending would read (RESEARCH.md, "M1 run 14", has why):
-      - a reset about 120 s after the commit: A2 armed last and never closed. Stuck, not slow;
-      - dark past 3 minutes: A2 closed, a completed entry (the alarm is an hour out: the power key);
+        reading that RESET_EN is still set and the count still moves, recording those, and going down.
+        The sample is `recfg_bite=1`'s, which never ran on the Mac.
+      WD2 has been on e1_hook's never-written list until now. The write leaves it armed and changes only
+      its timeout, so a stuck entry should still end in a reset, at 120 s; that a moved WD2 still bites
+      is what a reset at the moved time would show, and isn't known before it. The dark-for-good rule
+      moves from 2 minutes to 3.
+      How the ending would read (RESEARCH.md, "M1 run 14", has why). One run narrows the cases, and none
+      of these is a verdict by itself:
+      - a reset about 120 s after the commit: fits A2 arming last and never closing, stuck and not slow.
+        A2 closing and a later A sequence starting at about 90 s would look the same (far less likely,
+        judgment), so a second run with another bite decides: the reset follows the bite or it doesn't;
+      - dark past 3 minutes: a candidate for a completed entry, and inconclusive alone, since the write
+        may itself have kept WD2 from biting. Read with CPU0's record (RESET_EN still set, the count
+        still moving after the write) and the battery's drain over the dark stretch, and to be repeated
+        before it's called one (the alarm is an hour out: the power key);
       - a reset at about 30 s with the bite read back as 120 s: a later A sequence re-armed WD2 within
         a second or two, a completed entry and a stalled wake; or WD2's bite isn't compared live (WD1's
         is, by `apple_wdt`'s own use of it);
