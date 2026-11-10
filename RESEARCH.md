@@ -3578,7 +3578,7 @@ waits for actual f after B2's own raises (SIO_CPU, ANS2, ps_pmp), the bit-11 pol
 gate-status polls.
 
 **The probe as built** (`e1_hook probe=1`, launched by `pkexec e1-hook/probe` in a safe boot;
-`e1-hook/asc_probe.h` has the ops, the steps and the bytes). Not run yet. Pullfrog and one adversarial
+`e1-hook/asc_probe.h` has the ops, the steps and the bytes). Run once: "The probe's run", below. Pullfrog and one adversarial
 review went over it on #76; what they changed is marked.
 - It loads with `--m1-mark`'s parameters, so that everything the recipe maps and checks at load is there,
   and `probe=1`, with which the replay can't run: `e1_replay()` returns at once, `prepare` takes none of
@@ -3639,6 +3639,66 @@ review went over it on #76; what they changed is marked.
   the launcher asks again, three times at most, and never once `prepare` has run, in its own suspend or
   in one something else asked for. It writes `/sys/power/state` itself, so systemd's sleep hook doesn't
   run and the radios stay as they are: hands off the keyboard and trackpad until its photo block.
+
+### The probe's run: bit 1 reads set for all three, the PMP's only once it's idled; the Mac didn't come back (2026-11-10)
+
+`pkexec e1-hook/probe` in a safe boot, PR #76's build (7027cfc), about 18:30. The screen went black and
+stayed black; after 2 to 3 minutes Corey held the power key. Nothing was saved (the boot partition's
+`saved` was empty), so the kernel log with the words in full is lost. The PMU's record is whole: stage
+0x0e, step 0x15, the last of the 21, and all three bytes landed (`results/asc-probe-20261110/`).
+
+**What the bytes say** (ff fc fd):
+
+| | SIO, 0x39bc08000 | ANS, 0x38f408000 | PMP, 0x28ec08000 |
+|---|---|---|---|
+| awake, at the load, firmware running | not read (SIO_CPU gates itself) | set | not in the bytes |
+| at prepare | set, firmware running | set, firmware shut down, ANS2 on | clear or not read, firmware running |
+| after its idle pair | set | | set (after noirq) |
+| after RUN was cleared | set | | set |
+| after noirq, before the idle pair | | | **clear**, through the whole poll |
+| **the state B2 finds** | **set** (parents and SIO_CPU raised again, actual f) | **set** (ANS2 raised, actual f within 10 ms) | **set** |
+
+Every step went as meant: both idle pairs returned 0, both RUN bits read 1 and then 0, SIO_CPU and
+`ps_pmp` read actual f, ANS2 was off after noirq, reached actual f when raised as B2's op 149 raises it,
+and read its found target and actual state again within 10 ms of the write-back.
+
+**What it shows.**
+- **In the state the recipe leaves, all three of B2's coprocessor waits would pass.** That makes ops 51,
+  151 and 159 less likely to be where the pair stops. It doesn't exclude them: B2 polls later, after its
+  own raises and everything before them.
+- **Bit 1 follows the PMP's idle pair.** With the PMP's firmware running it read clear to the end of a
+  poll (up to 255 reads, 400 µs apart, about 100 ms at most; the count was in the log that's lost, and
+  the byte keeps only the outcome); after the idle pair it read set, and stayed set with RUN cleared.
+  The one coprocessor here whose firmware was seen both ways changed with it, so the bit looks like "this
+  coprocessor's CPU is idle", and B2's three waits like "idle before its power goes" (inferred). SIO's and
+  ANS's read set while their firmware was running, which fits firmware that idles between requests and
+  doesn't prove it.
+- **The PMP's idle pair matters to the engine.** Had the PMP been left running, as in runs 1 to 6, B2's
+  op 159 would most likely have stopped there for its 255 tries. Runs 7 to 17 idle it first, which makes
+  that wait less likely to be what stops them and doesn't exclude it: the probe sampled before any
+  commit, without the SMC's and the DCPs' steps, and B2 reads the word later, after its own writes
+  (Pullfrog on #77).
+- **ANS2 comes up by itself after noirq.** Raised with B2's value under whatever Linux's suspend leaves
+  above it, it reached actual f. B2's wait at op 150 would pass.
+
+**The Mac didn't come back, and that isn't explained.** The probe finished (step 0x15 and the bytes are
+its last acts before it fails the suspend), so the hang was in the kernel's resume or after it, with
+SIO's firmware and the PMP's stopped and `pmp_sleep_release` asserting two report requests to the
+stopped PMP. Which of those it was, nothing here says: the screen stayed dark and the save never ran.
+What it costs: this probe's words in full, and the line it logged after noirq with the gate words, the
+fabric's, DCS's and 0x28e20c400. What it means for the next one: **a probe that stops a coprocessor's
+firmware doesn't come back on this kernel.** One that only reads would be an ordinary failed suspend.
+
+**Where that leaves the stall** (run 17: B2 doesn't reach op 224 with every core down). In B2's order,
+what's left that can wait for ever, by the form of its read: the gate (0x2922c0044 bit 2 set, then bit 3
+clear); 0x2922c0040 bit 1 after B2's own write; the first handshake, inside which A2 settles DCS, the
+fabric and 0x28e20c400 (0x222 awake, to 0); eleven clock-generator status words at 0x28e000000 to
+0x28e01c000, each polled for bit 31 clear after B2 writes the word beside it; and two more AON words,
+0x2922c003c bit 8 and 0x2922c0038 bit 1, after B2's writes. Beside those, the polls with 255 tries whose
+end isn't known: bit 11 clear on some fifty power words after B2's writes of 0, and bit 30 set on six
+gate-status words (0x28e5a0064, 0x28e5a0050, 0x28e5a030c, 0x28e09c338, 0x28e09c34c, 0x28e09c310). None
+of the clock-generator words, the six gate words, or the AON words other than 0x2922c0040 and
+0x2922c0044 has ever been read on this Mac.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

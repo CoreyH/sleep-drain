@@ -1,0 +1,6 @@
+# Boots around the probe's run (e1-hook/probe, PR #76, 7027cfc)
+The regular boot before it ended 18:28:16 (journal), with the safe boot's initramfs built at 18:28. The safe boot (kernel 7.2.11-15) followed; nothing of it was saved, so its times aren't on file.
+Corey ran pkexec e1-hook/probe there. The screen went black and stayed black for 2 to 3 minutes; Corey then held the power key (their report). No photo: the screen never came back.
+/boot/sleep-drain-safe/saved was empty in the next boot: the launcher never got as far as its save, or the save didn't finish. The module's kernel log is lost with the safe boot's RAM.
+The regular boot after it began 18:34:42 (uptime -s). m1-crumbs read in that boot, before anything else: crumbs.txt. Stage 0x0e, step 0x15 (the last), bytes ff fc fd.
+One pkexec then cleared the breadcrumbs and ran collect, which had nothing to collect: clear-collect.txt.

@@ -43,10 +43,14 @@ the PR with that session's work.
   - With WD1 set as a marker and the fabric's p-state back where macOS has it, the restart came at
     90 s (run 17): B2, the second sequence of the entry pair, doesn't reach its op 224 with every core
     down. The stall is at its gate, in the first handshake or in its power-down.
-  - **Next: a probe, not a one-way run,** of the three coprocessor status words B2 polls in that
-    power-down, which nothing has read. Built, not run: `pkexec e1-hook/probe` in a safe boot (the
-    charger may stay in); the Mac comes back awake, and is restarted afterwards. "The order after run
-    17", in Track A below, is the place to start.
+  - A probe read the three coprocessor status words B2 polls in that power-down, in the state the
+    recipe leaves (not a one-way run; 2026-11-10): bit 1 read set for all three, the PMP's only once
+    it was idled. So those three waits would pass, and they're less likely to be the stall. The Mac
+    didn't come back from it (a black screen, the power key), so its log is lost and only its bytes
+    are on file: a probe that stops a coprocessor's firmware doesn't resume on this kernel.
+  - **Next: a look that only reads,** at the words the pair's remaining waits depend on, none of
+    which has been read here: the clock generators' status words, six gate-status words and four AON
+    words. Not built: "The order after the probe", in Track A below, is the place to start.
 
 ## Picking this up
 
@@ -415,13 +419,36 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 17 (2026-11-10; judgment; this is the only place it's kept):** run 17 put
+      **The order after the probe (2026-11-10; judgment; this is the only place it's kept):** the
+      probe ran once (RESEARCH.md, "The probe's run"). Bit 1 of all three coprocessor words read set in
+      the state the recipe leaves, the PMP's only after its idle pair: B2's ops 51, 151 and 159 would
+      pass, ANS2 comes up when raised, and the bit looks like "this coprocessor is idle". The Mac
+      didn't resume with SIO's firmware and the PMP's stopped, so the log is lost; the bytes are whole.
+      What's left before op 224, by what can wait for ever: the gate, 0x2922c0040, A2's three steps
+      inside the first handshake, eleven clock-generator status words (bit 31 clear after B2's write
+      beside each), 0x2922c003c and 0x2922c0038; and the 255-try polls for bit 11 on the power words
+      and bit 30 on six gate-status words.
+      Next, **not built: a look that only reads.** `e1_hook` with the probe's guards (no replay, every
+      suspend failed) and none of its stops and no write but its step marks: it reads, awake at the
+      load and again after noirq, every word those waits read or the engine's wake sequence leaves in a
+      known state (the fourteen clock-generator blocks' two words each, the six gate-status words, the
+      AON words 0x2922c0008, 0x24, 0x38, 0x3c, 0x40 and 0x44, DCS's, the fabric's and 0x28e20c400, and
+      the power words B2 polls), logs them in full and fails the suspend. Nothing is stopped, so it's
+      an ordinary failed suspend and the log should come back and be saved. What it gives: for every
+      word macOS's table doesn't write before the commit, the value the engine finds. Read against
+      what the wake sequence B1 leaves (the state B2 is written to start from), each word that differs
+      is a lead, and the next one-way run changes the likeliest and reads the marker. What it can't
+      give: anything the table changes after it, or what the engine's own writes then do.
+      After it, still open either way: the gate, which no read from a running core can see open; A2's
+      three steps tried from the AP; and the observer on a P core with the E complex down, which would
+      say whether the gate follows every core or CPU0's complex.
+      **Earlier, the order after run 17 (2026-11-10; judgment):** run 17 put
       the fabric back at 3 and set WD1 as a marker; the marker stood and the restart came at 90.0-91.5 s
       (RESEARCH.md, "M1 run 17"). So B2 doesn't reach its op 224 with every core down: the stall is at
       its gate, in the first handshake or in its power-down. `fabric_up=1` and `wd1_mark=1` stay in the
       recipe, and from here a change that gets B2 further shows as a restart at 120 s or later.
-      Next, **built and not run: a probe of the three coprocessor words B2 polls** (RESEARCH.md, "After
-      run 17", has what it is and "The probe as built" how): SIO's, ANS's and the PMP's ASC + 0x8000,
+      Next, **built and run: the probe of the three coprocessor words B2 polls** (RESEARCH.md, "After
+      run 17", has what it is, "The probe as built" how, and "The probe's run" what it read): SIO's, ANS's and the PMP's ASC + 0x8000,
       bit 1, which the engine waits for after powering each domain up, and which nothing has read. Not a
       one-way run: `pkexec e1-hook/probe` in a safe boot loads `e1_hook` with `--m1-mark`'s parameters
       and `probe=1` and asks for one suspend, which the module fails with -EIO from `prepare_late`
