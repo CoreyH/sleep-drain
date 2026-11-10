@@ -612,8 +612,11 @@ def mark_reading(x, s, v):
     if s in WD2_PEND:
         return (f"{head}not read. CPU0 had an exception pending after its reads (the stage) and likely never went down, and a core"
                 f" left up holds the engine by itself: {x:.0f} s says nothing about a pair with every core down")
-    seen, code = bool(v & 4), v >> 6
-    moved = bool(seen and v & 8 and v & 0x10 and v & 0x20 and v != 0xfe)
+    code = v >> 6
+    # live: WD2 seen armed, still armed after CPU0's write and counting, so that it fires unless something stops it. 0xfe is
+    # the parked cores, which stage 0x52 leaves in this byte: not a sample.
+    live = bool(v & 4 and v & 0x10 and v & 0x20 and v != 0xfe)
+    moved = bool(live and v & 8)
     if abs(x - unzeroed) <= 4:
         return (f"{head}about {unzeroed} s is what WD1 gives with its count never zeroed: B2 didn't reach its op 224, and the stall is"
                 " at B2's first poll, in the first handshake (A2's three steps of its own) or in B2's power-down. That's the"
@@ -633,11 +636,12 @@ def mark_reading(x, s, v):
     if x >= WD1_BITE_S - 4:
         # WD1's bite counts from B2's zeroing, which comes however long B2's power-down takes after the commit.
         late = f", which then came about {x - WD1_BITE_S:.0f} s after the commit" if x > WD1_BITE_S + 4 else ""
-        if not seen:
-            return (f"{head}{x:.0f} s is WD1's {WD1_BITE_S} s from a count that B2 zeroed{late}, but WD2 was never seen armed in the"
-                    " sample above: nothing here shows the entry pair started. Not read as a pair that finished")
+        if not live:
+            return (f"{head}{x:.0f} s is WD1's {WD1_BITE_S} s from a count that B2 zeroed{late}, but wd2_bite=1's sample, above,"
+                    " doesn't show WD2 armed and counting: a WD2 that wouldn't have fired anyway says nothing by staying silent."
+                    " Not read as a pair that finished")
         return (f"{head}{x:.0f} s is WD1's {WD1_BITE_S} s from a count that B2 zeroed{late}, with WD2, which the sample above saw"
-                " armed, stopped before it could fire: the entry pair FINISHED, and WD1 ended it as a dead-man")
+                " armed and counting, stopped before it could fire: the entry pair FINISHED, and WD1 ended it as a dead-man")
     return (f"{head}{x:.0f} s is none of its times (about {unzeroed} s, about {WD2_BITE_S} s, {WD1_BITE_S} s or more): not read. Right"
             " only in the first boot after the run, like the time itself")
 

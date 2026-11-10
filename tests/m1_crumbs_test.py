@@ -2386,10 +2386,10 @@ def position_tests(g, src):
         for x, text in ((90, "  wd1_mark=1's marker: about 90 s is what WD1 gives with its count never zeroed: B2 didn't reach its op 224"),
                         (88, "  wd1_mark=1's marker: about 90 s is what WD1 gives with its count never zeroed"),
                         (120, "  wd1_mark=1's marker: about 120 s is WD2: B2 zeroed WD1's count, so B2's first poll passed"),
-                        (150, "  wd1_mark=1's marker: 150 s is WD1's 150 s from a count that B2 zeroed, with WD2, which the sample above saw armed, stopped"
-                              " before it could fire: the entry pair FINISHED"),
+                        (150, "  wd1_mark=1's marker: 150 s is WD1's 150 s from a count that B2 zeroed, with WD2, which the sample above saw armed and"
+                              " counting, stopped before it could fire: the entry pair FINISHED"),
                         (163, "  wd1_mark=1's marker: 163 s is WD1's 150 s from a count that B2 zeroed, which then came about 13 s after the commit, with"
-                              " WD2, which the sample above saw armed, stopped before it could fire: the entry pair FINISHED"),
+                              " WD2, which the sample above saw armed and counting, stopped before it could fire: the entry pair FINISHED"),
                         (30, "  wd1_mark=1's marker: 30 s is none of its times (about 90 s, about 120 s, 150 s or more): not read."),
                         (135, "  wd1_mark=1's marker: 135 s is none of its times (about 90 s, about 120 s, 150 s or more): not read."),
                         (105, "  wd1_mark=1's marker: 105 s is none of its times (about 90 s, about 120 s, 150 s or more): not read.")):
@@ -2414,8 +2414,12 @@ def position_tests(g, src):
                  " 150 s can't be read as B2's progress. WD1 has been armed since step 4, so a run that stopped anywhere from there on restarts by"
                  " itself about 90 s later, committed or not", "FINISHED"),
                 (0xd2, 0xfe, 90, "not read. Stage 0x52 is the last before the commit", "B2 didn't reach"),
-                (0xd3, 0x02, 150, "150 s is WD1's 150 s from a count that B2 zeroed, but WD2 was never seen armed in the sample above: nothing here shows the"
-                 " entry pair started. Not read as a pair that finished", "FINISHED"),
+                (0xd3, 0x02, 150, "150 s is WD1's 150 s from a count that B2 zeroed, but wd2_bite=1's sample, above, doesn't show WD2 armed and counting:"
+                 " a WD2 that wouldn't have fired anyway says nothing by staying silent. Not read as a pair that finished", "FINISHED"),
+                (0xd3, 0x5d, 150, "doesn't show WD2 armed and counting", "FINISHED"),
+                (0xd3, wsmp(still=False), 150, "doesn't show WD2 armed and counting", "FINISHED"),
+                (0xd3, 0xfe, 163, "doesn't show WD2 armed and counting", "FINISHED"),
+                (0xd3, 0xfe, 120, "doesn't show WD2 armed and counting with CPU0's 120 s bite", "B2 zeroed WD1's count, so"),
                 (0xd1, 0x75, 120, "not read. CPU0 had an exception pending after its reads (the stage) and likely never went down, and a core left up holds"
                  " the engine by itself: 120 s says nothing about a pair with every core down", "B2 zeroed WD1's count, so"),
                 (0xd3, wsmp(post=False), 120, "about 120 s, but wd2_bite=1's sample, above, doesn't show WD2 armed and counting with CPU0's 120 s bite, so this"
@@ -2432,18 +2436,21 @@ def position_tests(g, src):
             for v in range(256):
                 for x in (60, 88, 90, 105, 120, 123, 135, 146, 150, 163, 300):
                     t = mr(x, stage, v)
-                    seen, moved, code = bool(v & 4), bool(v & 4 and v & 8 and v & 0x10 and v & 0x20 and v != 0xfe), v >> 6
+                    # Read here from wd2_bite.h's layout: seen armed (bit 2), the bite 120 s after the write (3), still armed (4), counting (5).
+                    live = bool(v & 4 and v & 0x10 and v & 0x20) and v != 0xfe
+                    moved, code = live and bool(v & 8), v >> 6
                     last, at120, late = stage == 0x53, x in (120, 123), x >= 146
                     ok = (t.startswith("  wd1_mark=1's marker: ")
                           and ("B2 didn't reach its op 224" in t) == (last and x in (88, 90))
                           and ("B2 zeroed WD1's count, so B2's first poll passed" in t) == (last and at120 and moved and code in (1, 2))
-                          and ("the entry pair FINISHED" in t) == (last and late and seen)
+                          and ("the entry pair FINISHED" in t) == (last and late and live)
                           and ("which then came about" in t) == (last and x in (163, 300))
-                          and ("ot read" in t) == (not last or x in (60, 105, 135) or (at120 and not (moved and code in (1, 2))) or (late and not seen)))
+                          and ("ot read" in t) == (not last or x in (60, 105, 135) or (at120 and not (moved and code in (1, 2))) or (late and not live)))
                     if not ok:
                         wrong.append((hex(stage), hex(v), x, t))
         check(not wrong, "for every sample at each of the run's stages: B2's progress is read from 90 s only at the last stage, from 120 s only with WD2's"
-              " bite moved and PHASE at A2's 4 or 5, a finished pair from 150 s or later only with WD2 seen armed, and nothing at the other two stages",
+              " bite moved and PHASE at A2's 4 or 5, a finished pair from 150 s or later only with WD2 armed and counting in a real sample, and nothing at"
+              " the other two stages",
               str(wrong[:3]))
         # Step 7 leaves the cores that held at 0x6007 (0xff as a rule). If stage 0x52's command lands without its last byte, that 0xff must not
         # read as the run's byte, all outcomes good and a marker standing: the steps' outcomes, sent only after a command that didn't fail,

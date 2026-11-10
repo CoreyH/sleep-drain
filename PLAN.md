@@ -444,7 +444,8 @@ steps, and restarting the DCP and the PMP afterwards.
         `m1-crumbs` reads the restart's time against the marker, and says what else 90 s and 120 s fit.
         It reads it only as far as the record bears it out (Pullfrog on #74): at the run's last
         stage, with no exception pending on CPU0; 120 s only if the sample shows WD2 armed and
-        counting with the moved bite and `PHASE` at A2's 4 or 5; 150 s only if WD2 was seen armed;
+        counting with the moved bite and `PHASE` at A2's 4 or 5; 150 s or later only if the sample
+        shows WD2 armed and counting, so that its silence means something;
         and the byte itself only if the steps' outcomes landed after its command and its "not all
         held" bit is clear, since step 7 leaves 0xff in the same place. A pair that finishes restarts
         150 s after B2's zeroing, so later than 150 s after the commit by however long B2 took.
