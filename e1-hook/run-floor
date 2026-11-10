@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite]
 #
 # --quick, ahead of the recipe, makes the reading 1 minute instead of 10, with no need to wait
 # 20 minutes off the charger: for a run whose question is how it ends. If one ever goes dark for
@@ -82,6 +82,18 @@
 # so once it's made the word reads 45 s on every way out, and this says so (recfg-bite --restore, by hand
 # in a safe boot, writes 30 s again). Its reset, if the engine ran the changed word and A2 is what stalls,
 # comes about 45 s after the screen goes dark, not 30. Its label is floor-m1-recfg-bite.
+# --m1-wd2-bite (PLAN.md, "The order after run 14"; RESEARCH.md, "M1 run 14") is --m1-power-words' with the
+# reset's time moved, without the SRAM, which dropped both of recfg-bite's stores: WD2's bite register,
+# 0x2922b0024, written to 120 s (Corey's OK of 2026-11-10 for that register and value, twice). First, before
+# anything is loaded, e1-hook/wd2-bite makes that store once from user space, awake, where WD2 isn't armed (a
+# read-only check, saved, then the store, saved): the control runs 13 and 14 lacked, since nothing had shown
+# that a store through /dev/mem changes any register here. The run goes on whether it took or not, and stops
+# only if WD2 isn't as it is awake. Then wd2_bite=1: CPU0, once it has let the others go after the commit and
+# has seen WD2 armed, writes the bite once, reads WD2 back and records it (stage 0xd7, or 0xd6 with an
+# exception pending). WD2 stays armed and only its timeout changes, so its reset, if the entry is stuck as
+# before, comes about 120 s after the screen goes dark, not 30: for this run, "dark for good" below starts
+# at 3 minutes, not 2. A reset at about 30 s, or no reset, would each be news (PLAN.md has the readings).
+# Its label is floor-m1-wd2-bite.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
@@ -96,7 +108,7 @@
 #     After --m1, also, before anything else touches the PMU:
 #       /home/corey/src/sleep-drain/e1-hook/m1-crumbs, for a photo or a copy,
 #       then pkexec /home/corey/src/sleep-drain/e1-hook/m1-crumbs --clear
-#       (after --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words and --m1-recfg-bite, --clear also disarms the alarm the run armed, 0x1401
+#       (after --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words, --m1-recfg-bite and --m1-wd2-bite, --clear also disarms the alarm the run armed, 0x1401
 #       back to 0x01, so that it can't power the Mac on an hour later; every
 #       m1 run refuses to load while it reads armed).
 #     After --m1-position, also, in that same boot, once m1-crumbs and collect
@@ -111,7 +123,7 @@
 #     the keyboard (dark since the reading began) stay dark past 2 minutes.
 #     Nothing wakes the Mac from it. If that's new (it's a candidate for a
 #     completed entry), leave it at least 30 minutes, then the steps below.
-#     After --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words or --m1-recfg-bite, do them before about 55 minutes: the alarm fires 60
+#     After --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words, --m1-recfg-bite or --m1-wd2-bite, do them before about 55 minutes: the alarm fires 60
 #     minutes after the commit, and if it wakes the SoC, the wake lands in
 #     m1n1 with no way back and the Mac hangs, at an unknown draw, until the
 #     power key. If it's dark past that, expect that and end it the same way.
@@ -157,6 +169,8 @@
 # a way out calls the replay off instead: an unload then would let the
 # suspend already asked for sleep as a plain s2idle, dark like the floor.
 # With --m1-recfg-bite, either way leaves A2's bite word at 45 s, and says so.
+# With --m1-wd2-bite, either way leaves WD2's bite at 120 s if wd2-bite's store took, and says so: WD2 isn't
+# armed awake, and a restart undoes it.
 set -euo pipefail
 
 SAFE_FLAG=${FLOOR_SAFE_FLAG:-/run/sleep-drain-safe/active}
@@ -195,6 +209,7 @@ macend=0
 siostop=0
 pwords=0
 recfg=0
+wd2=0
 quick=()
 label=floor
 # --quick, ahead of the rest: a 1-minute reading, for a run whose question is how it ends, not what it draws.
@@ -332,21 +347,38 @@ elif (($# == 1)) && [[ $1 == --m1-recfg-bite ]]; then
   pwords=1
   recfg=1
   label=floor-m1-recfg-bite
+elif (($# == 1)) && [[ $1 == --m1-wd2-bite ]]; then
+  quiet=1
+  m1=1
+  late=1
+  alarm=1
+  hold=1
+  nowatch=1
+  pmp=1
+  sio=1
+  disp=1
+  macend=1
+  siostop=1
+  pwords=1
+  wd2=1
+  label=floor-m1-wd2-bite
 elif (($# != 0)); then
-  die "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite]"
+  die "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
 ko=$here/e1_hook.ko
 # --m1-recfg-bite: the launcher that changes A2's bite word.
 BITE=${FLOOR_BITE:-$here/recfg-bite}
+# --m1-wd2-bite: the launcher that writes WD2's bite from user space, the control.
+WD2BITE=${FLOOR_WD2_BITE:-$here/wd2-bite}
 [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
 [[ -f $SAFE_FLAG ]] || die "the floor runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
 [[ -f $ko ]] || die "no $ko: make -C $here"
 [[ $(modinfo -F vermagic "$ko" | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r): make -C $here"
 # A build older than its sources may be another version's, with the same parameters: what it leaves in the PMU would be
 # read by this version's m1-crumbs, and --m1-recfg-bite's first build had its byte's two bite codes the other way round.
-for src in e1_hook.c recfg_bite.h m1_position.h; do
+for src in e1_hook.c recfg_bite.h m1_position.h wd2_bite.h; do
   [[ ! -e $here/$src || $ko -nt $here/$src ]] || die "$ko is older than $src: make -C $here"
 done
 # Builds before this one have no cancel (E1a's has no oneway either), and
@@ -369,6 +401,8 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!pwords)) || [[ $parms == *$'\n'ps_words:* ]] || die "$ko is an older build, without ps_words: make -C $here"
 ((!recfg)) || [[ $parms == *$'\n'recfg_bite:* ]] || die "$ko is an older build, without recfg_bite: make -C $here"
 ((!recfg)) || [[ -x $BITE ]] || die "no $BITE"
+((!wd2)) || [[ $parms == *$'\n'wd2_bite:* ]] || die "$ko is an older build, without wd2_bite: make -C $here"
+((!wd2)) || [[ -x $WD2BITE ]] || die "no $WD2BITE"
 # sleep-drain-pmp's module is built by install.sh for one kernel. After a kernel update it's the old kernel's until
 # install.sh runs again, which a safe boot can't do: better to say so now than after the load.
 ((!sio)) || [[ $(modinfo -F vermagic "$PMP_KO" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] ||
@@ -376,8 +410,8 @@ parms=$'\n'$(modinfo -F parm "$ko")
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 # --m1-recfg-bite: what the reading would refuse for (sleep-drain-reading's attached(): a USB device that isn't a root
-# hub, a USB-C partner), refused here, before the SRAM write and not after it.
-if ((recfg)); then
+# hub, a USB-C partner), refused here, before the SRAM write and not after it. --m1-wd2-bite: the same, before its write.
+if ((recfg || wd2)); then
   stuff=()
   for d in "$USB"/*; do
     [[ -f $d/idVendor && $(< "$d/idVendor") != 1d6b ]] || continue
@@ -407,6 +441,7 @@ fi
 # killing the launcher outright.
 armed=0
 patched=0
+wd2took=0
 reader=
 disarm() {
   local again
@@ -428,6 +463,13 @@ disarm() {
     again="run-floor --m1-recfg-bite can simply be run again"
     [[ ! -d $MODDIR ]] || again="e1_hook is still loaded, so restart before another run"
     echo "run-floor: A2's bite word was changed and still reads 45 s (recfg-bite --restore, in a safe boot, writes 30 s again; $again)" >&2 2> /dev/null || true
+  fi
+  # --m1-wd2-bite: nothing writes the 90 s back (the OK is for one value). Say what's left.
+  if ((wd2took)); then
+    wd2took=0
+    again="run-floor --m1-wd2-bite can simply be run again"
+    [[ ! -d $MODDIR ]] || again="e1_hook is still loaded, so restart before another run"
+    echo "run-floor: WD2's bite still reads 120 s from wd2-bite's write (WD2 isn't armed awake, so that changes nothing by itself, and a restart undoes it; $again)" >&2 2> /dev/null || true
   fi
 }
 cancel() {
@@ -486,6 +528,36 @@ if ((recfg)); then
   esac
 fi
 
+# --m1-wd2-bite: the control, before anything is loaded (wd2-bite: a read-only check, saved, then one store to WD2's
+# bite from user space, saved). kernel.panic is set by now, so a write that faults restarts the Mac 10 s later.
+# Whether the store took is the control's result, and the run goes on either way: e1_hook's own write, after the
+# commit, is the kernel's. It stops only if WD2 isn't as it is awake, or the launcher failed.
+if ((wd2)); then
+  # A line of this script's own first: with a broken stdout it fails here, and set -e stops before anything is written.
+  echo "run-floor: WD2's bite from user space first (wd2-bite), then the module and the reading"
+  rc=0
+  "$WD2BITE" || rc=$?
+  case $rc in
+  0)
+    wd2took=1
+    echo "run-floor: wd2-bite's store took: WD2's bite reads 120 s. Going on to the run"
+    ;;
+  5)
+    echo "run-floor: wd2-bite's store didn't take (exit 5, above): that's a result, and it's saved. Going on to the run: e1_hook's write is the kernel's"
+    ;;
+  3)
+    die "WD2 isn't as it is awake (wd2-bite exit 3, above), so nothing was written. Nothing is loaded and nothing replays. That's a result, and what was saved of it is on the boot partition: restart the Mac"
+    ;;
+  4)
+    die "wd2-bite stopped before its write (exit 4, above: a tool to rebuild, or a save that failed). Nothing was written and nothing is loaded. Once that's fixed this can be run again, in this same boot"
+    ;;
+  *)
+    # wd2-bite says itself, in capitals, when the writer ran and the bite may read 120 s.
+    die "wd2-bite failed (exit $rc), above. Nothing is loaded and nothing replays: restart the Mac"
+    ;;
+  esac
+fi
+
 params=(replay=15 oneway=1)
 ((!quiet)) || params+=(quiet=1)
 ((!m1)) || params+=(m1=1)
@@ -503,6 +575,7 @@ params=(replay=15 oneway=1)
 ((!siostop)) || params+=(sio_stop=1)
 ((!pwords)) || params+=(ps_words=1)
 ((!recfg)) || params+=(recfg_bite=1)
+((!wd2)) || params+=(wd2_bite=1)
 armed=1
 if ! insmod "$ko" "${params[@]}"; then
   # The module says why in the kernel log, which a safe boot loses at the restart: show it now, and keep it.
@@ -530,7 +603,8 @@ fi
   { ((!macend)) || [[ $(cat "$MODDIR/parameters/one_commit") == Y && $(cat "$MODDIR/parameters/smc_idle") == Y ]]; } &&
   { ((!siostop)) || [[ $(cat "$MODDIR/parameters/sio_stop") == Y ]]; } &&
   { ((!pwords)) || [[ $(cat "$MODDIR/parameters/ps_words") == Y ]]; } &&
-  { ((!recfg)) || [[ $(cat "$MODDIR/parameters/recfg_bite") == Y ]]; } ||
+  { ((!recfg)) || [[ $(cat "$MODDIR/parameters/recfg_bite") == Y ]]; } &&
+  { ((!wd2)) || [[ $(cat "$MODDIR/parameters/wd2_bite") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
 # --m1-sio-pmp: the PMP's display report requests withdrawn at this suspend's noirq (Corey's pick of 2026-11-09), as
 # T8140's driver does before it idles the PMP. A reboot undoes it; the module stays loaded on the ways out here.
@@ -607,6 +681,10 @@ klog e1_hook
 if ((patched)); then
   patched=0
   log "A2's bite word was changed and still reads 45 s: nothing here puts it back (recfg-bite's header says why)"
+fi
+if ((wd2took)); then
+  wd2took=0
+  log "WD2's bite still reads 120 s from wd2-bite's write: nothing here puts the 90 s back (WD2 isn't armed awake, and a restart undoes it)"
 fi
 log "================================================================================="
 log "Saving to the boot partition (this fails if the NVMe is gone)..."

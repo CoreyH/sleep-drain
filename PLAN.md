@@ -416,18 +416,33 @@ steps, and restarting the DCP and the PMP afterwards.
       a cumulative rung.
       **The order after run 14 (2026-11-10; judgment; this is the only place it's kept):** the SRAM
       dropped the 64-bit store too (RESEARCH.md, "M1 run 14"), so the sequences can't be edited from
-      user space and the markers are off. Next, proposed and needing Corey's OK: move the reset's time
+      user space and the markers are off. Next: move the reset's time
       without the SRAM, by writing WD2's bite register itself. One register, 0x2922b0024, and one value,
-      0xaba95000 (2,880,000,000 ticks, 120 s; a 32-bit bite ends at about 179 s), at two moments:
+      0xaba95000 (2,880,000,000 ticks, 120 s; a 32-bit bite ends at about 179 s), at two moments
+      (Corey's OK of 2026-11-10 for exactly that; built in #66 as `run-floor --m1-wd2-bite`, not run yet):
       - **The control, awake.** In the run's safe boot, before anything is loaded, one store to that
         register made as `recfg_poke` makes its own, from user space through `/dev/mem`, and read back
         (WD2 isn't armed awake, and its bite reads 90 s). If it takes, a store of that kind works on this
         Mac and the SRAM's refusal is the SRAM's. If it doesn't, runs 13 and 14 say nothing about the SRAM,
         and the same SRAM word stored from the kernel becomes the next test (its own OK).
+        As built: `e1-hook/wd2-bite`, which run-floor runs first: `wd2_poke check` (WD2's control, count and
+        bite, read-only), saved, then `wd2_poke patch`, saved. It stores only if the control reads 0 and
+        the bite 90 s, and reads the three words back. The run goes on whether the store took (exit 0) or
+        didn't (exit 5), and stops, with nothing loaded, if WD2 isn't as it is awake (exit 3) or the three
+        words read some other way after the store. Nothing writes the 90 s back: the OK is one value, WD2
+        isn't armed awake, and a restart undoes it (inferred).
       - **The run.** Run 12's recipe, with CPU0, once it has let the others go after the commit and has
         seen RESET_EN (so A2's opening has written its 30 s), writing the bite once, reading it back,
         reading that RESET_EN is still set and the count still moves, recording those, and going down.
-        The sample is `recfg_bite=1`'s, which never ran on the Mac.
+        The sample's path is `recfg_bite=1`'s, which never ran on the Mac, with the write and three reads more.
+        As built: `e1_hook wd2_bite=1` (on `ps_words=1`, never with `recfg_bite=1`). The load refuses if WD2
+        reads armed, or its bite 30 s. After the commit and the alarm there's no stage 0x4f: CPU0 lets the
+        others go, waits for RESET_EN (up to 0.3 s), reads the bite, writes it only if RESET_EN showed,
+        reads the bite and the control again and the count twice (up to 1 ms), then `PHASE`, and sends stage
+        0x57 (0xd7; 0x56 if it had an exception pending) with one byte at 0x6005: bits 1:0 the bite before
+        the write (1 A2's 30 s, 2 120 s, 3 its awake value), 2 RESET_EN seen and the write made, 3 the bite
+        120 s after it, 4 RESET_EN after it, 5 the count changing, 7:6 `PHASE` (0, 4, 5, another). WD2's
+        count and control are never written.
       WD2 has been on e1_hook's never-written list until now. The write leaves it armed and changes only
       its timeout, so a stuck entry should still end in a reset, at 120 s; that a moved WD2 still bites
       is what a reset at the moved time would show, and isn't known before it. The dark-for-good rule
@@ -449,6 +464,10 @@ steps, and restarting the DCP and the PMP afterwards.
       tell a SoC that's still powered from one that isn't (not checked). Then back to guessing: the
       internal PCIe ports (maralcbr's `lab_pcie_ports_down`, about 13 writes per port), each with Corey's
       OK.
+      The run: `pkexec e1-hook/run-floor --quick --m1-wd2-bite`, in a safe boot. Before it, in the merged
+      checkout: `make -C e1-hook` (run-floor refuses an `e1_hook.ko` older than `wd2_bite.h` too) and `cc
+      -O2 -Wall -o e1-hook/wd2_poke e1-hook/wd2_poke.c`. Corey times the dark stretch. After it, in the
+      first boot and before anything restarts the Mac: `m1-crumbs`, then `--clear` and `collect`.
       **Earlier, the order after run 13 (2026-11-09; judgment):** the reconfig
       SRAM didn't take the write (RESEARCH.md, "M1 run 13"): a lock set before Linux runs, most likely,
       which Linux can't clear (inferred). Before giving the approach up, one cheap test of the next

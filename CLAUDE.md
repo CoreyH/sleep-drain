@@ -151,7 +151,12 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   first changes one word of the reconfig SRAM, A2's WD2 bite, from 30 s to 45 s (Corey's OK of 2026-11-09; as one 64-bit
   store since run 13, Corey's OK of 2026-11-10), and after the
   commit, once it has let the others go, CPU0 reads WD2's bite and PHASE (stage 0x47, or 0x46 with an exception pending,
-  with its byte at 0x6005). The module never writes the SRAM, and nothing writes the old value back by itself. `run-floor --quick` ahead of any
+  with its byte at 0x6005). The module never writes the SRAM, and nothing writes the old value back by itself. `wd2_bite=1`
+  (`run-floor --m1-wd2-bite`, on `ps_words=1`, never with `recfg_bite=1`) moves the reset's time without the SRAM, which
+  dropped both stores: WD2's bite register, 0x2922b0024, written to 120 s (Corey's OK of 2026-11-10 for that register and
+  value, twice). `e1-hook/wd2-bite` writes it first, once, from user space, awake, the control runs 13 and 14 lacked; after
+  the commit, once it has let the others go and has seen WD2 armed, CPU0 writes it once more, the module's one write to WD2,
+  and records what WD2 read around that (stage 0x57, or 0x56 with an exception pending, with its byte at 0x6005). `run-floor --quick` ahead of any
   recipe makes the reading 1 minute. `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
@@ -191,6 +196,12 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `--restore` is for a person, in a safe boot. `--after` reads that one word once in the first regular boot
   after the run (`recfg_peek`'s stage 7), and only if the collected record says it read 45 s when the Mac
   went down, with nothing left to collect. run-floor refuses an `e1_hook.ko` older than its sources.
+  `e1-hook/wd2-bite` (root, safe boot only; `cc -O2 -Wall -o e1-hook/wd2_poke e1-hook/wd2_poke.c` first) is
+  `--m1-wd2-bite`'s control (`wd2_bite.h` has the register, its values and the module's byte): `wd2_poke check`,
+  read-only (WD2's control, count and bite), saved, then `wd2_poke patch`, one 32-bit store of 120 s to WD2's bite
+  through /dev/mem, made only if WD2 is as it is awake (control 0, bite 90 s), the three words read again, and
+  saved. It exits 0 if the store took and 5 if it didn't, and run-floor goes on either way. Nothing writes the
+  90 s back: the OK is for one value, and a restart undoes it.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake
@@ -211,7 +222,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   compiling `e1-hook/m1_position.h` itself; `tests/recfg_peek_test.py` runs
   `e1-hook/recfg_peek` on a sparse file standing in for /dev/mem and its
   launcher with stubs; `tests/recfg_bite_test.py` runs `e1-hook/recfg_poke` on the same kind
-  of file (exactly one word changes, or none; the store is 64 bits) and `e1-hook/recfg-bite` with stubs; `tests/sleep_drain_reading_test.py`
+  of file (exactly one word changes, or none; the store is 64 bits) and `e1-hook/recfg-bite` with stubs;
+  `tests/wd2_bite_test.py` does the same for `e1-hook/wd2_poke` and `e1-hook/wd2-bite`; `tests/sleep_drain_reading_test.py`
   runs `sleep-drain-reading` as uid 0 in a bubblewrap user namespace against
   a fake battery, with stub `sleep-drain-safe` and `systemctl`.
 - `patches/`: patch series for upstream, kept here for review before they're
