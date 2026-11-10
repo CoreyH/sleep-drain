@@ -389,9 +389,17 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
         check(r.returncode == 2 and a == [], "stage 8 refuses the piece " + repr(more) + ", reading nothing", r.stdout + r.stderr)
     r, a = run(8, out8c)
     check(r.returncode == 2 and a == [], "stage 8 refuses to run without a piece", r.stderr)
-    for st in ("1", "4", "5", "6", "7", "a", "h"):
+    for st in "1234567abcdefgh":
         r, a = run(st, out8c, "0")
         check(r.returncode == 2 and a == [], f"stage {st} refuses a third argument, reading nothing", r.stderr)
+    # Each line is out before its reads are made: with the trace on stdout too, the order shows.
+    inline8 = os.path.join(tmp, "recfg_peek_inline8")
+    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", '-DRECFG_MEM="%s"' % fake, '-DRECFG_TRACE="/dev/stdout"', "-o", inline8,
+                    os.path.join(E1_HOOK, "recfg_peek.c")], check=True)
+    seen = subprocess.run([inline8, "8", fresh("o8d"), "2"], capture_output=True, text=True).stdout
+    check(seen.index("piece 2 of 24: 0x292f18000-0x292f1bfff\n") < seen.index("reading 0x292f18000\n") < seen.index("\n0x292f18000\n") < seen.index("\n0x292f1bffc\n")
+          < seen.index("0x292f18000-0x292f1bfff read, ") < seen.index("words read 0"),
+          "stage 8 prints the piece and its \"reading\" line before the first read, and its counts after the last", seen[:200])
     src8 = open(os.path.join(E1_HOOK, "recfg_peek.c")).read()
     check("PROT_WRITE" not in src8 and "O_RDWR" not in src8 and "O_RDONLY | O_SYNC" in src8 and src8.count("mmap(") == 1
           and "#define SRAM_LEN\tUINT64_C(0x70000)" in src8 and "#define FIRST_DUMP\tUINT64_C(0x10000)" in src8
@@ -475,7 +483,7 @@ exit ${{rc[$1${{3:+:$3}}]:-0}}
 echo "save $*" >> {calls}
 n=$(ls {snaps} | wc -l)
 cp -a {log_root} {snaps}/$n
-{'exit 1' if save_fails else f'[[ $n != {save_fail_at - 1} ]] || exit 1' if save_fail_at else 'exit 0'}
+{'exit 1' if save_fails else f'[[ $n != {save_fail_at - 1} ]] || {{ echo "the save says: restart now" >&2; exit 1; }}' if save_fail_at else 'exit 0'}
 """)
             os.chmod(save, 0o755)
             flag = os.path.join(root, "active")
@@ -536,33 +544,44 @@ cp -a {log_root} {snaps}/$n
         check([d.rsplit("-", 1)[1] for d in os.listdir(logs)] == ["s5"], "--rest has its own directory", os.listdir(logs))
         rc, out, calls, logs, snaps = sandbox(args=("--more",))
         check(rc == 1 and "usage" in out and calls == [], "refuses an unknown argument", out)
-        check(sandbox.panic == "0", "and the stages before --to-end leave kernel.panic alone")
-
-        # --to-end: the rest of the SRAM, 24 pieces, each a run of the reader in a directory of its own, saved before the next.
-        REST = [x for n in range(24) for x in (f"stage 8 piece {n}", "save save")]
+        # --to-end: the rest of the SRAM, 24 pieces, each a run of the reader in a directory of its own, saved after every fourth
+        # (a save's tar holds everything the boot made so far, a journal a save included: one a piece would be some 130 MiB).
+        REST = [x for n in range(24) for x in ([f"stage 8 piece {n}"] + (["save save"] if n % 4 == 3 else []))]
         rc, out, calls, logs, snaps = sandbox(args=("--to-end",))
         dirs = sorted(os.listdir(logs))
-        check(rc == 0 and calls == REST and "done: the SRAM is read to its end, 24 pieces, each saved" in out,
-              "--to-end runs stage 8 for pieces 0 to 23 in order, saving after each", (calls[:6], out[-300:]))
-        check([d.rsplit("-", 1)[1] for d in dirs] == ["r%02d" % n for n in range(24)], "each piece has a directory of its own, r00 to r23", dirs)
+        check(rc == 0 and calls == REST and calls.count("save save") == 6 and "done: the SRAM is read to its end, 24 pieces, all saved" in out,
+              "--to-end runs stage 8 for pieces 0 to 23 in order, saving after every fourth", (calls[:6], out[-300:]))
+        check([d.rsplit("-", 1)[1] for d in dirs] == ["r%02d" % n for n in range(24)]
+              and all(open(os.path.join(logs, d, "sram-piece.bin")).read() == f"piece {n}\n" and f"== stage 8, piece {n}\n" in open(os.path.join(logs, d, "log.txt")).read()
+                      and f"the reader's stage 8 piece {n}\n" in open(os.path.join(logs, d, "log.txt")).read() for n, d in enumerate(dirs)),
+              "each piece has a directory of its own, r00 to r23, with its own dump and a log that names it", dirs)
         check(set(sandbox.panics) == {"10"} and sandbox.panic == "10", "kernel.panic is 10 before the first piece is read, and stays", sandbox.panics[:3])
-        check(len(snaps) == 24 and all(snaps[i].items() <= snaps[i + 1].items() for i in range(len(snaps) - 1))
-              and all(sum("sram-piece.bin" in f for f in snaps[i]) == i + 1 for i in range(24)),
-              "--to-end: each save holds the pieces read so far, and no file changes after the save that first saw it", [len(s) for s in snaps])
-        text = open(os.path.join(logs, dirs[7], "log.txt")).read()
-        check("== stage 8, piece 7\n" in text and "the reader's stage 8 piece 7" in text, "a piece's log names it", text)
+        check(len(snaps) == 6 and all(snaps[i].items() <= snaps[i + 1].items() for i in range(len(snaps) - 1))
+              and all(sum("sram-piece.bin" in f for f in snaps[i]) == 4 * (i + 1) for i in range(6)) and snaps[-1] == manifest(logs),
+              "--to-end: each save holds the pieces read so far, no file changes after the save that first saw it, and the last save has everything",
+              [len(s) for s in snaps])
         rc, out, calls, logs, snaps = sandbox(args=("--to-end",), rc_by_stage={"8:5": 3})
-        check(rc == 0 and calls == REST[:12] and "stopped at stage 8, piece 5, by what it found" in out and "done:" not in out,
-              "a piece that says stop (all ones) ends the pass, saved, as a result", (calls[-3:], out[-300:]))
-        for bad in (1, 139):
+        check(rc == 0 and calls == REST[:5] + ["stage 8 piece 4", "stage 8 piece 5", "save save"] and "stopped at stage 8, piece 5, by what it found" in out
+              and "restart the Mac normally; the next boot's collect brings them in" in out and "done:" not in out
+              and snaps[-1] == manifest(logs) and sandbox.panic == "10",
+              "a piece that says stop (all ones) ends the pass as a result, with a save that holds everything read, and says what to do next", (calls[-3:], out[-300:]))
+        rc, out, calls, logs, snaps = sandbox(args=("--to-end",), rc_by_stage={"8:3": 3})
+        check(rc == 0 and calls == REST[:5] and calls.count("save save") == 1 and snaps[-1] == manifest(logs),
+              "a stop at a group's last piece is saved once, not twice", calls)
+        for bad in (1, 135, 139):
             rc, out, calls, logs, snaps = sandbox(args=("--to-end",), rc_by_stage={"8:5": bad})
-            check(rc == 1 and calls == REST[:11] + ["save save"] and f"stage 8, piece 5 failed (exit {bad}); nothing further was read" in out,
-                  f"a piece's reader that fails ({bad}) stops the pass, after one more save", (calls[-3:], out[-300:]))
-        rc, out, calls, logs, snaps = sandbox(args=("--to-end",), save_fail_at=3)
-        check(rc == 1 and calls == REST[:6] and "couldn't save stage 8, piece 2's results; not reading further" in out,
-              "a failed save stops --to-end before the next piece is read", (calls[-3:], out[-300:]))
+            check(rc == 1 and calls == REST[:5] + ["stage 8 piece 4", "stage 8 piece 5", "save save"]
+                  and f"stage 8, piece 5 failed (exit {bad}); nothing further was read" in out and "NOT SAVED" not in out and snaps[-1] == manifest(logs),
+                  f"a piece's reader that fails or is killed ({bad}) stops the pass, after a save that holds what was read", (calls[-3:], out[-300:]))
+        rc, out, calls, logs, snaps = sandbox(args=("--to-end",), rc_by_stage={"8:5": 135}, save_fail_at=2)
+        check(rc == 1 and "stage 8, piece 5 failed (exit 135)" in out and "NOT SAVED: what's above is this stage's only record" in out
+              and "the save says: restart now" in out,
+              "a killed reader whose save then fails: said, with the save's own message on the screen", out[-500:])
+        rc, out, calls, logs, snaps = sandbox(args=("--to-end",), save_fail_at=1)
+        check(rc == 1 and calls == REST[:5] and "couldn't save stage 8, piece 3's results; not reading further" in out and "the save says: restart now" in out,
+              "a failed save stops --to-end before the next group is read, with the save's own message shown", (calls[-3:], out[-300:]))
         rc, out, calls, logs, snaps = sandbox(args=("--to-end",), tee_fails=True)
-        check(rc == 1 and calls == REST[:2] and "couldn't write" in out, "a log that can't be written stops --to-end after its first piece", (calls, out[-300:]))
+        check(rc == 1 and calls == ["stage 8 piece 0", "save save"] and "couldn't write" in out, "a log that can't be written stops --to-end after its first piece, with one save", (calls, out[-300:]))
         rc, out, calls, logs, snaps = sandbox(args=("--to-end",), sysctl=False)
         check(rc == 1 and calls == [] and "couldn't set kernel.panic; nothing read" in out, "--to-end reads nothing if kernel.panic can't be set", (calls, out))
         rc, out, calls, logs, snaps = sandbox(args=("--to-end",), safe=False)
@@ -576,8 +595,13 @@ cp -a {log_root} {snaps}/$n
             check(rc == 1 and "usage" in out and calls == [], "refuses arguments " + repr(args), out)
         ltext = open(launcher).read()
         check(ltext.count('"$BIN"') == 2 and ltext.count('"${reader[@]}"') == 1 and 'reader=("$BIN" 8 "$out" "$stage")' in ltext and 'reader=("$BIN" "$stage" "$out")' in ltext
-              and 'SYSCTL=${RECFG_SYSCTL:-/proc/sys/kernel}\n' in ltext and 'stages="0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23"' in ltext,
-              "the launcher's one way to stage 8 is --to-end's, a piece's index at a time, 0 to 23; its kernel.panic is the real one")
+              and 'SYSCTL=${RECFG_SYSCTL:-/proc/sys/kernel}\n' in ltext and 'stages="0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23"' in ltext
+              and ltext.count("/panic") == 1,
+              "the launcher's one way to stage 8 is --to-end's, a piece's index at a time, 0 to 23; its kernel.panic is the real one, written in one place")
+        # Only --to-end touches kernel.panic: the other modes, the one that runs in a regular boot among them, leave it alone.
+        for args, kw in (((), {}), (("--rest",), {}), (("--position",), {}), (("--position-after",), dict(safe=False, pdone=True))):
+            rc, out, calls, logs, snaps = sandbox(args=args, **kw)
+            check(rc == 0 and sandbox.panic == "0" and set(sandbox.panics) == {"0"}, f"recfg-peek {' '.join(args) or '(stages 1-4)'} leaves kernel.panic alone", (rc, sandbox.panics))
 
         # --position, in a safe boot: each stage saved before the next, then the record and the mark.
         LETTERS = "abcdefgh"

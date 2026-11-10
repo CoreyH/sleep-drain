@@ -23,13 +23,17 @@
 # the SRAM's first word; the table; the first 0x10000 bytes. --rest is the
 # most exposed read, on to the table's last sequence + 0x10000, and is for
 # after stage 4's dump has been decoded: it stands alone, in any later safe boot.
-# --to-end reads everything past stage 4's dump, to the SRAM's end at 0x70000, in 24
+# --to-end reads what's past stage 4's dump, to the SRAM's end at 0x70000, in 24
 # pieces of 16 KiB, each one a run of the reader with a directory of its own
-# (recfg-peek-<time>-r<NN>/), saved before the next is read: 37 of the 45 sequences
-# the SRAM's pointer blocks name are out there. None of it has been read before, so
-# it sets kernel.panic to 10 first: a read that faults then restarts the Mac 10 s
-# later, with every piece before it saved. It stops, as a result, at a piece that
-# reads all ones.
+# (recfg-peek-<time>-r<NN>/): 37 of the 45 sequences the SRAM's pointer blocks name
+# are out there. It saves after every fourth piece, and at any stop: each save's tar
+# holds everything the boot has made so far, a journal a save included, so a save a
+# piece would put some 130 MiB on the boot partition, and six put about 10. None of
+# this has been read before, so it sets kernel.panic to 10 first. A read whose fault
+# panics the kernel then restarts the Mac 10 s later, with the pieces up to the last
+# save kept: at most three good ones are lost with the one that faulted. A reader
+# that's only killed (SIGBUS) ends the pass, saved with what it had. It stops, as a
+# result, at a piece that reads all ones.
 #
 # Each stage gets a directory of its own, /var/log/sleep-drain/recfg-peek-<time>-s<N>/,
 # and its output is printed as it comes and saved to the boot partition
@@ -108,7 +112,8 @@ else
   echo "recfg-peek: saving under $LOG_ROOT/recfg-peek-$now-$tag*/"
 fi
 
-# Every stage's output is on the disk, or in the boot partition's save, before the next read.
+# Every stage's output is on the disk, or in the boot partition's save, before the next read
+# (--to-end: before the next group of four pieces).
 # The last step's status is keep()'s: the save in a safe boot, the sync in --position-after, which has no save.
 keep() {
   if [[ $mode == after ]]; then
@@ -119,10 +124,17 @@ keep() {
   fi
 }
 
-# --to-end reads what nothing has read: a fault there should restart the Mac, not leave it hung (run-floor's setting).
+# --to-end reads what nothing has read: a fault that panics the kernel should restart the Mac, not leave it hung
+# (run-floor sets this too, with panic_on_oops, which a read from user space doesn't need).
 if [[ $mode == rest ]]; then
   echo 10 > "$SYSCTL/panic" || die "couldn't set kernel.panic; nothing read"
 fi
+
+# For a stop on an error: one more save, and say so if it didn't work. The save's own message stays on the
+# screen: it says when the boot partition was left mounted.
+keep_or_say() {
+  keep "$1" > /dev/null || echo "recfg-peek: NOT SAVED: what's above is this stage's only record, so photograph it before any restart" >&2
+}
 
 for stage in $stages; do
   if [[ $mode == after ]]; then
@@ -134,9 +146,11 @@ for stage in $stages; do
   fi
   mkdir -p "$out" || die "couldn't make $out"
   log=$out/log.txt
+  piece=0
   if [[ $mode == rest ]]; then
     # One piece a run of the reader: the piece is an index, never an address.
     reader=("$BIN" 8 "$out" "$stage")
+    piece=$stage
     stage="8, piece $stage"
   else
     reader=("$BIN" "$stage" "$out")
@@ -146,17 +160,24 @@ for stage in $stages; do
   st=("${PIPESTATUS[@]}")
   rc=${st[0]}
   if ((st[1] != 0)); then
-    keep "$log" > /dev/null 2>&1
+    keep_or_say "$log"
     die "couldn't write $log (tee exit ${st[1]}); stage $stage's reader exited $rc; nothing further was read"
   fi
   if ((rc != 0 && rc != 3)); then
     echo "stage $stage failed (exit $rc); nothing further was read" | tee -a "$log"
-    keep "$log" > /dev/null 2>&1
+    keep_or_say "$log"
     die "stage $stage failed (exit $rc); nothing further was read"
   fi
-  keep "$log" || die "couldn't save stage $stage's results; not reading further"
+  # --to-end: after every fourth piece, and at a stop (its header says why not after each).
+  if [[ $mode != rest ]] || ((piece % 4 == 3 || rc == 3)); then
+    keep "$log" || die "couldn't save stage $stage's results; not reading further"
+  fi
   if ((rc == 3)); then
-    echo "recfg-peek: stopped at stage $stage, by what it found. That's a result: nothing else to do."
+    if [[ $mode == rest ]]; then
+      echo "recfg-peek: stopped at stage $stage, by what it found. That's a result, and it's saved with the pieces before it: restart the Mac normally; the next boot's collect brings them in."
+    else
+      echo "recfg-peek: stopped at stage $stage, by what it found. That's a result: nothing else to do."
+    fi
     exit 0
   fi
 done
@@ -170,7 +191,7 @@ if [[ $mode == position ]]; then
   : > "$RUNDIR/sleep-drain-position-awake" || die "couldn't leave the mark in $RUNDIR; run-floor --m1-position will refuse"
 fi
 if [[ $mode == rest ]]; then
-  echo "recfg-peek: done: the SRAM is read to its end, 24 pieces, each saved. Restart the Mac normally; the next boot's collect brings them in."
+  echo "recfg-peek: done: the SRAM is read to its end, 24 pieces, all saved. Restart the Mac normally; the next boot's collect brings them in."
   exit 0
 fi
 echo "recfg-peek: done (stages ${stages// /, }). Go on with the next step."
