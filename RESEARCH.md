@@ -3269,13 +3269,13 @@ alike: memory nothing has written.
 PongoOS format reaches; not finished):
 - All 37 targets past the first 64 KiB open with words that format doesn't have: metas 13, 7, 5 and 15,
   where it has only End and Delay. B0 and B1 open with the same meta 13, the word a strict walk rejected
-  at their start. Taken as one-word markers, metas 13, 7 and 5 leave 28 of the 37 walking cleanly to an
+  at their start. Taken as one-word markers, metas 13, 7 and 5 leave 24 of the 37 walking cleanly to an
   End that fits the next sequence's start.
-- Nine don't walk yet: they open with meta 15 and use another form of op. Each is shared by the four blocks
-  at 0x1200-0x1500 and writes the 0x2004..., 0x2008... pages. Four small ones use meta 2 with a payload,
-  as the word inside B1 does.
+- Thirteen don't walk yet. Nine open with meta 15 and use another form of op: each is shared by the four
+  blocks at 0x1200-0x1500 and writes the 0x2004..., 0x2008... pages. Four small ones use meta 2 with a
+  payload, as the word inside B1 does.
 
-**What the 28 are** (by the pages they write and the cluster words they poll; the naming is inferred):
+**What the 24 are** (by the pages they write and the cluster words they poll; the naming is inferred):
 - **The CPU complexes' sequences**, a pair each, up and down: the E complex (its own block at
   0x210e00000, soc-cluster word 0x28e098000), and the two P complexes (0x211e00000 and 0x212e00000, words
   + 4 and + 8).
@@ -3284,6 +3284,8 @@ PongoOS format reaches; not finished):
   0x40d... (AVEMSR by its index).
 - **DCS's:** two sequences for each of four instances (0x200..., 0x201..., 0x202..., 0x203...), beside the
   nine shared ones.
+- **Two that are an End word and nothing else,** the third and fourth slots of ANE0's block.
+That's 6, 8, 8 and 2.
 So the eight descriptor blocks aren't a soc cluster each, as "Before the feasibility run" guessed: the
 blocks are the tables of two kinds of sequencer, the clusters' and DCS's.
 
@@ -3295,10 +3297,14 @@ blocks are the tables of two kinds of sequencer, the clusters' and DCS's.
 - That's where T8140's "a complex has a sequence with its untimed wait" is on this chip.
 
 **What it shows, and doesn't:**
-- Nothing here places the stall. macOS's table already waits on each soc cluster's busy bit, and since
-  run 9 every one of those waits is met within 10 ms (`qto` 0): by that measure the clusters' sequences
-  finish in this recipe. It isn't the same test as the sequences' own waits, and nothing has read
-  0x28e09a000 + 4n.
+- Nothing here places the stall. For the four clusters that aren't CPU complexes (ANE0, AFR, DISPLAY,
+  AVEMSR), macOS's table waits on the busy bit, and since run 9 each of those waits is met within 10 ms
+  (`qto` 0). That isn't the same test as the sequences' own waits, and nothing has read 0x28e09a000 + 4n.
+- **The CPU complexes' sequences are untested where it matters.** `qto` doesn't cover them, and it's
+  taken before the cores are let go. What has been seen: with CPU7 up, EACC's and PACC0's busy bits
+  cleared (runs 2 and 3), and with CPU0 up, both P complexes' power read off (runs 5 and 6). Nothing has
+  seen the E complex's sequence finish in a run where CPU0 goes down last, which is every run since.
+  Its two untimed waits are the newest candidates for what's ahead of B2's first poll.
 - A2's three settle waits (DCS, fabric and 0x28e20c400, each with no timeout) run sequences that are now
   on file. Whether DCS reaches p-state 2 from the state this recipe leaves is something the AP can try
   before the commit, where a breadcrumb can say how it went.
