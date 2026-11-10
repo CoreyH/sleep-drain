@@ -414,7 +414,19 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 15 (2026-11-10; judgment; this is the only place it's kept):** the reset
+      **The order after the sweep of 2026-11-10 (judgment; this is the only place it's kept):** bit 5
+      of a soc-cluster word is an "up done" flag that's cleared by writing 1 (DJ's T8140 driver, and A1
+      in this SRAM: RESEARCH.md, "Related work, swept 2026-11-10"). Under Linux ANE0's, AFR's and
+      AVEMSR's words still carry it, and the table's literal 0 leaves it there, where macOS has 0.
+      Proposed next, needing Corey's OK for three PMGR words' new value: write 0x20, not 0, to
+      0x28e09800c (ANE0), 0x28e098014 (AFR) and 0x28e098020 (AVEMSR), in their places in the table, when
+      the word shows the flag; make those three waits and DISPLAY's ask for a word that reads 0, not
+      just bit 4 clear, with `qto` saying which didn't; everything else as run 15, WD2's bite at 120 s
+      included, so that the ending reads as it did there. Not built. Judgment: the likeliest single
+      difference found so far, perhaps 1 in 3 to change the ending. After it, in this order: A2's three
+      settle steps tried from the AP before the commit; the fabric's p-state at the commit; the WD1
+      marker run.
+      **Earlier, the order after run 15 (2026-11-10; judgment):** the reset
       followed WD2's bite to 120 s (RESEARCH.md, "M1 run 15"): the entry is stuck, not slow, and it isn't
       a completed entry with a stalled wake (but for a later sequence starting 90.0-91.3 s in, which
       another bite would rule out). The store from user space took, so runs 13 and 14 stand: the SRAM
