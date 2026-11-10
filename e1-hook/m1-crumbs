@@ -562,7 +562,9 @@ LOOK_DONE = len(LOOK_AT) - 1
 # gate=1 (e1-hook/probe --gate): its steps, by the number it leaves at 0x6010 with GATE_PASS set (gate_test.h's enum
 # gate_at), and the mark of its byte at 0x6005.
 GATE_PASS = 0x20
+GATE_NO_SNAP = 0x40  # in a mark from step 6 on: the write that carries the lane's three reads wasn't acked
 GATE_MARK = 0x80
+GATE_UNMADE = 0xe0  # the byte of a test that wasn't made
 GATE_AT = ("nothing marked",
            "everything read as found",
            "the five UARTs written 0x200",
@@ -571,8 +573,9 @@ GATE_AT = ("nothing marked",
            "the gate polled again",
            "AFNC2_LW1 written back as found",
            "the five UARTs written back as found",
-           "every step taken: the byte written")
-GATE_DONE = len(GATE_AT) - 1
+           "every step taken: the byte written",
+           "the test wasn't made: after noirq SIO read on, or a UART had a target of f, and nothing was written")
+GATE_LANE_BACK, GATE_DONE, GATE_NOT_MADE = 6, 8, 9
 
 
 def gate_word(p):
@@ -585,10 +588,11 @@ def gate_word(p):
 
 def gate_lines(at, v, pack):
     """gate=1's record: the step it was about to take when it last wrote 0x6010, its byte at 0x6005 if that landed, and
-    the lane's three reads at 0x6011-0x6016. The kernel log e1-hook/probe saves has every word in full."""
-    n = at & ~GATE_PASS
-    step = GATE_AT[n] if n <= GATE_DONE else "not a step's number"
-    if n == GATE_DONE:
+    the lane's three reads at 0x6011-0x6016, if the mark says they're this test's. The kernel log e1-hook/probe saves
+    has every word in full."""
+    n = at & ~(GATE_PASS | GATE_NO_SNAP)
+    step = GATE_AT[n] if n <= GATE_NOT_MADE else "not a step's number"
+    if n in (GATE_DONE, GATE_NOT_MADE):
         out = [f"0x6010 = 0x{at:02x}: the gate test, after both looks: {step}"]
     elif v & GATE_MARK:
         # The byte is zeroed when the test starts and written after its last step, write-backs and all: with it there, an
@@ -600,14 +604,30 @@ def gate_lines(at, v, pack):
                " The Mac went down in that step, or after it and before the next mark"
                + (". From step 2 to step 7 a word it had changed may not have been written back: the restart since has put"
                   " every power word back where the boot leaves it" if 2 <= n <= 7 else "")]
-    if any(pack):
-        out += ["0x6011-0x6016: AFNC2_LW1 (0x28e580160), read three times before anything was written back:",
-                f"  right before its write, SIO's subtree off: {gate_word(pack[0:2])}",
-                f"  after the write of macOS's 0x1000030f: {gate_word(pack[2:4])}",
-                f"  after the second poll of the gate: {gate_word(pack[4:6])}"]
+    # The lane's three reads are written in one command with step 6's mark, so only that mark, or a later one that
+    # doesn't say the command failed, makes 0x6011-0x6016 this test's: bytes left there from before are never read
+    # as its own (Pullfrog on #80). The byte at 0x6005 is another command's, and has no say in this.
+    if GATE_LANE_BACK <= n <= GATE_DONE and not at & GATE_NO_SNAP:
+        if any(pack):
+            out += ["0x6011-0x6016: AFNC2_LW1 (0x28e580160), read three times before anything was written back:",
+                    f"  right before its write, SIO's subtree off: {gate_word(pack[0:2])}",
+                    f"  after the write of macOS's 0x1000030f: {gate_word(pack[2:4])}",
+                    f"  after the second poll of the gate: {gate_word(pack[4:6])}"]
+        else:
+            out.append("0x6011-0x6016 read 0 though the mark says their write was acked: nothing is read from them")
     else:
-        out.append("0x6011-0x6016 read 0: the lane's three reads weren't written (the test didn't get that far, or wasn't made), or"
-                   " didn't land")
+        why = ("the test wasn't made" if n == GATE_NOT_MADE else
+               "the mark says the write that carries them wasn't acked" if GATE_LANE_BACK <= n <= GATE_DONE else
+               "the last mark that landed is from before their write" if n < GATE_LANE_BACK else "the mark isn't a step's")
+        if any(pack):
+            out.append(f"0x6011-0x6016 hold {bytes(pack).hex(' ')}: NOT this test's reads of the lane ({why}): left from before, and"
+                       " nothing is read from them")
+        else:
+            out.append(f"0x6011-0x6016 read 0: the lane's three reads weren't written ({why})")
+    if n == GATE_NOT_MADE:
+        return out + [f"0x6005 = 0x{v:02x}: " + ("the byte a test that wasn't made leaves" if v == GATE_UNMADE else
+                                                "NOT the 0xe0 a test that wasn't made leaves: nothing is read from it"),
+                      "  so: nothing was switched off, nothing had to be put back, and nothing is decided about the gate"]
     if not v & GATE_MARK:
         return out + [f"0x6005 = 0x{v:02x}: the test's byte didn't land (bit 7 clear), or the test stopped before it: nothing is read"
                       " from it"]
@@ -1305,7 +1325,9 @@ def main():
                     " written: the breadcrumbs stay, and clearing it needs Corey's word")
             elif alarm[0] & 0x40:
                 print(f"0x1401 reads armed (0x{alarm[0]:02x}) and was left alone: nothing shows this run armed it")
-            for off, n in CRUMBS:
+            # The stage's block last: a clear that stops halfway then leaves the stage, and the launchers, which go by a
+            # zero stage, refuse (Pullfrog on #80: a run's bytes at 0x6011-0x6016 left under a zero stage).
+            for off, n in reversed(CRUMBS):
                 if os.pwrite(fd, bytes(n), off) != n:
                     die(f"short write at {off:#x}")
             after = [os.pread(fd, n, off) for off, n in CRUMBS]

@@ -118,7 +118,10 @@ fi
 [[ $(< "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none"
 [[ $(< "$MEM_SLEEP") == *"[s2idle]"* ]] || die "s2idle isn't the sleep mode"
 # The breadcrumbs have to be clear: the module refuses otherwise, and says so less plainly.
-"$CRUMBS" 2> /dev/null | grep -q "^stage 0x6004 = 0x00:" || die "the PMU's breadcrumbs aren't clear: pkexec $here/m1-crumbs --clear"
+crumbs=$("$CRUMBS" 2> /dev/null)
+grep -q "^stage 0x6004 = 0x00:" <<< "$crumbs" || die "the PMU's breadcrumbs aren't clear: pkexec $here/m1-crumbs --clear"
+# And the bytes beside the stage, where the gate test leaves the lane's reads: none left there under a zero stage (Pullfrog on #80).
+grep -q "^0x6010: 00 00 00 00 00 00 00 " <<< "$crumbs" || die "the PMU's 0x6010-0x6016 aren't clear, though the stage is: pkexec $here/m1-crumbs --clear"
 
 mkdir -p "$LOGDIR" || die "couldn't make $LOGDIR"
 # The log as it grows is kept out of $LOGDIR: sleep-drain-safe save archives every new file there as it finds it, and

@@ -3851,10 +3851,14 @@ look".
   back. So the result the test is after may be the one it doesn't resume from. In a safe boot that costs
   the kernel log and nothing else: the disk is read-only, and a restart puts every power word back.
 - **The record, made to stand without the kernel log:** the look's stage 0x0f; the step about to be taken
-  at 0x6010, with 0x20 set; 0x6005 zeroed when the test starts and the result byte there at the end; and
-  at 0x6011-0x6016, written before anything is put back, AFNC2_LW1 three times in two bytes each (target,
-  actual state, auto-enable, auto floor, its three flags): right before its write, after it, and after the
-  second poll. The kernel log has every word in full, with the six gate words at four points.
+  at 0x6010, with 0x20 set; 0x6005 and 0x6011-0x6016 zeroed when the test starts, and the result byte at
+  0x6005 at the end; and at 0x6011-0x6016, AFNC2_LW1 three times in two bytes each (target, actual state,
+  auto-enable, auto floor, its three flags): right before its write, after it, and after the second poll.
+  Those six bytes go out before anything is put back, in one command with the mark of the step that
+  follows (6), so the mark is what says they're this test's: `m1-crumbs` reads them only under that mark
+  or a later one, and a later mark carries 0x40 if the command wasn't acked. A test that isn't made
+  leaves a mark of its own (9). The kernel log has every word in full, with the six gate words at four
+  points.
 - **What it can show, in Linux's suspended state:** the gate closes with the subtree off (then this poll
   isn't the stall there, and the lane's floor isn't needed for it); it reads closed only after the lane
   has macOS's value; the lane doesn't take the value, with what it reads instead, which would be the "not
@@ -3864,20 +3868,24 @@ look".
   that and doesn't end it. And the recipe's state is further on (the PMP and SIO's firmware stopped, the
   cores parked, macOS's table out), and B2 polls after its own writes. A result here is a lead for the
   next one-way run.
-- **Checked:** the test compiles the function as it stands against a model in fifteen scenarios (a gate
+- **Checked:** the test compiles the function as it stands against a model in twenty scenarios (a gate
   that closes at step 2, only at step 4, late by itself, or never; a lane that doesn't take the value, or
   had gated at Linux's own floor; SIO on, or a UART in use; words that don't go off, or don't come back, or
-  come back in their settings and not their actual state; each UART found its own way): twelve writes and
-  no other in each test that's made, none in one that isn't, and always the write-back.
+  come back in their settings and not their actual state; each UART found its own way; an earlier test's
+  bytes still in the PMU, with and without the PMU acking this test's writes): twelve writes and no other
+  in each test that's made, none in one that isn't, and always the write-back.
 - **What the adversarial review of #80 changed** (one pass by a subagent, set on breaking it; it found no
   way for the test to write a wrong word or to skip a write-back): the risk above, said plainly where the
   first build called the test safe to come back from; the precondition of step 0; 0x6005 zeroed first, so
   that a byte left there isn't read as this test's; the reads of step 3 before the write, and the "after,
   not because" in every verdict; the lane's three reads in the PMU; the lane judged back last; the
   never-write check at load; and the launcher printing the look's thirty lines above the photo's block
-  where they don't push the result off the screen. Pullfrog's two: a UART that didn't go off makes the
-  SUMMARY say INCONCLUSIVE first, and a result byte that landed means the test reached its end even if its
-  last mark didn't.
+  where they don't push the result off the screen. Pullfrog's three: a UART that didn't go off makes the
+  SUMMARY say INCONCLUSIVE first; a result byte that landed means the test reached its end even if its
+  last mark didn't; and bytes left at 0x6011-0x6016 by an earlier test can't be read as this one's reads
+  of the lane. For the last, besides the mark rule above: `m1-crumbs --clear` now zeroes the stage's
+  block last, so a clear that stops halfway leaves the stage and no launcher takes the PMU for clear, and
+  `e1-hook/probe` refuses if 0x6010-0x6016 aren't zero under a zero stage.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

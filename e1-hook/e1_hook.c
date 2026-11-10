@@ -3924,16 +3924,19 @@ static u32 m1_gate_write(void __iomem *p, u32 val, bool (*done)(u32, u32), u32 w
 static void m1_gate_test(void)
 {
 	static const u16 uart[GATE_UART_N] = GATE_UARTS, kid[GATE_KID_N] = GATE_KIDS;
-	static const u8 zero;
+	static const u8 zero, zero6[6];
 	bool uarts_off = true, closed1, lane_took, closed2, lane_gated, lane_back, uarts_back = true, made = true;
 	u32 was[GATE_UART_N], k[GATE_KID_N], lane, first, v, g;
-	u8 res, pack[6];
+	u8 res, rec[1 + 6], *pack = rec + 1, snap_bit;
+	int z5, z6, snap;
 	unsigned int i;
 	u64 t0;
 
 	m1_look_at(GATE_PASS | GATE_AT_READ);
-	/* A byte left there from before would read as this test's (the review): zeroed first. */
-	m1_kwrite(0x6005, &zero, 1);
+	/* Bytes left there from before would read as this test's (the review; Pullfrog on #80 for the lane's reads): zeroed first. */
+	z5 = m1_kwrite(0x6005, &zero, 1);
+	z6 = m1_kwrite(0x6011, zero6, sizeof(zero6));
+	pr_info("look: gate: the PMU's 0x6005 and 0x6011-0x6016 zeroed first: %d %d\n", z5, z6);
 	for (i = 0; i < GATE_UART_N; i++)
 		was[i] = readl(m1_sio + uart[i]);
 	for (i = 0; i < GATE_KID_N; i++)
@@ -3950,7 +3953,7 @@ static void m1_gate_test(void)
 			made = false;
 	}
 	if (!made) {
-		m1_look_at(GATE_PASS | GATE_AT_DONE);
+		m1_look_at(GATE_PASS | GATE_AT_NOT_MADE);
 		res = gate_byte(false, false, false, false, false, true, true);
 		i = m1_kwrite(0x6005, &res, 1);
 		pr_info("look: gate: SUMMARY: NOT MADE: after noirq SIO reads on, or a UART has a target of f, which isn't the state this test is for; nothing was written; byte %02x, written to the PMU: %d\n",
@@ -3991,14 +3994,22 @@ static void m1_gate_test(void)
 	lane_gated = gate_actual(v, 0);
 	gate_pack(v, pack + 4);
 	pr_info("look: gate: AFNC2_LW1 reads %08x then: its actual state %s\n", v, lane_gated ? "0" : "not 0");
-	/* The lane's three reads to the PMU before anything is written back (the review): if the resume doesn't come, they're what's left. */
-	m1_kwrite(0x6011, pack, sizeof(pack));
+	/*
+	 * The lane's three reads to the PMU before anything is written back (the review): if the resume doesn't come,
+	 * they're what's left. In one command with the next step's mark, so that the mark says the reads are this
+	 * test's; if that command isn't acked, the mark goes out alone and every mark after it says so (Pullfrog on #80).
+	 */
+	rec[0] = GATE_PASS | GATE_AT_LANE_BACK;
+	snap = m1_kwrite(LOOK_AT, rec, sizeof(rec));
+	snap_bit = snap ? GATE_NO_SNAP : 0;
+	if (snap)
+		m1_look_at(GATE_PASS | GATE_NO_SNAP | GATE_AT_LANE_BACK);
+	pr_info("look: gate: AFNC2_LW1's three reads, with the next step's mark, to the PMU's 0x6010-0x6016 in one command: %d\n", snap);
 
 	/* Back as found, the lane first, each less what the kernel's driver never writes back either. */
-	m1_look_at(GATE_PASS | GATE_AT_LANE_BACK);
 	v = m1_gate_write(m1_sio + GATE_LANE, lane & ~ASC_PS_NOT_WRITTEN, gate_took, lane, &first);
 	pr_info("look: gate: AFNC2_LW1 written back %08x: it reads %08x\n", lane & ~ASC_PS_NOT_WRITTEN, v);
-	m1_look_at(GATE_PASS | GATE_AT_UARTS_BACK);
+	m1_look_at(GATE_PASS | snap_bit | GATE_AT_UARTS_BACK);
 	for (i = 0; i < GATE_UART_N; i++) {
 		v = m1_gate_write(m1_sio + uart[i], was[i] & ~ASC_PS_NOT_WRITTEN, gate_back, was[i], &first);
 		pr_info("look: gate: 0x28e580%03x written back %08x: it reads %08x\n", uart[i], was[i] & ~ASC_PS_NOT_WRITTEN, v);
@@ -4011,7 +4022,7 @@ static void m1_gate_test(void)
 		cpu_relax();
 	lane_back = gate_back(v, lane);
 	pr_info("look: gate: AFNC2_LW1 reads %08x with everything written back: %s\n", v, lane_back ? "as found" : "NOT as found within 10 ms");
-	m1_look_at(GATE_PASS | GATE_AT_DONE);
+	m1_look_at(GATE_PASS | snap_bit | GATE_AT_DONE);
 	m1_gate_log("after both were put back");
 	res = gate_byte(uarts_off, closed1, lane_took, closed2, lane_gated, lane_back, uarts_back);
 	i = m1_kwrite(0x6005, &res, 1);
@@ -4023,6 +4034,7 @@ static void m1_gate_test(void)
 }
 static_assert(LOOK_SIO_PAGE + GATE_LANE == 0x28e580160ULL && LOOK_GATE_A + GATE_SIO == 0x28e5a0050ULL && GATE_PASS > LOOK_LOAD);
 static_assert(GATE_LANE < LOOK_SIO_FIRST && (LOOK_GATE_A & PAGE_MASK) == LOOK_GATE_A);
+static_assert(LOOK_AT == 0x6010 && GATE_AT_NOT_MADE < LOOK_LOAD && !(GATE_NO_SNAP & (GATE_PASS | LOOK_LOAD | (LOOK_LOAD - 1))));
 
 /*
  * look=1 at load, the last of m1_init()'s steps: its three mappings, the engine's page if nothing has mapped it yet,

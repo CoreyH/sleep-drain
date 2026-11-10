@@ -61,7 +61,8 @@ def write(path, text, mode=0o644):
 
 def setup(tmp, safe=True, loaded=False, ko=True, vermagic=RELEASE, newer=None, parms=True, takes="Y", insmod_rc=0, pm_test="[none] freezer",
           mem_sleep="[s2idle]", crumbs="stage 0x6004 = 0x00: none: no M1 run since the last clear", save_rc=0, klog=KLOG, plc=1, rmmod_rc=0,
-          pmp_rc=0, look_takes="Y", look=False, parms_look=True, pmpmod=False, pc_file=1, gate_takes="Y", parms_gate=True):
+          pmp_rc=0, look_takes="Y", look=False, parms_look=True, pmpmod=False, pc_file=1, gate_takes="Y", parms_gate=True,
+          crumbs10="0x6010: 00 00 00 00 00 00 00 5a  00 00 00 00 00 00 00 00"):
     """look: the launcher will be run with --look, so the count it goes by, the FIFO, is prepare_late_calls, and prepare_calls is a
     file with pc_file in it; otherwise the FIFO is prepare_calls and prepare_late_calls a file with plc. The FIFO's values are run()'s."""
     d = os.path.join(tmp, "e1-hook")
@@ -107,7 +108,7 @@ def setup(tmp, safe=True, loaded=False, ko=True, vermagic=RELEASE, newer=None, p
     write(os.path.join(stubs, "sleep"), f'#!/bin/sh\necho "sleep $*" >> {calls}\n', 0o755)
     write(os.path.join(stubs, "dmesg"), f'#!/bin/sh\necho "dmesg" >> {calls}\ncat {tmp}/klog\n', 0o755)
     write(os.path.join(tmp, "klog"), klog)
-    write(os.path.join(stubs, "m1-crumbs"), f'#!/bin/sh\necho "0x6000: 00 30 00 50"\necho "{crumbs}"\n', 0o755)
+    write(os.path.join(stubs, "m1-crumbs"), f'#!/bin/sh\necho "0x6000: 00 30 00 50"\necho "{crumbs10}"\necho "{crumbs}"\n', 0o755)
     # The saver also notes every file in the log directory as it stands at that save: sleep-drain-safe save archives each new one
     # as it finds it, and collect never replaces a file with a different copy of itself, so none may change between two saves.
     write(os.path.join(stubs, "save"), f'#!/bin/sh\necho "sleep-drain-safe $*" >> {calls}\n'
@@ -290,7 +291,13 @@ def main():
                 ("with breadcrumbs left in the PMU", dict(crumbs="stage 0x6004 = 0xd3 (pmp_out=1: bit 7, so the stage is 0x53)"),
                  "the PMU's breadcrumbs aren't clear"),
                 ("with a probe's breadcrumbs left in the PMU", dict(crumbs="stage 0x6004 = 0x0e: probe=1 (e1-hook/probe), not a run"),
-                 "the PMU's breadcrumbs aren't clear")]
+                 "the PMU's breadcrumbs aren't clear"),
+                # A clear that stopped halfway: the stage zero, an earlier gate test's reads of the lane still there (Pullfrog on #80).
+                ("with bytes left beside a zero stage", dict(crumbs10="0x6010: 00 ff 1f 0f 10 0f 10 00  00 00 00 00 00 00 00 00"),
+                 "the PMU's 0x6010-0x6016 aren't clear, though the stage is"),
+                ("with the last of those bytes left", dict(crumbs10="0x6010: 00 00 00 00 00 00 10 00  00 00 00 00 00 00 00 00"),
+                 "the PMU's 0x6010-0x6016 aren't clear, though the stage is"),
+                ("when m1-crumbs prints no 0x6010 row", dict(crumbs10="0x6018: 00"), "the PMU's 0x6010-0x6016 aren't clear, though the stage is")]
     refusals += [(f"with a module older than {n}", dict(newer=n), f"e1_hook.ko is older than {n}") for n in SOURCES]
     for what, kw, msg in refusals:
         with tempfile.TemporaryDirectory() as tmp:

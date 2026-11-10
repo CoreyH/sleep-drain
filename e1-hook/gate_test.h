@@ -56,10 +56,15 @@
  * the record in the PMU is made to stand without the kernel log:
  *   - the look's stage, 0x0f, with the step about to be taken at 0x6010,
  *     GATE_PASS set in it;
- *   - 0x6005 zeroed at the start, and gate_byte() there at the end;
- *   - six bytes at 0x6011-0x6016 before anything is written back, gate_pack()
- *     of the lane three times: right before its write, after it, and after the
- *     second poll.
+ *   - 0x6005 and 0x6011-0x6016 zeroed at the start, and gate_byte() at 0x6005
+ *     at the end;
+ *   - six bytes at 0x6011-0x6016, gate_pack() of the lane three times: right
+ *     before its write, after it, and after the second poll. They go out before
+ *     anything is written back, in one command with the mark of the step that
+ *     follows, GATE_AT_LANE_BACK. So that mark, or a later one without
+ *     GATE_NO_SNAP, is what says the six bytes are this test's: bytes left there
+ *     from before would otherwise read as its own (Pullfrog on #80);
+ *   - a test that isn't made leaves GATE_AT_NOT_MADE, and no reads.
  */
 #ifndef GATE_TEST_H
 #define GATE_TEST_H
@@ -90,6 +95,8 @@ typedef uint32_t u32;
 
 /* The steps, each written to the look's 0x6010 before it's taken, with GATE_PASS set. m1-crumbs has a line for each. */
 #define GATE_PASS		0x20
+/* In a mark from GATE_AT_LANE_BACK on: the command that carries the lane's three reads wasn't acked, so 0x6011-0x6016 aren't this test's. */
+#define GATE_NO_SNAP		0x40
 enum gate_at {
 	GATE_AT_NONE,
 	GATE_AT_READ,		/* everything read as found */
@@ -100,6 +107,7 @@ enum gate_at {
 	GATE_AT_LANE_BACK,	/* AFNC2_LW1 written back as found */
 	GATE_AT_UARTS_BACK,	/* the five UARTs written back as found */
 	GATE_AT_DONE,		/* every step taken: the byte */
+	GATE_AT_NOT_MADE,	/* step 0 found SIO on or a UART in use: nothing written, and the byte */
 };
 
 /* A power word took a written value: its auto-enable, auto floor and target read as that value's. */

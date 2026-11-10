@@ -175,9 +175,13 @@ refuses if one of them is on the never-write list.
 **It may not come back.** If the gate closes, SIO's island loses power with SIO's firmware running, and
 the kernel can't restart that firmware: the screen may stay dark, as after the probe (the launcher says
 so, and what to do then, before it asks for the suspend). So the record is
-made to stand without the kernel log: the step at 0x6010 with 0x20 set, the result byte at 0x6005
-(zeroed when the test starts), and the lane's three reads, two bytes each, at 0x6011-0x6016, written
-before anything is put back. `m1-crumbs` reads all of it after the restart. When it does come back,
+made to stand without the kernel log: the step at 0x6010 with 0x20 set, the result byte at 0x6005, and
+the lane's three reads, two bytes each, at 0x6011-0x6016. Those bytes are zeroed when the test starts,
+and the reads go out before anything is put back, in one command with step 6's mark: `m1-crumbs` reads
+them as this test's only under that mark or a later one (0x40 in a later mark says the command wasn't
+acked), and a test that isn't made leaves mark 9. `m1-crumbs` reads all of it after the restart; the
+launcher refuses to start unless 0x6010-0x6016 are zero as well as the stage, and `m1-crumbs --clear`
+zeroes the stage last, so a clear that stopped halfway doesn't pass for one that finished. When it does come back,
 everything is in the kernel log in full, and the launcher prints the look's lines above the photo's
 block and the test's lines in it, as it asks the module for `gate=Y` as it does for `look=Y`.
 RESEARCH.md, "The gate test as built", has why, and what the review of #80 changed.
