@@ -2,9 +2,9 @@
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
 --m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words,
---m1-recfg-bite, --m1-wd2-bite or --m1-cluster-ack; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1, hold=1, pmp_out=1, position=1,
-sio_on=1, disp_off=1, one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1, wd2_bite=1, cluster_ack=1) leaves in the
-PMU, read and decoded, and cleared again.
+--m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up or --m1-mark; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1,
+hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1, one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1,
+wd2_bite=1, cluster_ack=1, fabric_up=1, wd1_mark=1) leaves in the PMU, read and decoded, and cleared again.
 
   e1-hook/m1-crumbs               read them (no root needed)
   pkexec e1-hook/m1-crumbs --clear   zero them, after reading (root)
@@ -59,10 +59,17 @@ DISP_STAGES = (0x48, 0x49, 0x4a, 0x4c, 0x4d)  # disp_off=1: POSITION's with bit 
 # recfg_bite=1, in place of 0x4f and after the release: 0x6005 is the sample (e1_hook's M1_RECFG_STAGE_PEND and
 # M1_RECFG_STAGE: with and without an exception pending on CPU0 after its reads)
 RECFG_STAGES = (0x46, 0x47)
+# fabric_up=1 (run-floor --m1-fabric-up; e1-hook/fabric_up.h has the stages and the byte): from step 8's command on the
+# run has stages of its own, because 0x6007 changes meaning there: 0x52 for sio_stop=1's 0x4e, and 0x51 and 0x53 for
+# wd2_bite=1's 0x56 and 0x57 (with and without an exception pending).
+FAB_PRE = 0x52
+FAB_WD2 = (0x51, 0x53)
+FAB_STAGES = (FAB_PRE,) + FAB_WD2
 # wd2_bite=1, the same way: 0x6005 is its own sample (e1_hook's M1_WD2_STAGE_PEND and M1_WD2_STAGE)
-WD2_STAGES = (0x56, 0x57)
+WD2_STAGES = (0x56, 0x57) + FAB_WD2
+WD2_PEND = (0x56, FAB_WD2[0])  # CPU0 had an exception pending after its reads
 SAMPLE_STAGES = RECFG_STAGES + WD2_STAGES  # 0x6005 isn't the parked cores
-SIO_STOP_STAGES = (0x4e, 0x4f) + SAMPLE_STAGES  # sio_stop=1, in place of 0x5a and 0x5b: 0x6012 has the K steps' outcomes
+SIO_STOP_STAGES = (0x4e, 0x4f, FAB_PRE) + SAMPLE_STAGES  # sio_stop=1, in place of 0x5a and 0x5b: 0x6012 has the K steps' outcomes
 # alarm=1 (0x59, 0x5f), hold=1 (0x5a-0x5e) and position=1: 0x6016 is the alarm's byte, and the alarm may be armed
 ALARM_STAGES = (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e) + POSITION + SIO_STOP_STAGES
 ALARM_SECS = 3600  # e1_hook's M1_ALARM_SECS
@@ -143,7 +150,7 @@ ACK_WROTE = 0x2c  # the three words cluster_ack=1 writes 0x20 itself: all but DI
 # The stages a cluster_ack=1 run can leave, all with pmp_out=1's bit 7: those before 0x6014 is sent (the table's, and
 # hold=1's stop requests), and those after (sio_stop=1's last before the commit, and wd2_bite=1's two).
 ACK_EARLY = (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39)
-ACK_MARKED = (0x4e, 0x56, 0x57)
+ACK_MARKED = (0x4e, 0x56, 0x57) + FAB_STAGES
 # 0x6013's buckets: when CPU7 first read a power-down's bit 4 clear after the
 # hand-over. Its first read is at the hand-over itself, so bucket 0 can't say
 # the bit was ever set, and bit 5 isn't recorded: clear isn't "down".
@@ -194,6 +201,16 @@ HOLD_TEXT = {
     0x56: "wd2_bite=1: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2 was armed, and read WD2"
           " and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards: that would end its deep WFI, so it likely never"
           " went down (a write or a read that faulted after the commit would leave an SError pending, masked)",
+    0x52: "8 (fabric_up=1): sio_stop=1's 0x4e, with fabric_up=1's byte at 0x6007: the steps' outcomes (0x6012) follow it, the last"
+          " SPMI command before the commit; next came nub-spmi0's acks, the first commit, the alarm's commands, the release and"
+          " stage 0x51 or 0x53",
+    0x53: "fabric_up=1: wd2_bite=1's 0x57: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2 was"
+          " armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards, the run's last breadcrumb by design: it then"
+          " took its deep WFI, unrecorded",
+    0x51: "fabric_up=1: wd2_bite=1's 0x56: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2 was"
+          " armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards: that would end its deep"
+          " WFI, so it likely never went down (a write or a read that faulted after the commit would leave an SError pending,"
+          " masked)",
     0x4f: "sio_stop=1: the commit and the alarm are done, the run's last breadcrumb by design: CPU0 then released the others"
           " and took its deep WFI at once, unrecorded",
     0x40: "position=1: the release went out and CPU0's watch ended (0x6005 = the cores it read off); CPU0 stays up,"
@@ -513,6 +530,122 @@ def qto(q, ack=False):
                             "macOS's waits that timed out after 10 ms: " + "; ".join(timed))
 
 
+# wd1_mark=1 (run-floor --m1-mark; e1-hook/wd1_mark.h): bits 7:6 of fabric_up=1's byte, WD1 as read just before the commit.
+# Both set, the marker stood, and the restart's time reads B2's progress: WD1's bite less its count if B2 never zeroed
+# the count, WD2's bite if it did and the pair then stopped, WD1's bite if the pair finished.
+WD1_STANDS = 0xc0
+WD1_BITE_S, WD1_COUNT_S, WD2_BITE_S = 150, 60, 120
+FAB_WAS = ("another value: neither 0x333 nor asked down to 1", "0x111: asked down to 1 by the kernel's suspend, and there",
+           "asked down to 1 by the kernel's suspend, and not there yet", "0x333, as awake: this suspend hadn't lowered it")
+
+
+def fab_lines(v):
+    """fabric_up=1: 0x6007 from stage 0x52 on (e1-hook/fabric_up.h has the layout). It says what the word read, and leaves
+    the ending to the stage and wd2_bite=1's sample."""
+    was, took, kept = v >> 2 & 3, bool(v & 0x10), bool(v & 0x20)
+    out = [f"0x6007 = 0x{v:02x}: fabric_up=1's byte, in place of the cores that held:"]
+    if v & 2:
+        # The bad case by design: step 7's byte, which this one replaces, has this bit set whenever CPU1 held.
+        return out + ["  bit 1 is set: NOT all seven other cores wrote their stop bit and held; or this is still step 7's byte, the"
+                      " cores that held, where this bit is CPU1's, and stage 0x52's command didn't put the run's byte in its place."
+                      " Either way nothing more is read out of it: no fabric outcome, and no marker in WD1 is taken to stand"]
+    out += ["  the other cores: all seven wrote their stop bit and held",
+            f"  bit 0 (sio_on=1): ps_sio, UART_P and SPI_P {'all read actual f within 10 ms' if v & 1 else 'did NOT all read actual f within 10 ms'}",
+            f"  the fabric's p-state word (0x28e20c000) before CPU0's write: {FAB_WAS[was]}",
+            "  after the write of 3 to its low nibble: " + ("it read 0x333, not busy, within 10 ms" if took else "it did NOT read 0x333 within 10 ms")
+            + "; at the end of step 5, after the ClkGen park and PLL-off: " + ("0x333" if kept else "NOT 0x333")]
+    if not v:
+        out.append("  so: 0x00 is also what a byte that didn't land reads, and it would otherwise say that nothing settled and no"
+                   " marker stood: not a reading to lean on")
+    elif took and kept:
+        out.append("  so: the fabric was at 3 when the table went out and still there when step 5 ended, where macOS has it at its"
+                   " commit" + (": the kernel had lowered it, and the write brought it back" if was in (1, 2) else
+                                ". But it read 0x333 before the write too: this suspend hadn't lowered it, so the write changed nothing"
+                                " and the fabric wasn't a difference from macOS in this run" if was == 3 else
+                                ". Before the write it read neither 0x333 nor a word asked down to 1, which nothing predicted"))
+    elif took:
+        out.append("  so: the fabric came back to 3 after the write and was NOT there when step 5 ended: something in the table moved"
+                   " it (the ClkGen park or PLL-off, most likely). The engine didn't find it where macOS leaves it")
+    elif kept:
+        out.append("  so: the fabric didn't read 0x333 within 10 ms of the write but did when step 5 ended: it settled late, and was"
+                   " at 3 before the commit")
+    else:
+        out.append("  so: the fabric did NOT come back to 3, neither within 10 ms of the write nor by step 5's end. The run's one"
+                   " change didn't take, and the ending says nothing about a fabric at 3")
+    w = v & WD1_STANDS
+    if w == WD1_STANDS:
+        out.append(f"  bits 7:6 (wd1_mark=1): WD1 stood as the marker just before the commit: armed, its bite {WD1_BITE_S} s, its count"
+                   f" past {WD1_COUNT_S} s and running. The restart's time is read against it below, as far as the stage and"
+                   " wd2_bite=1's sample bear a reading out")
+    elif w:
+        out.append("  bits 7:6 (wd1_mark=1): the marker did NOT stand just before the commit: "
+                   + (f"WD1 was armed with its {WD1_BITE_S} s bite, but its count didn't read past {WD1_COUNT_S} s, by up to 5 s: the"
+                      " count write didn't take, or the count isn't running" if w == 0x40 else
+                      f"WD1's count read past {WD1_COUNT_S} s, by up to 5 s, but it wasn't armed with the {WD1_BITE_S} s bite")
+                   + ". The restart's time says nothing about B2, and a time that isn't WD2's may be WD1's")
+    else:
+        out.append("  bits 7:6 (wd1_mark=1): clear: no marker in WD1 stands in this record. In a run without wd1_mark=1 (the reading's"
+                   " label and the load log say which this was) the restart's time is read against WD2 alone. In one with it, the"
+                   " marker read back wrong in both respects, WD1 may still be armed some other way, and a time that isn't WD2's"
+                   " may be WD1's")
+    out.append("  (how the run ended is the stage's and wd2_bite=1's sample's to say; PLAN.md has how an ending reads with this)")
+    return out
+
+
+def fab_landed(b):
+    """fabric_up=1: is 0x6007 the run's byte? Step 7 leaves the cores that held there (0xff as a rule), and stage 0x52's command
+    puts the byte in its place, last of four. The steps' outcomes at 0x6012 go out right after that command and only if it
+    didn't fail, so their marker at 0x6013 says the command landed whole. Without it the byte may still be step 7's."""
+    return b[0x13] == K_MARK or b[0x13] & W_MARK == W_MARK
+
+
+def mark_reading(x, s, v):
+    """wd1_mark=1, the marker standing: what a restart x s after the commit (to a second either way) says, at stage s with
+    wd2_bite=1's sample v (0x6005). The time names no watchdog by itself: each reading is the one that fits, and it's given
+    only where the stage and the sample bear it out."""
+    head = "  wd1_mark=1's marker: "
+    unzeroed = WD1_BITE_S - WD1_COUNT_S
+    if s == FAB_PRE:
+        return (f"{head}not read. Stage 0x52 is the last before the commit: nothing here records the commit, the release or WD2 after"
+                f" it, so {x:.0f} s can't be read as B2's progress. WD1 has been armed since step 4, so a run that stopped anywhere"
+                f" from there on restarts by itself about {unzeroed} s later, committed or not")
+    if s in WD2_PEND:
+        return (f"{head}not read. CPU0 had an exception pending after its reads (the stage) and likely never went down, and a core"
+                f" left up holds the engine by itself: {x:.0f} s says nothing about a pair with every core down")
+    code = v >> 6
+    # live: WD2 seen armed, still armed after CPU0's write and counting, so that it fires unless something stops it. 0xfe is
+    # the parked cores, which stage 0x52 leaves in this byte: not a sample.
+    live = bool(v & 4 and v & 0x10 and v & 0x20 and v != 0xfe)
+    moved = bool(live and v & 8)
+    if abs(x - unzeroed) <= 4:
+        return (f"{head}about {unzeroed} s is what WD1 gives with its count never zeroed: B2 didn't reach its op 224, and the stall is"
+                " at B2's first poll, in the first handshake (A2's three steps of its own) or in B2's power-down. That's the"
+                " reading that fits with nothing else assumed, not a proof of which watchdog fired: a pair that finished, with"
+                " a later A sequence starting about 60 s after the commit and arming WD2 with its own 30 s, gives the same time")
+    if abs(x - WD2_BITE_S) <= 4:
+        if not moved:
+            return (f"{head}about {WD2_BITE_S} s, but wd2_bite=1's sample, above, doesn't show WD2 armed and counting with CPU0's"
+                    f" {WD2_BITE_S} s bite, so this record doesn't make the time WD2's. Not read as B2's progress")
+        if code not in (1, 2):
+            return (f"{head}about {WD2_BITE_S} s is WD2's moved bite, but PHASE didn't read 4 or 5, A2's before its last, in the sample"
+                    " above: a later A sequence may have armed WD2, after a pair that finished. Not read as B2 stopping in its last ops")
+        return (f"{head}about {WD2_BITE_S} s is WD2: B2 zeroed WD1's count, so B2's first poll passed, A2's three steps settled and"
+                " B2's power-down ran; the pair then stopped in its last twenty-odd ops (the second handshake, the PMU command, the"
+                " third handshake). One other reading isn't excluded by this run alone: a WD1 that can't reset the SoC in this"
+                " state, which a run with WD1's bite below WD2's would show")
+    if x >= WD1_BITE_S - 4:
+        # WD1's bite counts from B2's zeroing, which comes however long B2's power-down takes after the commit.
+        late = f", which then came about {x - WD1_BITE_S:.0f} s after the commit" if x > WD1_BITE_S + 4 else ""
+        if not live:
+            return (f"{head}{x:.0f} s is WD1's {WD1_BITE_S} s from a count that B2 zeroed{late}, but wd2_bite=1's sample, above,"
+                    " doesn't show WD2 armed and counting: a WD2 that wouldn't have fired anyway says nothing by staying silent."
+                    " Not read as a pair that finished")
+        return (f"{head}{x:.0f} s is WD1's {WD1_BITE_S} s from a count that B2 zeroed{late}, with WD2, which the sample above saw"
+                " armed and counting, stopped before it could fire: the entry pair FINISHED, and WD1 ended it as a dead-man")
+    return (f"{head}{x:.0f} s is none of its times (about {unzeroed} s, about {WD2_BITE_S} s, {WD1_BITE_S} s or more): not read. Right"
+            " only in the first boot after the run, like the time itself")
+
+
 def ack_lines(f, q, held):
     """cluster_ack=1: 0x6014's bits 4 and 5 with qto's bits 2-5 (e1_hook.c's m1 comment). f has bits 7 and 4 set; held is
     0x6007, sent in one command with qto: non-zero, it shows that command's last bytes landed. It says what the words
@@ -691,13 +824,23 @@ def decode(b, rtc, cnt=None, alarm=None):
             out.append(f"0x6006 = {qto(b[6], bool(ack))}")
             if ack is None:
                 out.append("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before"
-                           " stage 0x4e" + (", and that byte didn't survive" if s in ACK_MARKED else "") + ". In one, bits 2-5 are"
+                           " stage 0x4e (0x52 with fabric_up=1)" + (", and that byte didn't survive" if s in ACK_MARKED else "") + ". In one, bits 2-5 are"
                            " the cluster words whose flag stayed, not the waits on bit 4 that timed out)")
         if base >= 0x30:
             if not late:
                 out.append(f"left their spin to stop (0x6006 = 0x{b[6]:02x}): {cpus(b[6])}")
             if not pmp and (s in POS_S2 or s == 0x43):
                 pass  # sample 2's, or not decoded: position_lines()
+            elif s in FAB_STAGES and not pmp:
+                out.append(f"0x6007 = 0x{b[7]:02x}: not read. A fabric_up=1 run's stages always carry pmp_out=1's bit 7, and this one"
+                           " doesn't: not a record that run leaves")
+            elif s in FAB_STAGES and fab_landed(b):
+                out += fab_lines(b[7])
+            elif s in FAB_STAGES:
+                out.append(f"0x6007 = 0x{b[7]:02x}: not read. The steps' outcomes go out right after stage 0x52's command, and only if"
+                           " it didn't fail, and their marker isn't at 0x6013: that command isn't shown to have landed whole, and this"
+                           " byte, its last, may still be the one step 7 leaves here, the cores that held (0xff as a rule). It isn't"
+                           " read as fabric_up=1's byte, and no marker in WD1 is taken to stand")
             elif hold:
                 out.append(f"wrote their stop bit and held (0x6007 = 0x{b[7]:02x}): {cpus(b[7] & 0xfe)}")
                 # sio_on=1's bit, which only its own stages can read when clear: a plain pmp_out=1 run leaves it clear too.
@@ -752,7 +895,8 @@ def decode(b, rtc, cnt=None, alarm=None):
                 out += ack_lines(f, b[6], b[7])
             elif s in SIO_STOP_STAGES and f & (F_ACK | F_ACK_REST):
                 out.append("  0x6014's bits 4 and 5 are cluster_ack=1's alone in a sio_stop=1 run: bit 5 only with bit 4, and only at"
-                           " that run's stages (0x4e, 0x56, 0x57, with pmp_out=1's bit 7). Here they aren't that: don't read them")
+                           " that run's stages (0x4e, 0x56, 0x57, or fabric_up=1's 0x52, 0x51, 0x53, with pmp_out=1's bit 7). Here they aren't"
+                           " that: don't read them")
         else:
             cmd = ("its own one-byte command" if s in POSITION else
                    "the 3-byte command it went in (0x6012-0x6014)" if s in (0x5d, 0x5e) else
@@ -816,7 +960,7 @@ def decode(b, rtc, cnt=None, alarm=None):
             if s in RECFG_STAGES:
                 out += recfg_lines(b[5])
             elif s in WD2_STAGES:
-                out += wd2_lines(b[5], s == WD2_STAGES[0])
+                out += wd2_lines(b[5], s in WD2_PEND)
         elif s in POSITION:
             out += position_lines(s, b, pmp, disp)
         elif hold and s in HOLD_AFTER:
@@ -838,9 +982,11 @@ def decode(b, rtc, cnt=None, alarm=None):
             out.append("0x6015: step 8's command, whose second's low two bytes read 0: not decoded")
         if s in ALARM_STAGES:
             out.append(alarm_byte(b[0x16]))
-            if s in (0x59, 0x5a, 0x4e) and b[0x16] in ALARM_ACKED:
-                out.append(f"  stage 0x{s:02x}, so nothing records {'the commit' if s == 0x4e else 'the two commit writes'} after those commands ("
-                           f"{'0x5f' if s == 0x59 else '0x4f, or recfg_bite=1' + chr(39) + 's 0x46 or 0x47, or wd2_bite=1' + chr(39) + 's 0x56 or 0x57,' if s == 0x4e else '0x5b'} comes after them): inconclusive about the rest of the entry")
+            if s in (0x59, 0x5a, 0x4e, FAB_PRE) and b[0x16] in ALARM_ACKED:
+                nxt = {0x59: "0x5f", 0x5a: "0x5b", 0x4e: "0x4f, or recfg_bite=1's 0x46 or 0x47, or wd2_bite=1's 0x56 or 0x57,",
+                       FAB_PRE: "0x51 or 0x53"}[s]
+                out.append(f"  stage 0x{s:02x}, so nothing records {'the commit' if s in (0x4e, FAB_PRE) else 'the two commit writes'} after those commands ("
+                           f"{nxt} comes after them): inconclusive about the rest of the entry")
         elif b[0x14] & 0x80:
             out.append(f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
     if commit is not None and cnt and cnt[1]:
@@ -849,6 +995,8 @@ def decode(b, rtc, cnt=None, alarm=None):
         out.append(f"the SoC restarted about {x:.0f} s after the commit ({x - 1:.1f} to {x + 1:.1f} s: the PMU's RTC"
                    f" counts whole seconds); its counter (CNTVCT) is {age:.1f} s old. Right only in the first boot"
                    " after the run")
+        if s in FAB_STAGES and pmp and fab_landed(b) and b[7] & (WD1_STANDS | 2) == WD1_STANDS:
+            out.append(mark_reading(x, s, b[5]))
     if alarm:
         out += alarm_lines(s, commit, alarm, now, b[0x16])
     return out

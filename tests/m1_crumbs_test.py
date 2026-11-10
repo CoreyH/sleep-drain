@@ -1109,7 +1109,8 @@ def main():
     check(defs.get("M1_PMU_ALARM_CTRL") == g["ALARM_CTRL"] and defs.get("M1_PMU_ALARM") == g["ALARM"]
           and defs.get("M1_PMU_ALARM_EVENT") == g["ALARM_EVENT"] and defs.get("M1_PMU_ALARM_MASK") == g["ALARM_MASK"]
           and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"]
-          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x46, 0x47, 0x56, 0x57)
+          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x46, 0x47, 0x56, 0x57,
+                                    0x51, 0x53)
           and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src and "hold ? 0x5a : alarm ? 0x59 : 0x58" in src
           and "m1_stage(sio_stop ? 0x4f : 0x5b)" in src and "b[0] = 0x5c" in src and "? 0x5d : 0x5e" in src and "hold ? 0x39 :" in src
           and "hold ? 0x31 :" in src,
@@ -1123,6 +1124,7 @@ def main():
 
     position_tests(g, src)
     cluster_ack_tests(g, src)
+    mark_tests(g, src)
 
     print(f"{failed} failed" if failed else "all ok")
     return 1 if failed else 0
@@ -1286,7 +1288,7 @@ def cluster_ack_tests(g, src):
     sets = re.findall(r"flags \|= ([^;]+);", after)
     check(in_order_of(after, ["\tif (cluster_ack)\n\t\tflags |= M1_F_ACK;\n", "/* 5: the table's other entries", "/* 8 */", "b[4] = flags;",
                               "m1_crumb(0x6010, b, 7);", "/* 9 */"])
-          and sets == ["BIT(3)", "BIT(6)", "M1_F_ACK", "BIT(4)", "BIT(5)", "(read_sysreg(isr_el1) >> 6) & 7"]
+          and sets == ["BIT(3)", "BIT(6)", "BIT(6)", "M1_F_ACK", "BIT(4)", "BIT(5)", "(read_sysreg(isr_el1) >> 6) & 7"]
           and "if (!hold && cpu == 4 && m1_wait_off(M1_PS_PCPM0))\n\t\t\tflags |= BIT(4);" in after
           and "if (!hold && cpu == 7 && m1_wait_off(M1_PS_PCPM1))\n\t\t\tflags |= BIT(5);" in after
           and src.count("M1_F_ACK;") == 1 and len(re.findall(r"\bM1_F_ACK_REST\b", code_only)) == 2,
@@ -1304,9 +1306,9 @@ def cluster_ack_tests(g, src):
           "m1-crumbs names each cluster word's entry, and which three cluster_ack=1 wrote and which the table already acks", str(g["ACK_WORDS"]))
     # The stages m1-crumbs reads the mark at, and the ones it says can't tell, are the run's: bit 7 from K4 on, 0x28 after the table,
     # 0x31-0x37 and 0x39 for hold=1's stop requests, 0x4e before the commit, wd2_bite=1's two after it.
-    check(g["ACK_EARLY"] == (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39) and g["ACK_MARKED"] == (0x4e, 0x56, 0x57)
+    check(g["ACK_EARLY"] == (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39) and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53)
           and "b[0] = 0x28;" in after and "m1_stage((hold ? 0x31 : pmgr_late ? 0x29 : 0x21) + i);" in after
-          and "b[0] = hold ? 0x39 : pmgr_late ? 0x38 : 0x30;" in after and "b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;" in after
+          and "b[0] = hold ? 0x39 : pmgr_late ? 0x38 : 0x30;" in after and "b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;" in after
           and "else if (!recfg_bite && !wd2_bite)\n\t\t\tm1_stage(sio_stop ? 0x4f : 0x5b);" in after
           and "#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src,
           "the stages m1-crumbs takes for a cluster_ack=1 run's are the ones e1_hook.c sends on that recipe")
@@ -1332,6 +1334,247 @@ def cluster_ack_tests(g, src):
           and params.count("return 0;") == 1,
           "the load refuses cluster_ack=1 off run 15's recipe, unless the three entries are those words with the table's 0 and a cluster wait each, and"
           " unless exactly three values change: all of it before its one return 0", params)
+
+
+MARK_HDR = r"""
+#include <stdio.h>
+#include "fabric_up.h"
+#include "wd1_mark.h"
+int main(void)
+{
+	static const u32 words[] = { 0x333, 0x111, 0x113, 0x311, 0x331, 0x133, 0x313, 0x131, 0x222, 0x112, 0, 0x80000333, 0x80000111, 0x80000113,
+				     0x1333, 0x10111, 0x334, 0x33f, 0x11f, 0x211, 0x121 };
+	static const u8 helds[] = { 0xff, 0xfe, 0x01, 0x00, 0x7f, 0xfd, 0x80, 0x03 };
+	static const u32 ctls[] = { 0, 4, 1, 5, 0xffffffff, 0xfffffffb };
+	static const u32 bites[] = { WD1_MARK_BITE, WD1_MARK_BITE - 1, WD1_MARK_BITE + 1, 0, 30U * WD1_HZ, WD1_MARK_COUNT };
+	static const u32 counts[] = { 0, WD1_MARK_COUNT - 1, WD1_MARK_COUNT, WD1_MARK_COUNT + 1, WD1_MARK_COUNT + WD1_MARK_SLACK,
+				      WD1_MARK_COUNT + WD1_MARK_SLACK + 1, WD1_MARK_BITE, 0xffffffff, 15U * WD1_HZ };
+	unsigned int a, b, c, d, e;
+
+	printf("consts %llx %x %x %x %x %x %x %x %llx %x %x %x %x %x %x %x %x\n", FAB_PS, FAB_ASKED, FAB_AWAKE, FAB_SUSPEND, FAB_WORD, M1_FAB_STAGE_PRE,
+	       M1_FAB_STAGE, M1_FAB_STAGE_PEND, WD1_WDT, WD1_COUNT, WD1_BITE, WD1_CTRL, WD1_RESET_EN, WD1_HZ, WD1_MARK_BITE, WD1_MARK_COUNT,
+	       WD1_MARK_SLACK);
+	for (a = 0; a < sizeof(words) / sizeof(words[0]); a++)
+		printf("word %x %x %d %u\n", words[a], m1_fab_up(words[a]), m1_fab_awake(words[a]), m1_fab_pre(words[a]));
+	for (a = 0; a < sizeof(helds); a++)
+		for (b = 0; b < sizeof(words) / sizeof(words[0]); b++)
+			for (c = 0; c < 2; c++)
+				for (d = 0; d < 2; d++)
+					for (e = 0; e < 4; e++)
+						printf("byte %x %x %u %u %u %x\n", helds[a], words[b], c, d, e,
+						       m1_fab_byte(helds[a], words[b], c, d, (u8)e));
+	for (a = 0; a < sizeof(ctls) / sizeof(ctls[0]); a++)
+		for (b = 0; b < sizeof(bites) / sizeof(bites[0]); b++)
+			for (c = 0; c < sizeof(counts) / sizeof(counts[0]); c++)
+				printf("wd1 %x %x %x %x\n", ctls[a], bites[b], counts[c], m1_wd1_bits(ctls[a], bites[b], counts[c]));
+	return 0;
+}
+"""
+MARK_FN_PRELUDE = r"""
+#include <stdio.h>
+#include "fabric_up.h"
+#include "wd1_mark.h"
+typedef uint64_t u64;
+#define __iomem
+#define cpu_relax() do { } while (0)
+#define dsb(x) do { } while (0)
+/* A page of registers that reads a scripted sequence (its last value from then on) and logs every write. */
+static unsigned char page[0x1000];
+static u64 m1_tps = 1000, fake_now;
+static const u32 *seq;
+static unsigned int nseq, reads, nw;
+static long rmin, rmax;
+static struct { long off; u32 v; unsigned int reads; } wlog[16];
+static u64 m1_now(void) { return fake_now++; }
+static u32 readl(void *p)
+{
+	unsigned int i = reads++;
+	long off = (unsigned char *)p - page;
+
+	if (!i || off < rmin)
+		rmin = off;
+	if (!i || off > rmax)
+		rmax = off;
+	return seq[i < nseq ? i : nseq - 1];
+}
+static void writel(u32 v, void *p) { if (nw < 16) { wlog[nw].off = (unsigned char *)p - page; wlog[nw].v = v; wlog[nw].reads = reads; } nw++; }
+/* m1_fab()'s world: the table's mappings, of which only DCS's first wait's is used. */
+#define BIT(n) (1U << (n))
+#define GENMASK(h, l) ((~0U << (l)) & (~0U >> (31 - (h))))
+static void *post_map[128];
+"""
+MARK_FN_MAIN = r"""
+static void show(const char *what, unsigned int n, int ret, u32 pre)
+{
+	unsigned int i;
+
+	printf("%s %u ret %d pre %x reads %u at %lx-%lx writes %u:", what, n, ret, pre, reads, rmin, rmax, nw);
+	for (i = 0; i < nw && i < 16; i++)
+		printf(" %lx=%x@%u", wlog[i].off, wlog[i].v, wlog[i].reads);
+	printf("\n");
+}
+
+int main(void)
+{
+	static const u32 f0[] = { 0x111, 0x333 }, f1[] = { 0x111, 0x113, 0x313, 0x333 }, f2[] = { 0x111, 0x113 }, f3[] = { 0x333, 0x333 },
+		f4[] = { 0x80000111, 0x80000333 }, f5[] = { 0x222, 0x223, 0x333 }, w0[] = { 0 }, w1[] = { 4 }, w2[] = { 0xffffffff };
+	static const struct { const u32 *s; unsigned int n; } fs[] = { { f0, 2 }, { f1, 4 }, { f2, 2 }, { f3, 2 }, { f4, 2 }, { f5, 3 } },
+		ws[] = { { w0, 1 }, { w1, 1 }, { w2, 1 } };
+	unsigned int i;
+
+	for (i = 0; i < sizeof(fs) / sizeof(fs[0]); i++) {
+		u32 pre = 0xdeadbeef;
+		int ret;
+
+		seq = fs[i].s; nseq = fs[i].n; reads = 0; nw = 0;
+		ret = m1_fab_raise(page + 0x40, &pre);
+		show("fab", i, ret, pre);
+	}
+	for (i = 0; i < sizeof(ws) / sizeof(ws[0]); i++) {
+		int ret;
+
+		seq = ws[i].s; nseq = ws[i].n; reads = 0; nw = 0;
+		ret = m1_wd1_set(page);
+		show("wd1", i, ret, 0);
+	}
+	/* m1_fab(): DCS's first wait is after entry 49, whose mapping is its word's, 0x800 above the fabric's in the same page. */
+	post_map[m1_waits[0].idx] = page + 0x900;
+	printf("fabptr %u %llx %llx %ld\n", m1_waits[0].idx, (unsigned long long)m1_waits[0].addr, (unsigned long long)M1_FABRIC_PS,
+	       (long)((unsigned char *)m1_fab() - page));
+	return 0;
+}
+"""
+
+
+def mark_tests(g, src):
+    """fabric_up=1 and wd1_mark=1, e1_hook.c's side: the two headers against an independent reading of them, the two functions
+    that write, compiled as they stand against a page that logs every write, and the places that call them."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        def build(name, code):
+            c = os.path.join(tmp, name + ".c")
+            with open(c, "w") as f:
+                f.write(code)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(tmp, name), c], check=True)
+            return [line.split() for line in subprocess.run([os.path.join(tmp, name)], capture_output=True, text=True, check=True).stdout.splitlines()]
+
+        hdr = build("hdr", MARK_HDR)
+        defs = "".join(line + "\n" for line in src.splitlines()
+                       if re.match(r"#define (M1_ACK_\w+|M1_F_ACK\w*|M1_W_(CLEAR|SETTLED|PSTATE|CLUSTER)|M1_FABRIC_PS)\s", line))
+        fn = build("fn", MARK_FN_PRELUDE + defs + cut("static const struct m1_wait {", "\n};\n") + cut("static void __iomem *m1_fab(void)", "\n}\n")
+                   + cut("static bool m1_wd1_set(", "\n}\n") + cut("static bool m1_fab_raise(", "\n}\n") + MARK_FN_MAIN)
+
+    # The headers: the word, the value and the stages; WD1's registers and the two values; all as PLAN.md has them.
+    consts = [int(x, 16) for x in hdr[0][1:]]
+    check(hdr[0][0] == "consts" and consts == [0x28e20c000, 0xf, 3, 1, 0x80000fff, 0x52, 0x53, 0x51, 0x2922b0000, 0x10, 0x14, 0x1c, 4, 24000000,
+                                               0xd693a400, 0x55d4a800, 5 * 24000000]
+          and consts[14] == 150 * 24000000 and consts[15] == 60 * 24000000,
+          "fabric_up.h and wd1_mark.h: the fabric's word and 3; stages 0x52, 0x53, 0x51; WD1's count, bite and control; 150 s and 60 s", str(hdr[0]))
+    check((g["FAB_PRE"], g["FAB_WD2"]) == (consts[5], (consts[7], consts[6])) and g["WD1_BITE_S"] * 24000000 == consts[14]
+          and g["WD1_COUNT_S"] * 24000000 == consts[15] and g["WD2_BITE_S"] == 120 and g["WD1_STANDS"] == 0xc0,
+          "m1-crumbs' stages for the run and its three times are the headers' (and wd2_bite.h's 120 s)")
+    # The word's helpers: what's written, what counts as awake, and the class before the write.
+    words = [(int(r[1], 16), int(r[2], 16), int(r[3]), int(r[4])) for r in hdr if r[0] == "word"]
+
+    def klass(v):
+        v12 = v & 0x80000fff
+        return 3 if v12 == 0x333 else 1 if v12 == 0x111 else 2 if v & 0xf == 1 else 0
+
+    bad = [w for w in words if w[1] != (w[0] & ~0xf | 3) or w[2] != ((w[0] & 0x80000fff) == 0x333) or w[3] != klass(w[0])]
+    check(len(words) == 21 and not bad, "fabric_up.h: the write is the word with its low nibble := 3; awake is 0x333 with bit 31 clear; the class before"
+          " the write is 0x333, 0x111, asked down to 1, or another", str(bad[:4]))
+    bytes_ = [(int(r[1], 16), int(r[2], 16), int(r[3]), int(r[4]), int(r[5]), int(r[6], 16)) for r in hdr if r[0] == "byte"]
+    bad = [b for b in bytes_ if b[5] != ((b[0] & 1) | (2 if b[0] & 0xfe != 0xfe else 0) | klass(b[1]) << 2 | b[2] << 4 | b[3] << 5 | b[4] << 6)]
+    check(len(bytes_) == 8 * 21 * 2 * 2 * 4 and not bad,
+          "fabric_up.h's byte: bit 0 the sio bit, bit 1 NOT all seven held, bits 3:2 the class, bit 4 settled, bit 5 still there, bits 7:6 WD1's two",
+          str(bad[:4]))
+    # Step 7's byte with CPU1 held always has bit 1 set, and a byte for a run in which all seven held never does.
+    check(all(b[5] & 2 == 0 for b in bytes_ if b[0] & 0xfe == 0xfe) and all(b[5] & 2 for b in bytes_ if b[0] & 0xfe != 0xfe)
+          and "b[3] = hold ? held : down;\n\tm1_crumb(0x6004, b, 4);" in src,
+          "so the byte step 7 leaves at 0x6007 when CPU1 held can't be the run's byte for a run in which all seven held")
+    wd1 = [(int(r[1], 16), int(r[2], 16), int(r[3], 16), int(r[4], 16)) for r in hdr if r[0] == "wd1"]
+    bad = [w for w in wd1 if w[3] != ((1 if w[0] & 4 and w[1] == 0xd693a400 else 0) | (2 if 0x55d4a800 < w[2] <= 0x55d4a800 + 5 * 24000000 else 0))]
+    check(len(wd1) == 6 * 6 * 9 and not bad and any(w[2] == 0x55d4a800 and w[0] == 4 and w[1] == 0xd693a400 and w[3] == 1 for w in wd1),
+          "wd1_mark.h's two bits: armed with the 150 s bite; the count past 60 s by up to 5 s, and not at exactly the value written", str(bad[:4]))
+    # FAB_WAS, in m1-crumbs, is indexed by that class.
+    check(["0x111" in t for t in g["FAB_WAS"]] == [False, True, False, False] and ["0x333" in t and "neither" not in t for t in g["FAB_WAS"]] == [False, False, False, True]
+          and "not there yet" in g["FAB_WAS"][2] and "neither 0x333 nor asked down to 1" in g["FAB_WAS"][0],
+          "m1-crumbs names the fabric word's four classes in the header's order", str(g["FAB_WAS"]))
+
+    # m1_fab_raise(): one write, to the word it read, of that word with its low nibble := 3; then up to 10 ms for 0x333.
+    fab = {int(r[1]): r for r in fn if r[0] == "fab"}
+    want = {0: "ret 1 pre 111 reads 2 at 40-40 writes 1: 40=113@1", 1: "ret 1 pre 111 reads 4 at 40-40 writes 1: 40=113@1",
+            2: "ret 0 pre 111 reads 12 at 40-40 writes 1: 40=113@1", 3: "ret 1 pre 333 reads 2 at 40-40 writes 1: 40=333@1",
+            4: "ret 0 pre 80000111 reads 12 at 40-40 writes 1: 40=80000113@1", 5: "ret 1 pre 222 reads 3 at 40-40 writes 1: 40=223@1"}
+    got = {i: " ".join(r[2:]) for i, r in fab.items()}
+    check(got == want, "m1_fab_raise(): reads the word, writes it back once with its low nibble := 3 and nothing else, polls that same word for 0x333"
+          " with bit 31 clear, and gives up after 10 ms with what it last read", f"{got}")
+    ptr = [r for r in fn if r[0] == "fabptr"]
+    check(ptr == [["fabptr", "49", "28e20c800", "28e20c000", "256"]]
+          and "\treturn post_map[m1_waits[0].idx] - (m1_waits[0].addr - M1_FABRIC_PS);\n" in cut("static void __iomem *m1_fab(void)", "\n}\n"),
+          "m1_fab(): the fabric's word, 0x800 below DCS's in the mapping of the table's entry 49", str(ptr))
+    # m1_wd1_set(): the bite, the count, then RESET_EN, in that order; the control cleared first only if it read armed.
+    wd = {int(r[1]): " ".join(r[2:]) for r in fn if r[0] == "wd1"}
+    check(wd == {0: "ret 0 pre 0 reads 1 at 1c-1c writes 3: 14=d693a400@1 10=55d4a800@1 1c=4@1",
+                 1: "ret 1 pre 0 reads 1 at 1c-1c writes 4: 1c=0@1 14=d693a400@1 10=55d4a800@1 1c=4@1",
+                 2: "ret 1 pre 0 reads 1 at 1c-1c writes 4: 1c=0@1 14=d693a400@1 10=55d4a800@1 1c=4@1"},
+          "m1_wd1_set(): one read, of WD1's control; its bite := 150 s, its count := 60 s, then its control := 4, and nothing else; its control := 0"
+          " first if it read armed", f"{wd}")
+
+    # Where they're called: once each, by their own parameter, at their place in the replay; and nothing else writes those registers.
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
+    check(in_order_of(after, ["\t/* 4 */\n\tm1_aic_mask_all();\n\tif (wd1_mark) {\n\t\tif (m1_wd1_set(m1_wdt))\n\t\t\tflags |= BIT(6);\n\t} else if (readl(m1_wdt + M1_WD1_CTRL)) {\n"
+                              "\t\twritel(0, m1_wdt + M1_WD1_CTRL);\n\t\tflags |= BIT(6);\n\t}\n",
+                              "/* 5: the table's other entries, the commit held back; with pmgr_late, macOS's waits among them */\n"
+                              "\tif (fabric_up)\n\t\tfab_set = m1_fab_raise(m1_fab(), &fab_pre);\n\tfor (i = 0, k = 0; i < ARRAY_SIZE(e1_post_slpa) - 1; i++) {",
+                              "\tif (ps_words)\n\t\tm1_pw_bits = m1_pw_write();\n", "\tif (fabric_up)\n\t\tfab_end = m1_fab_awake(readl(m1_fab()));\n",
+                              "/* 6: release", "/* 8 */", "m1_crumb(0x6010, b, 7);\n",
+                              "\tif (wd1_mark)\n\t\twd1 = m1_wd1_bits(readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_BITE), readl(m1_wdt + WD1_COUNT));\n",
+                              "\t\tb[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;\n",
+                              "\t\tb[3] = fabric_up ? m1_fab_byte(held, fab_pre, fab_set, fab_end, wd1) : hold ? held : down;\n\t\tm1_crumb(0x6004, b, 4);\n",
+                              "/* 9 */", "writel_relaxed(1, commit);"])
+          and after.count("m1_wd1_set(") == 1 and after.count("m1_fab_raise(") == 1 and after.count("\t\tfab_set = ") == 1 and after.count("\t\tfab_end = ") == 1
+          and after.count("\t\twd1 = ") == 1 and "u32 fab_pre = 0;\n\tbool fab_set = false, fab_end = false;\n" in after and "pmpb = 0, wd1 = 0;" in after,
+          "the replay sets WD1 in step 4 in place of its stop, puts the fabric back before the table's first late entry, reads it again after the power"
+          " words, and looks at WD1 last, after step 8's first command and before the stage that carries the byte", after[:3000])
+    wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("  # an MMIO write, not a function whose name ends in "write"
+    wd1_writes = re.findall(wr[:-2] + r"\([^;]*(?:WD1_\w+|M1_WD_(?:CUR|BITE|CTRL)\(1\)|M1_WD1_CTRL)[^;]*;", code_only)
+    fab_writes = re.findall(wr[:-2] + r"\([^;]*(?:m1_fab\w*|FAB_\w+|M1_FABRIC_PS)[^;]*;", code_only)
+    check(sorted(wd1_writes) == sorted(["writel(0, wdt + WD1_CTRL);", "writel(WD1_MARK_BITE, wdt + WD1_BITE);", "writel(WD1_MARK_COUNT, wdt + WD1_COUNT);",
+                                         "writel(WD1_RESET_EN, wdt + WD1_CTRL);", "writel(0, m1_wdt + M1_WD1_CTRL);"])
+          and fab_writes == ["writel(m1_fab_up(v), p);"] and len(re.findall(r"\bm1_wd1_set\(", code_only)) == 2
+          and len(re.findall(r"\bm1_fab_raise\(", code_only)) == 2 and len(re.findall(r"\bWD1_MARK_(BITE|COUNT)\b", code_only)) == 2 + 2 + 5,
+          "nothing but m1_wd1_set() and step 4's old stop writes WD1, and nothing but m1_fab_raise() writes the fabric's word", f"{wd1_writes} {fab_writes}")
+    for name in ("m1_wd1_init", "m1_fab_init"):
+        init = cut(f"static int __init {name}(void)", "\n}\n")
+        check(not re.search(wr, init), f"{name}() only reads and logs", init)
+    check("\tif (fabric_up) {\n\t\tint ret = m1_fab_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
+          "\tif (wd1_mark) {\n\t\tint ret = m1_wd1_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n" in src,
+          "the load returns what m1_fab_init() and m1_wd1_init() refuse with")
+    # A tripwire, since a write through another name for the same register has no name to match: the module's MMIO write calls are
+    # counted, in the whole file and in the replay's own function. A new one changes the count, and has to be accounted for here.
+    after_code = re.sub(r"/\*.*?\*/", "", after, flags=re.S)
+    check(len(re.findall(wr, code_only)) == 42 and len(re.findall(wr, after_code)) == 11,
+          "e1_hook.c makes 42 MMIO write calls, 11 of them in m1_after_slpa() itself: none has been added without this count",
+          f"{len(re.findall(wr, code_only))} {len(re.findall(wr, after_code))}")
+    check("\tif (!m1_fab_awake(v)) {\n\t\tpr_err(" in cut("static int __init m1_fab_init(void)", "\n}\n")
+          and "if (e1_never_write(FAB_PS)) {" in src and "m1_never(WD1_WDT + WD1_COUNT, 1) || m1_never(WD1_WDT + WD1_BITE, 1) || m1_never(WD1_WDT + WD1_CTRL, 1)" in src,
+          "the load refuses fabric_up=1 unless the word reads 0x333 awake, and either parameter if its writes would touch the never-write list")
+    # The parameters: off unless asked for, read-only once loaded, and only on run 16's recipe, wd1_mark=1 only on fabric_up=1's stages.
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    check("static bool fabric_up;\nmodule_param(fabric_up, bool, 0444);\n" in src and "static bool wd1_mark;\nmodule_param(wd1_mark, bool, 0444);\n" in src
+          and not re.search(r"\b(fabric_up|wd1_mark)\s*=[^=]", code_only)
+          and in_order_of(params, ["\tif (cluster_ack && (!wd2_bite || !pmp_stop)) {\n", "\tif (wd1_mark && !fabric_up) {\n\t\tpr_err(", "\t\treturn -EINVAL;\n\t}\n"
+                                   "\tif (fabric_up && !cluster_ack) {\n\t\tpr_err(", "\t\treturn -EINVAL;\n\t}\n", "\treturn 0;\n\nbad_wait:"]),
+          "fabric_up=1 loads only on cluster_ack=1's recipe and wd1_mark=1 only with fabric_up=1; both are off by default and read-only", params[-2500:])
+    wout = cut("static void m1_wd2_out(void)", "\n}\n")
+    check("\tif ((read_sysreg(isr_el1) >> 6) & 7)\n\t\tb[0] = fabric_up ? M1_FAB_STAGE_PEND : M1_WD2_STAGE_PEND;\n\telse\n\t\tb[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;\n" in wout
+          and len(re.findall(r"\bM1_FAB_STAGE\w*\b", code_only)) == 3 + 3,
+          "the run's three stages go out where 0x4e, 0x57 and 0x56 did, and nowhere else", wout)
 
 
 def in_order_of(text, parts):
@@ -1997,7 +2240,7 @@ def position_tests(g, src):
                   f"cluster_ack=1 with 0x6006 and 0x6007 both 0 (0x6014 = 0x{flags:02x}): no word is said to have read 0", out + err)
         rc, out, err = dec(0xd7, dict(ack15, flags=0xa0))
         UNREAD = ("  0x6014's bits 4 and 5 are cluster_ack=1's alone in a sio_stop=1 run: bit 5 only with bit 4, and only at that run's stages (0x4e, 0x56, 0x57,"
-                  " with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
+                  " or fabric_up=1's 0x52, 0x51, 0x53, with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
         check(rc == 0 and "0x6014 bit 4 (cluster_ack=1)" not in out and UNREAD in out,
               "bit 5 without the mark in a sio_stop=1 record: called out, and not read as cluster_ack=1's", out + err)
         # Stages no cluster_ack=1 run sends (0x4f, and recfg_bite=1's), and a stage without pmp_out=1's bit: the mark isn't read there.
@@ -2008,7 +2251,7 @@ def position_tests(g, src):
                   f"stage 0x{stage:02x} with 0x6014 = 0x90: not a cluster_ack=1 run's stage, so the mark isn't read and the bits are called unreadable", out + err)
         # The mark's byte lost (bit 7 clear), or a stage before it was sent: 0x6006's cluster bits can't be read either way, and it says so,
         # whether or not one is set.
-        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e{}."
+        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e (0x52 with fabric_up=1){}."
                   " In one, bits 2-5 are the cluster words whose flag stayed, not the waits on bit 4 that timed out)\n")
         for stage in (0xce, 0xd6, 0xd7):
             for left in (0x04, 0x00):
@@ -2066,6 +2309,219 @@ def position_tests(g, src):
             want[0x1401] = 0x01
             check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
                   f"--clear after cluster_ack=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
+
+        # fabric_up=1's run, and wd1_mark=1's on it: stages of their own from step 8's command on, and 0x6007 their byte. 0xf5 is
+        # the byte when all goes as meant: the sio bit, bit 1 (NOT all held) clear, 0x111 before the write, 0x333 after it and
+        # at step 5's end, and the marker standing. 0x35 is that without a marker.
+        FAB = "0x6007 = 0x{:02x}: fabric_up=1's byte, in place of the cores that held:\n"
+        BACK = ("  so: the fabric was at 3 when the table went out and still there when step 5 ended, where macOS has it at its commit:"
+                " the kernel had lowered it, and the write brought it back\n")
+        STOOD = ("  bits 7:6 (wd1_mark=1): WD1 stood as the marker just before the commit: armed, its bite 150 s, its count past 60 s and running."
+                 " The restart's time is read against it below, as far as the stage and wd2_bite=1's sample bear a reading out\n")
+        NOMARKER = ("  bits 7:6 (wd1_mark=1): clear: no marker in WD1 stands in this record. In a run without wd1_mark=1 (the reading's label and the"
+                    " load log say which this was) the restart's time is read against WD2 alone. In one with it, the marker read back wrong in both"
+                    " respects, WD1 may still be armed some other way, and a time that isn't WD2's may be WD1's\n")
+        BIT1 = ("  bit 1 is set: NOT all seven other cores wrote their stop bit and held; or this is still step 7's byte, the cores that held, where"
+                " this bit is CPU1's, and stage 0x52's command didn't put the run's byte in its place. Either way nothing more is read out of it: no"
+                " fabric outcome, and no marker in WD1 is taken to stand\n")
+        fab17 = dict(ack15, flags=0x90)
+        rc, out, err = dec(0xd3, dict(fab17, down=0xf5))
+        check(rc == 0 and "stage 0x6004 = 0xd3 (pmp_out=1: bit 7, so the stage is 0x53) (pmgr_late=1): fabric_up=1: wd2_bite=1's 0x57:" in out
+              and FAB.format(0xf5) in out and "  the other cores: all seven wrote their stop bit and held\n" in out
+              and "  bit 0 (sio_on=1): ps_sio, UART_P and SPI_P all read actual f within 10 ms\n" in out
+              and "  the fabric's p-state word (0x28e20c000) before CPU0's write: 0x111: asked down to 1 by the kernel's suspend, and there\n" in out
+              and ("  after the write of 3 to its low nibble: it read 0x333, not busy, within 10 ms; at the end of step 5, after the ClkGen park and"
+                   " PLL-off: 0x333\n") in out
+              and BACK in out and STOOD in out and BIT1 not in out and "wrote their stop bit and held (0x6007" not in out
+              and "0x6007 bit 0 (sio_on=1)" not in out
+              and "0x6005 = 0x7d: wd2_bite=1, after the commit, the alarm and the release:\n" in out and TOOK + "\n" in out
+              and ACK in out and ALL0 in out and NONE.format(0, MET, "none") in out and LINE in out and WLINE.format(0xff) in out
+              and "0x6015 = 0x8d: K4 ran" in out and "PCPM0 not read (hold_nowatch=1: CPU0 doesn't watch them)" in out
+              and "from its low two bytes and the run's alarm: 121544" in out and "parked (0x6005" not in out,
+              "fabric_up=1 and wd1_mark=1's 0xd3: 0x6007 is the run's byte, never the cores that held; wd2_bite=1's sample, cluster_ack=1's"
+              " words and the steps' outcomes read as in run 16", out + err)
+        rc, out, err = dec(0xd1, dict(fab17, down=0xf5))
+        check(rc == 0 and "so the stage is 0x51" in out and "fabric_up=1: wd2_bite=1's 0x56:" in out
+              and "but had an SError, IRQ or FIQ pending afterwards: that would end its deep WFI" in out
+              and took(dark="no reset isn't a candidate for a completed entry here, since CPU0 likely never went down (the stage)") + "\n" in out
+              and "no reset is a candidate" not in out and FAB.format(0xf5) in out and BACK in out and STOOD in out and ACK in out,
+              "fabric_up=1's 0xd1: wd2_bite=1's pending stage, with the run's byte", out + err)
+        rc, out, err = dec(0xd2, dict(fab17, parked=0xfe, down=0xf5))
+        check(rc == 0 and "so the stage is 0x52" in out and "8 (fabric_up=1): sio_stop=1's 0x4e, with fabric_up=1's byte at 0x6007:" in out
+              and "parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out and FAB.format(0xf5) in out and BACK in out and STOOD in out
+              and "wd2_bite=1, after" not in out and "0x6012 = 0xff, the steps before the commit:\n" in out and ACK in out and ALL0 in out
+              and "  stage 0x52, so nothing records the commit after those commands (0x51 or 0x53 comes after them): inconclusive about the rest of the entry\n" in out,
+              "fabric_up=1's 0xd2: the last stage before the commit, with the parked cores at 0x6005, the run's byte at 0x6007 and no sample", out + err)
+        # The same byte under wd2_bite=1's own stage is the cores that held, as ever: the stage is what says which.
+        rc, out, err = dec(0xd7, dict(fab17, down=0xf5))
+        check(rc == 0 and "fabric_up=1's byte, in place of" not in out and "wd1_mark=1" not in out
+              and "wrote their stop bit and held (0x6007 = 0xf5): CPU2,CPU4,CPU5,CPU6,CPU7\n" in out,
+              "0xf5 at 0x6007 under stage 0xd7 is the cores that held, not fabric_up=1's byte", out + err)
+        # Without pmp_out=1's bit the stage can't be this run's: neither the byte nor the cluster mark is read, nor the time.
+        fake(path, scratch(0x53, **dict(fab17, down=0xf5)), rtc_secs=121544 + 120 + 40, alarm=alarm)
+        r = run(path, cnt="960000000 24000000")
+        check(r.returncode == 0 and "0x6014 bit 4 (cluster_ack=1)" not in r.stdout and UNREAD in r.stdout
+              and "0x6007 = 0xf5: not read. A fabric_up=1 run's stages always carry pmp_out=1's bit 7, and this one doesn't: not a record that run leaves\n" in r.stdout
+              and "fabric_up=1's byte, in place of" not in r.stdout and "WD1 stood" not in r.stdout and "wd1_mark=1's marker" not in r.stdout,
+              "stage 0x53 without bit 7: not this run's record, so neither its byte, nor a marker, nor the cluster mark is read", r.stdout + r.stderr)
+        for byte, text in ((0x35, NOMARKER),
+                           (0x75, "  bits 7:6 (wd1_mark=1): the marker did NOT stand just before the commit: WD1 was armed with its 150 s bite, but its count"
+                                  " didn't read past 60 s, by up to 5 s: the count write didn't take, or the count isn't running. The restart's time says"
+                                  " nothing about B2, and a time that isn't WD2's may be WD1's\n"),
+                           (0xb5, "  bits 7:6 (wd1_mark=1): the marker did NOT stand just before the commit: WD1's count read past 60 s, by up to 5 s, but"
+                                  " it wasn't armed with the 150 s bite. The restart's time says nothing about B2, and a time that isn't WD2's may be"
+                                  " WD1's\n")):
+            rc, out, err = dec(0xd3, dict(fab17, down=byte))
+            check(rc == 0 and text in out and STOOD not in out and "wd1_mark=1's marker:" not in out and BACK in out,
+                  f"fabric_up=1's byte 0x{byte:02x}: no standing marker, so the restart's time isn't read against WD1", out + err)
+        # Bit 1 set: not all held, or step 7's byte never replaced. Nothing more is read, whatever the other bits and the time.
+        for byte in (0xf7, 0xff, 0xfe, 0x37, 0x02):
+            fake(path, scratch(0xd3, **dict(fab17, down=byte)), rtc_secs=121544 + 120 + 40, alarm=alarm)
+            r = run(path, cnt="960000000 24000000")
+            check(r.returncode == 0 and FAB.format(byte) + BIT1 in r.stdout and "the fabric's p-state word" not in r.stdout and "WD1 stood" not in r.stdout
+                  and "bits 7:6 (wd1_mark=1)" not in r.stdout and "wd1_mark=1's marker" not in r.stdout,
+                  f"fabric_up=1's byte 0x{byte:02x}, bit 1 set, with the outcomes' marker behind it: nothing more is read out of it, and no marker stands",
+                  r.stdout + r.stderr)
+        # The restart's time against a marker that stood: 90, 120, 150 s and later, and a time that's none of them.
+        for x, text in ((90, "  wd1_mark=1's marker: about 90 s is what WD1 gives with its count never zeroed: B2 didn't reach its op 224"),
+                        (88, "  wd1_mark=1's marker: about 90 s is what WD1 gives with its count never zeroed"),
+                        (120, "  wd1_mark=1's marker: about 120 s is WD2: B2 zeroed WD1's count, so B2's first poll passed"),
+                        (150, "  wd1_mark=1's marker: 150 s is WD1's 150 s from a count that B2 zeroed, with WD2, which the sample above saw armed and"
+                              " counting, stopped before it could fire: the entry pair FINISHED"),
+                        (163, "  wd1_mark=1's marker: 163 s is WD1's 150 s from a count that B2 zeroed, which then came about 13 s after the commit, with"
+                              " WD2, which the sample above saw armed and counting, stopped before it could fire: the entry pair FINISHED"),
+                        (30, "  wd1_mark=1's marker: 30 s is none of its times (about 90 s, about 120 s, 150 s or more): not read."),
+                        (135, "  wd1_mark=1's marker: 135 s is none of its times (about 90 s, about 120 s, 150 s or more): not read."),
+                        (105, "  wd1_mark=1's marker: 105 s is none of its times (about 90 s, about 120 s, 150 s or more): not read.")):
+            for byte in (0xf5, 0x35):
+                fake(path, scratch(0xd3, **dict(fab17, down=byte)), rtc_secs=121544 + x + 40, alarm=alarm)
+                r = run(path, cnt="960000000 24000000")
+                check(r.returncode == 0 and f"the SoC restarted about {x} s after the commit" in r.stdout
+                      and (text in r.stdout) == (byte == 0xf5) and ("wd1_mark=1's marker:" in r.stdout) == (byte == 0xf5),
+                      f"fabric_up=1's 0xd3, a restart {x} s after the commit, 0x6007 = 0x{byte:02x}: read against the marker only if it stood",
+                      r.stdout + r.stderr)
+        # The 90 s and 120 s readings each carry the alternative that the time alone can't exclude.
+        mr = g["mark_reading"]
+        check("a pair that finished, with a later A sequence starting about 60 s after the commit and arming WD2 with its own 30 s, gives the same time"
+              in mr(90, 0x53, 0x7d) and "a WD1 that can't reset the SoC in this state" in mr(120, 0x53, 0x7d),
+              "the marker's 90 s and 120 s readings name what else gives that time")
+        # The time is read only as far as the stage and wd2_bite=1's sample bear it out (Pullfrog on #74): the records it gave, through
+        # the decoder, and then every sample at every stage.
+        for stage, sample, x, want, never in (
+                (0xd3, 0xfd, 120, "about 120 s is WD2's moved bite, but PHASE didn't read 4 or 5, A2's before its last, in the sample above: a later A sequence"
+                 " may have armed WD2, after a pair that finished. Not read as B2 stopping in its last ops", "B2 zeroed WD1's count, so"),
+                (0xd2, 0xfe, 150, "not read. Stage 0x52 is the last before the commit: nothing here records the commit, the release or WD2 after it, so"
+                 " 150 s can't be read as B2's progress. WD1 has been armed since step 4, so a run that stopped anywhere from there on restarts by"
+                 " itself about 90 s later, committed or not", "FINISHED"),
+                (0xd2, 0xfe, 90, "not read. Stage 0x52 is the last before the commit", "B2 didn't reach"),
+                (0xd3, 0x02, 150, "150 s is WD1's 150 s from a count that B2 zeroed, but wd2_bite=1's sample, above, doesn't show WD2 armed and counting:"
+                 " a WD2 that wouldn't have fired anyway says nothing by staying silent. Not read as a pair that finished", "FINISHED"),
+                (0xd3, 0x5d, 150, "doesn't show WD2 armed and counting", "FINISHED"),
+                (0xd3, wsmp(still=False), 150, "doesn't show WD2 armed and counting", "FINISHED"),
+                (0xd3, 0xfe, 163, "doesn't show WD2 armed and counting", "FINISHED"),
+                (0xd3, 0xfe, 120, "doesn't show WD2 armed and counting with CPU0's 120 s bite", "B2 zeroed WD1's count, so"),
+                (0xd1, 0x75, 120, "not read. CPU0 had an exception pending after its reads (the stage) and likely never went down, and a core left up holds"
+                 " the engine by itself: 120 s says nothing about a pair with every core down", "B2 zeroed WD1's count, so"),
+                (0xd3, wsmp(post=False), 120, "about 120 s, but wd2_bite=1's sample, above, doesn't show WD2 armed and counting with CPU0's 120 s bite, so this"
+                 " record doesn't make the time WD2's. Not read as B2's progress", "B2 zeroed WD1's count, so"),
+                (0xd3, wsmp(post=False), 150, "stopped before it could fire: the entry pair FINISHED", "Not read")):
+            fake(path, scratch(stage, **dict(fab17, parked=sample, down=0xf5)), rtc_secs=121544 + x + 40, alarm=alarm)
+            r = run(path, cnt="960000000 24000000")
+            line = [l for l in r.stdout.splitlines() if l.startswith("  wd1_mark=1's marker: ")]
+            check(r.returncode == 0 and len(line) == 1 and want in line[0] and never not in line[0],
+                  f"stage 0x{stage:02x}, sample 0x{sample:02x}, a restart at {x} s: the marker's reading goes no further than the stage and the sample do",
+                  r.stdout + r.stderr)
+        wrong = []
+        for stage in (0x52, 0x51, 0x53):
+            for v in range(256):
+                for x in (60, 88, 90, 105, 120, 123, 135, 146, 150, 163, 300):
+                    t = mr(x, stage, v)
+                    # Read here from wd2_bite.h's layout: seen armed (bit 2), the bite 120 s after the write (3), still armed (4), counting (5).
+                    live = bool(v & 4 and v & 0x10 and v & 0x20) and v != 0xfe
+                    moved, code = live and bool(v & 8), v >> 6
+                    last, at120, late = stage == 0x53, x in (120, 123), x >= 146
+                    ok = (t.startswith("  wd1_mark=1's marker: ")
+                          and ("B2 didn't reach its op 224" in t) == (last and x in (88, 90))
+                          and ("B2 zeroed WD1's count, so B2's first poll passed" in t) == (last and at120 and moved and code in (1, 2))
+                          and ("the entry pair FINISHED" in t) == (last and late and live)
+                          and ("which then came about" in t) == (last and x in (163, 300))
+                          and ("ot read" in t) == (not last or x in (60, 105, 135) or (at120 and not (moved and code in (1, 2))) or (late and not live)))
+                    if not ok:
+                        wrong.append((hex(stage), hex(v), x, t))
+        check(not wrong, "for every sample at each of the run's stages: B2's progress is read from 90 s only at the last stage, from 120 s only with WD2's"
+              " bite moved and PHASE at A2's 4 or 5, a finished pair from 150 s or later only with WD2 armed and counting in a real sample, and nothing at"
+              " the other two stages",
+              str(wrong[:3]))
+        # Step 7 leaves the cores that held at 0x6007 (0xff as a rule). If stage 0x52's command lands without its last byte, that 0xff must not
+        # read as the run's byte, all outcomes good and a marker standing: the steps' outcomes, sent only after a command that didn't fail,
+        # are what says it landed whole (Pullfrog on #74).
+        STALE = ("0x6007 = 0xff: not read. The steps' outcomes go out right after stage 0x52's command, and only if it didn't fail, and their marker"
+                 " isn't at 0x6013: that command isn't shown to have landed whole, and this byte, its last, may still be the one step 7 leaves here, the"
+                 " cores that held (0xff as a rule). It isn't read as fabric_up=1's byte, and no marker in WD1 is taken to stand\n")
+        step7 = dict(parked=0xfe, left=0, down=0xff, secs=121544, flags=0x90, isrs=0x8d, drained=0)
+        rc, out, err = dec(0xb9, step7)
+        check(rc == 0 and "wrote their stop bit and held (0x6007 = 0xff): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
+              and "fabric_up=1's byte, in place of the cores that held" not in out,
+              "step 7's record, stage 0xb9: 0x6007 is the cores that held", out + err)
+        for stage in (0xd2, 0xd3, 0xd1):
+            for x in (90, 120, 150):
+                fake(path, scratch(stage, **dict(step7, parked=0xfe if stage == 0xd2 else wsmp())), rtc_secs=121544 + x + 40, alarm=alarm)
+                r = run(path, cnt="960000000 24000000")
+                check(r.returncode == 0 and STALE in r.stdout and "fabric_up=1's byte, in place of the cores that held" not in r.stdout
+                      and "the fabric's p-state word" not in r.stdout and "WD1 stood" not in r.stdout
+                      and "wd1_mark=1's marker" not in r.stdout and "the steps' outcomes didn't land" in r.stdout
+                      and f"the SoC restarted about {x} s after the commit" in r.stdout,
+                      f"stage 0x{stage:02x} over step 7's 0xff with no outcomes after it, a restart at {x} s: the byte isn't read, and no marker stands",
+                      r.stdout + r.stderr)
+        # Without the outcomes' marker even a byte that looks like the run's isn't taken for it, and the time isn't read against it.
+        fake(path, scratch(0xd3, **dict(step7, parked=wsmp(), down=0xf5)), rtc_secs=121544 + 120 + 40, alarm=alarm)
+        r = run(path, cnt="960000000 24000000")
+        check(r.returncode == 0 and STALE.replace("0x6007 = 0xff", "0x6007 = 0xf5") in r.stdout and "WD1 stood" not in r.stdout
+              and "wd1_mark=1's marker" not in r.stdout and "the SoC restarted about 120 s after the commit" in r.stdout,
+              "0xf5 at 0x6007 with no outcomes after its command: not read as the run's byte, and the restart's time isn't read against a marker",
+              r.stdout + r.stderr)
+        check("\tif (m1_raw && m1_spmi_raw(true, addr, (u8 *)b, n))\n\t\tm1_raw = false;\n" in src
+              and g["fab_landed"](bytes(0x13) + b"\xdf") and g["fab_landed"](bytes(0x13) + b"\xa5") and g["fab_landed"](bytes(0x13) + b"\xc0")
+              and not any(g["fab_landed"](bytes(0x13) + bytes([m])) for m in (0x00, 0x01, 0x80, 0xa4, 0xbf)),
+              "a breadcrumb command that fails stops every one after it, so the outcomes' marker at 0x6013 says stage 0x52's command didn't fail")
+        # Every byte: what the fabric's sentence and the marker's line claim, against the bits, read independently.
+        wrong = []
+        for v in range(256):
+            lines = g["fab_lines"](v)
+            so = [line for line in lines if line.startswith("  so: ")]
+            wd = [line for line in lines if line.startswith("  bits 7:6 (wd1_mark=1): ")]
+            was, took_, kept, w = v >> 2 & 3, bool(v & 0x10), bool(v & 0x20), v & 0xc0
+            if v & 2:
+                ok = len(lines) == 2 and lines[1] + "\n" == BIT1 and not so and not wd
+            else:
+                ok = (len(so) == 1 and len(wd) == 1 and len(lines) == 8 and "reset" not in "".join(lines[:6])
+                      and lines[1] == "  the other cores: all seven wrote their stop bit and held"
+                      and ("was at 3 when the table went out and still there when step 5 ended" in so[0]) == (took_ and kept)
+                      and ("the kernel had lowered it, and the write brought it back" in so[0]) == (took_ and kept and was in (1, 2))
+                      and ("the fabric wasn't a difference from macOS in this run" in so[0]) == (took_ and kept and was == 3)
+                      and ("which nothing predicted" in so[0]) == (took_ and kept and was == 0)
+                      and ("came back to 3 after the write and was NOT there when step 5 ended" in so[0]) == (took_ and not kept)
+                      and ("settled late" in so[0]) == (not took_ and kept)
+                      and ("did NOT come back to 3" in so[0]) == (not took_ and not kept and v != 0)
+                      and ("not a reading to lean on" in so[0]) == (v == 0)
+                      and ("all read actual f" in lines[2] and "NOT" not in lines[2]) == bool(v & 1)
+                      and ("WD1 stood as the marker" in wd[0]) == (w == 0xc0) and ("did NOT stand" in wd[0]) == (w in (0x40, 0x80))
+                      and ("no marker in WD1 stands" in wd[0]) == (w == 0)
+                      and ("its count didn't read past 60 s" in wd[0]) == (w == 0x40) and ("it wasn't armed with the 150 s bite" in wd[0]) == (w == 0x80))
+            if not ok:
+                wrong.append((hex(v), so, wd))
+        check(not wrong, "fabric_up=1: for all 256 bytes, nothing is read past a set bit 1; the fabric is said to be at 3 only when it read 0x333 after"
+              " the write and at step 5's end, and the marker to have stood only when both its bits are set", str(wrong[:2]))
+        for stage in (0xd1, 0xd2, 0xd3):
+            before = fake(path, scratch(stage, **dict(fab17, down=0xf5, parked=0xfe if stage == 0xd2 else wsmp())), rtc_secs=121761, alarm=alarm)
+            r = run(path, "--clear", cnt=cnt)
+            after = open(path, "rb").read()
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                  f"--clear after fabric_up=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
 
         # wd2_bite.h itself: the register and its values, and the sample's byte against an independent reading of its layout.
         w_c = os.path.join(tmp, "w.c")
@@ -2321,7 +2777,7 @@ def position_tests(g, src):
           "SIO's RUN is left alone if its idle pair failed (what Corey OK'd)", fw)
     check("if (sio_stop && n == 1 && !READ_ONCE(replay_done))\n\t\tm1_sio_fw_stop();" in src[src.index("static int e1_prepare(void)"):src.index("static int e1_prepare(void)") + 700],
           "SIO's firmware is stopped at the first prepare of the suspend that will replay, after the DCPs", "")
-    check(in_order(src, ["b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;",
+    check(in_order(src, ["b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;",
                          "m1_crumb(0x6004, b, 4);\n\t\tif (sio_stop) {",
                          "b[0] = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;\n\t\t\tb[1] = ps_words ? M1_W_MARK | m1_pw_bits : M1_K_MARK;\n\t\t\tm1_crumb(0x6012, b, 2);"])
           and "m1_stage(sio_stop ? 0x4f : 0x5b);" in src and "#define M1_K_MARK\t\t0xa5" in src and "K_MARK = 0xa5" in open(TOOL).read(),
@@ -2353,7 +2809,7 @@ def position_tests(g, src):
     # recfg_bite=1: the module reads, and never writes, the SRAM; the sample goes out once, after the release, in one command with its stage.
     tool = open(TOOL).read()
     check("#define M1_RECFG_STAGE\t\t0x47" in src and "#define M1_RECFG_STAGE_PEND\t0x46" in src and "RECFG_STAGES = (0x46, 0x47)\n" in tool
-          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x46, 0x47, 0x56, 0x57),
+          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53),
           "recfg_bite=1's stages are 0x46 and 0x47 in the module and in m1-crumbs, with sio_stop=1's stages")
     uses = [l for l in src.splitlines() if re.search(r"\bm1_recfg\b", l)]
     literals = [int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", src)]
@@ -2375,7 +2831,7 @@ def position_tests(g, src):
           init)
     after = src[src.index("static void __noreturn m1_after_slpa(void)"):]
     after = after[:after.index("\n}\n")]
-    check(in_order(after, ["b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;", "m1_crumb(0x6012, b, 2);",
+    check(in_order(after, ["b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;", "m1_crumb(0x6012, b, 2);",
                            "if (recfg_bite) {\n\t\tsram = readl(m1_recfg + RECFG_BITE);\n\t\tdsb(sy);\n\t\tisb();\n\t}",
                            "/* 9 */", "local_daif_mask();", "if (position)\n\t\tm1_t_first = m1_now();", "writel_relaxed(1, commit);",
                            "if (alarm) {\n\t\tdsb(sy);\n\t\tm1_alarm_arm(rtc);\n\t}",
@@ -2412,8 +2868,8 @@ def position_tests(g, src):
           "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and m1_wd2_init() last, for wd2_bite=1 alone, and returns their refusals")
 
     # wd2_bite=1: one write to WD2, its bite, by CPU0 after the release, and only if WD2 showed RESET_EN; the sample in one command with its stage.
-    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57)\n" in tool
-          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57),
+    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2\n" in tool
+          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53) and g["WD2_PEND"] == (0x56, 0x51),
           "wd2_bite=1's stages are 0x56 and 0x57 in the module and in m1-crumbs, with recfg_bite=1's as the stages whose 0x6005 is a sample")
     wout = src[src.index("static void m1_wd2_out(void)"):]
     wout = wout[:wout.index("\n}\n")]
@@ -2423,7 +2879,8 @@ def position_tests(g, src):
                           "post = readl(m1_wdt + M1_WD_BITE(2));", "after = readl(m1_wdt + M1_WD_CTRL(2));", "c0 = readl(m1_wdt + M1_WD_CUR(2));",
                           "while ((c1 = readl(m1_wdt + M1_WD_CUR(2))) == c0 && m1_now() - t0 < m1_tps / 1000)",
                           "while (!(phase = readl(m1_pos + M1_POS_PHASE)) && m1_now() - t0 < m1_tps / 100)",
-                          "dsb(sy);\n\tisb();\n\tb[0] = ((read_sysreg(isr_el1) >> 6) & 7) ? M1_WD2_STAGE_PEND : M1_WD2_STAGE;",
+                          "dsb(sy);\n\tisb();\n\tif ((read_sysreg(isr_el1) >> 6) & 7)\n\t\tb[0] = fabric_up ? M1_FAB_STAGE_PEND : M1_WD2_STAGE_PEND;\n"
+                          "\telse\n\t\tb[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;",
                           "b[1] = m1_wd2_sample(pre, m1_wd2_bite_awake, ctl, post, after, c0, c1, phase);", "m1_crumb(0x6004, b, 2);",
                           "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));"])
           and wout.count("t0 = m1_now();") == 3 and wout.count("writel(") == 2 and "writel_relaxed" not in wout and wout.count("m1_crumb(") == 1

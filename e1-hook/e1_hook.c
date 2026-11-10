@@ -89,6 +89,8 @@
  *   pkexec e1-hook/run-floor --m1-recfg-bite      (--m1-power-words' and recfg_bite=1, after recfg-bite's one SRAM write: PLAN.md)
  *   pkexec e1-hook/run-floor --m1-wd2-bite        (--m1-power-words' and wd2_bite=1, after wd2-bite's write from user space: PLAN.md)
  *   pkexec e1-hook/run-floor --m1-cluster-ack     (--m1-wd2-bite's and cluster_ack=1: PLAN.md, "The order after the sweep of 2026-11-10")
+ *   pkexec e1-hook/run-floor --m1-fabric-up       (--m1-cluster-ack's and fabric_up=1: PLAN.md, "The order after run 16")
+ *   pkexec e1-hook/run-floor --m1-mark            (--m1-fabric-up's and wd1_mark=1: the same)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -127,6 +129,8 @@
 
 #include "m1_position.h"
 #include "recfg_bite.h"
+#include "fabric_up.h"
+#include "wd1_mark.h"
 #include "wd2_bite.h"
 
 #if IS_ENABLED(CONFIG_ACPI)
@@ -332,6 +336,14 @@ MODULE_PARM_DESC(wd2_bite, "With ps_words=1, and not with recfg_bite=1: after th
 static bool cluster_ack;
 module_param(cluster_ack, bool, 0444);
 MODULE_PARM_DESC(cluster_ack, "With wd2_bite=1 and no pmp_stop=0: step 5 writes the table's entries 55, 57 and 60, the soc-cluster words of ANE0, AFR and AVEMSR (0x28e09800c, 0x28e098014, 0x28e098020), as 0x20, not the table's 0: target 0 and a 1 to bit 5, the cluster's up-done flag (Corey's OK of 2026-11-10 for those three words and that value). The four cluster waits (after 55, 57, 58, 60) then ask for the whole word to read 0, not only bit 4 clear; for one that isn't met, its qto bit says the flag was still set, and 0x6014's bit 5 that something else was left in a word; 0x6014's bit 4 marks the run");
+/* The fabric's p-state back where macOS has it at the commit (PLAN.md, "The order after run 16"). */
+static bool fabric_up;
+module_param(fabric_up, bool, 0444);
+MODULE_PARM_DESC(fabric_up, "With cluster_ack=1: at the start of step 5, the fabric's p-state word, 0x28e20c000, is written once with its low nibble := 3, its awake value, which suspend_noirq lowers to 1 (Corey's OK of 2026-11-10 for this word and value), and polled up to 10 ms to read 0x333; read again at the end of step 5. From step 8's command on the stages are 0x52, 0x53 and 0x51 (for 0x4e, 0x57 and 0x56), and 0x6007 is fabric_up.h's byte");
+/* WD1 as a marker of how far B2 gets with every core down (PLAN.md, "The order after run 16"). */
+static bool wd1_mark;
+module_param(wd1_mark, bool, 0444);
+MODULE_PARM_DESC(wd1_mark, "With fabric_up=1: in step 4, where the kernel has already stopped WD1, its bite := 150 s (0x2922b0014 := 0xd693a400), its count := 60 s (0x2922b0010 := 0x55d4a800) and RESET_EN (0x2922b001c := 4), so that the restart's time says whether B2 zeroed the count (about 90 s if not; WD2's 120 s if it did; about 150 s or none if the pair finished). Read back just before the commit into bits 7:6 of 0x6007's byte. Corey's standing go-ahead of 2026-11-10");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -1354,7 +1366,65 @@ static void e1_after_slpa(void)
  * cluster_ack=1 loads on no other. The run goes on whatever the words read: after
  * slpa there's nothing to come back to, and the reset's time is the result.
  *
- * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
+ * fabric_up=1 (run-floor --m1-fabric-up; with cluster_ack=1) puts the fabric's
+ * p-state back where macOS has it before the table goes out (RESEARCH.md, "After
+ * run 16"; fabric_up.h has the word, the value and the byte). This kernel's
+ * apple-pmgr-misc writes 1 to the word's low nibble in suspend_noirq, at every
+ * suspend, and this module runs after that; the word reads 0x333 awake, and macOS
+ * has it at 3 at its commit (inferred from T6020, T6021 and that 0x333). A2's first
+ * step of its own, once B2 has answered its first handshake, writes 2 there and
+ * waits with no timeout for bits 11:8 to read 2: down from 3 under macOS, up from 1
+ * here, after the table has parked the ClkGen muxes and switched the PLL off. So at
+ * the start of step 5, before any of the table's late entries, m1_fab_raise() reads
+ * the word, writes it back with its low nibble := 3 (one write, the form the
+ * kernel's own resume uses; Corey's OK of 2026-11-10 for this word and value) and
+ * reads it for up to 10 ms until it reads as it does awake; and step 5's last act,
+ * after the power words, is one more read. The load refuses unless the word reads
+ * 0x333 awake, so that 3 is its awake value. The record needs four bits that the
+ * breadcrumbs don't have free, so from step 8's command on this run has stages of
+ * its own, M1_FAB_STAGE_PRE for 0x4e and M1_FAB_STAGE and M1_FAB_STAGE_PEND for
+ * wd2_bite=1's 0x57 and 0x56, and under them 0x6007 is m1_fab_byte(): the sio bit as
+ * before, one bit for "not all seven held" in place of the seven, the word's class
+ * before the write, and whether it read 0x333 after the write and at step 5's end.
+ * Step 7's command, stage 0x39, still has the seven bits, so a stage 0x52 command
+ * that landed without its last byte would leave them under the new stage: m1-crumbs
+ * reads the byte only if the steps' outcomes are at 0x6012 with their marker, since
+ * they go out after that command and only if it didn't fail (m1_crumb()), and only
+ * if its bit 1 is clear, which it never is in step 7's byte when CPU1 held.
+ * One thing is new in step 5's last read: it's the first access to that PMGR page
+ * after the ClkGen park and PLL-off (the power words read other pages there, and
+ * the engine's own A2 reads this word right after the commit). If it faulted, the
+ * SError would panic the kernel, and the Mac would restart about 10 s after the
+ * screen went dark, at stage 0x28.
+ *
+ * wd1_mark=1 (run-floor --m1-mark; with fabric_up=1) makes WD1 a marker of how
+ * far B2 gets with every core down, which no sample can see (RESEARCH.md, "After
+ * run 16"; wd1_mark.h has the registers, the values and the bits). B2 zeroes WD0's
+ * and WD1's counts at its ops 223 and 224 of 246, past its whole power-down, and
+ * writes no watchdog's control; A2 stops WD2 at the pair's end and nowhere else.
+ * Awake, WD1 is the kernel's: apple_wdt keeps it armed with 30 s and pings it, and
+ * its suspend callback has stopped it by the time this module runs (every run's
+ * step 4 found it off). So the marker is set in step 4, a moment before the commit,
+ * in place of step 4's stop: the control cleared if it still reads armed (0x6014's
+ * bit 6, as ever), then the bite := 150 s, the count := 60 s, and RESET_EN. The
+ * count write is new in kind: the kernel and the engine only ever write 0 there.
+ * With WD2's bite moved to 120 s after the commit, the restart reads: about 90 s
+ * after the commit, WD1 with its count never zeroed, so B2 didn't reach op 224;
+ * about 120 s, WD2, so B2 zeroed WD1's count and the pair stopped in its last ops;
+ * about 150 s, or none, the pair finished and WD1 ended it as a dead-man (none if
+ * WD1 doesn't count there). All of that only if the marker stood: in step 8, just
+ * before the commit's crumbs, CPU0 reads WD1's control, bite and count, and bits
+ * 7:6 of 0x6007's byte say whether it was armed with 150 s and whether the count
+ * read past 60 s by up to 5 s. If not, the restart's time says nothing about B2.
+ * Nothing is armed while the Mac is awake, and there's no way back from step 4.
+ * One thing the marker changes for every stage from step 4 on: a hang before the
+ * commit, which the notes above call dark until the power key, now ends in WD1's
+ * reset about 90 s after step 4. The stage tells such a run from one that
+ * committed, and m1-crumbs reads the time against the marker only at the run's
+ * last stage.
+ *
+ * Left out: Naeem's WD1 dead-man unless wd1_mark=1 (above), so that a completed
+ * entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
  * clusters to the
  * PMP, which has no known T6000 counterpart; his CPM power gating (0x80000000
@@ -1365,7 +1435,8 @@ static void e1_after_slpa(void)
  * park and counter blocks, which the table already writes (its own forms,
  * before the keys, or after slpa with pmgr_late). Never written:
  * MBSe, ps_pmp (0x28e0802d8), 0x28e700000, nub-spmi1, the SEP; and WD2, but
- * for its bite with wd2_bite=1 (above).
+ * for its bite with wd2_bite=1 (above). WD1's bite and count are written with
+ * wd1_mark=1 only.
  * observe=1 adds no address to what m1 writes: CPU0 writes CPU7's stop bit,
  * before the commit, instead of CPU7 in 6, and CPU7 writes breadcrumbs and
  * nub-spmi0's acks as CPU0 does. Nor does pmgr_late: it moves 26 of the
@@ -1942,6 +2013,15 @@ static const struct m1_wait {
  */
 #define M1_FABRIC_PS		0x28e20c000ULL
 static_assert((M1_FABRIC_PS & PAGE_MASK) == (0x28e20c800ULL & PAGE_MASK));
+/* fabric_up=1's one write is to that word, and its stages are nobody else's. */
+static_assert(FAB_PS == M1_FABRIC_PS && FAB_AWAKE == 3 && FAB_UP(0x111U) == 0x113U && FAB_UP(0x333U) == 0x333U);
+static_assert(M1_FAB_STAGE_PRE == 0x52 && M1_FAB_STAGE == 0x53 && M1_FAB_STAGE_PEND == 0x51);
+/* wd1_mark=1's three writes: WD1's bite, count and control, and the two values wd1_mark.h has; below WD2's 120 s by 30 s, and above it by 30 s. */
+static_assert(WD1_WDT == M1_WDT && WD1_COUNT == M1_WD_CUR(1) && WD1_BITE == M1_WD_BITE(1) && WD1_CTRL == M1_WD_CTRL(1) &&
+	      WD1_CTRL == M1_WD1_CTRL && WD1_RESET_EN == M1_WD_RESET_EN);
+static_assert(M1_WDT + M1_WD_BITE(1) == 0x2922b0014ULL && M1_WDT + M1_WD_CUR(1) == 0x2922b0010ULL &&
+	      M1_WDT + M1_WD1_CTRL == 0x2922b001cULL && WD1_MARK_BITE == 0xd693a400U && WD1_MARK_COUNT == 0x55d4a800U);
+static_assert(WD1_MARK_BITE - WD1_MARK_COUNT == WD2_BITE_NEW - 30U * WD2_HZ && WD1_MARK_BITE == WD2_BITE_NEW + 30U * WD2_HZ);
 /* position=1 reads HS_A through the commit's own mapping. */
 static_assert((E1_S2R_COMMIT & ~PAGE_MASK) + M1_POS_HS_A + 4 <= PAGE_SIZE);
 
@@ -2004,6 +2084,52 @@ static void m1_wait_unmet(const struct m1_wait *w, u32 v, u8 *qto, u8 *flags)
 		*qto |= w->qto;
 	if (v & ~M1_ACK_FLAG)
 		*flags |= M1_F_ACK_REST;
+}
+
+/*
+ * wd1_mark=1, in step 4: WD1 set as the marker (the m1 comment; wd1_mark.h). wdt is the watchdog page. It's stopped
+ * first if the kernel's suspend left it armed, which is what step 4 has always done; true if it was. Then the bite,
+ * the count and RESET_EN, in that order, so that nothing is armed until both values are in.
+ */
+static bool m1_wd1_set(void __iomem *wdt)
+{
+	bool was = readl(wdt + WD1_CTRL);
+
+	if (was)
+		writel(0, wdt + WD1_CTRL);
+	writel(WD1_MARK_BITE, wdt + WD1_BITE);
+	writel(WD1_MARK_COUNT, wdt + WD1_COUNT);
+	writel(WD1_RESET_EN, wdt + WD1_CTRL);
+	dsb(sy);
+	return was;
+}
+
+/* The fabric's p-state word, through DCS's mapping: m1_waits[0] is DCS's first wait, in the same page (checked at load). */
+static void __iomem *m1_fab(void)
+{
+	return post_map[m1_waits[0].idx] - (m1_waits[0].addr - M1_FABRIC_PS);
+}
+
+/*
+ * fabric_up=1, at the start of step 5: the fabric asked back to 3 (the m1 comment; fabric_up.h). One write, the word
+ * as read with its low nibble replaced, then up to 10 ms for it to read as it does awake. *pre gets the word as it was.
+ */
+static bool m1_fab_raise(void __iomem *p, u32 *pre)
+{
+	u32 v = readl(p);
+	u64 t0;
+
+	*pre = v;
+	writel(m1_fab_up(v), p);
+	dsb(sy);
+	t0 = m1_now();
+	for (;;) {
+		v = readl(p);
+		if (m1_fab_awake(v) || m1_now() - t0 > m1_tps / 100)
+			break;
+		cpu_relax();
+	}
+	return m1_fab_awake(v);
 }
 
 static void m1_aic_mask_all(void)
@@ -2780,7 +2906,10 @@ static void m1_wd2_out(void)
 		cpu_relax();
 	dsb(sy);
 	isb();
-	b[0] = ((read_sysreg(isr_el1) >> 6) & 7) ? M1_WD2_STAGE_PEND : M1_WD2_STAGE;
+	if ((read_sysreg(isr_el1) >> 6) & 7)
+		b[0] = fabric_up ? M1_FAB_STAGE_PEND : M1_WD2_STAGE_PEND;
+	else
+		b[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;
 	b[1] = m1_wd2_sample(pre, m1_wd2_bite_awake, ctl, post, after, c0, c1, phase);
 	m1_crumb(0x6004, b, 2);
 	for (i = 0; i < M1_SPMI_WORDS; i++)
@@ -2794,7 +2923,9 @@ static void __noreturn m1_after_slpa(void)
 {
 	static const u8 two = 0x02;
 	void __iomem *commit = post_map[ARRAY_SIZE(e1_post_slpa) - 1];
-	u8 parked = 0, left = 0, down = 0, held = 0, isrs = 0, flags = BIT(7), qto = 0, b[7], rtc[6] = {}, pmpb = 0;
+	u8 parked = 0, left = 0, down = 0, held = 0, isrs = 0, flags = BIT(7), qto = 0, b[7], rtc[6] = {}, pmpb = 0, wd1 = 0;
+	u32 fab_pre = 0;
+	bool fab_set = false, fab_end = false;
 	struct m1_core *o = &m1_core[7];
 	unsigned int i, k, cpu, drained = 0;
 	u32 v, dcs = 0, pacc0 = 0, sram = 0;
@@ -2836,7 +2967,10 @@ static void __noreturn m1_after_slpa(void)
 
 	/* 4 */
 	m1_aic_mask_all();
-	if (readl(m1_wdt + M1_WD1_CTRL)) {
+	if (wd1_mark) {
+		if (m1_wd1_set(m1_wdt))
+			flags |= BIT(6);
+	} else if (readl(m1_wdt + M1_WD1_CTRL)) {
 		writel(0, m1_wdt + M1_WD1_CTRL);
 		flags |= BIT(6);
 	}
@@ -2851,6 +2985,8 @@ static void __noreturn m1_after_slpa(void)
 	m1_crumb(0x6004, b, 2);
 
 	/* 5: the table's other entries, the commit held back; with pmgr_late, macOS's waits among them */
+	if (fabric_up)
+		fab_set = m1_fab_raise(m1_fab(), &fab_pre);
 	for (i = 0, k = 0; i < ARRAY_SIZE(e1_post_slpa) - 1; i++) {
 		const struct e1_mmio_write *w = &e1_post_slpa[i];
 
@@ -2885,6 +3021,9 @@ static void __noreturn m1_after_slpa(void)
 	/* ps_words=1: macOS's remaining power words (the m1 comment); a hang here leaves stage 0x28 */
 	if (ps_words)
 		m1_pw_bits = m1_pw_write();
+	/* fabric_up=1: is the fabric still where it was put, after the park and PLL-off? */
+	if (fabric_up)
+		fab_end = m1_fab_awake(readl(m1_fab()));
 
 	/* 6: release (hold=1: each core's stop request; they stay up through the commit) */
 	for (i = 0; i < ARRAY_SIZE(m1_order); i++) {
@@ -2943,11 +3082,14 @@ static void __noreturn m1_after_slpa(void)
 	b[5] = pmp_out ? pmpb | (isrs ? BIT(6) : 0) : isrs;
 	b[6] = alarm ? 0 : min(drained, 255U);	/* alarm=1: 0x6016 is m1_alarm_arm()'s */
 	m1_crumb(0x6010, b, 7);
+	/* wd1_mark=1: does the marker stand? The last look before the commit: nothing here touches WD1 after it. */
+	if (wd1_mark)
+		wd1 = m1_wd1_bits(readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_BITE), readl(m1_wdt + WD1_COUNT));
 	if (pmgr_late) {
-		b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;
+		b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;
 		b[1] = parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
-		b[3] = hold ? held : down;
+		b[3] = fabric_up ? m1_fab_byte(held, fab_pre, fab_set, fab_end, wd1) : hold ? held : down;
 		m1_crumb(0x6004, b, 4);
 		if (sio_stop) {
 			/* After the stage that says they're there; a failed command above stops this one (the m1 comment). */
@@ -3328,6 +3470,38 @@ static int __init m1_wd2_init(void)
 	return 0;
 }
 
+/* wd1_mark=1 at load: WD1's three words off the never-write list, and as they are awake, for the record. Reads only. */
+static int __init m1_wd1_init(void)
+{
+	if (m1_never(WD1_WDT + WD1_COUNT, 1) || m1_never(WD1_WDT + WD1_BITE, 1) || m1_never(WD1_WDT + WD1_CTRL, 1)) {
+		pr_err("m1: wd1_mark: a write would touch the never-write list; refusing\n");
+		return -EPERM;
+	}
+	pr_info("m1: wd1_mark: awake: WD1 ctrl %x count %08x bite %08x (the kernel's, which its suspend stops); step 4 writes bite %08x (150 s), count %08x (60 s), then control %x\n",
+		readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_COUNT), readl(m1_wdt + WD1_BITE), WD1_MARK_BITE, WD1_MARK_COUNT,
+		WD1_RESET_EN);
+	return 0;
+}
+
+/* fabric_up=1 at load: the word off the never-write list and as it is awake, 0x333, so that 3 is its awake value. Reads only. */
+static int __init m1_fab_init(void)
+{
+	u32 v = readl(m1_fab());
+
+	if (e1_never_write(FAB_PS)) {
+		pr_err("m1: fabric_up: 0x%llx is on the never-write list; refusing\n", FAB_PS);
+		return -EPERM;
+	}
+	pr_info("m1: fabric_up: 0x%llx awake %08x; step 5 first writes it back with its low nibble := %u (%08x for the %08x suspend_noirq leaves) and waits for %03x\n",
+		FAB_PS, v, FAB_AWAKE, m1_fab_up(FAB_AT_SUSPEND), FAB_AT_SUSPEND, FAB_AT_AWAKE);
+	if (!m1_fab_awake(v)) {
+		pr_err("m1: fabric_up: the fabric's p-state word doesn't read %03x awake, so %u isn't known to be its awake value; refusing\n",
+		       FAB_AT_AWAKE, FAB_AWAKE);
+		return -EINVAL;
+	}
+	return 0;
+}
+
 /* cluster_ack=1 at load: the nine soc-cluster words awake, and what step 5 will write to the three. Reads only. */
 static void __init m1_ack_init(void)
 {
@@ -3581,6 +3755,18 @@ static int __init m1_init(void)
 		m1_late_init();
 	if (cluster_ack)
 		m1_ack_init();
+	if (fabric_up) {
+		int ret = m1_fab_init();
+
+		if (ret)
+			return ret;
+	}
+	if (wd1_mark) {
+		int ret = m1_wd1_init();
+
+		if (ret)
+			return ret;
+	}
 	if (pmp_out) {
 		int ret = m1_pmp_init();
 
@@ -4029,6 +4215,14 @@ static int __init e1_check_params(void)
 		if (n != ARRAY_SIZE(ack))
 			goto bad_ack;
 	}
+	if (wd1_mark && !fabric_up) {
+		pr_err("wd1_mark=1 needs fabric_up=1 (its two bits are in that run's byte at 0x6007, under that run's stages)\n");
+		return -EINVAL;
+	}
+	if (fabric_up && !cluster_ack) {
+		pr_err("fabric_up=1 needs cluster_ack=1 (it's run 16's recipe with the fabric put back, and its stages and 0x6007's byte are that run's layout)\n");
+		return -EINVAL;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -4202,14 +4396,15 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
 		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "",
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
-		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "");
+		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
+		wd1_mark ? " wd1_mark=1" : "");
 	return 0;
 
 unmap:
