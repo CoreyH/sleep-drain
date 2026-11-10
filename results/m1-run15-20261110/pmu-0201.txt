@@ -1,0 +1,4 @@
+# The PMU's register 0x0201, read once through the nvmem interface (read-only; Corey's OK of 2026-11-10)
+# 10:14:12, 11.5 minutes into the first boot after run 15's reset (uptime -s 10:02:41), after m1-crumbs --clear.
+# nvmem: /sys/bus/nvmem/devices/spmi_nvmem2/nvmem, of_node /soc/spmi@2920a1300/pmic@f; one byte at offset 0x0201.
+0x0201 = 02

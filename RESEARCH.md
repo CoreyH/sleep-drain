@@ -3174,7 +3174,85 @@ time narrows the cases and a second bite value decides between them. It's one ne
 has been on e1_hook's never-written list so far, so it needs Corey's OK. PLAN.md has the order.
 
 Corey's OK came on 2026-11-10, for that register and value at those two moments, and it's built (#66,
-`run-floor --m1-wd2-bite`; not run yet). PLAN.md has what the build does.
+`run-floor --m1-wd2-bite`). It ran the same day: M1 run 15, next.
+
+### M1 run 15: WD2's bite moved to 120 s, and the reset follows it (2026-11-10)
+
+`e1-hook/run-floor --quick --m1-wd2-bite` (run 12's parameters and `wd2_bite=1`, #66; the module and
+`wd2_poke` built at bbc8156; kernel 7.2.11-15; flag `radios-off`; `pmp_sleep_release` with 0xc and 0xd), in a
+safe boot, on battery at 76%, with a 1-minute reading. Against run 12 it has two changes, both Corey's OK of
+2026-11-10: one store to WD2's bite from user space before anything is loaded, and one by CPU0 after the
+commit. Raw data: `results/m1-run15-20261110/`.
+
+**The control, awake:** `wd2-bite`'s check read WD2's control 0, its count running and its bite 0x80befc00
+(90 s), and was saved. `wd2_poke` stored 0xaba95000 to 0x2922b0024 through `/dev/mem` (one 32-bit `str`,
+then `dsb sy`) and read the three words again: the bite 0xaba95000, the control still 0. So a store made
+from user space the way `recfg_poke` makes its own does change a register here. Runs 13 and 14 stand as
+read: the SRAM's refusal is the SRAM's.
+
+**The facts:**
+- **The load:** WD2 read control 0 and bite 0xaba95000 awake, the control's value, and `PHASE` 0.
+- **Stage 0xd7** (0x57 with K4's bit 7), the run's last by design: the sample landed, and CPU0 had nothing
+  pending after its reads, just before its acks and its deep WFI.
+- **The sample, 0x6005 = 0x7d:** WD2's control showed RESET_EN within 0.3 s; the bite then read 30 s, an A
+  sequence's own; CPU0 wrote 120 s; the bite read 120 s after, RESET_EN was still set, and the count
+  was changing; `PHASE` read 4, A2's first.
+- **The rest as in run 12:** `qto` 0x00, every macOS wait met; both DCPs stopped and their domains off, the
+  SMC's ack, SIO's firmware stopped (0x6012 = 0xff); the sixteen target-0 power words read actual 0 and
+  the fabric and PCIe group didn't all read back as written (0x6013 = 0xdf); the PMP's CPU stopped
+  (0x6015 = 0x8e); all seven other cores wrote their stop bit and held.
+- **The restart: 120.0-121.3 s after the commit** (119.3-121.3, 119.8-121.8 and 120.0-122.0 from three
+  reads in the first boot). Corey: dark for two minutes, then the restart. The armed alarm survived it,
+  and `--clear` disarmed it.
+
+**What that shows:**
+- **The reset moved, for the first time, and it went where the bite was put.** The twelve runs that
+  reached the commit before this one all reset at about 30 s (runs 13 and 14 never suspended). WD2's bite
+  is writable from the AP, by the kernel after the commit and from user space awake, and it's compared
+  live: the count ran on from A2's arming and the SoC reset when it reached the new bite. So it was WD2
+  that ended this run, as it was taken to end the twelve earlier suspend runs.
+- **A2 armed WD2 at the commit, and no A sequence started after it, unless one did 90.0-91.3 s in.**
+  `PHASE` read 4 after CPU0's write, so none had by then. Every A sequence opens by writing its own
+  30 s and zeroing the count, so one that started t after the commit would have reset the SoC at
+  t + 30 s: only a start in that 1.3 s window fits the restart that was measured.
+- **A2 didn't close in 120 s.** Its close clears RESET_EN, and then there would have been no reset at
+  all, unless a later sequence armed WD2 again.
+- **So the entry is stuck, not slow, and it isn't a completed entry with a wake that stalls.** The one
+  other reading these facts allow is A2 closing and a later A sequence starting about 90 s after the
+  commit, which nothing known gives a reason for (judgment: a few in a hundred). A run with another
+  bite would rule it out: the reset follows the bite, or it doesn't.
+- **The battery says nothing firm about the dark stretch** (`boots.txt`): the gauge fell 87 mAh in the
+  300 s from the reading's end to 152 s into the next boot. The dark stretch is 120 s of that, and the
+  rest is a boot and a session that draw more than the reading's 0.54 A, by an amount nothing recorded.
+  No figure for the dark stretch comes out of it.
+
+**What it doesn't show: where the engine stops.** With CPU0 up, runs 6-10 placed A2 at its first
+handshake and B2 at or before its first poll. With every core down, nothing has seen B2 at all: run 15
+says only that the pair never finished.
+
+**What it changes** (judgment; the order is in PLAN.md, and only there):
+- WD2 is no longer a fixed 30 s. A run can be given up to about 179 s, and the reset's time now carries
+  information the AP chose: with A2's WD2 moved out of the way, a reset at T says a later sequence
+  started at T - 30 s, to the second.
+- Two of B2's own late steps can be read without the SRAM (the sequences, from the dump; the listing
+  stays off the repository). Past its power-downs, B2 zeroes WD0's and WD1's counts, and its
+  second-to-last step writes 1 to the PMU's register 0x0201 over SPMI (B0 writes 1 there too, and B1,
+  the last of the wake, writes 0). WD1 is Linux's own watchdog, and the PMU keeps its registers through
+  a reset, at least the scratch bytes and the alarm's. So a WD1 armed by CPU0 before it goes down would
+  reset the SoC at a time that says whether B2 got that far, and a read of 0x0201 after a run might say
+  whether B2 reached its end (if a restart doesn't clear it, which isn't known).
+- What holds B2's first poll is still the question. The best lead that needs no write is the part of
+  the SRAM that hasn't been read: the eight other descriptor blocks' sequences, the soc clusters' by
+  the look of them, where a complex's untimed wait would be ("Before the feasibility run").
+
+**The PMU's register 0x0201, read once (read-only, Corey's OK of 2026-11-10; `pmu-0201.txt`):** 0x02,
+11.5 minutes into the first boot after the reset. That's neither the 1 that B2 and B0 write there nor
+the 0 that B1 writes. So in a boot where no engine sequence has finished, the register holds a value of
+its own, and what the sequences write is either a command whose value doesn't read back or a state that
+a boot sets again. Either way this read can't say whether B2 reached that step in run 15: a 1 would have
+said it did, and a 2 fits a B2 that never got there as well as a boot that put the 2 back. It's worth
+one more read at a known point, in the next safe boot before any run, to see whether 2 is what every
+boot shows.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

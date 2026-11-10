@@ -414,12 +414,43 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 14 (2026-11-10; judgment; this is the only place it's kept):** the SRAM
+      **The order after run 15 (2026-11-10; judgment; this is the only place it's kept):** the reset
+      followed WD2's bite to 120 s (RESEARCH.md, "M1 run 15"): the entry is stuck, not slow, and it isn't
+      a completed entry with a stalled wake (but for a later sequence starting 90.0-91.3 s in, which
+      another bite would rule out). The store from user space took, so runs 13 and 14 stand: the SRAM
+      can't be written from Linux. What isn't known is how far B2 gets with every core down, and what
+      holds its first poll. Proposed, in this order, each needing Corey's OK (the first two have it, of
+      2026-11-10: the first is done, the second is being built; the third isn't asked for yet):
+      - **A read of the PMU's register 0x0201**, through the nvmem interface `m1-crumbs` reads the
+        breadcrumbs with, read-only, in a regular boot: once now, and in the first boot after each run
+        from here on. B2's second-to-last step writes 1 there, B0 does at the wake's start, and B1, the
+        last of the wake, writes 0. A 1 after a run would say B2 reached its end. A 0 says little until
+        it's known whether a restart clears it, and nothing here can show that.
+        Read once on 2026-11-10 (Corey's OK of that day), after run 15's reset: 0x02, neither value
+        (RESEARCH.md, "M1 run 15"). So it decides nothing yet. `m1-crumbs` could print it after each
+        run from here on (not built): a 1 would still be news.
+      - **The rest of the SRAM, read-only, in a safe boot.** 37 of the 45 sequences the SRAM's pointer
+        blocks name are past the 64 KiB that's been read, at 0x102e0-0x33160: the eight other
+        descriptor blocks', the soc clusters' by the look of them (RESEARCH.md, "Before the feasibility
+        run"). What they poll is the best lead on B2's first poll that needs no write. `recfg-peek
+        --rest` stops at table A's last sequence + 0x10000, so it needs a stage that reads on to the
+        SRAM's end, 0x70000, the same way: 16 KiB pieces, each saved. Then the decode, at the desk.
+      - **A marker run that needs no SRAM write: WD1.** Past its power-downs, B2 zeroes WD0's and WD1's
+        counts. CPU0 would arm WD1 before it goes down, with a bite of 60 s and its count set 20 s short
+        of it, and WD2 at 120 s behind it as in run 15. A reset 20 s after the commit: B2 didn't reach
+        that step within 20 s. A reset at 60-80 s: it did, at T - 60 s, and the stall is in B2's last
+        twenty ops or in A2's tail. Three new writes, to registers Linux's `apple_wdt` owns (WD1's
+        count, bite and control). Whether WD1's count takes a value other than 0 is to be read back
+        awake first. Judgment: a reset at 20 s, about 6 in 7.
+      Then back to guessing: the internal PCIe ports (maralcbr's `lab_pcie_ports_down`, about 13 writes
+      per port), each with Corey's OK.
+      **Earlier, the order after run 14 (2026-11-10; judgment):** the SRAM
       dropped the 64-bit store too (RESEARCH.md, "M1 run 14"), so the sequences can't be edited from
       user space and the markers are off. Next: move the reset's time
       without the SRAM, by writing WD2's bite register itself. One register, 0x2922b0024, and one value,
       0xaba95000 (2,880,000,000 ticks, 120 s; a 32-bit bite ends at about 179 s), at two moments
-      (Corey's OK of 2026-11-10 for exactly that; built in #66 as `run-floor --m1-wd2-bite`, not run yet):
+      (Corey's OK of 2026-11-10 for exactly that; built in #66 as `run-floor --m1-wd2-bite`; ran
+      2026-11-10 as M1 run 15: both stores took, and the reset came at 120 s):
       - **The control, awake.** In the run's safe boot, before anything is loaded, one store to that
         register made as `recfg_poke` makes its own, from user space through `/dev/mem`, and read back
         (WD2 isn't armed awake, and its bite reads 90 s). If it takes, a store of that kind works on this
