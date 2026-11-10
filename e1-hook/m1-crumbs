@@ -241,7 +241,8 @@ K_MARK = 0xa5  # e1_hook's M1_K_MARK: 0x6013, when 0x6012 has sio_stop=1's outco
 W_MARK = 0xc0  # e1_hook's M1_W_MARK: 0x6013's top two bits in a ps_words=1 run, one bit per group below them
 W_GROUPS = ("the five UARTs", "MSG", "ATC1-3_USB_AON", "ATC0-3_PCIE", "ATC1-3_COMMON")  # bits 0-4; e1_hook's M1_PW_*
 BITE_CLASSES = ("another value", "the new value, 45 s", "the old value, 30 s", "its awake value")  # recfg_bite.h's M1_BITE_*
-WD2_PRE = ("another value", "A2's 30 s", "the new value, 120 s", "the value it read awake at load")  # wd2_bite.h's M1_WD2_PRE_*
+# wd2_bite.h's M1_WD2_PRE_*: 30 s is every A sequence's, and A2's only while PHASE reads 4 or 5
+WD2_PRE = ("another value", "30 s, an A sequence's opening's", "the new value, 120 s", "the value it read awake at load")
 WD2_PHASES = (0, 4, 5, None)  # wd2_bite.h's m1_wd2_phase(): None is any other value
 DCP_CODES = ("its RTKit shutdown TIMED OUT", "its RTKit shutdown FAILED another way", "shut down, but RUN didn't read 1 then 0", "stopped")
 SIO_CODES = ("its RTKit idle pair TIMED OUT", "its RTKit idle pair FAILED another way", "idle returned 0, but RUN didn't read 1 then 0", "stopped")
@@ -318,15 +319,24 @@ def recfg_lines(v):
             "  (the reset time is a second fact, never the test: RESEARCH.md, \"A different approach\")"]
 
 
-def wd2_lines(v):
-    """wd2_bite=1, stages 0x56 and 0x57: 0x6005, what CPU0 read around its one write to WD2's bite (wd2_bite.h has the layout)."""
+def wd2_lines(v, pend=False):
+    """wd2_bite=1, stages 0x56 and 0x57: 0x6005, what CPU0 read around its one write to WD2's bite (wd2_bite.h has the layout).
+    pend: the stage is 0x56, CPU0 had an exception pending after its reads."""
     pre, seen, post, still, counting, ph = v & 3, bool(v & 4), bool(v & 8), bool(v & 0x10), bool(v & 0x20), WD2_PHASES[v >> 6]
-    if not seen:
+    if v == 0xfe:
+        # Before anything is read out of it: this is the byte the stage before leaves here.
+        so = ("0xfe is what stage 0x4e leaves in this byte (the parked cores): the stage's command most likely landed without its"
+              " second byte, and then this isn't a sample at all. None of the three lines above is to be leaned on")
+    elif not seen and post and pre != 2:
+        so = ("an inconsistent record: CPU0 made no write, and the bite read 120 s after that though it didn't just before. Something"
+              " else wrote it between the two reads, or the byte isn't the one CPU0 sent: not to be leaned on")
+    elif not seen:
         so = ("CPU0 made no write: nothing had armed WD2 within 0.3 s of the release, so the bite wasn't moved and the reset's time"
-              " says nothing about a moved bite")
+              " says nothing about a moved bite. A Mac that then stayed dark isn't a completed entry by this record: WD2 was never seen"
+              " armed")
         if post:
-            so += (". The bite read 120 s all the same: wd2-bite's store from user space, still there, which also says A2's opening"
-                   " hadn't written its own")
+            so += (". The bite read 120 s before and after: wd2-bite's store from user space, still there, which also says no"
+                   " sequence's opening had written its own 30 s")
     elif not post:
         so = ("CPU0 MADE ITS WRITE AND THE BITE DIDN'T READ 120 s AFTER IT: the register didn't keep the kernel's store (or"
               " something wrote it again at once). The bite wasn't moved, and the reset's time says nothing about a moved bite")
@@ -340,15 +350,24 @@ def wd2_lines(v):
     else:
         took = ("the write took, and" if pre != 2 else
                 "the bite read 120 s before CPU0's write as after it, so this record doesn't show that write took;")
+        who = "A2" if ph in (4, 5) else "the sequence that armed WD2"
+        dark = ("no reset is a candidate for a completed entry" if not pend else
+                "no reset isn't a candidate for a completed entry here, since CPU0 likely never went down (the stage)")
         so = (f"{took} WD2 was armed and counting with a 120 s bite. The reset's time is the result now: about 120 s"
-              " after the commit fits A2 arming last and never closing; no reset is a candidate for a completed entry; about 30 s,"
+              f" after the commit fits {who} arming last and never closing; {dark}; about 30 s,"
               " or another time T, fits a later sequence arming WD2 again, T - 30 s after the commit")
-    if seen and pre != 1:
-        so += (f". But the bite read {WD2_PRE[pre]} before the write, not A2's 30 s, though RESET_EN showed: not the state A2's"
-               " opening leaves, so what armed WD2 isn't clear from this record")
-    if v == 0xfe:
-        so += (". And 0xfe is what stage 0x4e leaves in this byte (the parked cores): if the stage's command landed without its"
-               " second byte, this isn't a sample at all")
+        if ph == 0:
+            so += (". PHASE still read 0 after 10 ms, where A2 writes 4 a few ops after its opening: which sequence armed WD2 isn't"
+                   " shown by this record")
+        elif ph is None:
+            so += (". PHASE read neither 4 nor 5, A2's before its last: A2 may have run to its end already and a later A sequence"
+                   " armed WD2, each opening with the same 30 s. Then the entry had finished before CPU0's write, and the bite that"
+                   " was moved is that sequence's")
+    if seen and pre != 1 and v != 0xfe:
+        so += (f". But the bite read {WD2_PRE[pre]} before the write, not the 30 s an A sequence's opening leaves, though RESET_EN"
+               " showed: what armed WD2 isn't clear from this record")
+    if pend and v != 0xfe and not (seen and post and still and counting):
+        so += ". And CPU0 had an exception pending after its reads (the stage): it likely never went down"
     if v == 0:
         so += ". And 0x00 is also what a byte that didn't land, or didn't survive the reset, reads: not a reading to lean on"
     what = ("neither 0, 4 nor 5: A2's last, or a later sequence's" if ph is None else
@@ -728,7 +747,7 @@ def decode(b, rtc, cnt=None, alarm=None):
             if s in RECFG_STAGES:
                 out += recfg_lines(b[5])
             elif s in WD2_STAGES:
-                out += wd2_lines(b[5])
+                out += wd2_lines(b[5], s == WD2_STAGES[0])
         elif s in POSITION:
             out += position_lines(s, b, pmp, disp)
         elif hold and s in HOLD_AFTER:

@@ -148,9 +148,10 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
           "check says each read before it is made, then what it read", out)
     start = mem(bite=NEW)
     r, acc = run(poke, "check")
-    check(r.returncode == 0 and shape(acc) == "T" and content(fake) == start and "WD2: not armed, its bite the new value, 120 s\n" in r.stdout,
-          "check with 120 s there already: exit 0", r.stdout)
+    check(r.returncode == 7 and shape(acc) == "T" and content(fake) == start and "WD2: not armed, its bite the new value, 120 s\n" in r.stdout,
+          "check with 120 s there already: exit 7, its own status", r.stdout)
     for kw, what in ((dict(ctrl=4), "ARMED"), (dict(ctrl=5), "ARMED"), (dict(ctrl=7, bite=A2), "ARMED"), (dict(ctrl=1), "not as expected"), (dict(ctrl=2, bite=NEW), "not as expected"),
+                     (dict(ctrl=8), "not as expected"), (dict(ctrl=0x100), "not as expected"), (dict(ctrl=0x80000000), "not as expected"), (dict(ctrl=0xfffffffb), "not as expected"),
                      (dict(bite=A2), "not as expected"), (dict(bite=0), "not as expected"), (dict(bite=AWAKE + 1), "not as expected"), (dict(bite=0xffffffff, ctrl=0xffffffff), "ARMED")):
         start = mem(**kw)
         for mode in ("check", "patch"):
@@ -174,8 +175,8 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
           < out.index("WD2: not armed, its bite the new value, 120 s") < out.index(TOOK),
           "patch says the verdict, then the write before it, then the three again and their verdict", out)
     r, acc = run(poke, "patch")
-    check(r.returncode == 0 and "already the new value: nothing written" in r.stdout and shape(acc) == "T" and content(fake) == after,
-          "patch on a bite that's already 120 s: exit 0, no store", r.stdout + str(acc))
+    check(r.returncode == 7 and "already the new value: nothing written" in r.stdout and "took the write" not in r.stdout and shape(acc) == "T" and content(fake) == after,
+          "patch on a bite that's already 120 s: no store, and exit 7, not the exit of a store that took", r.stdout + str(acc))
     # Each line is out before its access is made: with the trace on stdout too, the order shows.
     inline = build("wd2_poke_inline", trace_to="/dev/stdout")
     mem()
@@ -270,6 +271,12 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     else:
         print("note the store's instructions aren't checked here: not an arm64 host, or no objdump")
 
+    # The tests' hooks can't be built into a tool that opens the real device.
+    for hook in ("-DWD2_POKE_DROP=1", "-DWD2_POKE_STORE(v)=(v)", '-DWD2_TRACE="/tmp/x"'):
+        r = subprocess.run(["cc", "-O2", "-Wall", hook, "-o", os.path.join(tmp, "never"), src_path], capture_output=True, text=True)
+        check(r.returncode != 0 and "are for test builds, which set WD2_MEM too" in r.stderr and not os.path.exists(os.path.join(tmp, "never")),
+              f"a build with {hook.split('=')[0]} and the real memory device doesn't compile", r.stderr[:300])
+
     # The source: one store, one address, one value, no number taken from the command line or the environment.
     src = open(src_path).read()
     hdr = open(os.path.join(E1_HOOK, "wd2_bite.h")).read()
@@ -328,12 +335,14 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
             return res
 
         def sandbox(*, args=(), safe=True, uid=0, check_rc=0, patch_rc=0, save_fail_at=None, tee_fails=False, old=None, records=(), term_at=None,
-                    real=None, sysctl=True, date=None):
+                    real=None, sysctl=True, date=None, mark=None, mark_path=None):
             """Runs the launcher with stubs; returns (rc, output, calls, the log root, manifests at each save).
             old: "poke" or "header", the file that's newer than the built tool. records: directories already there, as (time, step, text).
             tee_fails: True, or "write" for the write's log alone. term_at: a save's number: SIGTERM to the launcher there.
             real: the writer built for the fake device, in place of the stub. sysctl: False for no kernel.panic to write.
-            date: the time the launcher's date gives. A stub that "dies of a signal" exits 139, and leaves no core dump."""
+            date: the time the launcher's date gives. A stub that "dies of a signal" exits 139, and leaves no core dump.
+            mark: what this boot's mark says already, of an earlier run. mark_path: the mark's file, to share one "boot" between two runs
+            (False: a path that can't be written). sandbox.mark is what it says after."""
             root = tempfile.mkdtemp(dir=tmp)
             calls = os.path.join(root, "calls")
             log_root = os.path.join(root, "log")
@@ -364,7 +373,7 @@ echo "save $*" >> {calls}
 n=$(ls {snaps} | wc -l)
 cp -a {log_root} {snaps}/$n
 {f'[[ $n != {term_at - 1} ]] || {{ kill -TERM $PPID; sleep 0.3; }}' if term_at else ''}
-{f'[[ $n != {save_fail_at - 1} ]] || exit 1' if save_fail_at else ''}
+{f'[[ $n != {save_fail_at - 1} ]] || {{ echo "the save\'s own word: restart now" >&2; exit 1; }}' if save_fail_at else ''}
 exit 0
 """)
             srcs = {}
@@ -389,11 +398,16 @@ exit 0
             flag_s = os.path.join(root, "active")
             if safe:
                 open(flag_s, "w").close()
-            env = ["env", "WD2_POKE=" + poke_s, "WD2_POKE_SRC=" + srcs["wd2_poke.c"], "WD2_HEADER=" + srcs["wd2_bite.h"], "WD2_SAFE_FLAG=" + flag_s,
+            mark_s = os.path.join(root, "no-such-dir", "mark") if mark_path is False else mark_path or os.path.join(root, "mark")
+            if mark is not None:
+                with open(mark_s, "w") as f:
+                    # "": a mark with nothing in it, as one whose write failed would be.
+                    f.write(mark + "\n" if mark else "")
+            env = ["env", "WD2_MARK=" + mark_s, "WD2_POKE=" + poke_s, "WD2_POKE_SRC=" + srcs["wd2_poke.c"], "WD2_HEADER=" + srcs["wd2_bite.h"], "WD2_SAFE_FLAG=" + flag_s,
                    "WD2_SAVE=" + save, "WD2_LOG_ROOT=" + log_root, "WD2_SYSCTL=" + sysdir]
             if real:
                 # The real writer is newer than the real sources it was just built from.
-                env[2:4] = ["WD2_POKE_SRC=" + src_path, "WD2_HEADER=" + os.path.join(E1_HOOK, "wd2_bite.h")]
+                env[3:5] = ["WD2_POKE_SRC=" + src_path, "WD2_HEADER=" + os.path.join(E1_HOOK, "wd2_bite.h")]
             if tee_fails or date:
                 bindir = os.path.join(root, "bin")
                 os.mkdir(bindir)
@@ -414,6 +428,7 @@ exit 0
             lines = open(calls).read().split("\n")[:-1] if os.path.exists(calls) else []
             manifests = [manifest(os.path.join(snaps, n)) for n in sorted(os.listdir(snaps), key=int)]
             sandbox.panic = open(os.path.join(sysdir, "panic")).read().strip() if sysctl else None
+            sandbox.mark = open(mark_s).read().strip() if os.path.exists(mark_s) else None
             return r.returncode, r.stdout + r.stderr, lines, log_root, manifests
 
         def steps(logs):
@@ -421,9 +436,9 @@ exit 0
 
         FULL = ["poke check panic=0", "save save", "poke patch panic=10", "save save"]
         rc, out, calls, logs, snaps = sandbox()
-        check(rc == 0 and calls == FULL and "done: WD2's bite reads 120 s, so a store from user space changes a register here" in out and MAY not in out
-              and sandbox.panic == "10",
-              "wd2-bite: the check, saved, then kernel.panic and the write, saved; exit 0", (rc, calls, out))
+        check(rc == 0 and calls == FULL and "done: WD2's bite reads 120 s after this store, so a store from user space changes a register here" in out and MAY not in out
+              and sandbox.panic == "10" and sandbox.mark == "took",
+              "wd2-bite: the check, saved, then kernel.panic and the write, saved; exit 0, and this boot's mark says the store took", (rc, calls, out, sandbox.mark))
         check(steps(logs) == ["check", "write"], "each step has a directory of its own", os.listdir(logs))
         check(len(snaps) == 2 and all("-write/" not in f for f in snaps[0]) and any("-write/log.txt" in f for f in snaps[1])
               and snaps[0].items() <= snaps[1].items(),
@@ -435,24 +450,28 @@ exit 0
         wdir = [d for d in os.listdir(logs) if d.endswith("-write")][0]
         check("the writer's patch" in open(os.path.join(logs, wdir, "log.txt")).read(), "the write's log holds the writer's output")
 
-        # Stops before the writer runs: nothing written, exit 3 (WD2 isn't as it is awake) or 4 (anything else).
+        # Stops before the writer runs: nothing written. Exit 3, WD2 isn't as it is awake; 4, before anything is read, for what can be put right
+        # in this boot; 1 for the rest, which run-floor answers with "restart the Mac".
         rc, out, calls, logs, snaps = sandbox(check_rc=3)
         check(rc == 3 and calls == FULL[:2] and "WD2 isn't as it is awake (above): nothing written. That's a result." in out and steps(logs) == ["check"]
               and MAY not in out and NOT_SAVED not in out,
               "a check that finds WD2 not as it is awake: exit 3, saved, and no write", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(check_rc=3, save_fail_at=1)
-        check(rc == 3 and NOT_SAVED in out, "and it says so when that record couldn't be saved", (rc, out))
-        for bad in (1, 2, 139):
+        check(rc == 3 and NOT_SAVED in out and "the save's own word: restart now" in out, "and it says so, with the save's own message, when that record couldn't be saved", (rc, out))
+        for bad in (1, 2, 135, 139):
             rc, out, calls, logs, snaps = sandbox(check_rc=bad)
-            check(rc == 4 and calls == FULL[:2] and f"the check failed (exit {bad}); nothing written" in out and MAY not in out,
-                  f"a check that fails ({bad}): exit 4, saved, and no write", (rc, calls, out))
+            check(rc == 1 and calls == FULL[:2] and f"the check failed (exit {bad}); nothing written" in out and MAY not in out,
+                  f"a check that fails ({bad}): exit 1, saved, and no write", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(save_fail_at=1)
-        check(rc == 4 and calls == FULL[:2] and "couldn't save the check; nothing written" in out, "a check that can't be saved: exit 4, no write", (rc, calls, out))
+        check(rc == 1 and calls == FULL[:2] and "couldn't save the check (sleep-drain-safe's own message is above); nothing written. Restart the Mac" in out
+              and "the save's own word: restart now" in out and MAY not in out,
+              "a check that can't be saved: exit 1, not the exit that lets the run be made again, the save's own message shown, and no write", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(tee_fails=True)
-        check(rc == 4 and not [c for c in calls if c.startswith("poke patch")] and "couldn't write" in out, "a check whose log can't be written: exit 4, no write", (rc, calls, out))
+        check(rc == 1 and not [c for c in calls if c.startswith("poke patch")] and "couldn't write" in out and MAY not in out,
+              "a check whose log can't be written: exit 1, no write", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(sysctl=False)
-        check(rc == 4 and [c.split(" panic=")[0] for c in calls] == ["poke check", "save save"] and "couldn't set kernel.panic" in out,
-              "kernel.panic can't be set: exit 4, no write", (rc, calls, out))
+        check(rc == 1 and [c.split(" panic=")[0] for c in calls] == ["poke check", "save save"] and "couldn't set kernel.panic; nothing written" in out,
+              "kernel.panic can't be set: exit 1, no write", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(term_at=1)
         check(rc == 143 and calls == FULL[:2] and MAY not in out, "SIGTERM during the check's save: no write, and nothing said about the register", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(date="20261110T230000", records=(("20261110T230000", "check", "another run's\n"),))
@@ -476,17 +495,56 @@ exit 0
         # From the writer's start on. Nothing here stores again.
         rc, out, calls, logs, snaps = sandbox(patch_rc=5)
         check(rc == 5 and calls == FULL and "THE WRITE DIDN'T TAKE: a store from user space didn't change this register. That's a result" in out
-              and MAY not in out and NOT_SAVED not in out and "done:" not in out,
-              "a write that didn't take: exit 5, saved, said as a result, and no second store", (rc, calls, out))
+              and MAY not in out and NOT_SAVED not in out and "done:" not in out and sandbox.mark == "dropped",
+              "a write that didn't take: exit 5, saved, said as a result, no second store, and this boot's mark says it was dropped", (rc, calls, out, sandbox.mark))
+        # run-floor goes on after exit 5, so a result that couldn't be saved must not be one: the save may have left the boot partition mounted.
         rc, out, calls, logs, snaps = sandbox(patch_rc=5, save_fail_at=2)
-        check(rc == 5 and calls == FULL and NOT_SAVED in out, "the same when its record can't be saved: still exit 5, and it says the record isn't saved", (rc, calls, out))
+        check(rc == 1 and calls == FULL and "THE WRITE DIDN'T TAKE: a store from user space didn't change this register" in out
+              and "that result's record couldn't be saved (sleep-drain-safe's own message is above): photograph these lines, and restart the Mac" in out
+              and "the save's own word: restart now" in out and MAY not in out,
+              "a write that didn't take and whose record can't be saved: exit 1, never 5, with the save's own message shown", (rc, calls, out))
+        rc, out, calls, logs, snaps = sandbox(save_fail_at=2)
+        check(rc == 1 and "the save's own word: restart now" in out, "a save that fails after a write that took shows its own message too", (rc, out))
         rc, out, calls, logs, snaps = sandbox(patch_rc=3)
         check(rc == 3 and calls == FULL and "WD2 changed between the check and the write: nothing written." in out and MAY not in out,
               "a writer that refuses: exit 3, saved; nothing was written", (rc, calls, out))
         for bad in (6, 2, 9, 139):
             rc, out, calls, logs, snaps = sandbox(patch_rc=bad)
-            check(rc == 1 and calls == FULL and f"wd2_poke failed (exit {bad})" in out and MAY in out and "done:" not in out,
-                  f"a writer that fails, or finds WD2 neither way after its write ({bad}): exit 1, saved, and it says the bite may read 120 s", (rc, calls, out))
+            check(rc == 1 and calls == FULL and f"wd2_poke failed (exit {bad})" in out and MAY in out and "done:" not in out and sandbox.mark == "started",
+                  f"a writer that fails, or finds WD2 neither way after its write ({bad}): exit 1, saved, it says the bite may read 120 s, and the mark stays"
+                  " at started", (rc, calls, out, sandbox.mark))
+        rc, out, calls, logs, snaps = sandbox(patch_rc=7)
+        check(rc == 1 and calls == FULL and "WD2 changed between the check and the write: nothing written" in out and "done:" not in out and MAY not in out,
+              "a writer that finds 120 s there itself: nothing written, exit 1, never the exit of a store that took", (rc, calls, out))
+
+        # One store from user space in a boot: a second run checks, saves, and gives the first one's result, without storing.
+        ONE = FULL[:2]
+        rc, out, calls, logs, snaps = sandbox(mark="took", check_rc=7)
+        check(rc == 0 and calls == ONE and steps(logs) == ["check"] and "this boot's one store was made earlier and took: the bite reads 120 s. Nothing is written now" in out
+              and "next: wd2_poke patch" not in out and sandbox.mark == "took" and sandbox.panic == "0",
+              "run again after a store that took: the check, saved, no store, exit 0", (rc, calls, out))
+        rc, out, calls, logs, snaps = sandbox(mark="dropped", check_rc=0)
+        check(rc == 5 and calls == ONE and steps(logs) == ["check"] and "this boot's one store was made earlier and didn't take: the bite reads 90 s. It isn't made again (the OK is for one)" in out
+              and "next: wd2_poke patch" not in out and sandbox.mark == "dropped",
+              "run again after a store that was dropped: the check, saved, exit 5, and no second store", (rc, calls, out))
+        text = open(os.path.join(logs, os.listdir(logs)[0], "log.txt")).read()
+        check("It isn't made again (the OK is for one)" in text, "and the saved check says so too", text)
+        rc, out, calls, logs, snaps = sandbox(check_rc=7)
+        check(rc == 7 and calls == ONE and "WD2's bite reads 120 s, and no store was made in this boot" in out and "the control isn't made" in out
+              and "took" not in out and sandbox.mark is None,
+              "a bite of 120 s with no store made in this boot: exit 7, saved, nothing written, and never called a store that took", (rc, calls, out))
+        for mark, check_rc in (("took", 0), ("dropped", 7), ("started", 0), ("started", 7), ("", 0), ("something else", 7)):
+            rc, out, calls, logs, snaps = sandbox(mark=mark, check_rc=check_rc)
+            check(rc == 1 and calls == ONE and "WD2 doesn't read as that store left it. Nothing is written now. Restart the Mac" in out and "next: wd2_poke patch" not in out,
+                  f"a mark of {mark!r} with a check exit of {check_rc}: not what that store left: exit 1, no store", (rc, calls, out))
+        for mark, check_rc in (("took", 7), ("dropped", 0), (None, 7)):
+            rc, out, calls, logs, snaps = sandbox(mark=mark, check_rc=check_rc, save_fail_at=1)
+            check(rc == 1 and calls == ONE and "couldn't save that (sleep-drain-safe's own message is above); nothing written. Restart the Mac" in out
+                  and "the save's own word: restart now" in out,
+                  f"the same three ways out (mark {mark!r}) with a save that fails: exit 1, never the exits run-floor goes on after", (rc, calls, out))
+        rc, out, calls, logs, snaps = sandbox(mark_path=False)
+        check(rc == 1 and calls == FULL[:2] and "couldn't write" in out and "nothing written" in out and MAY not in out,
+              "a mark that can't be left: exit 1 before the store, which isn't made", (rc, calls, out))
         rc, out, calls, logs, snaps = sandbox(save_fail_at=2)
         check(rc == 1 and calls == FULL and "couldn't save the write's record" in out and MAY in out,
               "a write whose record can't be saved: exit 1, and it says the bite may read 120 s", (rc, calls, out))
@@ -515,14 +573,30 @@ exit 0
         check(ctext.count("reading 0x") == 3 and AS_AWAKE + "\n" in ctext and "writing" not in ctext and NEXT in ctext
               and WRITING in wtext and TOOK + "\n" in wtext and wtext.count("reading 0x") == 6,
               "its two logs: the check's three reads and verdict, then the writer's own lines", ctext + wtext)
+        boot = os.path.join(tmp, "boot-mark")
+        before = mem()
+        rc, out, calls, logs, snaps = sandbox(real=poke, mark_path=boot)
+        if os.path.exists(trace):
+            os.unlink(trace)
+        rc2, out2, calls2, logs2, snaps2 = sandbox(real=poke, mark_path=boot)
+        t = open(trace).read() if os.path.exists(trace) else ""
+        check(rc == 0 and rc2 == 0 and content(fake) == {**before, BITE: NEW} and "this boot's one store was made earlier and took" in out2
+              and calls2 == ["save save"] and "w 0x" not in t and t.count("r 0x") == 3,
+              "the real writer, run again in the same boot after a store that took: three reads, saved, exit 0, and no store", (rc, rc2, out2, t))
         rc, out, calls, logs, snaps = sandbox(real=poke)
-        check(rc == 0 and content(fake) == {**before, BITE: NEW} and "already the new value: nothing written" in out,
-              "run again: the check finds 120 s, and nothing is written", out)
+        check(rc == 7 and content(fake) == {**before, BITE: NEW} and "no store was made in this boot" in out and "done:" not in out,
+              "the real writer in another boot that finds 120 s there: exit 7, nothing written, and not called a store that took", (rc, out))
+        os.unlink(boot)
         start = mem()
-        rc, out, calls, logs, snaps = sandbox(real=dropped)
+        rc, out, calls, logs, snaps = sandbox(real=dropped, mark_path=boot)
         check(rc == 5 and content(fake) == start and "THE WRITE DIDN'T TAKE: the bite still reads 90 s" in out
               and "THE WRITE DIDN'T TAKE: a store from user space didn't change this register" in out and MAY not in out,
               "the real writer on a register that drops the store: exit 5, said by the writer and the launcher, and the device unchanged", (rc, out))
+        os.unlink(trace)
+        rc, out, calls, logs, snaps = sandbox(real=dropped, mark_path=boot)
+        t = open(trace).read() if os.path.exists(trace) else ""
+        check(rc == 5 and content(fake) == start and "It isn't made again (the OK is for one)" in out and "w 0x" not in t and t.count("r 0x") == 3,
+              "run again in the same boot after a store that was dropped: three reads, no second store, exit 5 again", (rc, out, t))
         start = mem(ctrl=4, bite=A2)
         rc, out, calls, logs, snaps = sandbox(real=poke)
         check(rc == 3 and content(fake) == start and calls == ["save save"] and not [d for d in os.listdir(logs) if d.endswith("-write")],

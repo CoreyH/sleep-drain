@@ -87,8 +87,10 @@
 # 0x2922b0024, written to 120 s (Corey's OK of 2026-11-10 for that register and value, twice). First, before
 # anything is loaded, e1-hook/wd2-bite makes that store once from user space, awake, where WD2 isn't armed (a
 # read-only check, saved, then the store, saved): the control runs 13 and 14 lacked, since nothing had shown
-# that a store through /dev/mem changes any register here. The run goes on whether it took or not, and stops
-# only if WD2 isn't as it is awake. Then wd2_bite=1: CPU0, once it has let the others go after the commit and
+# that a store through /dev/mem changes any register here. The run goes on whether it took or not, and stops,
+# with nothing loaded, if WD2 isn't as it is awake or wd2-bite fails (a save that fails among that). wd2-bite
+# makes that store once in a boot: run again in the same boot, it gives the first one's result. Then
+# wd2_bite=1: CPU0, once it has let the others go after the commit and
 # has seen WD2 armed, writes the bite once, reads WD2 back and records it (stage 0xd7, or 0xd6 with an
 # exception pending). WD2 stays armed and only its timeout changes, so its reset, if the entry is stuck as
 # before, comes about 120 s after the screen goes dark, not 30: for this run, "dark for good" below starts
@@ -531,7 +533,8 @@ fi
 # --m1-wd2-bite: the control, before anything is loaded (wd2-bite: a read-only check, saved, then one store to WD2's
 # bite from user space, saved). kernel.panic is set by now, so a write that faults restarts the Mac 10 s later.
 # Whether the store took is the control's result, and the run goes on either way: e1_hook's own write, after the
-# commit, is the kernel's. It stops only if WD2 isn't as it is awake, or the launcher failed.
+# commit, is the kernel's. It goes on, too, if the bite read 120 s before any store in this boot (no control then,
+# and no store). It stops if WD2 isn't as it is awake, or the launcher failed.
 if ((wd2)); then
   # A line of this script's own first: with a broken stdout it fails here, and set -e stops before anything is written.
   echo "run-floor: WD2's bite from user space first (wd2-bite), then the module and the reading"
@@ -545,14 +548,18 @@ if ((wd2)); then
   5)
     echo "run-floor: wd2-bite's store didn't take (exit 5, above): that's a result, and it's saved. Going on to the run: e1_hook's write is the kernel's"
     ;;
+  7)
+    echo "run-floor: wd2-bite made no store: WD2's bite read 120 s already, with none made in this boot (exit 7, above). The control wasn't made, and that's saved. Going on to the run"
+    ;;
   3)
     die "WD2 isn't as it is awake (wd2-bite exit 3, above), so nothing was written. Nothing is loaded and nothing replays. That's a result, and what was saved of it is on the boot partition: restart the Mac"
     ;;
   4)
-    die "wd2-bite stopped before its write (exit 4, above: a tool to rebuild, or a save that failed). Nothing was written and nothing is loaded. Once that's fixed this can be run again, in this same boot"
+    die "wd2-bite stopped before its write (exit 4, above: a tool to rebuild, most likely). Nothing was written and nothing is loaded. Once that's fixed this can be run again, in this same boot"
     ;;
   *)
-    # wd2-bite says itself, in capitals, when the writer ran and the bite may read 120 s.
+    # wd2-bite says itself, in capitals, when the writer ran and the bite may read 120 s. A save that failed ends here
+    # too, whatever the store did: it can leave the boot partition mounted.
     die "wd2-bite failed (exit $rc), above. Nothing is loaded and nothing replays: restart the Mac"
     ;;
   esac

@@ -900,9 +900,20 @@ def test_wd2(launcher):
               f"{script}: wd2-bite exit 5, the store didn't take: said as a result, the module loads and the reading runs all the same, and nothing"
               " says the bite reads 120 s", r.stdout + r.stderr + "\n".join(c + wc))
 
+    # No store, because the bite read 120 s before any in this boot: no control, said so, and the run goes on. Nothing says a store took.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, launcher, reading="handoff", wd2_rc=7)
+        r = run(tmp, d, launcher)
+        c = calls(tmp)
+        check(r.returncode == 2 and wd2_calls(tmp) == [WD2] and c[:2] == [insmod.format(os.path.join(d, "e1_hook.ko")), f"reading take --label {launcher[3]} --then suspend"]
+              and "run-floor: wd2-bite made no store: WD2's bite read 120 s already, with none made in this boot (exit 7, above). The control wasn't made" in r.stdout
+              and "store took" not in r.stdout and "didn't take" not in r.stdout and WD2_STILL not in r.stdout + r.stderr,
+              f"{script}: wd2-bite exit 7, no store made: said as that, never as a store that took, and the run goes on", r.stdout + r.stderr + "\n".join(c))
+
     # Anything else from wd2-bite: nothing is loaded.
     for wd2_rc, msg in ((3, "WD2 isn't as it is awake (wd2-bite exit 3, above), so nothing was written."), (4, "wd2-bite stopped before its write (exit 4, above"),
-                        (1, "wd2-bite failed (exit 1)"), (6, "wd2-bite failed (exit 6)"), (143, "wd2-bite failed (exit 143)")):
+                        (1, "wd2-bite failed (exit 1)"), (2, "wd2-bite failed (exit 2)"), (6, "wd2-bite failed (exit 6)"), (8, "wd2-bite failed (exit 8)"),
+                        (126, "wd2-bite failed (exit 126)"), (127, "wd2-bite failed (exit 127)"), (143, "wd2-bite failed (exit 143)")):
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, wd2_rc=wd2_rc)
             r = run(tmp, d, launcher)
@@ -971,6 +982,41 @@ def test_wd2(launcher):
         check(p.returncode == 143 and wc == [WD2] and cancelled(tmp) == "1\n" and err.count(WD2_STILL) == 1 and err.count(LOADED) == 1 and WD2_AGAIN not in err,
               f"{script}: SIGTERM while it watches: the replay called off, and it says the bite still reads 120 s and, e1_hook staying loaded, to restart first",
               out + err + "\n".join(wc))
+    # The real wd2-bite under run-floor, with a stub writer whose store doesn't take. Saved: the run goes on. With its second save failing
+    # (as when sleep-drain-safe can't unmount the boot partition and says to restart): that isn't exit 5, and nothing is loaded.
+    for save_fails in (False, True):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, launcher, reading="handoff")
+            real = os.path.join(tmp, "real")
+            rcalls = os.path.join(real, "calls")
+            os.makedirs(os.path.join(real, "log"))
+            for n in ("wd2_poke.c", "wd2_bite.h"):
+                write(os.path.join(real, n), "")
+                os.utime(os.path.join(real, n), (1000, 1000))
+            write(os.path.join(real, "wd2_poke"),
+                  f'#!/bin/sh\necho "poke $1" >> {rcalls}\ncase $1 in check) exit 0 ;; patch) echo "THE WRITE DID NOT TAKE (the stub writer)"; exit 5 ;; esac\nexit 9\n', 0o755)
+            os.utime(os.path.join(real, "wd2_poke"), (2000, 2000))
+            unmount = '[ "$(grep -c "^save" ' + rcalls + ')" != 2 ] || { echo "sleep-drain-safe: saved, but /boot is still mounted at /run/x: restart now" >&2; exit 1; }\n'
+            write(os.path.join(real, "save"), f'#!/bin/sh\necho "save $*" >> {rcalls}\n' + (unmount if save_fails else "") + "exit 0\n", 0o755)
+            e = env(tmp, launcher)
+            e.update(FLOOR_WD2_BITE=os.path.join(E1_HOOK, "wd2-bite"), WD2_POKE=os.path.join(real, "wd2_poke"), WD2_POKE_SRC=os.path.join(real, "wd2_poke.c"),
+                     WD2_HEADER=os.path.join(real, "wd2_bite.h"), WD2_SAFE_FLAG=os.path.join(tmp, "run", "active"), WD2_SAVE=os.path.join(real, "save"),
+                     WD2_LOG_ROOT=os.path.join(real, "log"), WD2_SYSCTL=os.path.join(tmp, "sysctl"), WD2_MARK=os.path.join(real, "mark"))
+            r = subprocess.run(cmd(d, launcher), env=e, capture_output=True, text=True, timeout=60)
+            c = calls(tmp)
+            rc_ = open(rcalls).read().split("\n")[:-1] if os.path.exists(rcalls) else []
+            four = ["poke check", "save save", "poke patch", "save save"]
+            if save_fails:
+                check(r.returncode == 1 and rc_ == four and c == [] and "Going on" not in r.stdout and "it's saved" not in r.stdout
+                      and "/boot is still mounted at /run/x: restart now" in r.stderr and "that result's record couldn't be saved" in r.stderr
+                      and "wd2-bite failed (exit 1), above. Nothing is loaded and nothing replays: restart the Mac" in r.stderr,
+                      f"{script}: the real wd2-bite, a store that didn't take and a save that failed: no load and no reading, and the save's own"
+                      " word to restart is on the screen", r.stdout + r.stderr + "\n".join(c + rc_))
+            else:
+                check(r.returncode == 2 and rc_ == four and c[:2] == [insmod.format(os.path.join(d, "e1_hook.ko")), f"reading take --label {launcher[3]} --then suspend"]
+                      and "wd2-bite's store didn't take (exit 5, above): that's a result, and it's saved. Going on to the run" in r.stdout,
+                      f"{script}: the real wd2-bite, a store that didn't take, saved: the run goes on", r.stdout + r.stderr + "\n".join(c + rc_))
+
     # The launcher itself: wd2-bite is the only program of the kind it runs for this recipe, once and with no arguments.
     text = open(os.path.join(E1_HOOK, "run-floor")).read()
     check(text.count('"$WD2BITE"') == 1 and '"$WD2BITE" || rc=$?' in text and '"$WD2BITE" --' not in text and "wd2_poke" not in text,

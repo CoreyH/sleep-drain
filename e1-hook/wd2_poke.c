@@ -13,14 +13,16 @@
 // this Mac: every write seen to land was the kernel's. WD2's bite is a register
 // the same kind of store can be tried on with nothing at stake: awake, WD2 isn't
 // armed, and the engine's sequences write the bite themselves before they arm
-// it. If the bite reads 120 s after the store, a store like recfg_poke's works
-// here, and the SRAM's refusal is the SRAM's. If it still reads 90 s, runs 13
-// and 14 say nothing about the SRAM.
+// it. If the bite reads 90 s before the store and 120 s after it, a store like
+// recfg_poke's works here, and the SRAM's refusal is the SRAM's. If it still
+// reads 90 s, runs 13 and 14 say nothing about the SRAM. A bite that read 120 s
+// before any store shows neither.
 //
 // There's no address argument and no value argument: the register and its
 // values are wd2_bite.h's. patch writes only if the control reads 0 and the bite
-// its awake 90 s; with 120 s there already it writes nothing and says so; with
-// anything else (WD2 armed, another bite) it writes nothing. The write is one
+// its awake 90 s; with 120 s there already it writes nothing and says so, with
+// an exit status of its own, since a bite it didn't change shows nothing about
+// its store; with anything else (WD2 armed, another bite) it writes nothing. The write is one
 // aligned 32-bit str, the width the kernel writes this register with. Nothing
 // puts the 90 s back: the OK is for one value, the bite of a watchdog that isn't
 // armed changes nothing, and a restart brings the 90 s back (inferred: it has
@@ -30,11 +32,12 @@
 // It refuses outside a safe boot (sleepdrain.safe on the kernel's command line
 // and the safe boot's flag in /run), as recfg_poke does.
 //
-// Exit status: 0, WD2 is as it is awake (check), or the bite reads 120 s
-// (patch: written now, or there already); 3, WD2 wasn't as expected and nothing
-// was written; 5, the write was made and the bite still reads 90 s, the control
-// unchanged: a result; 6, the write was made and the three words read some other
-// way; 2, usage, not a safe boot, or the memory device didn't open.
+// Exit status: 0, WD2 is as it is awake (check), or this run's write was made
+// and the bite reads 120 s after it (patch); 7, the bite read 120 s already,
+// with WD2 not armed, and nothing was written; 3, WD2 wasn't as expected and
+// nothing was written; 5, the write was made and the bite still reads 90 s, the
+// control unchanged: a result; 6, the write was made and the three words read
+// some other way; 2, usage, not a safe boot, or the memory device didn't open.
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -51,6 +54,10 @@
 #ifndef WD2_MEM
 #error "wd2_poke is for arm64 Macs"
 #endif
+#endif
+/* The tests' hooks, below, are for a build pointed at a file: never one that opens the real device. */
+#if (defined(WD2_TRACE) || defined(WD2_POKE_DROP) || defined(WD2_POKE_STORE)) && !defined(WD2_MEM)
+#error "WD2_TRACE, WD2_POKE_DROP and WD2_POKE_STORE are for test builds, which set WD2_MEM too"
 #endif
 
 #ifndef WD2_MEM
@@ -253,10 +260,10 @@ int main(int argc, char **argv)
 
 	verdict = look(&ctl);
 	if (!patch)
-		return verdict == WD2_AWAKE || verdict == WD2_NEW ? 0 : 3;
+		return verdict == WD2_AWAKE ? 0 : verdict == WD2_NEW ? 7 : 3;
 	if (verdict == WD2_NEW) {
 		printf("already the new value: nothing written\n");
-		return 0;
+		return 7;
 	}
 	if (verdict != WD2_AWAKE) {
 		printf("not as it is awake: nothing written\n");

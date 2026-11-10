@@ -200,8 +200,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `--m1-wd2-bite`'s control (`wd2_bite.h` has the register, its values and the module's byte): `wd2_poke check`,
   read-only (WD2's control, count and bite), saved, then `wd2_poke patch`, one 32-bit store of 120 s to WD2's bite
   through /dev/mem, made only if WD2 is as it is awake (control 0, bite 90 s), the three words read again, and
-  saved. It exits 0 if the store took and 5 if it didn't, and run-floor goes on either way. Nothing writes the
-  90 s back: the OK is for one value, and a restart undoes it.
+  saved. It exits 0 if the store took and 5 if it didn't, each only once its record is saved, and run-floor goes
+  on after those (and after 7: the bite read 120 s before any store in this boot, so none was made). It makes
+  one store in a boot: a mark in /run says how that one went, and a later run gives its result without storing
+  again. Nothing writes the 90 s back: the OK is for one value, and a restart undoes it.
 - `tests/`: hardware-free checks. `python3 -I tests/pmu_alarm_test.py` runs
   `pmu-alarm`'s real test against a fake PMU; `tests/rtc_alarm_load_test.py`
   runs `rtc-alarm-test/load` as root in a bubblewrap sandbox against a fake
@@ -223,7 +225,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `e1-hook/recfg_peek` on a sparse file standing in for /dev/mem and its
   launcher with stubs; `tests/recfg_bite_test.py` runs `e1-hook/recfg_poke` on the same kind
   of file (exactly one word changes, or none; the store is 64 bits) and `e1-hook/recfg-bite` with stubs;
-  `tests/wd2_bite_test.py` does the same for `e1-hook/wd2_poke` and `e1-hook/wd2-bite`; `tests/sleep_drain_reading_test.py`
+  `tests/wd2_bite_test.py` runs `e1-hook/wd2_poke` that way too (one word changes, or none; its store is 32 bits) and
+  `e1-hook/wd2-bite` with stubs; `tests/sleep_drain_reading_test.py`
   runs `sleep-drain-reading` as uid 0 in a bubblewrap user namespace against
   a fake battery, with stub `sleep-drain-safe` and `systemctl`.
 - `patches/`: patch series for upstream, kept here for review before they're

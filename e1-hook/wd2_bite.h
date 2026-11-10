@@ -17,8 +17,9 @@
  * The sample, wd2_bite=1's byte at 0x6005, sent in one command with its stage
  * (0x57, or 0x56 if CPU0 had an exception pending after the reads), once CPU0
  * has let the other cores go after the commit:
- *   bits 1:0  WD2's bite as read before the write: 0 another value, 1 A2's
- *             30 s, 2 the new 120 s, 3 the value it read awake at load. The
+ *   bits 1:0  WD2's bite as read before the write: 0 another value, 1 the
+ *             30 s every A sequence's opening writes (A2's, while PHASE reads 4
+ *             or 5), 2 the new 120 s, 3 the value it read awake at load. The
  *             codes are chosen so that 0xfe, the parked cores, which stage 0x4e
  *             leaves in this byte, can't read as the sample that's expected
  *             (bit 0 is never set there)
@@ -28,8 +29,9 @@
  *   bit 4     the control still showed RESET_EN after that
  *   bit 5     the count read differently on a second read after that: WD2 was
  *             still counting
- *   bits 7:6  PHASE (0x2922c0110), read last: 0 for 0, 1 for 4, 2 for 5, 3 for
- *             anything else (the sequences write 0 to 0xd; A2 writes 4, 5 and 7)
+ *   bits 7:6  PHASE (0x2922c0110) bits 3:0, read last: 0 for 0, 1 for 4, 2 for
+ *             5, 3 for anything else (the sequences write 0 to 0xd; A2 writes 4,
+ *             5 and 7)
  */
 #ifndef WD2_BITE_H
 #define WD2_BITE_H

@@ -1594,14 +1594,18 @@ def position_tests(g, src):
         def wsmp(pre=A2, seen=True, post=True, still=True, counting=True, phase=1):
             return pre | (4 if seen else 0) | (8 if post else 0) | (0x10 if still else 0) | (0x20 if counting else 0) | phase << 6
 
-        TOOK = ("  so: the write took, and WD2 was armed and counting with a 120 s bite. The reset's time is the result now: about 120 s after the commit"
-                " fits A2 arming last and never closing; no reset is a candidate for a completed entry; about 30 s, or another time T, fits a later"
-                " sequence arming WD2 again, T - 30 s after the commit")
+        def took(who="A2", dark="no reset is a candidate for a completed entry"):
+            return ("  so: the write took, and WD2 was armed and counting with a 120 s bite. The reset's time is the result now: about 120 s after the commit"
+                    f" fits {who} arming last and never closing; {dark}; about 30 s, or another time T, fits a later"
+                    " sequence arming WD2 again, T - 30 s after the commit")
+
+        TOOK = took()
+        SEQ = "the sequence that armed WD2"
         rc, out, err = dec(0xd7, dict(run10, parked=wsmp(), prog=(0xff, 0xff)))
         check(rc == 0 and wsmp() == 0x7d
               and "stage 0x6004 = 0xd7 (pmp_out=1: bit 7, so the stage is 0x57) (pmgr_late=1): wd2_bite=1: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2 was armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards" in out
               and "0x6005 = 0x7d: wd2_bite=1, after the commit, the alarm and the release:\n" in out
-              and "  WD2's bite before CPU0's write: A2's 30 s; WD2's control showed RESET_EN, so CPU0 wrote the bite, 120 s\n" in out
+              and "  WD2's bite before CPU0's write: 30 s, an A sequence's opening's; WD2's control showed RESET_EN, so CPU0 wrote the bite, 120 s\n" in out
               and "  read after that: the bite 120 s; RESET_EN set; the count changing\n" in out
               and "  PHASE, read last: 0x4 (the entry pair's first (A2))\n" in out and TOOK + "\n" in out
               and "parked (0x6005" not in out and "observe=1" not in out and "read off after the release" not in out and "recfg_bite=1, after" not in out
@@ -1610,20 +1614,37 @@ def position_tests(g, src):
               and "from its low two bytes and the run's alarm: 121544" in out and "the SoC restarted about" in out,
               "wd2_bite=1's 0xd7: the sample at 0x6005, the steps' outcomes, no parked line, and bit 0 of the sample isn't observe=1's mark", out + err)
         rc, out, err = dec(0xd6, dict(run10, parked=wsmp()))
+        # The pending stage: CPU0 likely stayed up, so a dark ending isn't a candidate for anything, and the sentence says so itself.
         check(rc == 0 and "so the stage is 0x56" in out and "but had an SError, IRQ or FIQ pending afterwards: that would end its deep WFI" in out
-              and TOOK + "\n" in out and "parked (0x6005" not in out and "from its low two bytes and the run's alarm: 121544" in out,
-              "wd2_bite=1's 0xd6: the same sample, and CPU0 had something pending after its reads", out + err)
-        for code, what in ((0, "0x0 (its awake value, or pair 0's)"), (1, "0x4 (the entry pair's first (A2))"), (2, "0x5 (the entry pair's second (A2))"),
-                           (3, "neither 0, 4 nor 5: A2's last, or a later sequence's")):
+              and took(dark="no reset isn't a candidate for a completed entry here, since CPU0 likely never went down (the stage)") + "\n" in out
+              and "no reset is a candidate" not in out and "parked (0x6005" not in out and "from its low two bytes and the run's alarm: 121544" in out,
+              "wd2_bite=1's 0xd6: the same sample, CPU0 had something pending after its reads, and no reset is then no candidate for a completed entry", out + err)
+        rc, out, err = dec(0xd6, dict(run10, parked=wsmp(post=False)))
+        check(rc == 0 and "The bite wasn't moved, and the reset's time says nothing about a moved bite. And CPU0 had an exception pending after its reads (the stage): it likely never went down\n" in out,
+              "wd2_bite=1's 0xd6 with a write that didn't read back: the pending exception is said there too", out + err)
+        # A2 is named only while PHASE reads 4 or 5: every A sequence opens with the same 30 s.
+        for code, what, more in (
+                (0, "0x0 (its awake value, or pair 0's)", took(SEQ) + ". PHASE still read 0 after 10 ms, where A2 writes 4 a few ops after its opening: which sequence armed WD2 isn't shown by this record\n"),
+                (1, "0x4 (the entry pair's first (A2))", TOOK + "\n"), (2, "0x5 (the entry pair's second (A2))", TOOK + "\n"),
+                (3, "neither 0, 4 nor 5: A2's last, or a later sequence's",
+                 took(SEQ) + ". PHASE read neither 4 nor 5, A2's before its last: A2 may have run to its end already and a later A sequence armed WD2, each opening with the same 30 s."
+                 " Then the entry had finished before CPU0's write, and the bite that was moved is that sequence's\n")):
             rc, out, err = dec(0xd7, dict(run10, parked=wsmp(phase=code)))
-            check(rc == 0 and f"  PHASE, read last: {what}\n" in out and TOOK + "\n" in out, f"wd2_bite=1: PHASE's code {code} reads as {what.split(' (')[0]}", out + err)
+            check(rc == 0 and f"  PHASE, read last: {what}\n" in out and more in out and ("fits A2 arming last" in out) == (code in (1, 2)),
+                  f"wd2_bite=1: PHASE's code {code} reads as {what.split(' (')[0]}, and A2 is named only for 4 and 5", out + err)
         rc, out, err = dec(0xd7, dict(run10, parked=wsmp(seen=False, post=False, still=False)))
         check(rc == 0 and "WD2's control did NOT show RESET_EN within 0.3 s, so CPU0 wrote nothing\n" in out and "the write took" not in out
-              and "  so: CPU0 made no write: nothing had armed WD2 within 0.3 s of the release, so the bite wasn't moved and the reset's time says nothing about a moved bite\n" in out,
-              "wd2_bite=1: no RESET_EN within 0.3 s: no write was made, and the reset's time says nothing about a moved bite", out + err)
+              and ("  so: CPU0 made no write: nothing had armed WD2 within 0.3 s of the release, so the bite wasn't moved and the reset's time says nothing about a moved bite."
+                   " A Mac that then stayed dark isn't a completed entry by this record: WD2 was never seen armed\n") in out,
+              "wd2_bite=1: no RESET_EN within 0.3 s: no write was made, the reset's time says nothing about a moved bite, and a dark ending isn't a completed entry", out + err)
         rc, out, err = dec(0xd7, dict(run10, parked=wsmp(pre=W_NEW, seen=False, still=False)))
-        check(rc == 0 and "the write took" not in out and "The bite read 120 s all the same: wd2-bite's store from user space, still there" in out,
-              "wd2_bite=1: no write, and a bite of 120 s: that's the store from user space, not CPU0's", out + err)
+        check(rc == 0 and "the write took" not in out and "The bite read 120 s before and after: wd2-bite's store from user space, still there" in out,
+              "wd2_bite=1: no write, and a bite of 120 s before and after: that's the store from user space, not CPU0's", out + err)
+        for pre in (0, A2, W_AWAKE):
+            rc, out, err = dec(0xd7, dict(run10, parked=wsmp(pre=pre, seen=False, still=False)))
+            check(rc == 0 and "store from user space" not in out and "the write took" not in out
+                  and "  so: an inconsistent record: CPU0 made no write, and the bite read 120 s after that though it didn't just before." in out,
+                  f"wd2_bite=1: no write, with a bite of 120 s after and class {pre} before: an inconsistent record, said as that", out + err)
         rc, out, err = dec(0xd7, dict(run10, parked=wsmp(post=False)))
         check(rc == 0 and "the write took" not in out and "read after that: the bite NOT 120 s; " in out
               and "  so: CPU0 MADE ITS WRITE AND THE BITE DIDN'T READ 120 s AFTER IT: the register didn't keep the kernel's store" in out,
@@ -1638,22 +1659,46 @@ def position_tests(g, src):
               "wd2_bite=1: a count that stopped after the write: a dark ending wouldn't be a completed entry by this record", out + err)
         for pre, what in ((0, "another value"), (W_AWAKE, "the value it read awake at load")):
             rc, out, err = dec(0xd7, dict(run10, parked=wsmp(pre=pre)))
-            check(rc == 0 and TOOK + f". But the bite read {what} before the write, not A2's 30 s, though RESET_EN showed: not the state A2's opening leaves,"
-                  " so what armed WD2 isn't clear from this record\n" in out,
-                  f"wd2_bite=1: RESET_EN with a bite of {what} before the write: said, since A2's opening leaves 30 s", out + err)
+            check(rc == 0 and TOOK + f". But the bite read {what} before the write, not the 30 s an A sequence's opening leaves, though RESET_EN showed:"
+                  " what armed WD2 isn't clear from this record\n" in out,
+                  f"wd2_bite=1: RESET_EN with a bite of {what} before the write: said, since an opening leaves 30 s", out + err)
         rc, out, err = dec(0xd7, dict(run10, parked=wsmp(pre=W_NEW)))
         check(rc == 0 and "the write took" not in out
               and "  so: the bite read 120 s before CPU0's write as after it, so this record doesn't show that write took; WD2 was armed and counting with a 120 s bite." in out
-              and "But the bite read the new value, 120 s before the write, not A2's 30 s" in out,
+              and "But the bite read the new value, 120 s before the write, not the 30 s an A sequence's opening leaves" in out,
               "wd2_bite=1: a bite that read 120 s before the write too doesn't show the write took", out + err)
         rc, out, err = dec(0xd7, dict(run10, parked=0x00))
         check(rc == 0 and "the write took" not in out and "And 0x00 is also what a byte that didn't land, or didn't survive the reset, reads: not a reading to lean on\n" in out,
               "wd2_bite=1: 0x00 at 0x6005 is called out as a byte that may not have landed", out + err)
         # 0xfe, the parked cores, is what stage 0x4e leaves at 0x6005: it must never read as the expected sample.
         rc, out, err = dec(0xd7, dict(run10, parked=0xfe))
-        check(rc == 0 and "the write took" not in out and "WD2's bite before CPU0's write: the new value, 120 s" in out
-              and "And 0xfe is what stage 0x4e leaves in this byte (the parked cores): if the stage's command landed without its second byte, this isn't a sample at all\n" in out,
-              "wd2_bite=1: 0xfe at 0x6005, the byte stage 0x4e leaves there, never says the write took, and is called out", out + err)
+        check(rc == 0 and "the write took" not in out and "WD2 was armed and counting" not in out and "completed entry" not in out
+              and ("  so: 0xfe is what stage 0x4e leaves in this byte (the parked cores): the stage's command most likely landed without its second byte,"
+                   " and then this isn't a sample at all. None of the three lines above is to be leaned on\n") in out,
+              "wd2_bite=1: 0xfe at 0x6005, the byte stage 0x4e leaves there, is called that before anything is read out of it", out + err)
+        # Every byte, with and without the pending stage: what the sentence claims against the bits, read independently.
+        wrong = []
+        for v in range(256):
+            for pend in (False, True):
+                so = [line for line in g["wd2_lines"](v, pend) if line.startswith("  so: ")]
+                pre, seen, post, still, counting, code = v & 3, v & 4, v & 8, v & 0x10, v & 0x20, v >> 6
+                moved = bool(seen and post and still and counting and v != 0xfe)
+                ok = (len(so) == 1
+                      and ("the write took" in so[0]) == (moved and pre != 2)
+                      and ("The reset's time is the result now" in so[0]) == moved
+                      and ("no reset is a candidate for a completed entry" in so[0]) == (moved and not pend)
+                      and ("fits A2 arming last" in so[0]) == (moved and code in (1, 2))
+                      and ("isn't a sample at all" in so[0]) == (v == 0xfe)
+                      and ("CPU0 made no write" in so[0]) == (not seen)
+                      and ("likely never went down" in so[0]) == (pend and v != 0xfe)
+                      and ("not the 30 s an A sequence's opening leaves" in so[0]) == bool(seen and pre != 1 and v != 0xfe)
+                      and ("an inconsistent record" in so[0]) == bool(not seen and post and pre != 2)
+                      and ("store from user space, still there" in so[0]) == bool(not seen and post and pre == 2)
+                      and ("not a reading to lean on" in so[0]) == (v == 0))
+                if not ok:
+                    wrong.append((hex(v), pend, so))
+        check(not wrong, "wd2_bite=1: for all 256 bytes, with either stage, the sentence says the write took, names A2, or calls no reset a candidate for a"
+              " completed entry only where the bits and the stage allow it", str(wrong[:3]))
         rc, out, err = dec(0xcf, dict(run10, parked=0x7d))
         check(rc == 0 and "wd2_bite=1" not in out and "parked (0x6005 = 0x7d)" in out, "stage 0x4f's 0x6005 is still parked, never wd2_bite=1's sample", out + err)
         rc, out, err = dec(0xc7, dict(run10, parked=0x7d))
@@ -1682,9 +1727,9 @@ def position_tests(g, src):
                     'static const u32 awakes[] = { WD2_BITE_AWAKE, WD2_BITE_NEW };\n'
                     'printf("consts %llx %x %x %x %x %x %x %x\\n", WD2_WDT + WD2_BITE, WD2_COUNT, WD2_BITE, WD2_CTRL, WD2_RESET_EN, WD2_BITE_A2, WD2_BITE_AWAKE, WD2_BITE_NEW);\n'
                     'for (unsigned a = 0; a < 2; a++) for (unsigned b = 0; b < 5; b++) for (unsigned c = 0; c < 8; c++) for (unsigned q = 0; q < 5; q++)\n'
-                    ' for (unsigned f = 0; f < 8; f++) for (unsigned k = 0; k < 2; k++) for (unsigned p = 0; p < 32; p++)\n'
+                    ' for (unsigned f = 0; f < 8; f++) for (unsigned k = 0; k < 3; k++) for (unsigned p = 0; p < 32; p++)\n'
                     '  printf("%x %x %x %x %x %x %x %02x\\n", awakes[a], bites[b], c, bites[q], f, k, p,\n'
-                    '         m1_wd2_sample(bites[b], awakes[a], c, bites[q], f, 1000, 1000 + k, p));\n'
+                    '         m1_wd2_sample(bites[b], awakes[a], c, bites[q], f, 1000, k == 2 ? 3 : 1000 + k, p));\n'
                     'return 0;\n}\n')
         wexe = os.path.join(tmp, "w")
         subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", wexe, w_c], check=True)
@@ -1700,12 +1745,13 @@ def position_tests(g, src):
                     | {0: 0, 4: 1, 5: 2}.get(phase & 0xf, 3) << 6)
 
         bad = [r for r in rows[1:] if int(r[7], 16) != want_wd2(*(int(x, 16) for x in r[:7]))]
-        check(len(rows) == 1 + 2 * 5 * 8 * 5 * 8 * 2 * 32 and not bad,
-              "m1_wd2_sample: the bite before the write, RESET_EN before and after, the bite and the count after, PHASE's code: nothing else", str(bad[:4]))
+        check(len(rows) == 1 + 2 * 5 * 8 * 5 * 8 * 3 * 32 and not bad,
+              "m1_wd2_sample: the bite before the write, RESET_EN before and after, the bite and the count after (any change, a count that fell too),"
+              " PHASE's low four bits as a code: nothing else", str(bad[:4]))
         check(want_wd2(0x80befc00, 0x2aea5400, 4, 0xaba95000, 4, 1, 4) == 0x7d and 0xfe & 3 != 1
               and all(want_wd2(0x80befc00, 0x2aea5400, 4, 0xaba95000, 4, 1, ph) != 0xfe for ph in range(16)),
               "the parked byte, 0xfe, isn't the sample that's expected, whatever PHASE reads: its class bits don't say A2's 30 s")
-        check(g["WD2_PRE"][1].startswith("A2's 30 s") and g["WD2_PRE"][2].startswith("the new value, 120 s") and g["WD2_PHASES"] == (0, 4, 5, None),
+        check(g["WD2_PRE"][1].startswith("30 s, ") and g["WD2_PRE"][2].startswith("the new value, 120 s") and g["WD2_PHASES"] == (0, 4, 5, None),
               "m1-crumbs' names for the sample's classes and PHASE codes are the header's order")
 
         # recfg_bite.h itself: the sample's byte against an independent reading of its layout, the two values, and the verdict.

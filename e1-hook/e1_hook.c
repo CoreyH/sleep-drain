@@ -1318,7 +1318,8 @@ static void e1_after_slpa(void)
  * an exception pending after the reads: a write that faulted leaves an SError
  * pending, masked). WD2's count and control are never written: the count runs on
  * from A2's arming, so the reset, if A2 never closes and nothing arms WD2 again,
- * comes 120 s after the commit.
+ * comes 120 s after the commit. The write is made whether or not raw SPMI still
+ * works: the reset's time is the result, and the byte only says how to read it.
  *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
@@ -1573,7 +1574,7 @@ static bool m1_smc_acked;
 #define M1_RECFG_STAGE		0x47	/* recfg_bite=1: in place of 0x4f, after the release, with the sample at 0x6005 (the m1 comment) */
 #define M1_RECFG_STAGE_PEND	0x46	/* the same, with an exception pending on CPU0 after the sample's reads */
 #define M1_RECFG_MAP		0x4000	/* the SRAM's start: table A and A2's opening are in it */
-/* recfg_bite=1: the SRAM's first 16 KiB, only ever read here, and WD2's bite as the load read it. */
+/* recfg_bite=1: the SRAM's first 16 KiB, only ever read here. Its and wd2_bite=1's: WD2's bite as the load read it. */
 static void __iomem *m1_recfg;
 static u32 m1_wd2_bite_awake;
 static_assert(RECFG_A2_ENTRY + 8 <= M1_RECFG_MAP && RECFG_A2 + 4 * RECFG_SEQ_WORDS <= M1_RECFG_MAP);
@@ -3222,7 +3223,7 @@ static int __init m1_recfg_init(void)
  * wd2_bite=1 at load, reads only: WD2 and PHASE awake, the baseline for the sample
  * after the commit. This refuses if WD2 reads armed, or if its bite already reads
  * A2's 30 s, which the sample couldn't tell from A2's own write. A bite of 120 s
- * here is e1-hook/wd2-bite's, written from user space before the load.
+ * here is most likely e1-hook/wd2-bite's, written from user space before the load.
  */
 static int __init m1_wd2_init(void)
 {

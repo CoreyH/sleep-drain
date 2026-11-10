@@ -428,9 +428,13 @@ steps, and restarting the DCP and the PMP afterwards.
         As built: `e1-hook/wd2-bite`, which run-floor runs first: `wd2_poke check` (WD2's control, count and
         bite, read-only), saved, then `wd2_poke patch`, saved. It stores only if the control reads 0 and
         the bite 90 s, and reads the three words back. The run goes on whether the store took (exit 0) or
-        didn't (exit 5), and stops, with nothing loaded, if WD2 isn't as it is awake (exit 3) or the three
-        words read some other way after the store. Nothing writes the 90 s back: the OK is one value, WD2
-        isn't armed awake, and a restart undoes it (inferred).
+        didn't (exit 5), each only with its record saved, and stops, with nothing loaded, if WD2 isn't as
+        it is awake (exit 3), if the three words read some other way after the store, or if a save fails
+        (it can leave the boot partition mounted: restart). It makes one store in a boot: run again in
+        that boot, it checks, saves, and gives the first one's result. A bite that reads 120 s before any
+        store in a boot (exit 7) isn't a store that took: nothing is written, there's no control, and the
+        run goes on; it would say the 120 s survived a restart. Nothing writes the 90 s back: the OK is
+        one value, WD2 isn't armed awake, and a restart undoes it (inferred).
       - **The run.** Run 12's recipe, with CPU0, once it has let the others go after the commit and has
         seen RESET_EN (so A2's opening has written its 30 s), writing the bite once, reading it back,
         reading that RESET_EN is still set and the count still moves, recording those, and going down.
@@ -460,6 +464,11 @@ steps, and restarting the DCP and the PMP afterwards.
         a second or two, a completed entry and a stalled wake; or WD2's bite isn't compared live (WD1's
         is, by `apple_wdt`'s own use of it);
       - a reset at another time T: a later sequence started T - 30 s after the commit.
+      The byte says how far to trust each (m1-crumbs prints it): the write counts as made only if the
+      bite read 120 s after it with RESET_EN still set and the count still changing; A2 is named only
+      while `PHASE` reads 4 or 5, since every A sequence opens with the same 30 s; stage 0x56 means CPU0
+      likely stayed up, and then no ending is a completed entry. A reset at about 120 s with no stage
+      0x56 or 0x57 on record: the write was made (it doesn't wait on raw SPMI) and its record didn't land.
       Judgment: stuck, about 3 in 4. The longer dark stretch may also give the coulomb counter enough to
       tell a SoC that's still powered from one that isn't (not checked). Then back to guessing: the
       internal PCIe ports (maralcbr's `lab_pcie_ports_down`, about 13 writes per port), each with Corey's
