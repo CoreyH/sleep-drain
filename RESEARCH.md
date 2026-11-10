@@ -3655,7 +3655,7 @@ stayed black; after 2 to 3 minutes Corey held the power key. Nothing was saved (
 | at prepare | set, firmware running | set, firmware shut down, ANS2 on | clear or not read, firmware running |
 | after its idle pair | set | | set (after noirq) |
 | after RUN was cleared | set | | set |
-| after noirq, before the idle pair | | | **clear**, for all 255 reads |
+| after noirq, before the idle pair | | | **clear**, through the whole poll |
 | **the state B2 finds** | **set** (parents and SIO_CPU raised again, actual f) | **set** (ANS2 raised, actual f within 10 ms) | **set** |
 
 Every step went as meant: both idle pairs returned 0, both RUN bits read 1 and then 0, SIO_CPU and
@@ -3666,15 +3666,18 @@ and read its found target and actual state again within 10 ms of the write-back.
 - **In the state the recipe leaves, all three of B2's coprocessor waits would pass.** That makes ops 51,
   151 and 159 less likely to be where the pair stops. It doesn't exclude them: B2 polls later, after its
   own raises and everything before them.
-- **Bit 1 follows the PMP's idle pair.** With the PMP's firmware running it read clear through a whole
-  poll, 255 reads over about 100 ms; after the idle pair it read set, and stayed set with RUN cleared.
+- **Bit 1 follows the PMP's idle pair.** With the PMP's firmware running it read clear to the end of a
+  poll (up to 255 reads, 400 µs apart, about 100 ms at most; the count was in the log that's lost, and
+  the byte keeps only the outcome); after the idle pair it read set, and stayed set with RUN cleared.
   The one coprocessor here whose firmware was seen both ways changed with it, so the bit looks like "this
   coprocessor's CPU is idle", and B2's three waits like "idle before its power goes" (inferred). SIO's and
   ANS's read set while their firmware was running, which fits firmware that idles between requests and
   doesn't prove it.
 - **The PMP's idle pair matters to the engine.** Had the PMP been left running, as in runs 1 to 6, B2's
-  op 159 would most likely have stopped there for its 255 tries. Runs 7 to 17 idle it first, so this
-  isn't what stops them.
+  op 159 would most likely have stopped there for its 255 tries. Runs 7 to 17 idle it first, which makes
+  that wait less likely to be what stops them and doesn't exclude it: the probe sampled before any
+  commit, without the SMC's and the DCPs' steps, and B2 reads the word later, after its own writes
+  (Pullfrog on #77).
 - **ANS2 comes up by itself after noirq.** Raised with B2's value under whatever Linux's suspend leaves
   above it, it reached actual f. B2's wait at op 150 would pass.
 
