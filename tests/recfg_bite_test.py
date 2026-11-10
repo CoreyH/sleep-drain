@@ -5,9 +5,10 @@ order, without hardware.
 The writer is compiled with its memory device pointed at a sparse file whose
 offsets are physical addresses, its safe-boot flag and kernel command line at
 files here, and with -DRECFG_TRACE, so that every access is logged: each case
-checks what it read, that it stored at most to the one address, and the file's
-whole content after. More builds drop or change its stores, as an SRAM that's
-locked or takes another value would, or disturb the next word. The launcher
+checks what it read, that it stored at most to the one address (a 64-bit store:
+the bite word, and the next word's own value above it), and the file's whole
+content after. More builds drop or change its stores, as an SRAM that's locked
+or takes another value in either half would, or disturb another word. The launcher
 runs as uid 0 in a bubblewrap user namespace with stub tools and a stub
 sleep-drain-safe that record what they're asked and what the log directory held
 at each save, and then with the real reader and writer on the fake device.
@@ -29,6 +30,9 @@ E1_HOOK = os.path.realpath(os.path.join(HERE, "..", "e1-hook"))
 CFG, LOCK, SRAM, SRAM_LEN = 0x2925c0200, 0x2925c0214, 0x292f00000, 0x70000
 BITE = SRAM + 0x2010
 OLD, NEW = 0x2aea5400, 0x405f7e00
+# The writer's one store is 64 bits wide: the bite below, and above it the next word, A2's value for WD2's control, as it reads.
+NEXT = BITE + 4
+STORE = {4 << 32 | NEW: "new", 4 << 32 | OLD: "old"}
 # The ten words, built from the format and WD2's register map as recfg_bite.h builds them: nothing is copied from the dump.
 HEAD = ((0x2922b0000 >> 10) << 6) | (4 - 1) << 2 | 1
 OFFS = int.from_bytes(bytes(reg >> 2 for reg in (0x2c, 0x20, 0x24, 0x2c)), "little")
@@ -88,8 +92,13 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     dropped = build("recfg_poke_drop", "-DRECFG_POKE_DROP(n)=1")
     garbled_once = build("recfg_poke_once", "-DRECFG_POKE_STORE(v,n)=((n)==0?(v)^0xffffU:(v))")
     garbled = build("recfg_poke_garble", "-DRECFG_POKE_STORE(v,n)=((v)^0xffffU)")
-    # A store that takes, and clears the next word with it: the value A2 gives WD2's control.
-    neighbour = build("recfg_poke_neighbour", "-DRECFG_POKE_STORE(v,n)=((n)==0?(*(volatile uint32_t*)((volatile char*)p+4)=0,(v)):(v))")
+    # A store whose high half lands as 0: the next word, the value A2 gives WD2's control, cleared with the bite. Once, and every time.
+    high_once = build("recfg_poke_high_once", "-DRECFG_POKE_STORE(v,n)=((n)==0?(v)&0xffffffffULL:(v))")
+    high = build("recfg_poke_high", "-DRECFG_POKE_STORE(v,n)=((v)&0xffffffffULL)")
+    # A store that lands with its halves the other way round, once.
+    swapped = build("recfg_poke_swapped", "-DRECFG_POKE_STORE(v,n)=((n)==0?(v)<<32|(v)>>32:(v))")
+    # The next word cleared just before the first store: a 64-bit store puts its 4 back, and a 32-bit one wouldn't.
+    cleared = build("recfg_poke_cleared", "-DRECFG_POKE_STORE(v,n)=((n)==0?(*(volatile uint32_t*)((volatile char*)p+4)=0,(v)):(v))")
 
     def mem(values, extra=()):
         """A fresh device: the ten words, and other words that must not change."""
@@ -117,19 +126,22 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
                   (SRAM + 0x1ffc, 0x33333333), (SRAM, 0x44444444), (SRAM + SRAM_LEN - 4, 0x55555555)]
 
     def shape(acc):
-        """The accesses as a string: T for a pass over the ten words, in order; w(value) for a store to the bite word; ? for anything else."""
+        """The accesses as a string: T for a pass over the ten words, in order; w(new) or w(old) for the 64-bit store at the bite word,
+        by its bite, with the next word's 4 above it (w(0x...) for any other value); ? for anything else."""
         out, i = [], 0
         while i < len(acc):
             if [(op, pa) for op, pa, _ in acc[i:i + 10]] == [("r", pa) for pa in TEN]:
                 out.append("T")
                 i += 10
             elif acc[i][0] == "w" and acc[i][1] == BITE:
-                out.append("w(%s)" % {NEW: "new", OLD: "old"}.get(acc[i][2], hex(acc[i][2])))
+                out.append("w(%s)" % STORE.get(acc[i][2], hex(acc[i][2])))
                 i += 1
             else:
                 out.append("?")
                 i += 1
         return " ".join(out)
+
+    WRITING = "writing 0x405f7e00 to 0x292f02010 and 0x00000004 to 0x292f02014, in one 64-bit store\n"
 
     open(flag, "w").close()
     with open(cmdline, "w") as f:
@@ -139,12 +151,14 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     after = content(fake)
     check(r.returncode == 0 and "the word took the write: it reads the new value, 45 s, and the other nine read as before" in r.stdout,
           "patch: exit 0, and it says the word took the write", r.stdout + r.stderr)
-    check(shape(acc) == "T w(new) T", "patch reads the ten words in order, stores once, to 0x292f02010, and reads all ten again", acc)
-    check(after == {**before, BITE: NEW} and before[BITE] == OLD, "patch changes that one word in the whole device, and nothing else",
+    check(shape(acc) == "T w(new) T", "patch reads the ten words in order, stores once, at 0x292f02010, and reads all ten again", acc)
+    check([v for op, _, v in acc if op == "w"] == [0x00000004405f7e00], "its store is 64 bits: 0x405f7e00 below, 0x00000004 above", acc)
+    check(after == {**before, BITE: NEW} and before[BITE] == OLD and after[NEXT] == before[NEXT] == 4,
+          "patch changes that one word in the whole device, and nothing else: the next word reads 4 as before",
           {k: (before.get(k), after.get(k)) for k in set(before) | set(after) if before.get(k) != after.get(k)})
     out = r.stdout
     check(all(out.index("reading 0x%x\n" % pa) < out.index("0x%x = 0x%08x" % (pa, v)) for pa, v in zip(TEN, GOOD))
-          and out.index("A2's WD2 bite word, 0x292f02010: the old value, 30 s") < out.index("writing 0x405f7e00 to 0x292f02010\n")
+          and out.index("A2's WD2 bite word, 0x292f02010: the old value, 30 s") < out.index(WRITING)
           < out.index("the ten words again, after the write:\n") < out.index("0x292f02010 = 0x405f7e00")
           < out.index("A2's WD2 bite word, 0x292f02010: the new value, 45 s"),
           "patch says each read before it, the verdict, then the write before it, then the ten again and their verdict", out)
@@ -157,13 +171,14 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     mem(GOOD, NEIGHBOURS)
     seen = subprocess.run([inline, "patch"], capture_output=True, text=True).stdout
     check(all(seen.index("reading 0x%x\n" % pa) < seen.index("r 0x%x " % pa) for pa in TEN)
-          and seen.index("writing 0x405f7e00 to 0x292f02010\n") < seen.index("w 0x292f02010 0x405f7e00\n") < seen.rindex("reading 0x292f02010\n")
+          and seen.index(WRITING) < seen.index("w 0x292f02010 0x00000004405f7e00\n") < seen.rindex("reading 0x292f02010\n")
           < seen.rindex("r 0x292f02010 0x405f7e00\n"),
           "patch prints each \"reading\" line before that read and the \"writing\" line before the store", seen)
     mem(GOOD[:8] + [NEW, 4], NEIGHBOURS)
     r, acc = run(poke, "restore")
-    check(r.returncode == 0 and "the word reads the old value, 30 s, again" in r.stdout and shape(acc) == "T w(old) T" and content(fake) == before,
-          "restore: one store of the old value to the same word, the ten read again, and the device is as it began", r.stdout + str(acc))
+    check(r.returncode == 0 and "the word reads the old value, 30 s, again" in r.stdout and shape(acc) == "T w(old) T" and content(fake) == before
+          and "writing 0x2aea5400 to 0x292f02010 and 0x00000004 to 0x292f02014, in one 64-bit store\n" in r.stdout,
+          "restore: one store of the old value at the same word, the ten read again, and the device is as it began", r.stdout + str(acc))
     r, acc = run(poke, "restore")
     check(r.returncode == 0 and "already the old value: nothing written" in r.stdout and shape(acc) == "T" and content(fake) == before,
           "restore on a word that's already old: exit 0, no store", r.stdout + str(acc))
@@ -209,12 +224,29 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
           and shape(acc) == "T w(new) T w(old) T" and content(fake) == {**start, BITE: OLD ^ 0xffff},
           "a store that always lands as another value: exit 5, two stores and no more, only that word touched", r.stdout + str(acc))
     start = mem(GOOD, NEIGHBOURS)
-    r, acc = run(neighbour, "patch")
+    r, acc = run(high_once, "patch")
+    check(r.returncode == 5 and "the word took the write" not in r.stdout and "THE TEN WORDS READ NEITHER AS BEFORE NOR AS INTENDED" in r.stdout
+          and "the ten words read as they did before the write" in r.stdout and shape(acc) == "T w(new) T w(old) T" and content(fake) == start,
+          "a store that takes the bite but clears the next word: caught by the ten read again (exit 5), and both words are put back, once",
+          r.stdout + str(acc))
+    r, acc = run(high, "patch")
     left = dict(start)
-    del left[SRAM + 0x2014]
+    del left[NEXT]
     check(r.returncode == 5 and "the word took the write" not in r.stdout and "THE TEN WORDS READ NEITHER AS BEFORE NOR AS INTENDED" in r.stdout
           and "THE TEN WORDS STILL DON'T READ AS THEY DID BEFORE THE WRITE" in r.stdout and shape(acc) == "T w(new) T w(old) T" and content(fake) == left,
-          "a store that takes but changes the next word: caught by the ten read again (exit 5), the bite put back, and no store to the neighbour",
+          "a store that clears the next word every time: exit 5, two stores and no more, and it says the words still aren't as before",
+          r.stdout + str(acc))
+    start = mem(GOOD, NEIGHBOURS)
+    r, acc = run(swapped, "patch")
+    check(r.returncode == 5 and "the word took the write" not in r.stdout and "THE TEN WORDS READ NEITHER AS BEFORE NOR AS INTENDED" in r.stdout
+          and "0x292f02010 = 0x00000004" in r.stdout and "0x292f02014 = 0x405f7e00" in r.stdout
+          and "the ten words read as they did before the write" in r.stdout and shape(acc) == "T w(new) T w(old) T" and content(fake) == start,
+          "a store that lands with its halves swapped: caught (exit 5), and both words are put back", r.stdout + str(acc))
+    # The store is 64 bits wide on the device, not only in the trace: the next word, cleared just before it, reads 4 after.
+    start = mem(GOOD, NEIGHBOURS)
+    r, acc = run(cleared, "patch")
+    check(r.returncode == 0 and "the word took the write" in r.stdout and shape(acc) == "T w(new) T" and content(fake) == {**start, BITE: NEW},
+          "the store covers the next word too: cleared just before the store, it reads 4 after it, and patch says the word took the write",
           r.stdout + str(acc))
 
     # The same for each of the four words outside A2: all ten decide after the write, not A2's six alone.
@@ -227,7 +259,7 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
               and shape(acc) == "T w(new) T w(old) T" and content(fake) == {**start, TEN[i]: 0x10000001},
               f"a store that takes and changes {name}: caught by the ten read again (exit 5), the bite put back", r.stdout + str(acc))
     # restore's own read-back: the ten must read as before patch, not merely the bite no longer new.
-    for exe, what, left in ((garbled, "lands as another value", {BITE: OLD ^ 0xffff}), (neighbour, "changes the next word", {SRAM + 0x2014: None})):
+    for exe, what, left in ((garbled, "lands as another value", {BITE: OLD ^ 0xffff}), (high, "clears the next word", {NEXT: None})):
         start = mem(GOOD[:8] + [NEW, 4], NEIGHBOURS)
         r, acc = run(exe, "restore")
         want = {k: v for k, v in {**start, BITE: OLD, **left}.items() if v is not None}
@@ -282,19 +314,26 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     # The source: one store, one address, two values, no number taken from the command line or the environment.
     src = open(src_path).read()
     hdr = open(os.path.join(E1_HOOK, "recfg_bite.h")).read()
-    check(src.count("wr32(") == 2 and "wr32(BITE_PA, value);" in src and src.count("str %w0") == 1 and src.count("*(volatile uint32_t *)p = v;") == 1
+    check(src.count("wr64(") == 2 and "wr64(BITE_PA, BITE_STORE(bite));" in src and src.count("str %") == 1
+          and 'asm volatile("str %x0, [%1]\\n\\tdsb sy" : : "r"(v), "r"(p) : "memory");' in src
+          and src.count("*(volatile uint64_t *)p = v;") == 1 and "wr32" not in src and src.count("volatile uint64_t *") == 1
           and sorted(re.findall(r"\bstore\((\w+)\);", src)) == ["RECFG_BITE_NEW", "RECFG_BITE_OLD", "RECFG_BITE_OLD"]
           and "#define BITE_PA ((uint64_t)(RECFG_SRAM + RECFG_BITE))" in src
+          and "#define BITE_STORE(bite) ((uint64_t)RECFG_WD_RESET_EN << 32 | (uint64_t)(bite))" in src and src.count("BITE_STORE(") == 2
+          and "_Static_assert((BITE_PA & 7) == 0," in src and "_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__," in src
+          and "_Static_assert(RECFG_BITE + 4 == RECFG_A2 + (RECFG_SEQ_WORDS - 1) * 4," in src
           and len(re.findall(r"(?<![a-z_])open\(", src)) == 1 and "open(RECFG_MEM, O_RDWR | O_SYNC)" in src
           and not any(w in src for w in ("strtoul", "strtol", "atoi", "sscanf", "argv[2]", "getenv", "environ")),
-          "recfg_poke.c has one store, to BITE_PA, of one of the two values, one open of the device, and takes no number from its arguments or the environment")
+          "recfg_poke.c has one store, 64 bits at BITE_PA, of one of the two bites under the next word's 4, one open of the device, and takes no number from its arguments or the environment")
     check('#define RECFG_MEM "/dev/mem"\n' in src and '#define RECFG_SAFE_FLAG "/run/sleep-drain-safe/active"\n' in src
           and '#define RECFG_CMDLINE "/proc/cmdline"\n' in src and "#define MAP_UNIT UINT64_C(0x4000)\n" in src and "sysconf" not in src,
           "recfg_poke.c's own memory device, safe-boot flag and command line, which every build here overrides, are the real ones; it maps by 16 KiB")
     check("#define RECFG_BITE_OLD\t\t0x2aea5400U" in hdr and "#define RECFG_BITE_NEW\t\t0x405f7e00U" in hdr and "#define RECFG_SRAM\t\t0x292f00000ULL" in hdr
-          and "#define RECFG_A2\t\t0x2000U" in hdr and "#define RECFG_BITE\t\t(RECFG_A2 + 4 * 4)" in hdr,
-          "recfg_bite.h: the word and the two values are the ones Corey OK'd on 2026-11-09")
-    check(BITE & ~7 not in (0x28e0802d8, 0x28e700000), "the word isn't on the never-write list")
+          and "#define RECFG_A2\t\t0x2000U" in hdr and "#define RECFG_BITE\t\t(RECFG_A2 + 4 * 4)" in hdr
+          and "#define RECFG_WD_RESET_EN\t(1U << 2)" in hdr and "#define RECFG_SEQ_WORDS\t\t6" in hdr,
+          "recfg_bite.h: the word and the two values are the ones Corey OK'd on 2026-11-09, and the next word's value is the 4 the check asks for")
+    check(BITE % 8 == 0 and NEXT == TEN[9] and GOOD[9] == 4 and not {BITE, NEXT} & {0x28e0802d8, 0x28e700000, 0x28e0802dc, 0x28e700004},
+          "the store is aligned, its second word is the tenth of the ten, and neither is on the never-write list")
 
     # The launcher, as uid 0 in a user namespace.
     if shutil.which("bwrap") is None:
@@ -441,7 +480,7 @@ exit 0
         cdir = [d for d in os.listdir(logs) if d.endswith("-check")][0]
         text = open(os.path.join(logs, cdir, "log.txt")).read()
         check("the reader's stage 6" in text and VERDICT in text and text.rstrip().endswith("if the check above still holds")
-              and "next: recfg_poke patch, one write, 0x292f02010 := 0x405f7e00 (45 s)" in text,
+              and "next: recfg_poke patch, one 64-bit store, 0x292f02010 := 0x405f7e00 (45 s) and 0x292f02014 := 0x00000004 (as it reads)" in text,
               "the check's saved log ends with the line that says the write comes next", text)
         wdir = [d for d in os.listdir(logs) if d.endswith("-write")][0]
         check("the writer's patch" in open(os.path.join(logs, wdir, "log.txt")).read(), "the write's log holds the writer's output")
@@ -612,7 +651,7 @@ exit 0
         cdir, wdir = (os.path.join(logs, [d for d in os.listdir(logs) if d.endswith(e)][0], "log.txt") for e in ("-check", "-write"))
         ctext, wtext = open(cdir).read(), open(wdir).read()
         check(ctext.count("reading 0x") == 10 and "A2's WD2 bite word, 0x292f02010: the old value, 30 s\n" in ctext and "writing" not in ctext
-              and "writing 0x405f7e00 to 0x292f02010\n" in wtext and TOOK + "\n" in wtext,
+              and WRITING in wtext and TOOK + "\n" in wtext,
               "its two logs: the check's ten reads and verdict, then the writer's own lines, with the line --after looks for", ctext + wtext)
         real_w = ("20261109T210000", "write", wtext)
         rc, out, calls, logs, snaps = sandbox(real=(peek_real, poke))

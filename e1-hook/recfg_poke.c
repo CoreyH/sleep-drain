@@ -1,7 +1,8 @@
 // recfg_poke (T6000, as root, in a safe boot): the one write to the AON
 // engine's reconfig SRAM, through /dev/mem. Corey's OK of 2026-11-09, for this
-// word and this value; PLAN.md and RESEARCH.md ("A different approach") say
-// what it's for. e1-hook/recfg-bite runs it.
+// word and this value, and of 2026-11-10 for making it as one 64-bit store;
+// PLAN.md and RESEARCH.md ("A different approach", "M1 run 13") say what it's
+// for. e1-hook/recfg-bite runs it.
 //
 //   recfg_poke patch     A2's WD2 bite word, 0x292f02010: 30 s to 45 s
 //   recfg_poke restore   back to 30 s, by hand, if that's ever wanted
@@ -14,17 +15,22 @@
 //            with 45 s there already, it writes nothing and says so
 //   restore  writes only if all ten are as expected with the bite at 45 s, the
 //            value patch writes; with 30 s there already, it writes nothing
-// A write is one aligned 32-bit str to that one address. Then all ten words are
-// read again: the write counts only if they give the verdict it was after, so
-// a neighbour that changed with the bite (the value A2 gives WD2's control is
-// the next word) is caught here, not as a Mac that stays dark. A line is
-// printed and flushed before every read and before the write, so that if one
-// faults the output shows which.
+// A write is one aligned 64-bit str at that one address. Run 13's was a 32-bit
+// str, and the SRAM dropped it without a fault; whether it takes a 64-bit one
+// is this build's question. The store's low half is the bite. Its high half is
+// the next word, 0x292f02014, the value A2 gives WD2's control: it's stored as
+// the 4 (RESET_EN) the ten words must show there before anything is written,
+// so the bite is the only word meant to change. Then all ten words are read
+// again, 32 bits each as before: the write counts only if they give the verdict
+// it was after, so a store that lands as anything else in either half is caught
+// here, not as a Mac that stays dark. A line is printed and flushed before
+// every read and before the write, so that if one faults the output shows
+// which.
 //
 // What isn't in the OK, and is here anyway: if the ten words read neither as
-// before nor as intended after patch's write, it stores the old value in the
-// bite word once, so that what's left is as close to what was found as one
-// word can make it; and restore, which nothing runs by itself.
+// before nor as intended after patch's write, it makes the same store once
+// more with the old bite, which is both words as they were found; and restore,
+// which nothing runs by itself.
 //
 // It refuses outside a safe boot (sleepdrain.safe on the kernel's command line
 // and the safe boot's flag in /run): an access nothing answers can raise an
@@ -33,6 +39,7 @@
 // kind of sequence in place on A9-A11, and stops if the SRAM's range lock or
 // the table's lock is set; only the table lock's analogue is known here (it
 // reads 0), so a write that's dropped and one that faults are both possible.
+// PongoOS's own edit is a 32-bit store, so the width is the weaker suspect.
 //
 // Exit status: 0, the ten words read as asked for (written now, or there
 // already); 3, they weren't as expected and nothing was written; 5, a write
@@ -67,25 +74,34 @@
 #endif
 
 #define BITE_PA ((uint64_t)(RECFG_SRAM + RECFG_BITE))
+/* The word the store's high half covers, and the one 64-bit value for a bite: that word's own 4 above it. */
+#define NEXT_PA (BITE_PA + 4)
+#define BITE_STORE(bite) ((uint64_t)RECFG_WD_RESET_EN << 32 | (uint64_t)(bite))
+
+_Static_assert((BITE_PA & 7) == 0, "the 64-bit store has to be aligned");
+_Static_assert(RECFG_BITE + 4 == RECFG_A2 + (RECFG_SEQ_WORDS - 1) * 4,
+	       "the store's high half has to be the last of A2's six checked words");
+_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the bite has to be the store's low half");
 
 /*
- * Test builds log every access (tests/recfg_poke_test.py), and can drop or
- * change the nth store: an SRAM that's locked, or one that takes another value.
+ * Test builds log every access (tests/recfg_bite_test.py), a read's 32 bits or
+ * a store's 64, and can drop or change the nth store: an SRAM that's locked, or
+ * one that takes another value.
  */
 #ifdef RECFG_TRACE
-static void trace(char op, uint64_t pa, uint32_t v)
+static void trace(char op, uint64_t pa, uint64_t v, int digits)
 {
 	static FILE *t;
 
 	if (!t)
 		t = fopen(RECFG_TRACE, "a");
 	if (t) {
-		fprintf(t, "%c 0x%" PRIx64 " 0x%08x\n", op, pa, v);
+		fprintf(t, "%c 0x%" PRIx64 " 0x%0*" PRIx64 "\n", op, pa, digits, v);
 		fflush(t);
 	}
 }
 #else
-#define trace(op, pa, v) ((void)0)
+#define trace(op, pa, v, digits) ((void)0)
 #endif
 #ifndef RECFG_POKE_DROP
 #define RECFG_POKE_DROP(n) 0
@@ -126,26 +142,29 @@ static uint32_t rd32(uint64_t pa)
 #else
 	v = *(const volatile uint32_t *)p;
 #endif
-	trace('r', pa, v);
+	trace('r', pa, v, 8);
 	return v;
 }
 
-/* The only store in this program, and BITE_PA the only address it's ever given. */
-static void wr32(uint64_t pa, uint32_t v)
+/*
+ * The only store in this program, and BITE_PA the only address it's ever given:
+ * one 64-bit access, as device memory is never split or merged.
+ */
+static void wr64(uint64_t pa, uint64_t v)
 {
 	static int stores;
 	volatile void *p = map_word(pa, PROT_READ | PROT_WRITE);
 	int n = stores++;
 
-	trace('w', pa, v);
+	trace('w', pa, v, 16);
 	(void)n;	/* the test macros may not use it */
 	if (RECFG_POKE_DROP(n))
 		return;
 	v = RECFG_POKE_STORE(v, n);
 #ifdef __aarch64__
-	asm volatile("str %w0, [%1]\n\tdsb sy" : : "r"(v), "r"(p) : "memory");
+	asm volatile("str %x0, [%1]\n\tdsb sy" : : "r"(v), "r"(p) : "memory");
 #else
-	*(volatile uint32_t *)p = v;
+	*(volatile uint64_t *)p = v;
 #endif
 }
 
@@ -167,10 +186,11 @@ static enum recfg_verdict look(void)
 	return verdict;
 }
 
-static void store(uint32_t value)
+static void store(uint32_t bite)
 {
-	printf("writing 0x%08x to 0x%" PRIx64 "\n", value, BITE_PA);
-	wr32(BITE_PA, value);
+	printf("writing 0x%08x to 0x%" PRIx64 " and 0x%08x to 0x%" PRIx64 ", in one 64-bit store\n",
+	       bite, BITE_PA, RECFG_WD_RESET_EN, NEXT_PA);
+	wr64(BITE_PA, BITE_STORE(bite));
 }
 
 /* The safe boot's flag, and its word on the kernel's command line, as e1_hook asks for it. */
@@ -241,7 +261,7 @@ int main(int argc, char **argv)
 			printf("THE WRITE DIDN'T TAKE: the word still reads the old value, 30 s. Nothing is changed\n");
 			return 5;
 		}
-		printf("THE TEN WORDS READ NEITHER AS BEFORE NOR AS INTENDED after the write; putting the old value back in the bite word\n");
+		printf("THE TEN WORDS READ NEITHER AS BEFORE NOR AS INTENDED after the write; storing the two words as they were found\n");
 		store(RECFG_BITE_OLD);
 		printf("the ten words again:\n");
 		printf(look() == RECFG_OLD ? "the ten words read as they did before the write\n" :

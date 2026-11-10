@@ -148,7 +148,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   (`run-floor --m1-power-words`, on `sio_stop=1`) writes macOS's remaining 20 power words at the end of step 5
   (Corey's OK of 2026-11-09), and 0x6013 = 0xc0 | one bit per group says how they went. `recfg_bite=1`
   (`run-floor --m1-recfg-bite`, on `ps_words=1`) is the feasibility run for instrumenting the engine: `e1-hook/recfg-bite`
-  first changes one word of the reconfig SRAM, A2's WD2 bite, from 30 s to 45 s (Corey's OK of 2026-11-09), and after the
+  first changes one word of the reconfig SRAM, A2's WD2 bite, from 30 s to 45 s (Corey's OK of 2026-11-09; as one 64-bit
+  store since run 13, Corey's OK of 2026-11-10), and after the
   commit, once it has let the others go, CPU0 reads WD2's bite and PHASE (stage 0x47, or 0x46 with an exception pending,
   with its byte at 0x6005). The module never writes the SRAM, and nothing writes the old value back by itself. `run-floor --quick` ahead of any
   recipe makes the reading 1 minute. `13` is the floor with the CPUs left up. `13`
@@ -182,7 +183,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `recfg_peek` as above) is the feasibility run's one SRAM word, A2's WD2 bite at 0x292f02010
   (`recfg_bite.h` has where it is and both values). In a safe boot it runs `recfg_peek`'s read-only stage 6,
   saves, then `recfg_poke patch`, the only thing in the repo that writes the SRAM (one word, one of two
-  values, nothing taken from its arguments, all ten words read again after), and saves.
+  values, nothing taken from its arguments, all ten words read again after), and saves. Run 13's 32-bit store
+  was dropped, so the write is now one aligned 64-bit store: the bite, and above it the next word, 0x292f02014,
+  stored as the 4 the check has just read there (Corey's OK of 2026-11-10).
   `run-floor --m1-recfg-bite` runs that itself. The OK is one write, so nothing undoes it automatically:
   `--restore` is for a person, in a safe boot. `--after` reads that one word once in the first regular boot
   after the run (`recfg_peek`'s stage 7), and only if the collected record says it read 45 s when the Mac
@@ -207,7 +210,7 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   compiling `e1-hook/m1_position.h` itself; `tests/recfg_peek_test.py` runs
   `e1-hook/recfg_peek` on a sparse file standing in for /dev/mem and its
   launcher with stubs; `tests/recfg_bite_test.py` runs `e1-hook/recfg_poke` on the same kind
-  of file (exactly one word changes, or none) and `e1-hook/recfg-bite` with stubs; `tests/sleep_drain_reading_test.py`
+  of file (exactly one word changes, or none; the store is 64 bits) and `e1-hook/recfg-bite` with stubs; `tests/sleep_drain_reading_test.py`
   runs `sleep-drain-reading` as uid 0 in a bubblewrap user namespace against
   a fake battery, with stub `sleep-drain-safe` and `systemctl`.
 - `patches/`: patch series for upstream, kept here for review before they're
