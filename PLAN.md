@@ -419,10 +419,11 @@ steps, and restarting the DCP and the PMP afterwards.
       which Linux can't clear (inferred). Before giving the approach up, one cheap test of the next
       likeliest cause, the store's width: the same change as one aligned 64-bit store
       at 0x292f02010, the bite's new value in its low half and 0x292f02014's own value (4) in its high
-      half, awake in a safe boot, with the ten words read before and after (Corey's OK of 2026-11-10;
-      built in #64, not run yet: `recfg_poke` makes every store that way now, its put-back and `restore`
-      too). It runs as run 13 did, `pkexec e1-hook/recfg-peek --position` and then `pkexec
-      e1-hook/run-floor --quick --m1-recfg-bite`, in a safe boot. If the store takes, the feasibility
+      half, awake in a safe boot, with the ten words read before and after (Corey's OK of 2026-11-10 for
+      that store; built in #64, not run yet). `recfg_poke`'s put-back and `restore`, which the OK's one
+      write doesn't cover and which don't run by themselves, are the same store with the old bite. It
+      runs as run 13 did, `pkexec e1-hook/run-floor --quick --m1-recfg-bite` in a safe boot (this recipe
+      has no position read, so no awake pass comes first). If the store takes, the feasibility
       run goes ahead in that boot, and the reading guide under "the order after run 12" is its guide; if
       it stops at the write again (exit 5, "THE WRITE DIDN'T TAKE"), a lock is near certain and the
       markers are off. A store that lands as anything else in either half is answered with one more

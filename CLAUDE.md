@@ -185,7 +185,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   saves, then `recfg_poke patch`, the only thing in the repo that writes the SRAM (one word, one of two
   values, nothing taken from its arguments, all ten words read again after), and saves. Run 13's 32-bit store
   was dropped, so the write is now one aligned 64-bit store: the bite, and above it the next word, 0x292f02014,
-  stored as the 4 the check has just read there (Corey's OK of 2026-11-10).
+  stored as the 4 the check has just read there (Corey's OK of 2026-11-10). Its put-back, if the ten words
+  read wrong after the write, is that store with the old bite: both words as they were found, whatever they read then.
   `run-floor --m1-recfg-bite` runs that itself. The OK is one write, so nothing undoes it automatically:
   `--restore` is for a person, in a safe boot. `--after` reads that one word once in the first regular boot
   after the run (`recfg_peek`'s stage 7), and only if the collected record says it read 45 s when the Mac

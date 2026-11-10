@@ -17,6 +17,7 @@ at each save, and then with the real reader and writer on the fake device.
 """
 import hashlib
 import os
+import platform
 import re
 import shutil
 import struct
@@ -311,9 +312,51 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
         r, acc = run(poke, *args)
         check(r.returncode == 2 and acc == [] and content(fake) == start, "refuses arguments " + repr(args) + ", reading nothing", r.stdout + r.stderr)
 
+    # The build that runs on the Mac has no trace and none of the test macros: the same change there, by the device's content
+    # and, on an arm64 host, by its instructions.
+    plain = os.path.join(tmp, "recfg_poke_plain")
+    subprocess.run(["cc", "-O2", "-Wall", '-DRECFG_MEM="%s"' % fake, '-DRECFG_SAFE_FLAG="%s"' % flag, '-DRECFG_CMDLINE="%s"' % cmdline, "-o", plain, src_path],
+                   check=True)
+    start = mem(GOOD, NEIGHBOURS)
+    r, acc = run(plain, "patch")
+    took = content(fake)
+    r2, _ = run(plain, "restore")
+    check(r.returncode == 0 and acc == [] and took == {**start, BITE: NEW} and r2.returncode == 0 and content(fake) == start,
+          "built as for the Mac (cc -O2 -Wall, no trace): patch changes the one word, and restore leaves the device as it began", r.stdout + r2.stdout)
+    if platform.machine() == "aarch64" and shutil.which("objdump"):
+        dis = subprocess.run(["objdump", "-d", "--no-show-raw-insn", plain], capture_output=True, text=True, check=True).stdout
+        ins = [re.sub(r"\s+", " ", m.group(1).split("//")[0]).strip() for m in (re.match(r"\s*[0-9a-f]+:\s+(\S.*)", line) for line in dis.splitlines()) if m]
+        at = [i for i, x in enumerate(ins) if x.split()[0] == "dsb"]
+        check(len(at) == 1 and ins[at[0]] == "dsb sy" and re.fullmatch(r"str x\d+, \[x\d+(, #\d+)?\]", ins[at[0] - 1]) is not None,
+              "that build's one dsb comes right after a 64-bit str: one store instruction, not two halves", [ins[i - 1:i + 1] for i in at])
+    else:
+        print("note the store's instructions aren't checked here: not an arm64 host, or no objdump")
+
     # The source: one store, one address, two values, no number taken from the command line or the environment.
     src = open(src_path).read()
     hdr = open(os.path.join(E1_HOOK, "recfg_bite.h")).read()
+    # The store's function, whole: the one place a writable mapping is asked for, so nothing else in the program can store to the device.
+    WR64 = '''static void wr64(uint64_t pa, uint64_t v)
+{
+	static int stores;
+	volatile void *p = map_word(pa, PROT_READ | PROT_WRITE);
+	int n = stores++;
+
+	trace('w', pa, v, 16);
+	(void)n;	/* the test macros may not use it */
+	if (RECFG_POKE_DROP(n))
+		return;
+	v = RECFG_POKE_STORE(v, n);
+#ifdef __aarch64__
+	asm volatile("str %x0, [%1]\\n\\tdsb sy" : : "r"(v), "r"(p) : "memory");
+#else
+	*(volatile uint64_t *)p = v;
+#endif
+}
+'''
+    check(WR64 in src and src.count("PROT_WRITE") == 1 and src.count("map_word(") == 3 and src.count("mmap(") == 1 and src.count("asm volatile") == 2
+          and not any(w in src for w in ("pwrite", "memcpy", "memset", "mprotect", "MAP_PRIVATE")) and len(re.findall(r"(?<![a-z_])write\(", src)) == 0,
+          "recfg_poke.c asks for a writable mapping in wr64 alone, and wr64 is the reviewed function, line for line: one store statement in it")
     check(src.count("wr64(") == 2 and "wr64(BITE_PA, BITE_STORE(bite));" in src and src.count("str %") == 1
           and 'asm volatile("str %x0, [%1]\\n\\tdsb sy" : : "r"(v), "r"(p) : "memory");' in src
           and src.count("*(volatile uint64_t *)p = v;") == 1 and "wr32" not in src and src.count("volatile uint64_t *") == 1
