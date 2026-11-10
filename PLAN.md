@@ -33,10 +33,11 @@ the PR with that session's work.
     written from Linux (runs 13 and 14). The entry is a pair, A2 and B2. With CPU0 left up to watch,
     A2 waits at its first handshake and B2 at its first poll, an AON status bit nothing here drives
     (run 6). With every core down nothing has seen where the pair stops.
-  - Ruled out as the stall, each by a run that changed it and reset all the same: the other cores and
-    both P complexes (1, 5), macOS's PMGR quiesce and its waits (3, 9), the RTC alarm (4), the PMP (7),
-    the display (9), the commit written once and the SMC's notice (10), SIO's firmware (11), macOS's
-    remaining power words (12), the clusters' leftover "up done" flags (16).
+  - Tried, each in a run that reset all the same (the run's number in brackets): every other core and
+    both P complexes down before the commit (1, 5), macOS's PMGR quiesce in its place with its waits
+    (3; all of them met from run 9 on), the PMP stopped (7), the display off (9), the commit written
+    once and the SMC given its AP idle notice (10), SIO's firmware stopped (11), macOS's remaining
+    power words (12), the clusters' "up done" flags acked (16).
   - **Next: one run that reads how far B2 gets with every core down** (WD1 as a marker), with the
     fabric's p-state put back where macOS has it. It needs Corey's OK for four writes and isn't built:
     "The order after run 16", in Track A below, is the place to start.
