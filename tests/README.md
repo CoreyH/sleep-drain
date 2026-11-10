@@ -20,7 +20,14 @@ used to sit in CLAUDE.md, entry for entry):
 - `tests/m1_crumbs_test.py` runs `e1-hook/m1-crumbs` on a fake PMU nvmem file, position=1's samples made by
   compiling `e1-hook/m1_position.h` itself, cluster_ack=1's three values and its waits by compiling
   `e1_hook.c`'s own table and wait functions, and fabric_up=1's and wd1_mark=1's writes by compiling the
-  two functions that make them against a page that logs every write. For probe=1 it compiles
+  two functions that make them against a page that logs every write. For gates_mark=1 it compiles
+  `gates_mark.h`'s byte and stage map against an independent reading, and runs `m1_gates_read()` and
+  `m1_gates_init()` as they stand against pages that say what was read, with no `writel()` to call: the seven
+  words in order, and the load refused, nothing read, when a page isn't mapped. It pins step 8's order (the
+  stage, the outcomes, the reads, dsb and isb, the byte), the alarm's last command carrying the byte, and the
+  load's refusals; reads the byte at 0x4b, 0x54 and 0x55 for every value, never where the record doesn't say
+  it's there, the time against the marker as at fabric_up=1's stages; and `--clear` never takes it for the
+  alarm's result. For probe=1 it compiles
   `asc_probe.h`'s bytes and `m1_probe_word()` against a scripted page, runs `m1_probe_prepare()` and
   `m1_probe_late()` as they stand against a model of the registers in sixteen scenarios (no word read
   with its domain off, every step marked before it's taken, ANS2 left as found, `ps_pmp` never

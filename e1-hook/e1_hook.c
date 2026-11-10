@@ -91,6 +91,7 @@
  *   pkexec e1-hook/run-floor --m1-cluster-ack     (--m1-wd2-bite's and cluster_ack=1: PLAN.md, "The order after the sweep of 2026-11-10")
  *   pkexec e1-hook/run-floor --m1-fabric-up       (--m1-cluster-ack's and fabric_up=1: PLAN.md, "The order after run 16")
  *   pkexec e1-hook/run-floor --m1-mark            (--m1-fabric-up's and wd1_mark=1: the same)
+ *   pkexec e1-hook/run-floor --m1-gates           (--m1-mark's and gates_mark=1: PLAN.md, "The order after the look")
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -137,6 +138,7 @@
 #include "gate_test.h"
 #include "fabric_up.h"
 #include "wd1_mark.h"
+#include "gates_mark.h"
 #include "wd2_bite.h"
 
 #if IS_ENABLED(CONFIG_ACPI)
@@ -350,6 +352,10 @@ MODULE_PARM_DESC(fabric_up, "With cluster_ack=1: at the start of step 5, the fab
 static bool wd1_mark;
 module_param(wd1_mark, bool, 0444);
 MODULE_PARM_DESC(wd1_mark, "With fabric_up=1: in step 4, where the kernel has already stopped WD1, its bite := 150 s (0x2922b0014 := 0xd693a400), its count := 60 s (0x2922b0010 := 0x55d4a800) and RESET_EN (0x2922b001c := 4), so that the restart's time says whether B2 zeroed the count (about 90 s if not; WD2's 120 s if it did; about 150 s or none if the pair finished). Read back just before the commit into bits 7:6 of 0x6007's byte. Corey's standing go-ahead of 2026-11-10");
+/* The six gate words B2 polls, read in the recipe's own state (PLAN.md, "The order after the look"). */
+static bool gates_mark;
+module_param(gates_mark, bool, 0444);
+MODULE_PARM_DESC(gates_mark, "With wd1_mark=1, never with probe=1: reads only. In step 8, after the stage and the steps' outcomes and right before the commit, CPU0 reads the six gate-status words B2 polls (0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338, 0x28e09c34c) and AFNC2_LW1 (0x28e580160), and sends one byte to 0x6016: their bit 30s, whether the lane read 0x1000030f, and bit 7 always; the alarm's last command writes it again in place of its result. From step 8's command on the stages are 0x4b, 0x55 and 0x54 (for 0x52, 0x53 and 0x51). The seven words are read and logged awake at the load, which refuses unless their pages are mapped (gates_mark.h)");
 /* Not a run: the three coprocessor words B2 polls, read in the recipe's state, and the suspend failed (PLAN.md, "The order after run 17"). */
 static bool probe;
 module_param(probe, bool, 0444);
@@ -1448,6 +1454,31 @@ static void e1_after_slpa(void)
  * committed, and m1-crumbs reads the time against the marker only at the run's
  * last stage.
  *
+ * gates_mark=1 (run-floor --m1-gates; with wd1_mark=1, never with probe=1) reads
+ * the six gate-status words B2 polls, and the fabric lane above SIO, in the
+ * state the recipe leaves, which nothing has read them in (PLAN.md, "The order
+ * after the look"; gates_mark.h has the words, the byte and the stages). Reads
+ * only: no register is written that wd1_mark=1's run doesn't write. At the load,
+ * m1_gates_init() maps the two gate pages (look.h's, never mapped twice: the look
+ * needs probe=1), refuses unless they and SIO's page are mapped, and reads and
+ * logs the seven words awake, the baseline. In step 8, stage 0x52's command goes
+ * out as 0x4b, with the same bytes, then the steps' outcomes as ever; then CPU0
+ * reads the six gate words in look.h's order and AFNC2_LW1, dsb and isb, and
+ * sends gates_byte() to 0x6016, which step 8's first command has just left at
+ * 0: bit 30 of each gate (set, closed), whether the lane read macOS's
+ * 0x1000030f, and bit 7. That byte is the alarm's result in every other run
+ * since run 4: here m1_alarm_arm()'s last command, after the commit, writes the
+ * gate byte again in its place, so that nothing after the commit changes but
+ * that value, and the alarm's own registers, read at the next boot, are what
+ * say it was written. After the release m1_wd2_out() sends 0x55 or 0x54 in place
+ * of 0x53 or 0x51. Every other byte is fabric_up=1's and wd1_mark=1's. What the
+ * reads can leave: they come after stage 0x4b's command and the outcomes, with
+ * SError unmasked until step 9, so a read that faults panics the kernel there
+ * (a restart about 10 s later, if the panic's restart works) and one that never
+ * returns leaves WD1's marker to restart the Mac about 90 s after step 4; both
+ * leave stage 0x4b, 0x6013's marker and 0x6016 at 0. So does a byte whose own
+ * command failed, after which the run went on unrecorded.
+ *
  * probe=1 (e1-hook/probe; with wd1_mark=1, so that everything the recipe maps and
  * checks at load is there) isn't a run. It reads, in the state the recipe makes,
  * the three words B2 polls before its op 224 and that nothing had read: bit 1 of
@@ -1716,6 +1747,10 @@ static void __iomem *m1_cpu_start, *m1_ps, *m1_aic, *m1_aic_event, *m1_aon, *m1_
 static void __iomem *m1_soc, *m1_sio, *m1_wdx, *m1_cpm;
 /* position=1: the page B2 opens on, read only. */
 static void __iomem *m1_pos;
+/* look=1 and gates_mark=1, which never load together: the two pages with the six gate-status words (look.h), read only. */
+static void __iomem *m1_look_ga, *m1_look_gb;
+/* gates_mark=1: the byte step 8 sends to 0x6016, which the alarm's last command sends again in place of its result. */
+static u8 m1_gates;
 /* position=1: CPU0's times of the first and third commit writes, and SIO_CPU's reference. */
 static u64 m1_t_first, m1_t_third;
 static bool m1_sio_ref;
@@ -2493,7 +2528,9 @@ static void m1_park(void *data)
  * byte means). rtc is step 8's 6-byte read of 0x1406. It stops at the first
  * command that fails, flushes the FIFO and acks as m1_raw_start() does, and
  * leaves m1_raw alone, so that the commit's other two writes and the last
- * crumbs still go out; 0x6016 stays 0 if it never began.
+ * crumbs still go out; 0x6016 stays 0 if it never began. With gates_mark=1 its
+ * last command sends the gate byte again in place of its result (gates_mark.h):
+ * the same command, at the same moment, with that value.
  */
 static void m1_alarm_arm(const u8 *rtc)
 {
@@ -2531,7 +2568,7 @@ fail:
 	for (i = 0; i < M1_SPMI_WORDS; i++)
 		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
 done:
-	m1_crumb(0x6016, &res, 1);
+	m1_crumb(0x6016, gates_mark ? &m1_gates : &res, 1);
 }
 
 /* position=1: one sample's two bytes (m1_position.h). Reads only. */
@@ -2980,6 +3017,9 @@ static void m1_wd2_out(void)
 		b[0] = fabric_up ? M1_FAB_STAGE_PEND : M1_WD2_STAGE_PEND;
 	else
 		b[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;
+	/* gates_mark=1: its own stage in place of fabric_up=1's, since 0x6016 is its byte (gates_mark.h). */
+	if (gates_mark)
+		b[0] = gates_stage(b[0]);
 	b[1] = m1_wd2_sample(pre, m1_wd2_bite_awake, ctl, post, after, c0, c1, phase);
 	m1_crumb(0x6004, b, 2);
 	for (i = 0; i < M1_SPMI_WORDS; i++)
@@ -2987,6 +3027,25 @@ static void m1_wd2_out(void)
 	dsb(sy);
 	isb();
 }
+
+/*
+ * gates_mark=1: the six gate words into g, in gates_mark.h's order (look.h's pages and offsets), then AFNC2_LW1 into
+ * *lane. Reads only, each into its own variable, in this order; step 8's last before the commit, and the load's.
+ */
+static void m1_gates_read(u32 *g, u32 *lane)
+{
+	static const u16 ga[] = LOOK_GATE_A_OFFS, gb[] = LOOK_GATE_B_OFFS;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(ga); i++)
+		g[i] = readl(m1_look_ga + ga[i]);
+	for (i = 0; i < ARRAY_SIZE(gb); i++)
+		g[ARRAY_SIZE(ga) + i] = readl(m1_look_gb + gb[i]);
+	*lane = readl(m1_sio + GATE_LANE);
+}
+static_assert(ARRAY_SIZE(((u16[])LOOK_GATE_A_OFFS)) + ARRAY_SIZE(((u16[])LOOK_GATE_B_OFFS)) == GATES_N && GATES_AT == 0x6016);
+static_assert(LOOK_GATE_A == 0x28e5a0000ULL && LOOK_GATE_B == 0x28e09c000ULL && LOOK_SIO_PAGE == M1_PS_SIO_PAGE &&
+	      M1_PS_SIO_PAGE + GATE_LANE == 0x28e580160ULL && GATE_CLOSED == BIT(30) && GATE_LANE_VAL == 0x1000030fU);
 
 /* Steps K3, K4 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
@@ -3157,6 +3216,8 @@ static void __noreturn m1_after_slpa(void)
 		wd1 = m1_wd1_bits(readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_BITE), readl(m1_wdt + WD1_COUNT));
 	if (pmgr_late) {
 		b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;
+		if (gates_mark)
+			b[0] = gates_stage(b[0]);
 		b[1] = parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
 		b[3] = fabric_up ? m1_fab_byte(held, fab_pre, fab_set, fab_end, wd1) : hold ? held : down;
@@ -3169,6 +3230,20 @@ static void __noreturn m1_after_slpa(void)
 		}
 	} else {
 		m1_stage(0x50);
+	}
+	/*
+	 * gates_mark=1: the six gate words and the lane, the last reads before the commit, after the stage and the outcomes
+	 * that say where the run is; SError still unmasked, so that a read that faulted panics here, then their byte (the
+	 * m1 comment; gates_mark.h).
+	 */
+	if (gates_mark) {
+		u32 g[GATES_N], lane;
+
+		m1_gates_read(g, &lane);
+		dsb(sy);
+		isb();
+		m1_gates = gates_byte(g, lane);
+		m1_crumb(GATES_AT, &m1_gates, 1);
 	}
 	/* recfg_bite=1: A2's bite word once more, SError still unmasked: a read that faulted panics here, before the commit, not under step 9's mask (the m1 comment). */
 	if (recfg_bite) {
@@ -3787,8 +3862,8 @@ static int __init m1_probe_init(void)
 	return 0;
 }
 
-/* look=1: the clock generators' blocks and the two pages with the gate-status words; the other words' pages are the recipe's. Only ever read. */
-static void __iomem *m1_look_clk, *m1_look_ga, *m1_look_gb;
+/* look=1: the clock generators' blocks and the two pages with the gate-status words (m1_look_ga and m1_look_gb, declared with m1_pos for gates_mark=1's step 8); the other words' pages are the recipe's. Only ever read. */
+static void __iomem *m1_look_clk;
 static_assert(LOOK_AON_PAGE == M1_POS_PAGE && LOOK_SIO_PAGE == M1_PS_SIO_PAGE && LOOK_PS_PAGE == M1_PMGR_PS);
 static_assert(LOOK_SIO_PAGE + LOOK_SIO_ANS2 == M1_PS_SIO_PAGE + M1_PS_ANS2 && LOOK_SIO_FIRST == M1_PS_SIO && LOOK_SIO_LAST < LOOK_SIO_ANS2);
 
@@ -4093,6 +4168,31 @@ static int __init m1_wd1_init(void)
 	return 0;
 }
 
+/*
+ * gates_mark=1 at load: the two gate pages mapped (the look maps them too, and needs probe=1, which this never loads
+ * with), every page step 8 reads through checked, and the seven words read and logged awake, the baseline for step 8's
+ * reads. Reads only.
+ */
+static int __init m1_gates_init(void)
+{
+	u32 g[GATES_N], lane;
+
+	m1_look_ga = ioremap_np(LOOK_GATE_A, PAGE_SIZE);
+	m1_look_gb = ioremap_np(LOOK_GATE_B, PAGE_SIZE);
+	if (!m1_look_ga || !m1_look_gb) {
+		pr_err("m1: gates_mark: a mapping failed; refusing\n");
+		return -ENOMEM;
+	}
+	if (!m1_sio) {
+		pr_err("m1: gates_mark: SIO's page isn't mapped; refusing\n");
+		return -ENODEV;
+	}
+	m1_gates_read(g, &lane);
+	pr_info("m1: gates_mark: awake: gates 0x28e5a0000: +050 %08x +064 %08x +30c %08x; 0x28e09c000: +310 %08x +338 %08x +34c %08x; AFNC2_LW1 0x28e580160 %08x; byte %02x. Step 8 reads them again, right before the commit\n",
+		g[0], g[1], g[2], g[3], g[4], g[5], lane, gates_byte(g, lane));
+	return 0;
+}
+
 /* fabric_up=1 at load: the word off the never-write list and as it is awake, 0x333, so that 3 is its awake value. Reads only. */
 static int __init m1_fab_init(void)
 {
@@ -4373,6 +4473,12 @@ static int __init m1_init(void)
 	}
 	if (wd1_mark) {
 		int ret = m1_wd1_init();
+
+		if (ret)
+			return ret;
+	}
+	if (gates_mark) {
+		int ret = m1_gates_init();
 
 		if (ret)
 			return ret;
@@ -4897,6 +5003,10 @@ static int __init e1_check_params(void)
 		pr_err("fabric_up=1 needs cluster_ack=1 (it's run 16's recipe with the fabric put back, and its stages and 0x6007's byte are that run's layout)\n");
 		return -EINVAL;
 	}
+	if (gates_mark && (!wd1_mark || probe)) {
+		pr_err("gates_mark=1 needs wd1_mark=1 and no probe=1 (its stages are that run's with 0x6016 its byte, and the probe never reaches step 8)\n");
+		return -EINVAL;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -5070,7 +5180,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -5078,7 +5188,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;
 

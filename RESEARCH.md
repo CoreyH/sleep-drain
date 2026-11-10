@@ -3930,6 +3930,34 @@ What it settles, all of it in Linux's suspended state:
 What was wrong in the build: "if the gate stays open it should come back as the look did". It doesn't. A
 `--gate` run is to be treated as one-way.
 
+### The gates read as built: six gate words and the lane, read right before the commit (2026-11-10)
+
+`e1_hook gates_mark=1`, `pkexec e1-hook/run-floor --quick --m1-gates`: run 17's recipe (`--m1-mark`) with
+one addition that writes no register. Built, not run. `e1-hook/gates_mark.h` has the words, the byte and
+the stages.
+
+- **What it reads.** In step 8, after the stage and the steps' outcomes have gone out and right before
+  the commit, CPU0 reads 0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338 and
+  0x28e09c34c, then AFNC2_LW1 (0x28e580160). The load reads the same seven awake and logs them.
+- **What it leaves.** One byte at 0x6016: bits 0-5 the six words' bit 30 (set is closed), bit 6 the
+  lane at exactly 0x1000030f, bit 7 always. Every scratch byte was taken, so it has the alarm's
+  result's place: the alarm's last command sends the gate byte again where its result went, and the
+  alarm's own registers at the next boot still say whether it was armed. The run's last stages are its
+  own for that reason: 0xcb, 0xd5 and 0xd4 for `--m1-mark`'s 0xd2, 0xd3 and 0xd1.
+- **What changes about the run.** One more PMU command before the commit, and seven reads of PMGR
+  words in a state they've never been read in (the clocks parked). A read that faults or hangs leaves
+  stage 0xcb with 0x6016 still 0, and the Mac restarts by the panic or by WD1's marker; a byte whose
+  own command failed leaves the same record. Everything else, the restart's time against the marker
+  included, reads as run 17's.
+- **Reading it.** 0x28e5a0050 open: B2's op 140 is the stall's likeliest place, and what holds that
+  gate is the question. Closed: that poll is cleared, as far as a read before B2's own writes can clear
+  it, and `a2_pre=1` is next. The other five are B2's later polls: one that reads open behind a power
+  word the recipe has already switched off is a lead of the same kind.
+
+Checked: Pullfrog, the module's build, `tests/m1_crumbs_test.py`, `tests/e1a_launcher_test.py` and the
+new code's own mutants (41, all caught); no adversarial pass, since nothing new is written. Built by a
+subagent (Opus) and reviewed here.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

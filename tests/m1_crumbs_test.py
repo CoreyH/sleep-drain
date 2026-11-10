@@ -1122,8 +1122,8 @@ def main():
     check(defs.get("M1_PMU_ALARM_CTRL") == g["ALARM_CTRL"] and defs.get("M1_PMU_ALARM") == g["ALARM"]
           and defs.get("M1_PMU_ALARM_EVENT") == g["ALARM_EVENT"] and defs.get("M1_PMU_ALARM_MASK") == g["ALARM_MASK"]
           and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"]
-          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x46, 0x47, 0x56, 0x57,
-                                    0x51, 0x53)
+          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x4b, 0x46, 0x47,
+                                    0x56, 0x57, 0x51, 0x53, 0x54, 0x55)
           and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src and "hold ? 0x5a : alarm ? 0x59 : 0x58" in src
           and "m1_stage(sio_stop ? 0x4f : 0x5b)" in src and "b[0] = 0x5c" in src and "? 0x5d : 0x5e" in src and "hold ? 0x39 :" in src
           and "hold ? 0x31 :" in src,
@@ -1138,6 +1138,7 @@ def main():
     position_tests(g, src)
     cluster_ack_tests(g, src)
     mark_tests(g, src)
+    gates_mark_tests(g, src)
     with tempfile.TemporaryDirectory() as tmp:
         ppath = os.path.join(tmp, "nvmem")
 
@@ -1351,8 +1352,10 @@ def cluster_ack_tests(g, src):
           and {b for b in idx if g["ACK_WROTE"] >> b & 1} == {2, 3, 5},
           "m1-crumbs names each cluster word's entry, and which three cluster_ack=1 wrote and which the table already acks", str(g["ACK_WORDS"]))
     # The stages m1-crumbs reads the mark at, and the ones it says can't tell, are the run's: bit 7 from K4 on, 0x28 after the table,
-    # 0x31-0x37 and 0x39 for hold=1's stop requests, 0x4e before the commit, wd2_bite=1's two after it.
-    check(g["ACK_EARLY"] == (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39) and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53)
+    # 0x31-0x37 and 0x39 for hold=1's stop requests, 0x4e before the commit, wd2_bite=1's two after it; and fabric_up=1's and
+    # gates_mark=1's in place of those three.
+    check(g["ACK_EARLY"] == (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39)
+          and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53, 0x4b, 0x54, 0x55)
           and "b[0] = 0x28;" in after and "m1_stage((hold ? 0x31 : pmgr_late ? 0x29 : 0x21) + i);" in after
           and "b[0] = hold ? 0x39 : pmgr_late ? 0x38 : 0x30;" in after and "b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;" in after
           and "else if (!recfg_bite && !wd2_bite)\n\t\t\tm1_stage(sio_stop ? 0x4f : 0x5b);" in after
@@ -1622,6 +1625,342 @@ def mark_tests(g, src):
     check("\tif ((read_sysreg(isr_el1) >> 6) & 7)\n\t\tb[0] = fabric_up ? M1_FAB_STAGE_PEND : M1_WD2_STAGE_PEND;\n\telse\n\t\tb[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;\n" in wout
           and len(re.findall(r"\bM1_FAB_STAGE\w*\b", code_only)) == 3 + 3,
           "the run's three stages go out where 0x4e, 0x57 and 0x56 did, and nowhere else", wout)
+
+
+GATES_HDR = r"""
+#include <stdio.h>
+#include "gates_mark.h"
+int main(void)
+{
+	static const unsigned short ga[] = LOOK_GATE_A_OFFS, gb[] = LOOK_GATE_B_OFFS;
+	/* Words with bit 30 set, and without it, the other bits varied. */
+	static const u32 shut[] = { GATE_CLOSED, 0xffffffff, 0x40000001, 0xc0000000, 0x7fffffff };
+	static const u32 open[] = { 0, 0xbfffffff, 0x3fffffff, 0x80000000, 0x00000001 };
+	static const u32 lanes[] = { GATE_LANE_VAL, GATE_LANE_VAL ^ 1, GATE_LANE_VAL | (1U << 8), GATE_LANE_VAL | (1U << 30), 0x1f0000ff, 0, 0xffffffff,
+				     0x0000030f, 0x1000030e };
+	unsigned int m, j, l, i, s;
+	u32 g[GATES_N];
+
+	printf("consts %llx %x %x %x %llx %x %x %x %llx %x %x %x %x %x %x %x\n", LOOK_GATE_A, ga[0], ga[1], ga[2], LOOK_GATE_B, gb[0], gb[1],
+	       gb[2], LOOK_SIO_PAGE, GATE_LANE, GATE_LANE_VAL, GATE_CLOSED, GATES_N, GATES_AT, GATES_LANE_MACOS, GATES_MARK);
+	printf("stages %x %x %x\n", M1_GATES_STAGE_PRE, M1_GATES_STAGE, M1_GATES_STAGE_PEND);
+	for (s = 0; s < 256; s++)
+		printf("stage %x %x\n", s, gates_stage((u8)s));
+	for (m = 0; m < 64; m++)
+		for (j = 0; j < 5; j++)
+			for (l = 0; l < sizeof(lanes) / sizeof(lanes[0]); l++) {
+				for (i = 0; i < GATES_N; i++)
+					g[i] = m >> i & 1 ? shut[(i + j) % 5] : open[(i + j) % 5];
+				printf("byte %x %x %x %x %x %x %x %x\n", g[0], g[1], g[2], g[3], g[4], g[5], lanes[l], gates_byte(g, lanes[l]));
+			}
+	return 0;
+}
+"""
+GATES_FN_PRELUDE = r"""
+#include <stdarg.h>
+#include <stdio.h>
+#include "gates_mark.h"
+typedef uint16_t u16;
+typedef uint64_t u64;
+#define __iomem
+#define __init
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define PAGE_SIZE 0x4000UL
+#define ENOMEM 12
+#define ENODEV 19
+/* Three pages that say which was read where, each read its own value; no writel() for the code to call. */
+static unsigned char ga_page[PAGE_SIZE], gb_page[PAGE_SIZE], sio_page[PAGE_SIZE];
+static void *m1_look_ga, *m1_look_gb, *m1_sio;
+static unsigned int nread, map_fails;
+static u32 readl(const void *p)
+{
+	const unsigned char *c = p;
+	const unsigned char *const pg[3] = { ga_page, gb_page, sio_page };
+	unsigned int k;
+
+	for (k = 0; k < 3; k++)
+		if (c >= pg[k] && c < pg[k] + PAGE_SIZE)
+			break;
+	printf("read %c %lx\n", k < 3 ? "ABS"[k] : '?', k < 3 ? (unsigned long)(c - pg[k]) : 0UL);
+	return 0x1000 + nread++;
+}
+/* The n-th mapping fails (1-based); 0: none does. */
+static void *ioremap_np(u64 pa, unsigned long size)
+{
+	static unsigned int n;
+
+	printf("map %llx %lx\n", (unsigned long long)pa, size);
+	if (++n == map_fails)
+		return NULL;
+	return pa == LOOK_GATE_A ? (void *)ga_page : pa == LOOK_GATE_B ? (void *)gb_page : NULL;
+}
+static void pr_err(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("err "); vprintf(fmt, ap); va_end(ap); }
+static void pr_info(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("info "); vprintf(fmt, ap); va_end(ap); }
+"""
+GATES_FN_MAIN = r"""
+int main(int argc, char **argv)
+{
+	u32 g[GATES_N] = { 0 }, lane = 0;
+	unsigned int i;
+	int ret;
+
+	(void)argc;
+	if (argv[1][0] == 'r') {
+		/* Step 8's reads, with the load's pointers in place. */
+		m1_look_ga = ga_page;
+		m1_look_gb = gb_page;
+		m1_sio = sio_page;
+		m1_gates_read(g, &lane);
+		printf("got");
+		for (i = 0; i < GATES_N; i++)
+			printf(" %x", g[i]);
+		printf(" %x\n", lane);
+		return 0;
+	}
+	/* The load: "i N S", the N-th mapping failing (0: none), SIO's page mapped or not. */
+	map_fails = (unsigned int)(argv[1][1] - '0');
+	m1_sio = argv[1][2] == 's' ? (void *)sio_page : NULL;
+	ret = m1_gates_init();
+	printf("ret %d reads %u\n", ret, nread);
+	return 0;
+}
+"""
+
+
+def gates_mark_tests(g, src):
+    """gates_mark=1: gates_mark.h against an independent reading of it; m1_gates_read() and m1_gates_init() compiled as they stand
+    against pages that say what was read, with no writel() to call; the places in e1_hook.c that use them; and the byte, the
+    run's stages and --clear through m1-crumbs."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    with tempfile.TemporaryDirectory() as tmp:
+        def build(name, code):
+            c = os.path.join(tmp, name + ".c")
+            with open(c, "w") as f:
+                f.write(code)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(tmp, name), c], check=True)
+            return os.path.join(tmp, name)
+
+        hdr = [line.split() for line in subprocess.run([build("hdr", GATES_HDR)], capture_output=True, text=True, check=True).stdout.splitlines()]
+        fn = build("fn", GATES_FN_PRELUDE + cut("static void m1_gates_read(u32 *g, u32 *lane)", "\n}\n")
+                   + cut("static int __init m1_gates_init(void)", "\n}\n") + GATES_FN_MAIN)
+
+        def fnrun(arg):
+            return subprocess.run([fn, arg], capture_output=True, text=True, check=True).stdout.splitlines()
+
+        reads, loads = fnrun("r"), {a: fnrun(a) for a in ("i0s", "i1s", "i2s", "i0n")}
+
+    # The header: look.h's six words in its order, gate_test.h's lane and polarity, the byte's two flags, the PMU byte, the stages.
+    consts = [int(x, 16) for x in hdr[0][1:]]
+    check(hdr[0][0] == "consts" and consts == [0x28e5a0000, 0x50, 0x64, 0x30c, 0x28e09c000, 0x310, 0x338, 0x34c, 0x28e580000, 0x160, 0x1000030f,
+                                               1 << 30, 6, 0x6016, 0x40, 0x80]
+          and hdr[1] == ["stages", "4b", "55", "54"],
+          "gates_mark.h: the six words are 0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338, 0x28e09c34c, in that order, then"
+          " AFNC2_LW1 at 0x28e580160; bit 30 is closed; macOS's lane is 0x1000030f; the byte is 0x6016; stages 0x4b, 0x55, 0x54", str(hdr[:2]))
+    words = [consts[0] + o for o in consts[1:4]] + [consts[4] + o for o in consts[5:8]]
+    check(tuple(f"{w:#x}" for w in words) == g["GATE_WORDS"] and (g["GATES_LANE"], g["GATES_MARK"]) == (consts[14], consts[15])
+          and (g["GATES_PRE"], g["GATES_WD2"]) == (0x4b, (0x54, 0x55)) and g["GATES_STAGES"] == (0x4b, 0x54, 0x55),
+          "m1-crumbs names the six words in the header's order, and its byte's bits and the run's stages are the header's", str(g["GATE_WORDS"]))
+    stages = {int(r[1], 16): int(r[2], 16) for r in hdr if r[0] == "stage"}
+    check(len(stages) == 256 and all(v == {0x52: 0x4b, 0x53: 0x55, 0x51: 0x54}.get(s, s) for s, v in stages.items()),
+          "gates_stage(): fabric_up=1's 0x52, 0x53 and 0x51 become 0x4b, 0x55 and 0x54, and every other stage stays as it is")
+    rows = [[int(x, 16) for x in r[1:]] for r in hdr if r[0] == "byte"]
+    bad = [r for r in rows if r[7] != (0x80 | sum(1 << i for i in range(6) if r[i] >> 30 & 1) | (0x40 if r[6] == 0x1000030f else 0))]
+    check(len(rows) == 64 * 5 * 9 and not bad and {r[7] & 0x3f for r in rows} == set(range(64)),
+          "gates_byte(): bits 0-5 bit 30 of the six words in order, and nothing else of them; bit 6 the lane at exactly 0x1000030f; bit 7 always",
+          str(bad[:4]))
+
+    # m1_gates_read(): seven reads, in the header's order, each into its own place; nothing written (there's no writel() to call).
+    got = [r for r in reads if r.startswith("got")]
+    check([r for r in reads if r.startswith("read")] == ["read A 50", "read A 64", "read A 30c", "read B 310", "read B 338", "read B 34c", "read S 160"]
+          and got == ["got 1000 1001 1002 1003 1004 1005 1006"],
+          "m1_gates_read(): 0x28e5a0050, 0x64, 0x30c, then 0x28e09c310, 0x338, 0x34c, then AFNC2_LW1, each into its own place, and nothing else",
+          "\n".join(reads))
+    # m1_gates_init(): both pages mapped non-posted, a page each; the load refused with nothing read if a mapping fails or SIO's page
+    # isn't there; otherwise the seven words read once and logged.
+    maps = ["map 28e5a0000 4000", "map 28e09c000 4000"]
+    ok = loads["i0s"]
+    check(ok[:2] == maps and ok[-1] == "ret 0 reads 7" and len([r for r in ok if r.startswith("read ")]) == 7
+          and any(r.startswith("info m1: gates_mark: awake: gates 0x28e5a0000: +050 00001000 +064 00001001 +30c 00001002; 0x28e09c000: +310 00001003"
+                               " +338 00001004 +34c 00001005; AFNC2_LW1 0x28e580160 00001006; byte 80.") for r in ok),
+          "m1_gates_init(): the two gate pages mapped, the seven words read once and logged with their byte", "\n".join(ok))
+    check(loads["i1s"][-1] == "ret -12 reads 0" and loads["i2s"][-1] == "ret -12 reads 0" and loads["i0n"][-1] == "ret -19 reads 0"
+          and all(any(r.startswith("err m1: gates_mark:") for r in loads[a]) for a in ("i1s", "i2s", "i0n")),
+          "m1_gates_init(): refuses, reading nothing, if either mapping fails or SIO's page isn't mapped", str(loads))
+    init = cut("static int __init m1_gates_init(void)", "\n}\n")
+    wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
+    check(not re.search(wr, init) and "\tif (gates_mark) {\n\t\tint ret = m1_gates_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n" in src
+          and in_order_of(src, ["\tif (observe || pmgr_late) {\n\t\tm1_soc = ioremap_np(M1_SOC_CLUSTERS, PAGE_SIZE);\n\t\tm1_sio = ioremap_np(",
+                                "\tif (gates_mark) {\n\t\tint ret = m1_gates_init();"]),
+          "the load runs m1_gates_init() after SIO's page is mapped and returns its refusal; it writes nothing")
+
+    # Step 8: after stage 0x4b's command and the outcomes, the reads, dsb and isb, then the byte, all before step 9's mask and the commit.
+    after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
+    check(in_order_of(after, ["\t\tb[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;\n"
+                              "\t\tif (gates_mark)\n\t\t\tb[0] = gates_stage(b[0]);\n\t\tb[1] = parked",
+                              "\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n",
+                              "\tif (gates_mark) {\n\t\tu32 g[GATES_N], lane;\n\n\t\tm1_gates_read(g, &lane);\n\t\tdsb(sy);\n\t\tisb();\n"
+                              "\t\tm1_gates = gates_byte(g, lane);\n\t\tm1_crumb(GATES_AT, &m1_gates, 1);\n\t}\n",
+                              "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
+          and after.count("m1_gates_read(") == 1 and len(re.findall(r"\bm1_gates_read\(", code_only)) == 3
+          and len(re.findall(r"\bm1_gates\s*=[^=]", code_only)) == 1 and len(re.findall(r"\bgates_stage\(", code_only)) == 2,
+          "step 8 sends stage 0x4b in 0x52's place, then the outcomes, then reads the seven words and sends their byte, SError still unmasked,"
+          " before the commit; nothing else sets the byte, and the stage is mapped in two places", after[-4000:])
+    alarm_fn = cut("static void m1_alarm_arm(const u8 *rtc)", "\n}\n")
+    wout = cut("static void m1_wd2_out(void)", "\n}\n")
+    check("done:\n\tm1_crumb(0x6016, gates_mark ? &m1_gates : &res, 1);\n}" in alarm_fn and alarm_fn.count("m1_crumb(") == 1
+          and in_order_of(wout, ["\telse\n\t\tb[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;\n",
+                                 "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tb[1] = m1_wd2_sample("]),
+          "after the commit: the alarm's one command to the PMU sends the gate byte in its result's place, and the last stage is the run's own",
+          alarm_fn + wout)
+    # No register written: no MMIO write names the gate pages, and the count of MMIO writes is mark_tests()' as it was.
+    check(not re.search(r"write\w*\([^;]*m1_look_g[ab]", code_only) and not re.search(r"write\w*\([^;]*GATE_LANE\b[^;]*;", cut("static void m1_gates_read(", "\n}\n")),
+          "nothing writes through the gate pages, and m1_gates_read() writes nothing")
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    check("static bool gates_mark;\nmodule_param(gates_mark, bool, 0444);\n" in src and not re.search(r"\bgates_mark\s*=[^=]", code_only)
+          and in_order_of(params, ["\tif (gates_mark && (!wd1_mark || probe)) {\n\t\tpr_err(", "\t\treturn -EINVAL;\n\t}\n", "\treturn 0;\n\nbad_wait:"])
+          and 'gates_mark ? " gates_mark=1" : ""' in src,
+          "gates_mark=1 loads only with wd1_mark=1 and never with probe=1; it's off by default, read-only, and named in the load line", params[-1500:])
+
+    # m1-crumbs. The run's record at its last stage, all as meant (run 17's bytes, wd2_bite=1's sample, the marker standing), with the
+    # gate byte at 0x6016.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+        alarm = (0x41, 121544 + 3600, 0, 0)
+        rec = dict(parked=0x7d, left=0, down=0xf5, secs=121544, prog=(0xff, 0xff), flags=0x90, isrs=0x8d)
+
+        def dec(stage, gb, x=217, **kw):
+            fake(path, scratch(stage, **dict(rec, drained=gb, **kw)), rtc_secs=121544 + x + 40, alarm=alarm)
+            r = run(path, cnt="960000000 24000000")
+            return r.returncode, r.stdout, r.stderr
+
+        WORD = "  {}: bit 30 {}\n"
+        rc, out, err = dec(0xd5, 0xc6)
+        check(rc == 0 and "stage 0x6004 = 0xd5 (pmp_out=1: bit 7, so the stage is 0x55) (pmgr_late=1): gates_mark=1: fabric_up=1's 0x53:" in out
+              and ("0x6016 = 0xc6: gates_mark=1's byte, in place of the alarm's result: what CPU0 read in step 8, right before the commit and"
+                   " before B2's own writes:\n") in out
+              and WORD.format("0x28e5a0050", "clear, open (the gate B2 polls at op 140, after SIO's subtree)") in out
+              and WORD.format("0x28e5a0064", "SET, closed") in out and WORD.format("0x28e5a030c", "SET, closed") in out
+              and WORD.format("0x28e09c310", "clear, open") in out and WORD.format("0x28e09c338", "clear, open") in out
+              and WORD.format("0x28e09c34c", "clear, open") in out
+              and "  AFNC2_LW1 (0x28e580160), the fabric lane above SIO: read 0x1000030f, macOS's value\n" in out
+              and "  so: 0x28e5a0050 read OPEN in the recipe's state too" in out and "nothing records the commit" not in out
+              and "alarm command" not in out and "0x6016 = 0xc6: not a value" not in out
+              and "0x6007 = 0xf5: fabric_up=1's byte, in place of the cores that held:\n" in out and "WD1 stood as the marker" in out
+              and "0x6005 = 0x7d: wd2_bite=1, after the commit, the alarm and the release:\n" in out
+              and "0x6014 bit 4 (cluster_ack=1)" in out and "0x6013 = 0xff: ps_words=1 wrote the 20 power words" in out
+              and "0x6015 = 0x8d: K4 ran" in out
+              and "RTC second just before the commit, from its low two bytes: 121544, 257 s before now (121801); right if this read comes within 18 h" in out
+              and "the run's alarm" not in out and "0x140c is the commit's second + 3600, as the run wrote it" in out
+              and "the armed alarm survived the reset" in out and "the SoC restarted about 217 s after the commit" in out,
+              "gates_mark=1's 0xd5: the gate byte, read gate by gate, in the alarm's result's place; the rest read as --m1-mark's 0xd3", out + err)
+        # The same bytes under --m1-mark's 0xd3 are its record as ever, and every line that isn't about the stage, 0x6016 or the alarm
+        # reads the same at 0xd5.
+        rc3, out3, err3 = dec(0xd3, 0xbd)
+        rc5, out5, err5 = dec(0xd5, 0xbd)
+        skip = ("0x6000:", "0x6010:", "stage 0x6004", "0x6016", "RTC second", "PMU alarm", "  0x140c", "  the armed alarm", "  0x28e", "  AFNC2", "  so: 0x28e")
+        missing = [l for l in out3.splitlines() if not l.startswith(skip) and l not in out5.splitlines()]
+        check(rc3 == 0 and rc5 == 0 and "0x6016 = 0xbd: every alarm command was acked" in out3 and "gates_mark=1" not in out3
+              and "0x6016 = 0xbd: gates_mark=1's byte" in out5 and "every alarm command was acked" not in out5 and not missing,
+              "0xbd at 0x6016: the alarm's result under 0xd3, the gate byte under 0xd5, and nothing else read differently", "\n".join(missing) + out3 + out5)
+        rc, out, err = dec(0xd4, 0xff)
+        check(rc == 0 and "so the stage is 0x54" in out and "gates_mark=1: fabric_up=1's 0x51:" in out and "pending afterwards" in out
+              and "  so: 0x28e5a0050 read closed in the recipe's state: B2's poll of it at op 140 is cleared" in out
+              and "did NOT read 0x1000030f" not in out and "  wd1_mark=1's marker: not read. CPU0 had an exception pending" in out,
+              "gates_mark=1's 0xd4: the pending stage, its byte, and no reading of the time", out + err)
+        # Stage 0x4b: the parked cores at 0x6005, the gate byte landed or not.
+        rc, out, err = dec(0xcb, 0x81, x=90, parked=0xfe)
+        check(rc == 0 and "so the stage is 0x4b" in out and "8 (gates_mark=1): fabric_up=1's 0x52, with the gate byte after it:" in out
+              and "parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out and "wd2_bite=1, after" not in out
+              and "0x6007 = 0xf5: fabric_up=1's byte" in out and "  so: 0x28e5a0050 read closed" in out
+              and "  AFNC2_LW1 (0x28e580160), the fabric lane above SIO: did NOT read 0x1000030f, macOS's value (the load log has it awake)\n" in out
+              and "  stage 0x4b, so nothing records the commit after this byte (0x54 or 0x55 comes after it): inconclusive about the rest of the entry\n" in out
+              and "  wd1_mark=1's marker: not read. Stage 0x4b is the last before the commit" in out,
+              "gates_mark=1's 0xcb with its byte: the stage before the commit, the parked cores, the byte, and no reading of the time", out + err)
+        FAULT = ("0x6016 = 0x00: THE GATE BYTE DIDN'T LAND (bit 7 clear), though stage 0x4b and the steps' outcomes did: CPU0 was reading the six"
+                 " gate words and the lane, or sending their byte, when the record stopped.")
+        for x in (10, 90):
+            rc, out, err = dec(0xcb, 0, x=x, parked=0xfe)
+            check(rc == 0 and FAULT in out and "bit 30" not in out and f"the SoC restarted about {x} s after the commit" in out
+                  and "about 10 s later" in out and "about 90 s after step 4" in out and "wd1_mark=1's marker: not read. Stage 0x4b" in out,
+                  f"gates_mark=1's 0xcb with 0x6016 = 0, a restart at {x} s: said to be a read that faulted or hung, or the byte's command failing",
+                  out + err)
+        # Where the record doesn't say it's the gate byte, nothing is read from it: bit 7 clear after the run's later stage, the outcomes'
+        # marker missing, pmp_out=1's bit missing.
+        for stage, gb, kw, want in ((0xd5, 0x00, {}, "0x6016 = 0x00: bit 7 is clear, so the gate byte didn't survive the reset"),
+                                    (0xd5, 0x7f, {}, "0x6016 = 0x7f: bit 7 is clear, so the gate byte didn't survive the reset"),
+                                    (0xd4, 0x3f, {}, "0x6016 = 0x3f: bit 7 is clear"),
+                                    (0xd5, 0xc6, dict(prog=(0xff, 0x00)), "0x6016 = 0xc6: not read. The gate byte goes out right after the steps' outcomes"),
+                                    (0xcb, 0x00, dict(prog=(0xff, 0x00), parked=0xfe), "0x6016 = 0x00: not read. The gate byte goes out right after"),
+                                    (0x55, 0xc6, {}, "0x6016 = 0xc6: not read. A gates_mark=1 run's stages always carry pmp_out=1's bit 7")):
+            rc, out, err = dec(stage, gb, **kw)
+            check(rc == 0 and want in out and "bit 30" not in out and "THE GATE BYTE" not in out and "alarm command" not in out,
+                  f"stage 0x{stage:02x}, 0x6016 = 0x{gb:02x}{', no outcomes marker' if kw.get('prog') else ''}: the gate byte isn't read", out + err)
+        # Every byte, at each of the run's stages, read independently of the decoder.
+        wrong = []
+        for s in (0x4b, 0x54, 0x55):
+            for v in range(256):
+                b = bytearray(0x20)
+                b[0x13], b[0x16] = 0xff, v
+                lines = g["gates_lines"](s, bytes(b), True)
+                text = "\n".join(lines)
+                if not v & 0x80:
+                    ok = len(lines) == 1 and "bit 30" not in text and ("THE GATE BYTE DIDN'T LAND" in text) == (s == 0x4b)
+                else:
+                    ok = (len(lines) == 9 + (s == 0x4b) and "reset" not in text
+                          and all((f"  {w}: bit 30 SET, closed" in lines[1 + i]) == bool(v >> i & 1)
+                                  and (f"  {w}: bit 30 clear, open" in lines[1 + i]) == (not v >> i & 1) for i, w in enumerate(g["GATE_WORDS"]))
+                          and ("read 0x1000030f, macOS's value" in lines[7] and "NOT" not in lines[7]) == bool(v & 0x40)
+                          and lines[8].startswith("  so: ") and ("read closed" in lines[8]) == bool(v & 1) and ("OPEN" in lines[8]) == (not v & 1)
+                          and ("a2_pre=1 is next" in lines[8]) == bool(v & 1) and ("op 140" in lines[8])
+                          and ("nothing records the commit" in text) == (s == 0x4b))
+                if not ok:
+                    wrong.append((hex(s), hex(v), lines))
+            b = bytearray(0x20)
+            b[0x13], b[0x16] = 0xff, 0xc6
+            if g["gates_lines"](s, bytes(b), False)[0].find("not read") < 0 or "bit 30" in "\n".join(g["gates_lines"](s, bytes(b), False)):
+                wrong.append((hex(s), "no pmp_out=1 bit"))
+        check(not wrong, "gates_mark=1: for every byte at each of its stages, each gate is called closed exactly when its bit is set, the lane macOS's"
+              " exactly with bit 6, 0x28e5a0050's verdict follows bit 0, and nothing is read from a byte without bit 7", str(wrong[:2]))
+        # The time against the marker: at each of the run's stages exactly as at fabric_up=1's, for every sample.
+        mr = g["mark_reading"]
+        wrong = [(hex(v), x) for v in range(256) for x in (60, 88, 90, 105, 120, 123, 135, 146, 150, 163, 300)
+                 if mr(x, 0x4b, v) != mr(x, 0x52, v).replace("Stage 0x52", "Stage 0x4b") or mr(x, 0x54, v) != mr(x, 0x51, v)
+                 or mr(x, 0x55, v) != mr(x, 0x53, v)]
+        check(not wrong and "Stage 0x4b is the last before the commit" in mr(90, 0x4b, 0x7d),
+              "the restart's time is read against the marker at 0x4b, 0x54 and 0x55 exactly as at 0x52, 0x51 and 0x53", str(wrong[:3]))
+        for x, text in ((90, "about 90 s is what WD1 gives with its count never zeroed: B2 didn't reach its op 224"),
+                        (120, "about 120 s is WD2: B2 zeroed WD1's count"), (150, "the entry pair FINISHED")):
+            rc, out, err = dec(0xd5, 0xc6, x=x)
+            check(rc == 0 and f"  wd1_mark=1's marker: {text}" in out or (x == 150 and "150 s is WD1's 150 s from a count that B2 zeroed" in out
+                                                                            and text in out),
+                  f"gates_mark=1's 0xd5, a restart at {x} s: read against the marker as --m1-mark's is", out + err)
+
+        # --clear: the run's alarm disarmed by its compare value, as ever; with the second's low bytes lost, 0x6016 is never taken for the
+        # alarm's result, so the alarm isn't disarmed and the crumbs stay (--m1-mark's 0xd3 with 0xbd there is disarmed, as before).
+        for stage, kw in ((0xd5, {}), (0xd4, {}), (0xcb, dict(parked=0xfe))):
+            before = fake(path, scratch(stage, **dict(rec, drained=0xc6, **kw)), rtc_secs=121761, alarm=alarm)
+            r = run(path, "--clear", cnt="4800000000 24000000")
+            after_ = open(path, "rb").read()
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and after_ == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                  f"--clear after gates_mark=1's 0x{stage:02x}: the run's alarm disarmed by its compare value, and the crumbs zeroed", r.stdout + r.stderr)
+        lost = dict(rec, secs=0, drained=0xbd)
+        before = fake(path, scratch(0xd5, **lost), rtc_secs=121761, alarm=alarm)
+        r = run(path, "--clear", cnt="4800000000 24000000")
+        check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
+              and "after gates_mark=1's stages it never does: it's that run's byte" in r.stderr,
+              "--clear after 0xd5 with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
+        before = fake(path, scratch(0xd3, **lost), rtc_secs=121761, alarm=alarm)
+        r = run(path, "--clear", cnt="4800000000 24000000")
+        check(r.returncode == 0 and "disarmed: 0x1401 = 0x01" in r.stdout and "gates_mark" not in r.stderr,
+              "--clear after --m1-mark's 0xd3 with the second lost and 0xbd at 0x6016: the alarm's result, disarmed as before", r.stdout + r.stderr)
 
 
 PROBE_HDR = r"""
@@ -3767,7 +4106,7 @@ def position_tests(g, src):
                   f"cluster_ack=1 with 0x6006 and 0x6007 both 0 (0x6014 = 0x{flags:02x}): no word is said to have read 0", out + err)
         rc, out, err = dec(0xd7, dict(ack15, flags=0xa0))
         UNREAD = ("  0x6014's bits 4 and 5 are cluster_ack=1's alone in a sio_stop=1 run: bit 5 only with bit 4, and only at that run's stages (0x4e, 0x56, 0x57,"
-                  " or fabric_up=1's 0x52, 0x51, 0x53, with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
+                  " or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
         check(rc == 0 and "0x6014 bit 4 (cluster_ack=1)" not in out and UNREAD in out,
               "bit 5 without the mark in a sio_stop=1 record: called out, and not read as cluster_ack=1's", out + err)
         # Stages no cluster_ack=1 run sends (0x4f, and recfg_bite=1's), and a stage without pmp_out=1's bit: the mark isn't read there.
@@ -3778,7 +4117,7 @@ def position_tests(g, src):
                   f"stage 0x{stage:02x} with 0x6014 = 0x90: not a cluster_ack=1 run's stage, so the mark isn't read and the bits are called unreadable", out + err)
         # The mark's byte lost (bit 7 clear), or a stage before it was sent: 0x6006's cluster bits can't be read either way, and it says so,
         # whether or not one is set.
-        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e (0x52 with fabric_up=1){}."
+        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1){}."
                   " In one, bits 2-5 are the cluster words whose flag stayed, not the waits on bit 4 that timed out)\n")
         for stage in (0xce, 0xd6, 0xd7):
             for left in (0x04, 0x00):
@@ -4336,7 +4675,7 @@ def position_tests(g, src):
     # recfg_bite=1: the module reads, and never writes, the SRAM; the sample goes out once, after the release, in one command with its stage.
     tool = open(TOOL).read()
     check("#define M1_RECFG_STAGE\t\t0x47" in src and "#define M1_RECFG_STAGE_PEND\t0x46" in src and "RECFG_STAGES = (0x46, 0x47)\n" in tool
-          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53),
+          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x4b, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55),
           "recfg_bite=1's stages are 0x46 and 0x47 in the module and in m1-crumbs, with sio_stop=1's stages")
     uses = [l for l in src.splitlines() if re.search(r"\bm1_recfg\b", l)]
     literals = [int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", src)]
@@ -4396,8 +4735,8 @@ def position_tests(g, src):
           " after it, and returns their refusals")
 
     # wd2_bite=1: one write to WD2, its bite, by CPU0 after the release, and only if WD2 showed RESET_EN; the sample in one command with its stage.
-    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2\n" in tool
-          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53) and g["WD2_PEND"] == (0x56, 0x51),
+    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2\n" in tool
+          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55) and g["WD2_PEND"] == (0x56, 0x51, 0x54),
           "wd2_bite=1's stages are 0x56 and 0x57 in the module and in m1-crumbs, with recfg_bite=1's as the stages whose 0x6005 is a sample")
     wout = src[src.index("static void m1_wd2_out(void)"):]
     wout = wout[:wout.index("\n}\n")]
