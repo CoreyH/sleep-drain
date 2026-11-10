@@ -3375,6 +3375,97 @@ Corey's OK came on 2026-11-10, for 0x20 in place of the table's 0 in those three
 (`run-floor --m1-cluster-ack`: run 15's recipe with `cluster_ack=1`; not run yet). PLAN.md has what the
 build does and how its endings read.
 
+### M1 run 16: the three cluster words acked, all four read 0, and the reset still comes at 120 s (2026-11-10)
+
+`e1-hook/run-floor --quick --m1-cluster-ack` (run 15's parameters and `cluster_ack=1`, #71; the module
+built at 7ad9be9; kernel 7.2.11-15; flag `radios-off`; `pmp_sleep_release` with 0xc and 0xd), in a safe
+boot, on battery at 57%, with a 1-minute reading. Against run 15 it has one change, Corey's OK of
+2026-11-10: step 5 writes ANE0's, AFR's and AVEMSR's soc-cluster words (0x28e09800c, 0x28e098014,
+0x28e098020) as 0x20, not the table's 0, and the four cluster waits, DISPLAY's too, ask for the whole
+word to read 0. Raw data: `results/m1-run16-20261110/`.
+
+**The facts:**
+- **The load:** the nine soc-cluster words read 0x0f, 0x2f, 0x2f, 0x2f, 0, 0x2f, 0x2f, 0x0f, 0x2f awake:
+  ANE0's, AFR's, DISPLAY's and AVEMSR's all 0x2f, up with the flag set. `wd2-bite`'s store took (90 s to
+  120 s), as in run 15.
+- **The cluster words: all four read 0 within 10 ms of their writes.** 0x6014 = 0x90: the run's mark, and
+  nothing but a flag left in any word; 0x6006 = 0x00: no flag left either. 0x6007 = 0xff shows that
+  command's last bytes landed. So 0x20 written to a word that reads 0x2f takes the cluster to target 0
+  and clears the flag, here as on T8140, and DISPLAY's, after the table's own 0x20, reads 0 as well.
+- **Everything else as in run 15, byte for byte** but for the second and that mark: stage 0xd7, the
+  sample 0x7d (WD2 armed with 30 s, CPU0's 120 s read back, the count running, `PHASE` 4), 0x6012 =
+  0xff, 0x6013 = 0xdf, 0x6015 = 0x8e, 0x6016 = 0xbd.
+- **The restart: 119.1-120.5 s after the commit** (119.1-121.1, 118.5-120.5 and 119.0-121.0 from three
+  reads in the first boot). Corey: two minutes of black screen, then the restart. The armed alarm survived
+  it, and `--clear` disarmed it.
+
+**What that shows:**
+- **The leftover "up done" flags aren't what stalls the entry, or not alone.** At the commit the four
+  words now read what macOS has there, and the pair still never finished: the same reset, at WD2's
+  moved bite.
+- **What it can't say: whether the flags were ever left.** No run has read those words after the
+  table's plain 0, so the premise (that they read 0x20 in runs 3 to 15) is still inferred. Either way the
+  words are at macOS's value now, and `cluster_ack=1` stays in the recipe for that.
+
+**What it changes** (judgment; the order is in PLAN.md, and only there): one more difference from macOS
+is gone and the ending didn't move. Sixteen runs in, a guess at the next difference is the weaker half
+of a run. The stronger half is an instrument that reads where the pair stops with every core down, which
+the next section proposes, with the one difference that sits at A2's first step of its own.
+
+### After run 16: the fabric is one step below what the engine asks for, and WD1 can say how far B2 gets (2026-11-10)
+
+Desk work, from the sequences on file, this kernel's source and its log. Nothing here is from m1n1 or
+Aura. The sequences' listing stays off the repository.
+
+**The fabric's p-state at the commit is 1 under Linux, and A2's first step of its own asks for 2.**
+- A2, once B2 has answered its first handshake, writes 2 to DCS's p-state word and waits, writes 2 to
+  the fabric's (0x28e20c000) and waits for bits 11:8 to read 2 with bit 31 clear, and writes 0 to
+  0x28e20c400 and waits. None of the three waits has a timeout.
+- This kernel lowers the fabric at every suspend. `apple-pmgr-misc`'s `suspend_noirq` writes the suspend
+  p-state, 1, to the fabric word's low nibble, and with the PMP described it leaves DCS alone
+  (omacom/linux-aurora, `drivers/soc/apple/apple-pmgr-misc.c`; "set 0 ps to pstate 1" in this morning's
+  s2idle sleep on 7.2.11-15, and no line for DCS). The word reads 0x333 awake (every load log). E1's
+  module runs after the whole noirq pass, so every run so far has reached the commit with the fabric
+  asked down to 1. Nothing has read the word there.
+- macOS doesn't have it there. T6020's macOS ends the fabric at 3 before its commit (DeepIdle's
+  worklog), RJ's T6021 sequence steps it 5, then 3, and maralcbr's J314s table never writes it after
+  `slpa`. That T6000's macOS has it at 3 at the commit is inferred from those and from 0x333 awake.
+- So the engine's own sequence, written for a fabric coming down from 3 to 2, here has to bring it up
+  from 1 to 2, after the table has parked the ClkGen muxes and switched the PLL off. If that step can't
+  settle, A2 waits there for good, WD2 running. That is a stall right behind B2's first handshake, with
+  a cause that's Linux's and not macOS's (judgment: about 1 in 4 that it's what stops the pair; it needs
+  the gate to open first, which only a run with every core down can show).
+- The way to test it: put the fabric back at 3 before the table's DCS entries, while the clocks still
+  run, as Linux's own resume does, wait for it to settle, and read the word before and after. One PMGR
+  write (0x28e20c000, the low nibble to 3), which needs Corey's OK.
+
+**WD1 as a three-way marker, with nothing left up to watch.**
+- B2 zeroes WD0's and WD1's counts at its ops 223 and 224 of 246, after its whole power-down, and writes
+  neither watchdog's control. A2 stops WD2 only at its very end.
+- So arm WD1 about 70 s before the commit and leave it armed: at the module's load, ahead of the
+  1-minute reading, the way the kernel's own driver starts it (three writes to WD1: count 0, a bite of
+  160 s, RESET_EN), with step 4 no longer stopping it and every way out before the suspend disarming it.
+  With WD2 at 120 s as in runs 15 and 16, the reset's time then reads the pair's progress:
+  - **about 90 s after the commit** (160 s less the lead, which the saved log gives to the second): WD1,
+    its count never zeroed. B2 didn't reach op 223: the stall is at the gate, in the first handshake
+    (A2's three steps) or in B2's power-down.
+  - **about 120 s:** WD2. B2 zeroed WD1's count, so the gate opened, A2's three steps settled and B2's
+    power-down ran, and the pair then stopped in its last twenty-odd ops: the second handshake, the
+    PMU command, the third handshake.
+  - **about 160 s, or dark:** the entry completed (A2 stopped WD2), and WD1, zeroed at about the
+    commit, ended it as a dead-man, as on T8103; dark if WD1 doesn't count in that state.
+- The three times are 30 s or more apart and the restart is timed to about a second, so one run reads
+  it. It needs no core left up, which is what has kept every sample so far at the gate.
+- It also ends a completed entry by itself: no power key, and no wait in the dark. A floor reading
+  would be a later run, with WD1 left out.
+- What it costs: WD1 is armed for about a minute while the Mac is awake, in a safe boot. If the launcher
+  dies without disarming it, the Mac restarts 160 s after the load, which harms nothing there.
+
+**Why both in one run** (judgment): the marker reads the same whether the fabric is the cause or not.
+With the fabric at 3, 90 s says the early stall isn't the fabric's, 120 s says the pair got past it to
+its last ops, and 160 s or dark is the entry. What the pairing gives up is knowing whether the fabric
+write was needed for a run that gets further, which a later run without it would settle.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

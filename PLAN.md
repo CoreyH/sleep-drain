@@ -23,29 +23,23 @@ the PR with that session's work.
     the key macOS writes, wasn't read. `CLSP` reads 0 and `CLWK` doesn't
     move, so the SMC apparently never registers a sleep (inferred).
   - The likely S2R timer is 0x2925c4000, which already reads 1 under Linux.
-- **In progress: E2, making the S2R entry complete** (A5). maralcbr's
-  replay with Naeem's M1 recipe takes every core down and commits the entry,
-  but the SoC still resets about 30 s after the commit (RESEARCH.md, "M1 run 2"
-  to "M1 run 5"): the engine's own watchdog, WD2 (read in runs 2 and 3, strongly
-  inferred in the others). That the entry itself never finishes is inferred; a
-  completed entry with a wake stalled right after it would look the same
-  (RESEARCH.md, "The engine's reconfig SRAM"). In
-  run 3, with macOS's PMGR quiesce in macOS's place, only DISPLAY's and
-  SIO_CPU's waits timed out. Run 4 (2026-11-08: that quiesce, the PMU's RTC
-  alarm between the commit's first write and the other two, no observer) ended
-  the same way, the reset 29.6-31.3 s after the commit, with CPU1-7 and both P
-  complexes off before it; the armed alarm survived the reset. Run 5 (the same
-  day: every other core held through the commit, then released) reset at
-  30.0-31.3 s, with all seven read off after the release. The first 64 KiB of
-  the engine's reconfig SRAM have now been read and decoded (RESEARCH.md, "The
-  engine's reconfig SRAM"): the 30 s is a timeout the engine's own sequences arm
-  (that it's what resets the SoC is inferred), and the pair of sequences that
-  looks like the entry polls device power domains, the DCS and fabric p-states
-  and, first, an unidentified AON status word. It accesses no address known to
-  be a CPU or display register; a wait below the sequences isn't excluded. Next
-  is the position read below (Corey OK'd its seven new read-only addresses on
-  2026-11-09, and it's built; its run waits for Corey's go; the order is at the
-  top of that list).
+- **In progress: E2, making the S2R entry complete** (A5). Sixteen one-way runs (RESEARCH.md, "M1
+  run 1" to "M1 run 16"). maralcbr's replay with Naeem's M1 recipe takes every core down and commits
+  the entry, and the SoC resets instead of sleeping. What's established:
+  - The reset is the engine's own watchdog, WD2, which the entry sequence arms at the commit and stops
+    only at its end. Moved from 30 s to 120 s, the reset follows it (runs 15 and 16): the entry is
+    stuck, not slow, and it isn't a completed entry with a stalled wake.
+  - The engine's sequences are read in full (the reconfig SRAM, 0x34000 bytes of content) and can't be
+    written from Linux (runs 13 and 14). The entry is a pair, A2 and B2. With CPU0 left up to watch,
+    A2 waits at its first handshake and B2 at its first poll, an AON status bit nothing here drives
+    (run 6). With every core down nothing has seen where the pair stops.
+  - Ruled out as the stall, each by a run that changed it and reset all the same: the other cores and
+    both P complexes (1, 5), macOS's PMGR quiesce and its waits (3, 9), the RTC alarm (4), the PMP (7),
+    the display (9), the commit written once and the SMC's notice (10), SIO's firmware (11), macOS's
+    remaining power words (12), the clusters' leftover "up done" flags (16).
+  - **Next: one run that reads how far B2 gets with every core down** (WD1 as a marker), with the
+    fabric's p-state put back where macOS has it. It needs Corey's OK for four writes and isn't built:
+    "The order after run 16", in Track A below, is the place to start.
 
 ## Picking this up
 
@@ -414,7 +408,30 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after the sweep of 2026-11-10 (judgment; this is the only place it's kept):** bit 5
+      **The order after run 16 (2026-11-10; judgment; this is the only place it's kept):** run 16 wrote
+      the three cluster words 0x20, all four read 0, and the reset came at 120 s again (RESEARCH.md, "M1
+      run 16"): the leftover flags aren't the stall, or not alone. `cluster_ack=1` stays in the recipe.
+      Proposed next, one run, needing Corey's OK for four writes (RESEARCH.md, "After run 16", has the
+      evidence; not built):
+      - **WD1 as a marker:** armed at the module's load, about 70 s before the commit, as the kernel's
+        own driver starts it: 0x2922b0010 (count) := 0, 0x2922b0014 (bite) := 160 s (0xe4e1c000),
+        0x2922b001c (control) := 4; left armed through step 4; disarmed (control := 0) on every way out
+        before the suspend. B2 zeroes WD1's count at op 223 of 246, so the restart reads: about 90 s
+        after the commit, B2 never got there; about 120 s (WD2), it did, and the pair stopped in its
+        last ops; about 160 s or dark, the entry completed.
+      - **The fabric back at 3 before the table's DCS entries:** 0x28e20c000, low nibble := 3, its awake
+        value, which this kernel's `suspend_noirq` lowers to 1 where macOS has 3 (inferred) and A2 then
+        asks for 2; up to 10 ms for it to settle; the word read before the write, after it, and at the
+        end of step 5.
+      - The record needs about a byte more than the breadcrumbs have free. Take it from what's
+        redundant in this recipe (the second's high byte at 0x6011, which the alarm's compare value
+        repeats), not from a new PMU byte.
+      - `run-floor`'s new option implies the 1-minute reading: with WD1 armed at the load, the
+        10-minute one can't be used.
+      After it, by its reading: 90 s, the gate itself (which party holds 0x2922c0044's bit 2: an awake
+      test that stops one coprocessor at a time and reads the word, each stop needing an OK); 120 s,
+      B2's last ops (the PMU command over SPMI first); 160 s or dark, the wake.
+      **Earlier, the order after the sweep of 2026-11-10 (judgment):** bit 5
       of a soc-cluster word is an "up done" flag that's cleared by writing 1 (DJ's T8140 driver, and A1
       in this SRAM: RESEARCH.md, "Related work, swept 2026-11-10"). Under Linux ANE0's, AFR's and
       AVEMSR's words still carry it awake, and the table's literal 0 would leave it there, where macOS
@@ -423,7 +440,7 @@ steps, and restarting the DCP and the PMP afterwards.
       0x28e09800c (ANE0), 0x28e098014 (AFR) and 0x28e098020 (AVEMSR), in their places in the table;
       those three waits and DISPLAY's ask for a word that reads 0, not just bit 4 clear; everything
       else as run 15, WD2's bite at 120 s included, so that the ending reads as it did there.
-      **Built, not run yet:** `pkexec e1-hook/run-floor --quick --m1-cluster-ack` in a safe boot, on
+      **Built and run: run 16, above.** It was `pkexec e1-hook/run-floor --quick --m1-cluster-ack` in a safe boot, on
       battery, with nothing attached (`cluster_ack=1` on run 15's parameters; it runs `wd2-bite`
       first, as run 15 did). The 0x20 goes out whatever the word reads just before, as the table's own
       0x20 to PACC0, PACC1 and DISPLAY does; the load log has the nine words awake. A word that never
