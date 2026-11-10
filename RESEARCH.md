@@ -3314,6 +3314,63 @@ blocks are the tables of two kinds of sequencer, the clusters' and DCS's.
 **The PMU's register 0x0201, once more** (`pmu-0201.txt`): 0x02 again, in a boot with no run before it.
 So 2 is what a boot shows, and the read after run 15 said nothing about B2. Only a 1 would ever be news.
 
+### Related work, swept 2026-11-10, and what it says about the cluster words
+
+A read-only sweep by a subagent, at Corey's suggestion (no m1n1 and no Aura; a conclusion its author says
+comes from a hypervisor trace is marked). Nothing was posted anywhere. Checked here: the three passages
+of DJ's driver quoted below, and this SRAM's own ops.
+
+**No one has published a completed S2R entry on an M1 Pro or Max, or an M2 Pro or Max,** and nothing new
+names what B2's first poll waits for. By project:
+- **Naeem Malik (T8103):** no new run. His entry completes and nothing wakes it (WD1 resets at about
+  181 s); the work is paused and moves to macOS on another machine (malik-na/m1-power-lab fa6d307394bb).
+- **Diljit Singh (DJ, T8140), aurora-silicon/linux:** no T600x port. The driver is becoming
+  `drivers/soc/apple/sleep.c` with per-SoC match data (#1334), whose first step for a new chip is to
+  measure its sleep under Aura. A consolidated draft is #1445. A sleep-DDR vote in the wake block decides
+  how deep T8140 sleeps, and some states of the always-on coprocessor stall its wake (#1217, #1358, #1377;
+  from traces in part).
+- **Bartosz Nitka (niteria, T8132):** 16 of 16 sleeps on one boot; the system cache is written back
+  before the commit (715a0229e1b8, from a trace); still through Aura.
+- **Dylan Ironside (T8132, J604), new:** IronsideXXVI/omarchy-j604. No completed entry. An early sleep
+  request to the SEP turns a suspend that doesn't finish into a reset 25-45 s later, with the same "PMU
+  logged 1 boot error(s)" line: a second source of such a reset, to expect if a SEP rung is ever built.
+  It isn't ours: run 15's reset followed WD2's bite.
+- **RJ Skerry-Ryan (T6021):** nothing new since October. In his tree, and not in these notes before:
+  fabric and DCS stepped down in lock step before the commit (fabric 5, DCS 7, fabric 3, DCS 5;
+  686d1baf9ab7), and a driver for the PMGR's sleep-state counters, which he logs at the next boot
+  because the block is always-on and "may tell how far an earlier boot got" (353718fc6237).
+- **DeepIdle (T6020):** active again on a fresh install, with no new S2R run. **maralcbr:** nothing new.
+- **Kernel changes on their way to this Mac** (aurora-silicon, merged 2026-11-08 to -10): afnc3's and
+  `gp_usb_aon`'s power nodes disabled on T6000 (#1294), PMP votes on J314s (#1290), EDAC on T6000's
+  error handlers (#1304), keyboard and trackpad wakes (#1347). Each would be a variable.
+
+**Bit 5 of a soc-cluster word is a flag, not a state: "up done", cleared by writing 1.**
+- DJ's driver says so for T8140 (`sleep.c` at ae8031d65734, L105-106: "Set when a complex's up sequence
+  ends, and cleared by writing 1"). Before the commit it turns the AVE complex off by writing 0x20,
+  "Target 0, and the leftover done flag from iBoot's up, as XNU's first write does", and polls for the
+  word to read 0. Its reason (L2838-2842): macOS has that complex off already, "so at the commit its
+  word is already 0 and the engine has no sequence to run for it. Turning it off at the commit instead
+  puts that sequence, with its untimed wait, right before the CPU complexes'". It also acknowledges a
+  leftover done flag in a DCS word, "as the DCS word has none on macOS".
+- **This SRAM agrees, for T6000:** A1, the last sequence of the wake, raises EACC by writing 0xf to
+  0x28e098000, waits with no timeout for bit 5, and then writes 0x2f. That's a done flag being waited
+  for and written back as 1.
+- **So the replay's literal zeros aren't macOS's state here.** Awake under Linux, ANE0's, AFR's and
+  AVEMSR's words read 0x2f: on, with the flag iBoot's up left, which nothing has acknowledged. The table
+  writes them 0, macOS's value, traced where those complexes were off already. PACC0's, PACC1's and
+  DISPLAY's get 0x20, the value that also acknowledges the flag. If the flag stays until it's written,
+  three words are at 0x20 at the commit where macOS has 0 (inferred: nothing has read them there; the
+  runs' `qto` looks at bit 4 alone).
+- **What that could do** (inferred): the engine has those complexes' down sequences to run, or to wait
+  on, at the commit, each with its untimed wait. That would sit ahead of B2's first poll, where every
+  sample has found the engine.
+
+**Other things the sweep found, for the list:** 0x2922800b0, which every cluster's down sequence raises
+first, is `ps_nub_fabric` in Linux's device tree. 0x28e20c400, the third word A2 settles, is likely a
+third perf-state word (its awake 0x222 has the shape of fabric's 0x333; T8140 brings a SoC perf state
+down before DCS). The fabric is at p-state 1 at the commit here, deeper than RJ's sequence for T6021
+leaves it, and A2 then asks for 2.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
