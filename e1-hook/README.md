@@ -82,6 +82,23 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   (Corey's OK of 2026-11-10 for those three words and that value), and the four cluster waits, DISPLAY's too,
   ask for the whole word to read 0: for one that doesn't, 0x6006's bits 2-5 say whose flag was still set and
   0x6014's bit 5 that something else was left in a word; 0x6014's bit 4 marks the run.
+- `fabric_up=1` (`run-floor --m1-fabric-up`, on `cluster_ack=1`) puts the fabric's p-state back where macOS
+  has it: at the start of step 5, one write to 0x28e20c000, the word as read with its low nibble := 3, its
+  awake value, which this kernel's `suspend_noirq` lowers to 1 at every suspend (Corey's OK of 2026-11-10 for
+  that word and value), then up to 10 ms for it to read 0x333, and one more read at step 5's end. The load
+  refuses unless the word reads 0x333 awake. From step 8's command on the run has stages of its own (0x52
+  for 0x4e, 0x53 and 0x51 for 0x57 and 0x56), because 0x6007 becomes `fabric_up.h`'s byte there: the sio
+  bit, "all seven held", what the word read before the write, whether it read 0x333 after it and at step
+  5's end, and `wd1_mark=1`'s two bits.
+- `wd1_mark=1` (`run-floor --m1-mark`, on `fabric_up=1`) makes WD1, the kernel's own watchdog, a marker of
+  how far B2 gets with every core down. The kernel keeps WD1 armed and pinged while awake and stops it at
+  suspend, so it's set in step 4, a moment before the commit: its bite := 150 s, its count := 60 s (a
+  non-zero count write, new in kind), then RESET_EN (`wd1_mark.h`; built on Corey's standing go-ahead of
+  2026-11-10). B2 zeroes WD1's count at its op 223 of 246, so with WD2 at 120 s the restart reads: about
+  90 s, never zeroed; about 120 s, zeroed, and the pair stopped in its last ops; about 150 s or none, the
+  pair finished. Only if the marker stood: step 8 reads WD1 back, and bits 7:6 of 0x6007's byte say whether
+  it was armed with 150 s and its count at 60 s. `m1-crumbs` reads the restart's time against it, and says
+  what else each time could be.
 - `run-floor --quick` ahead of any recipe makes the reading 1 minute. `13` is the floor with the CPUs left up.
 
 ## What holds for every one-way run

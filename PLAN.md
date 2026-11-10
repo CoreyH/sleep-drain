@@ -415,10 +415,13 @@ steps, and restarting the DCP and the PMP afterwards.
       **The order after run 16 (2026-11-10; judgment; this is the only place it's kept):** run 16 wrote
       the three cluster words 0x20, all four read 0, and the reset came at 120 s again (RESEARCH.md, "M1
       run 16"): the leftover flags aren't the stall, or not alone. `cluster_ack=1` stays in the recipe.
-      Proposed next, one run (RESEARCH.md, "After run 16", has the evidence; not built). Corey OK'd
-      four writes on 2026-11-10: the fabric's, below, which stands, and three to WD1 at the module's
-      load, which can't work (the kernel's `apple_wdt` owns WD1 awake and stops it at suspend: Pullfrog
-      on #72). The marker as it has to be needs a fresh OK:
+      Next, one run (RESEARCH.md, "After run 16", has the evidence). **Built, not run yet:** `pkexec
+      e1-hook/run-floor --quick --m1-mark` in a safe boot, on battery, with nothing attached
+      (`fabric_up=1 wd1_mark=1` on run 16's parameters; `--m1-fabric-up` is the same without the
+      marker). Corey OK'd four writes on 2026-11-10: the fabric's, below, which stands, and three to
+      WD1 at the module's load, which can't work (the kernel's `apple_wdt` owns WD1 awake and stops it
+      at suspend: Pullfrog on #72). Shown the marker as it has to be, Corey answered with the standing
+      go-ahead to build new steps without waiting, and it's built that way:
       - **WD1 as a marker:** set in the replay's step 4, where the kernel has already stopped WD1, a
         moment before the commit: 0x2922b0014 (bite) := 150 s (0xd693a400), 0x2922b0010 (count) := 60 s
         (0x55d4a800), 0x2922b001c (control) := 4. Nothing is armed awake. Just before the commit CPU0
@@ -434,9 +437,11 @@ steps, and restarting the DCP and the PMP afterwards.
         value, which this kernel's `suspend_noirq` lowers to 1 where macOS has 3 (inferred) and A2 then
         asks for 2; up to 10 ms for it to settle; the word read before the write, after it, and at the
         end of step 5.
-      - The record needs about a byte more than the breadcrumbs have free. Take it from what's
-        redundant in this recipe (the second's high byte at 0x6011, which the alarm's compare value
-        repeats), not from a new PMU byte.
+      - The record takes no new PMU byte. From step 8's command on the run has stages of its own
+        (0xd2, then 0xd3 or 0xd1), under which 0x6007 holds one bit for "all seven held" in place of
+        the seven, and with the room that leaves: what the fabric's word read before the write,
+        whether it read 0x333 after it and at step 5's end, and whether WD1 stood as the marker.
+        `m1-crumbs` reads the restart's time against the marker, and says what else each time fits.
       After it, by its reading: 90 s, the gate itself (which party holds 0x2922c0044's bit 2: an awake
       test that stops one coprocessor at a time and reads the word, each stop needing an OK); 120 s,
       B2's last ops (the PMU command over SPMI first); 150 s or dark, the wake.

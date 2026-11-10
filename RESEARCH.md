@@ -3480,6 +3480,11 @@ Aura. The sequences' listing stays off the repository.
   has its own: a WD1 that can't reset the SoC in that state would leave WD2's 120 s whatever B2 did,
   which a run with WD1's bite below WD2's would show.
 
+Both are built (`run-floor --m1-mark`: `fabric_up=1` and `wd1_mark=1` on run 16's recipe; not run yet).
+The fabric's write is the one Corey OK'd on 2026-11-10; the marker's three are the ones shown to Corey
+that day after Pullfrog's catch, built on their standing go-ahead for new steps. PLAN.md has what the
+build does and how its endings read.
+
 **Why both in one run** (judgment): the marker reads the same whether the fabric is the cause or not.
 With the fabric at 3, 90 s says the early stall isn't the fabric's, 120 s says the pair got past it to
 its last ops, and 150 s or dark is the entry. What the pairing gives up is knowing whether the fabric

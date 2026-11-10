@@ -87,7 +87,7 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   out-of-tree module (`make -C e1-hook`) that runs at the end of a suspend's noirq pass and, with
   `replay=15`, replays macOS's sleep entry for good: the Mac resets or stays dark, and never wakes.
   `run-floor` is its launcher, one option per rung, each rung adding to the one before
-  (`--m1-cluster-ack` is the latest); `m1-crumbs` reads the record a run leaves in the PMU after the
+  (`--m1-mark` is the latest); `m1-crumbs` reads the record a run leaves in the PMU after the
   restart, and `--clear` zeroes it. The rest are one-purpose tools for single reads and writes
   (`recfg-peek`, `recfg-bite`, `wd2-bite`). **`e1-hook/README.md` says what every parameter, option
   and tool does: read it before working here.** What always holds: a one-way run loads only in a
@@ -96,8 +96,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   repo; nothing here is installed by `install.sh`.
 - `tests/`: hardware-free checks, one file per tool, each run as `python3 -I -B tests/<name>.py`.
   `tests/README.md` lists what each covers. The two that guard the one-way runs are
-  `tests/m1_crumbs_test.py` (the decoder, and `e1_hook.c`'s own table and wait functions compiled in
-  user space) and `tests/e1a_launcher_test.py` (every `run-floor` option, about 4 minutes).
+  `tests/m1_crumbs_test.py` (the decoder, and `e1_hook.c`'s own table, wait and write functions
+  compiled in user space) and `tests/e1a_launcher_test.py` (every `run-floor` option, about 6 minutes).
+  `tests/mutants.py` breaks that code one way at a time and says what the first of them missed.
 - `patches/`: patch series for upstream, kept here for review before they're
   posted. `patches/pmu-alarm-t600x/` is the PMU RTC alarm for omacom/linux-aurora
   (B2); its README says what's in it and how it was checked.

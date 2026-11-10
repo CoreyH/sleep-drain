@@ -71,6 +71,10 @@ LAUNCHERS = (
      "floor-m1-wd2-bite", ("--m1-wd2-bite",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1",
      "floor-m1-cluster-ack", ("--m1-cluster-ack",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1",
+     "floor-m1-fabric-up", ("--m1-fabric-up",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1",
+     "floor-m1-mark", ("--m1-mark",)),
 )
 
 failed = 0
@@ -84,12 +88,22 @@ def is_m1(launcher):
     """--m1, --m1-observe, --m1-late, --m1-alarm, the two --m1-hold, the two --m1-pmp and --m1-position: all load m1=1."""
     return any(a in ("--m1", "--m1-observe", "--m1-late", "--m1-alarm", "--m1-hold", "--m1-hold-nowatch", "--m1-pmp",
                      "--m1-pmp-idle", "--m1-position", "--m1-sio-pmp", "--m1-disp-off", "--m1-macos-end", "--m1-sio-stop",
-                     "--m1-power-words", "--m1-recfg-bite", "--m1-wd2-bite", "--m1-cluster-ack") for a in launcher[4])
+                     "--m1-power-words", "--m1-recfg-bite", "--m1-wd2-bite", "--m1-cluster-ack", "--m1-fabric-up", "--m1-mark") for a in launcher[4])
+
+
+def is_mark(launcher):
+    """--m1-mark: --m1-fabric-up's run with wd1_mark=1."""
+    return "--m1-mark" in launcher[4]
+
+
+def is_fab(launcher):
+    """--m1-fabric-up, and --m1-mark on top of it: --m1-cluster-ack's run with fabric_up=1."""
+    return "--m1-fabric-up" in launcher[4] or is_mark(launcher)
 
 
 def is_ack(launcher):
-    """--m1-cluster-ack: --m1-wd2-bite's run, wd2-bite's store included, with cluster_ack=1."""
-    return "--m1-cluster-ack" in launcher[4]
+    """--m1-cluster-ack, and --m1-fabric-up on top of it: --m1-wd2-bite's run, wd2-bite's store included, with cluster_ack=1."""
+    return "--m1-cluster-ack" in launcher[4] or is_fab(launcher)
 
 
 def runs_wd2(launcher):
@@ -124,7 +138,7 @@ PARMS = {
              "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
              "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
              "alarm:With m1=1 and pmgr_late=1 (bool)\nhold:With alarm=1 (bool)\nhold_nowatch:With hold=1 only (bool)\n"
-             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\none_commit:With disp_off=1 (bool)\nsmc_idle:With disp_off=1 (bool)\nsio_stop:With disp_off=1 (bool)\nps_words:With sio_stop=1 (bool)\nrecfg_bite:With ps_words=1 (bool)\nwd2_bite:With ps_words=1 (bool)\ncluster_ack:With wd2_bite=1 (bool)\nreplay:LAB ONLY (uint)\n",
+             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\none_commit:With disp_off=1 (bool)\nsmc_idle:With disp_off=1 (bool)\nsio_stop:With disp_off=1 (bool)\nps_words:With sio_stop=1 (bool)\nrecfg_bite:With ps_words=1 (bool)\nwd2_bite:With ps_words=1 (bool)\ncluster_ack:With wd2_bite=1 (bool)\nfabric_up:With cluster_ack=1 (bool)\nwd1_mark:With fabric_up=1 (bool)\nreplay:LAB ONLY (uint)\n",
     "floor-nosiostop": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                        "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
                        "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
@@ -191,6 +205,8 @@ PARMS["floor-nopwords"] = PARMS["floor"].replace("ps_words:With sio_stop=1 (bool
 PARMS["floor-norecfg"] = PARMS["floor"].replace("recfg_bite:With ps_words=1 (bool)\n", "")
 PARMS["floor-nowd2"] = PARMS["floor"].replace("wd2_bite:With ps_words=1 (bool)\n", "")
 PARMS["floor-noack"] = PARMS["floor"].replace("cluster_ack:With wd2_bite=1 (bool)\n", "")
+PARMS["floor-nofab"] = PARMS["floor"].replace("fabric_up:With cluster_ack=1 (bool)\n", "")
+PARMS["floor-nomark"] = PARMS["floor"].replace("wd1_mark:With fabric_up=1 (bool)\n", "")
 
 
 def sysctl(tmp):
@@ -199,7 +215,7 @@ def sysctl(tmp):
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
           takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
-          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
+          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -210,7 +226,7 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     # The module's sources beside it, as in the checkout: older than the build ("fresh"), or the named one newer.
     if srcs:
         os.utime(os.path.join(d, "e1_hook.ko"), (2000, 2000))
-        for n in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h"):
+        for n in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h", "fabric_up.h", "wd1_mark.h"):
             write(os.path.join(d, n), "")
             os.utime(os.path.join(d, n), (3000, 3000) if srcs == n else (1000, 1000))
     if safe:
@@ -259,6 +275,8 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     quiet += f' recfg_bite=1) echo Y > {moddir}/parameters/recfg_bite ;;' if takes_recfg else ""
     quiet += f' wd2_bite=1) echo Y > {moddir}/parameters/wd2_bite ;;' if takes_wd2 else ""
     quiet += f' cluster_ack=1) echo Y > {moddir}/parameters/cluster_ack ;;' if takes_ack else ""
+    quiet += f' fabric_up=1) echo Y > {moddir}/parameters/fabric_up ;;' if takes_fab else ""
+    quiet += f' wd1_mark=1) echo Y > {moddir}/parameters/wd1_mark ;;' if takes_mark else ""
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
               f' oneway=1) echo Y > {moddir}/parameters/oneway ;;{quiet} esac; done\n') if takes else ""
     # The rest of the floor's parameters, as before any suspend; cancel is
@@ -555,6 +573,8 @@ def test_floor_refusals(launcher):
     recfg = "--m1-recfg-bite" in launcher[4]
     wd2 = runs_wd2(launcher)
     ack = is_ack(launcher)
+    fab = is_fab(launcher)
+    mark = is_mark(launcher)
     pwords = "--m1-power-words" in launcher[4] or recfg or wd2
     siostop = "--m1-sio-stop" in launcher[4] or pwords
     macend = "--m1-macos-end" in launcher[4] or siostop
@@ -615,9 +635,13 @@ def test_floor_refusals(launcher):
                   ("with a USB-C partner attached", dict(attached="typec"), None, "unplug everything first (attached: port0-partner)")]
     if ack:
         cases.append(("a build without cluster_ack", dict(build="floor-noack"), None, "without cluster_ack"))
+    if fab:
+        cases.append(("a build without fabric_up", dict(build="floor-nofab"), None, "without fabric_up"))
+    if mark:
+        cases.append(("a build without wd1_mark", dict(build="floor-nomark"), None, "without wd1_mark"))
     if plain:
         # The floor's build before quiet still runs the floor itself.
-        usage = "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack]"
+        usage = "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark]"
         cases += [("an unknown argument", {}, ["--loud"], usage),
                   ("a second argument", {}, ["--quiet", "--quiet"], usage),
                   ("--quiet and --m1 together", {}, ["--quiet", "--m1"], usage),
@@ -636,9 +660,13 @@ def test_floor_refusals(launcher):
                   ("--observe alone", {}, ["--observe"], usage),
                   ("--late alone", {}, ["--late"], usage),
                   ("--m1-wd2-bite and --m1-cluster-ack together", {}, ["--m1-wd2-bite", "--m1-cluster-ack"], usage),
-                  ("--cluster-ack alone", {}, ["--cluster-ack"], usage)]
+                  ("--cluster-ack alone", {}, ["--cluster-ack"], usage),
+                  ("--m1-cluster-ack and --m1-fabric-up together", {}, ["--m1-cluster-ack", "--m1-fabric-up"], usage),
+                  ("--fabric-up alone", {}, ["--fabric-up"], usage),
+                  ("--m1-fabric-up and --m1-mark together", {}, ["--m1-fabric-up", "--m1-mark"], usage),
+                  ("--mark alone", {}, ["--mark"], usage)]
     # A build older than one of its sources: another version's, perhaps, whose breadcrumbs this version's m1-crumbs would misread.
-    cases += [(f"a module older than {src}", dict(srcs=src), None, f"e1_hook.ko is older than {src}: make -C") for src in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h")]
+    cases += [(f"a module older than {src}", dict(srcs=src), None, f"e1_hook.ko is older than {src}: make -C") for src in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h", "fabric_up.h", "wd1_mark.h")]
     for what, kw, argv, msg in cases:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)
@@ -689,6 +717,10 @@ def test_floor_refusals(launcher):
         ignored.append(("wd2_bite", dict(takes_wd2=False)))
     if ack:
         ignored.append(("cluster_ack", dict(takes_ack=False)))
+    if fab:
+        ignored.append(("fabric_up", dict(takes_fab=False)))
+    if mark:
+        ignored.append(("wd1_mark", dict(takes_mark=False)))
     for what, kw in ignored:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)
@@ -894,7 +926,7 @@ def test_wd2(launcher):
     script = name(launcher)
     insmod = "insmod {} " + launcher[2]
     WD2_AGAIN = globals()["WD2_AGAIN"].format(launcher[4][0])
-    other = "--m1-cluster-ack" if launcher[4][0] == "--m1-wd2-bite" else "--m1-wd2-bite"
+    other = "--m1-cluster-ack" if launcher[4][0] != "--m1-cluster-ack" else "--m1-wd2-bite"
 
     # The store took, and no suspend comes: NO FLOOR, the replay called off, and the block says the bite still reads 120 s.
     with tempfile.TemporaryDirectory() as tmp:
