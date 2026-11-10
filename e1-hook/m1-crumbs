@@ -1,9 +1,9 @@
 #!/usr/bin/python3 -I
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
---m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words or
---m1-recfg-bite; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1,
-one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1) leaves in the PMU, read and decoded, and cleared
+--m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words,
+--m1-recfg-bite or --m1-wd2-bite; e1_hook m1=1, observe=1, pmgr_late=1, alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1,
+one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1, wd2_bite=1) leaves in the PMU, read and decoded, and cleared
 again.
 
   e1-hook/m1-crumbs               read them (no root needed)
@@ -59,7 +59,10 @@ DISP_STAGES = (0x48, 0x49, 0x4a, 0x4c, 0x4d)  # disp_off=1: POSITION's with bit 
 # recfg_bite=1, in place of 0x4f and after the release: 0x6005 is the sample (e1_hook's M1_RECFG_STAGE_PEND and
 # M1_RECFG_STAGE: with and without an exception pending on CPU0 after its reads)
 RECFG_STAGES = (0x46, 0x47)
-SIO_STOP_STAGES = (0x4e, 0x4f) + RECFG_STAGES  # sio_stop=1, in place of 0x5a and 0x5b: 0x6012 has the K steps' outcomes
+# wd2_bite=1, the same way: 0x6005 is its own sample (e1_hook's M1_WD2_STAGE_PEND and M1_WD2_STAGE)
+WD2_STAGES = (0x56, 0x57)
+SAMPLE_STAGES = RECFG_STAGES + WD2_STAGES  # 0x6005 isn't the parked cores
+SIO_STOP_STAGES = (0x4e, 0x4f) + SAMPLE_STAGES  # sio_stop=1, in place of 0x5a and 0x5b: 0x6012 has the K steps' outcomes
 # alarm=1 (0x59, 0x5f), hold=1 (0x5a-0x5e) and position=1: 0x6016 is the alarm's byte, and the alarm may be armed
 ALARM_STAGES = (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e) + POSITION + SIO_STOP_STAGES
 ALARM_SECS = 3600  # e1_hook's M1_ALARM_SECS
@@ -166,12 +169,18 @@ HOLD_TEXT = {
           " down last, by design)",
     0x4e: "8 (sio_stop=1): the steps' outcomes (0x6012) follow it, the last SPMI command before the commit; next came nub-spmi0's acks, the first commit, the"
           " alarm's commands and stage 0x4f (recfg_bite=1: one read of A2's bite word in the SRAM before those, and no 0x4f:"
-          " stage 0x46 or 0x47 after the release)",
+          " stage 0x46 or 0x47 after the release; wd2_bite=1: no 0x4f either: stage 0x56 or 0x57 after the release)",
     0x47: "recfg_bite=1: the commit, the alarm and the release are done, and CPU0 read WD2 and PHASE (0x6005) with nothing pending"
           " afterwards, the run's last breadcrumb by design: it then took its deep WFI, unrecorded",
     0x46: "recfg_bite=1: the commit, the alarm and the release are done, and CPU0 read WD2 and PHASE (0x6005), but had an SError, IRQ"
           " or FIQ pending afterwards: that would end its deep WFI, so it likely never went down (a read that faulted after the"
           " commit would leave an SError pending, masked)",
+    0x57: "wd2_bite=1: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2 was armed, and read WD2"
+          " and PHASE (0x6005) with nothing pending afterwards, the run's last breadcrumb by design: it then took its deep WFI,"
+          " unrecorded",
+    0x56: "wd2_bite=1: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2 was armed, and read WD2"
+          " and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards: that would end its deep WFI, so it likely never"
+          " went down (a write or a read that faulted after the commit would leave an SError pending, masked)",
     0x4f: "sio_stop=1: the commit and the alarm are done, the run's last breadcrumb by design: CPU0 then released the others"
           " and took its deep WFI at once, unrecorded",
     0x40: "position=1: the release went out and CPU0's watch ended (0x6005 = the cores it read off); CPU0 stays up,"
@@ -232,6 +241,9 @@ K_MARK = 0xa5  # e1_hook's M1_K_MARK: 0x6013, when 0x6012 has sio_stop=1's outco
 W_MARK = 0xc0  # e1_hook's M1_W_MARK: 0x6013's top two bits in a ps_words=1 run, one bit per group below them
 W_GROUPS = ("the five UARTs", "MSG", "ATC1-3_USB_AON", "ATC0-3_PCIE", "ATC1-3_COMMON")  # bits 0-4; e1_hook's M1_PW_*
 BITE_CLASSES = ("another value", "the new value, 45 s", "the old value, 30 s", "its awake value")  # recfg_bite.h's M1_BITE_*
+# wd2_bite.h's M1_WD2_PRE_*: 30 s is every A sequence's, and A2's only while PHASE reads 4 or 5
+WD2_PRE = ("another value", "30 s, an A sequence's opening's", "the new value, 120 s", "the value it read awake at load")
+WD2_PHASES = (0, 4, 5, None)  # wd2_bite.h's m1_wd2_phase(): None is any other value
 DCP_CODES = ("its RTKit shutdown TIMED OUT", "its RTKit shutdown FAILED another way", "shut down, but RUN didn't read 1 then 0", "stopped")
 SIO_CODES = ("its RTKit idle pair TIMED OUT", "its RTKit idle pair FAILED another way", "idle returned 0, but RUN didn't read 1 then 0", "stopped")
 SIO_CLASSES = ("all ones: a failed read", "target 0, bit 11 set (B2 at op 91, inferred)",
@@ -305,6 +317,69 @@ def recfg_lines(v):
             f" {'the new value' if sram else 'NOT the new value'}",
             f"  so: {so}",
             "  (the reset time is a second fact, never the test: RESEARCH.md, \"A different approach\")"]
+
+
+def wd2_lines(v, pend=False):
+    """wd2_bite=1, stages 0x56 and 0x57: 0x6005, what CPU0 read around its one write to WD2's bite (wd2_bite.h has the layout).
+    pend: the stage is 0x56, CPU0 had an exception pending after its reads."""
+    pre, seen, post, still, counting, ph = v & 3, bool(v & 4), bool(v & 8), bool(v & 0x10), bool(v & 0x20), WD2_PHASES[v >> 6]
+    if v == 0xfe:
+        # Before anything is read out of it: this is the byte the stage before leaves here.
+        so = ("0xfe is what stage 0x4e leaves in this byte (the parked cores): the stage's command most likely landed without its"
+              " second byte, and then this isn't a sample at all. None of the three lines above is to be leaned on")
+    elif not seen and post and pre != 2:
+        so = ("an inconsistent record: CPU0 made no write, and the bite read 120 s after that though it didn't just before. Something"
+              " else wrote it between the two reads, or the byte isn't the one CPU0 sent: not to be leaned on")
+    elif not seen:
+        so = ("CPU0 made no write: nothing had armed WD2 within 0.3 s of the release, so the bite wasn't moved and the reset's time"
+              " says nothing about a moved bite. A Mac that then stayed dark isn't a completed entry by this record: WD2 was never seen"
+              " armed")
+        if post:
+            so += (". The bite read 120 s before and after: wd2-bite's store from user space, still there, which also says no"
+                   " sequence's opening had written its own 30 s")
+    elif not post:
+        so = ("CPU0 MADE ITS WRITE AND THE BITE DIDN'T READ 120 s AFTER IT: the register didn't keep the kernel's store (or"
+              " something wrote it again at once). The bite wasn't moved, and the reset's time says nothing about a moved bite")
+    elif not still:
+        so = ("the bite reads 120 s, but RESET_EN didn't show after the write: WD2 wasn't armed any more (a sequence closing just"
+              " then, or the write itself). An unarmed WD2 doesn't bite, so a Mac that then stayed dark is that as readily as a"
+              " completed entry")
+    elif not counting:
+        so = ("the bite reads 120 s with RESET_EN set, but the count didn't change within 1 ms: WD2 may not be counting any more."
+              " A Mac that then stayed dark may be that, and isn't a completed entry by this record")
+    else:
+        took = ("the write took, and" if pre != 2 else
+                "the bite read 120 s before CPU0's write as after it, so this record doesn't show that write took;")
+        who = "A2" if ph in (4, 5) else "the sequence that armed WD2"
+        dark = ("no reset is a candidate for a completed entry" if not pend else
+                "no reset isn't a candidate for a completed entry here, since CPU0 likely never went down (the stage)")
+        so = (f"{took} WD2 was armed and counting with a 120 s bite. The reset's time is the result now: about 120 s"
+              f" after the commit fits {who} arming last and never closing; {dark}; about 30 s,"
+              " or another time T, fits a later sequence arming WD2 again, T - 30 s after the commit")
+        if ph == 0:
+            so += (". PHASE still read 0 after 10 ms, where A2 writes 4 a few ops after its opening: which sequence armed WD2 isn't"
+                   " shown by this record")
+        elif ph is None:
+            so += (". PHASE read neither 4 nor 5, A2's before its last: A2 may have run to its end already and a later A sequence"
+                   " armed WD2, each opening with the same 30 s. Then the entry had finished before CPU0's write, and the bite that"
+                   " was moved is that sequence's")
+    if seen and pre != 1 and v != 0xfe:
+        so += (f". But the bite read {WD2_PRE[pre]} before the write, not the 30 s an A sequence's opening leaves, though RESET_EN"
+               " showed: what armed WD2 isn't clear from this record")
+    if pend and v != 0xfe and not (seen and post and still and counting):
+        so += ". And CPU0 had an exception pending after its reads (the stage): it likely never went down"
+    if v == 0:
+        so += ". And 0x00 is also what a byte that didn't land, or didn't survive the reset, reads: not a reading to lean on"
+    what = ("neither 0, 4 nor 5: A2's last, or a later sequence's" if ph is None else
+            f"{ph:#x} ({'its awake value, or pair 0' + chr(39) + 's' if ph == 0 else PHASES[ph]})")
+    return [f"0x6005 = 0x{v:02x}: wd2_bite=1, after the commit, the alarm and the release:",
+            f"  WD2's bite before CPU0's write: {WD2_PRE[pre]}; WD2's control"
+            f" {'showed RESET_EN, so CPU0 wrote the bite, 120 s' if seen else 'did NOT show RESET_EN within 0.3 s, so CPU0 wrote nothing'}",
+            f"  read after that: the bite {'120 s' if post else 'NOT 120 s'}; RESET_EN {'set' if still else 'NOT set'}; the"
+            f" count {'changing' if counting else 'NOT changing within 1 ms'}",
+            f"  PHASE, read last: {what}",
+            f"  so: {so}",
+            "  (the readings, and why one run narrows the cases without deciding them: PLAN.md, \"The order after run 14\")"]
 
 
 def k_lines(b):
@@ -505,8 +580,8 @@ def decode(b, rtc, cnt=None, alarm=None):
     late = s in LATE or hold
     base = HOLD.get(s, LATE.get(s, s))  # the stage of runs 1 and 2 it stands for
     obs = base in OBSERVED
-    # An observe=1 run, below CPU7's own stages. Not recfg_bite=1's stage: its 0x6005 is the sample.
-    mark = s not in POSITION and s not in RECFG_STAGES and 0x10 <= base <= 0x60 and bool(b[5] & 1)
+    # An observe=1 run, below CPU7's own stages. Not recfg_bite=1's or wd2_bite=1's stage: its 0x6005 is the sample.
+    mark = s not in POSITION and s not in SAMPLE_STAGES and 0x10 <= base <= 0x60 and bool(b[5] & 1)
     text = HOLD_TEXT.get(s) or LATE_TEXT.get(s) or stage(base, mark)
     out = [
         f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
@@ -540,8 +615,8 @@ def decode(b, rtc, cnt=None, alarm=None):
         out.append(f"0x6007 = {b[7]}: " + ("no watchdog was armed to reset the SoC" if b[7] == 255 else
                                          f"{b[7]} s until the first armed watchdog's reset, as CPU7 read it"))
     elif base >= 0x10:
-        if s in RECFG_STAGES:
-            pass  # 0x6005 is the sample: recfg_lines(), below
+        if s in SAMPLE_STAGES:
+            pass  # 0x6005 is the sample: recfg_lines() or wd2_lines(), below
         elif s in HOLD_AFTER and s not in SIO_STOP_STAGES:
             out.append(f"read off after the release (0x6005 = 0x{b[5]:02x}, up to 10 ms each): {cpus(b[5] & 0xfe)}")
             if s in POSITION:
@@ -671,6 +746,8 @@ def decode(b, rtc, cnt=None, alarm=None):
             out += k_lines(b)
             if s in RECFG_STAGES:
                 out += recfg_lines(b[5])
+            elif s in WD2_STAGES:
+                out += wd2_lines(b[5], s == WD2_STAGES[0])
         elif s in POSITION:
             out += position_lines(s, b, pmp, disp)
         elif hold and s in HOLD_AFTER:
@@ -694,7 +771,7 @@ def decode(b, rtc, cnt=None, alarm=None):
             out.append(alarm_byte(b[0x16]))
             if s in (0x59, 0x5a, 0x4e) and b[0x16] in ALARM_ACKED:
                 out.append(f"  stage 0x{s:02x}, so nothing records {'the commit' if s == 0x4e else 'the two commit writes'} after those commands ("
-                           f"{'0x5f' if s == 0x59 else '0x4f, or recfg_bite=1' + chr(39) + 's 0x46 or 0x47,' if s == 0x4e else '0x5b'} comes after them): inconclusive about the rest of the entry")
+                           f"{'0x5f' if s == 0x59 else '0x4f, or recfg_bite=1' + chr(39) + 's 0x46 or 0x47, or wd2_bite=1' + chr(39) + 's 0x56 or 0x57,' if s == 0x4e else '0x5b'} comes after them): inconclusive about the rest of the entry")
         elif b[0x14] & 0x80:
             out.append(f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
     if commit is not None and cnt and cnt[1]:

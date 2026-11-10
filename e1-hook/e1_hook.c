@@ -87,6 +87,7 @@
  *   pkexec e1-hook/run-floor --m1-sio-stop        (--m1-macos-end's, hold_nowatch=1 for position=1, and sio_stop=1: PLAN.md)
  *   pkexec e1-hook/run-floor --m1-power-words     (--m1-sio-stop's and ps_words=1: PLAN.md)
  *   pkexec e1-hook/run-floor --m1-recfg-bite      (--m1-power-words' and recfg_bite=1, after recfg-bite's one SRAM write: PLAN.md)
+ *   pkexec e1-hook/run-floor --m1-wd2-bite        (--m1-power-words' and wd2_bite=1, after wd2-bite's write from user space: PLAN.md)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -125,6 +126,7 @@
 
 #include "m1_position.h"
 #include "recfg_bite.h"
+#include "wd2_bite.h"
 
 #if IS_ENABLED(CONFIG_ACPI)
 #error "ACPI registers s2idle ops of its own, and this module would replace them"
@@ -321,6 +323,10 @@ MODULE_PARM_DESC(ps_words, "With sio_stop=1: at the end of step 5, the 20 PMGR p
 static bool recfg_bite;
 module_param(recfg_bite, bool, 0444);
 MODULE_PARM_DESC(recfg_bite, "With ps_words=1: e1-hook/recfg-bite has changed A2's WD2 bite word in the engine's reconfig SRAM to 45 s (this module never writes the SRAM). The load refuses unless A2's opening reads as expected with that bite; step 8 reads the word again; after the commit, the alarm and the release, CPU0 waits for WD2's RESET_EN (up to 0.3 s), reads WD2's bite and PHASE, and records them at 0x6005 with stage 0x47 (0x46 if it had an exception pending). Corey's OK of 2026-11-09");
+/* The reset's time moved without the SRAM: WD2's bite register, written once after the commit (PLAN.md, "The order after run 14"). */
+static bool wd2_bite;
+module_param(wd2_bite, bool, 0444);
+MODULE_PARM_DESC(wd2_bite, "With ps_words=1, and not with recfg_bite=1: after the commit, the alarm and the release, CPU0 waits for WD2's RESET_EN (up to 0.3 s), reads WD2's bite, writes it once, 0x2922b0024 := 0xaba95000 (120 s; Corey's OK of 2026-11-10; only if RESET_EN showed), reads the bite and the control again, the count twice, then PHASE, and records them at 0x6005 with stage 0x57 (0x56 with an exception pending) in place of 0x4f (wd2_bite.h). It writes neither WD2's count nor its control. The load refuses if WD2 reads armed awake, or its bite A2's 30 s");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -1296,6 +1302,25 @@ static void e1_after_slpa(void)
  * 5, A2 before its last phase: from 7 on, a later sequence's opening may have
  * re-armed WD2 with its own 30 s before it wrote its own phase.
  *
+ * wd2_bite=1 (run-floor --m1-wd2-bite; with ps_words=1, never with recfg_bite=1)
+ * moves the reset's time without the SRAM, which dropped both of recfg_poke's
+ * stores (RESEARCH.md, "M1 run 14"). It's this module's one write to WD2: its bite
+ * register, 0x2922b0024, := 120 s (wd2_bite.h; Corey's OK of 2026-11-10), made
+ * once, by CPU0, after the commit. The load refuses if WD2 reads armed awake or
+ * its bite already reads A2's 30 s, and logs WD2 and PHASE awake (the bite is
+ * 120 s there if e1-hook/wd2-bite's write from user space took, 90 s if not). The
+ * commit and the alarm are as in sio_stop=1, with no stage 0x4f: CPU0 lets the
+ * others go, and then m1_wd2_out() waits for WD2's control to show RESET_EN, up
+ * to 0.3 s, so that A2's opening has written its own bite; reads the bite; writes
+ * the new one, only if RESET_EN showed; reads the bite and the control again, and
+ * the count twice (up to 1 ms for it to change); reads PHASE as recfg_bite=1
+ * does; and sends stage 0x57 with the sample at 0x6005 in one command (0x56 with
+ * an exception pending after the reads: a write that faulted leaves an SError
+ * pending, masked). WD2's count and control are never written: the count runs on
+ * from A2's arming, so the reset, if A2 never closes and nothing arms WD2 again,
+ * comes 120 s after the commit. The write is made whether or not raw SPMI still
+ * works: the reset's time is the result, and the byte only says how to read it.
+ *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
  * clusters to the
@@ -1306,7 +1331,8 @@ static void e1_after_slpa(void)
  * unknown; his L1 clean by set and way, since nothing comes back; his clkgen
  * park and counter blocks, which the table already writes (its own forms,
  * before the keys, or after slpa with pmgr_late). Never written:
- * MBSe, ps_pmp (0x28e0802d8), 0x28e700000, WD2, nub-spmi1, the SEP.
+ * MBSe, ps_pmp (0x28e0802d8), 0x28e700000, nub-spmi1, the SEP; and WD2, but
+ * for its bite with wd2_bite=1 (above).
  * observe=1 adds no address to what m1 writes: CPU0 writes CPU7's stop bit,
  * before the commit, instead of CPU7 in 6, and CPU7 writes breadcrumbs and
  * nub-spmi0's acks as CPU0 does. Nor does pmgr_late: it moves 26 of the
@@ -1548,12 +1574,18 @@ static bool m1_smc_acked;
 #define M1_RECFG_STAGE		0x47	/* recfg_bite=1: in place of 0x4f, after the release, with the sample at 0x6005 (the m1 comment) */
 #define M1_RECFG_STAGE_PEND	0x46	/* the same, with an exception pending on CPU0 after the sample's reads */
 #define M1_RECFG_MAP		0x4000	/* the SRAM's start: table A and A2's opening are in it */
-/* recfg_bite=1: the SRAM's first 16 KiB, only ever read here, and WD2's bite as the load read it. */
+/* recfg_bite=1: the SRAM's first 16 KiB, only ever read here. Its and wd2_bite=1's: WD2's bite as the load read it. */
 static void __iomem *m1_recfg;
 static u32 m1_wd2_bite_awake;
 static_assert(RECFG_A2_ENTRY + 8 <= M1_RECFG_MAP && RECFG_A2 + 4 * RECFG_SEQ_WORDS <= M1_RECFG_MAP);
 static_assert(RECFG_WDT == M1_WDT && RECFG_WD2_COUNT == M1_WD_CUR(2) && RECFG_WD2_BITE == M1_WD_BITE(2) &&
 	      RECFG_WD2_CTRL == M1_WD_CTRL(2) && RECFG_WD_RESET_EN == M1_WD_RESET_EN);
+#define M1_WD2_STAGE		0x57	/* wd2_bite=1: in place of 0x4f, after the release, with the sample at 0x6005 (the m1 comment) */
+#define M1_WD2_STAGE_PEND	0x56	/* the same, with an exception pending on CPU0 after the sample's reads */
+/* wd2_bite=1's one write: WD2's bite register and the value Corey OK'd, and nothing else of WD2's. */
+static_assert(WD2_WDT == M1_WDT && WD2_COUNT == M1_WD_CUR(2) && WD2_BITE == M1_WD_BITE(2) && WD2_CTRL == M1_WD_CTRL(2) &&
+	      WD2_RESET_EN == M1_WD_RESET_EN && WD2_BITE_A2 == RECFG_BITE_OLD);
+static_assert(M1_WDT + M1_WD_BITE(2) == 0x2922b0024ULL && WD2_BITE_NEW == 0xaba95000U);
 
 /* ps_words=1: the groups, one bit each in 0x6013 (the m1 comment). */
 #define M1_PW_UART	0
@@ -2635,6 +2667,49 @@ static void m1_recfg_out(u32 sram)
 	isb();
 }
 
+/*
+ * wd2_bite=1, CPU0 once it has let the others go: WD2's bite moved to 120 s, this
+ * module's one write to WD2 (Corey's OK of 2026-11-10), and what WD2 read around
+ * it (the m1 comment has the order and why; wd2_bite.h the byte). The write is
+ * made only if RESET_EN showed, so only after A2's opening has written its own
+ * bite. Each wait is bounded. One command carries the stage and the byte, then its
+ * vectors are acked, as after every SPMI command before a deep WFI.
+ */
+static void m1_wd2_out(void)
+{
+	u32 ctl, pre, post, after, c0, c1, phase;
+	unsigned int i;
+	u8 b[2];
+	u64 t0;
+
+	t0 = m1_now();
+	while (!((ctl = readl(m1_wdt + M1_WD_CTRL(2))) & M1_WD_RESET_EN) && m1_now() - t0 < 3 * m1_tps / 10)
+		cpu_relax();
+	pre = readl(m1_wdt + M1_WD_BITE(2));
+	if (ctl & M1_WD_RESET_EN) {
+		writel(WD2_BITE_NEW, m1_wdt + M1_WD_BITE(2));
+		dsb(sy);
+	}
+	post = readl(m1_wdt + M1_WD_BITE(2));
+	after = readl(m1_wdt + M1_WD_CTRL(2));
+	c0 = readl(m1_wdt + M1_WD_CUR(2));
+	t0 = m1_now();
+	while ((c1 = readl(m1_wdt + M1_WD_CUR(2))) == c0 && m1_now() - t0 < m1_tps / 1000)
+		cpu_relax();
+	t0 = m1_now();
+	while (!(phase = readl(m1_pos + M1_POS_PHASE)) && m1_now() - t0 < m1_tps / 100)
+		cpu_relax();
+	dsb(sy);
+	isb();
+	b[0] = ((read_sysreg(isr_el1) >> 6) & 7) ? M1_WD2_STAGE_PEND : M1_WD2_STAGE;
+	b[1] = m1_wd2_sample(pre, m1_wd2_bite_awake, ctl, post, after, c0, c1, phase);
+	m1_crumb(0x6004, b, 2);
+	for (i = 0; i < M1_SPMI_WORDS; i++)
+		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
+	dsb(sy);
+	isb();
+}
+
 /* Steps K3, K4 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
 {
@@ -2842,11 +2917,12 @@ static void __noreturn m1_after_slpa(void)
 	if (alarm) {
 		/*
 		 * The last SPMI command before the release (hold=1) or the deep WFI: every one leaves a vector to ack
-		 * before that WFI. recfg_bite=1's stage goes out after the release, with its sample (m1_recfg_out()).
+		 * before that WFI. recfg_bite=1's stage goes out after the release, with its sample (m1_recfg_out()),
+		 * and wd2_bite=1's the same way (m1_wd2_out()).
 		 */
 		if (!hold)
 			m1_stage(0x5f);
-		else if (!recfg_bite)
+		else if (!recfg_bite && !wd2_bite)
 			m1_stage(sio_stop ? 0x4f : 0x5b);
 		for (i = 0; i < M1_SPMI_WORDS; i++)
 			writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
@@ -2857,6 +2933,8 @@ static void __noreturn m1_after_slpa(void)
 		m1_hold_release(held, qto, flags);
 	if (recfg_bite)
 		m1_recfg_out(sram);
+	if (wd2_bite)
+		m1_wd2_out();
 	if (obs) {
 		o->raw = m1_raw;
 		o->down = down;
@@ -3141,6 +3219,33 @@ static int __init m1_recfg_init(void)
 	return 0;
 }
 
+/*
+ * wd2_bite=1 at load, reads only: WD2 and PHASE awake, the baseline for the sample
+ * after the commit. This refuses if WD2 reads armed, or if its bite already reads
+ * A2's 30 s, which the sample couldn't tell from A2's own write. A bite of 120 s
+ * here is most likely e1-hook/wd2-bite's, written from user space before the load.
+ */
+static int __init m1_wd2_init(void)
+{
+	u32 ctl;
+
+	if (!m1_pos)
+		m1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);
+	if (!m1_pos) {
+		pr_err("m1: wd2_bite: a mapping failed; refusing\n");
+		return -ENOMEM;
+	}
+	ctl = readl(m1_wdt + M1_WD_CTRL(2));
+	m1_wd2_bite_awake = readl(m1_wdt + M1_WD_BITE(2));
+	pr_info("m1: wd2_bite: awake: WD2 ctrl %x count %08x bite %08x, PHASE %08x; after the commit CPU0 writes bite %08x (120 s), once, if RESET_EN shows\n",
+		ctl, readl(m1_wdt + M1_WD_CUR(2)), m1_wd2_bite_awake, readl(m1_pos + M1_POS_PHASE), WD2_BITE_NEW);
+	if ((ctl & M1_WD_RESET_EN) || m1_wd2_bite_awake == WD2_BITE_A2) {
+		pr_err("m1: wd2_bite: WD2 isn't in its awake state (armed, or its bite already A2's 30 s), so the sample couldn't tell what the engine wrote; refusing\n");
+		return -EBUSY;
+	}
+	return 0;
+}
+
 /* sio_stop=1 at load: SIO's RTKit, through its mailbox's drvdata, running, and its ASC mapped. Refuses the module otherwise. */
 static int __init m1_sio_stop_init(void)
 {
@@ -3414,6 +3519,12 @@ static int __init m1_init(void)
 	}
 	if (recfg_bite) {
 		int ret = m1_recfg_init();
+
+		if (ret)
+			return ret;
+	}
+	if (wd2_bite) {
+		int ret = m1_wd2_init();
 
 		if (ret)
 			return ret;
@@ -3782,6 +3893,10 @@ static int __init e1_check_params(void)
 		pr_err("recfg_bite=1 needs ps_words=1 (stages 0x46 and 0x47 and their byte at 0x6005 are in that run's layout)\n");
 		return -EINVAL;
 	}
+	if (wd2_bite && (!ps_words || recfg_bite)) {
+		pr_err("wd2_bite=1 needs ps_words=1 and no recfg_bite=1 (stages 0x56 and 0x57 and their byte at 0x6005 are in that run's layout, and the two samples share the byte)\n");
+		return -EINVAL;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -3950,13 +4065,14 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
 		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "",
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
-		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "");
+		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
+		wd2_bite ? " wd2_bite=1" : "");
 	return 0;
 
 unmap:

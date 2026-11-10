@@ -1,0 +1,206 @@
+#!/bin/bash
+# e1-hook/wd2-bite: WD2's bite register written once from user space, awake, the control for
+# runs 13 and 14 (PLAN.md, "The order after run 14"; RESEARCH.md, "M1 run 14"), as root, in a
+# safe boot:
+#
+#   pkexec /home/corey/src/sleep-drain/e1-hook/wd2-bite
+#
+# Corey's OK of 2026-11-10: one register, 0x2922b0024, to 0xaba95000 (120 s), written here once
+# and once more by e1_hook after the commit. run-floor --m1-wd2-bite runs this itself, before
+# it loads anything.
+#
+# recfg_poke's stores to the reconfig SRAM were dropped, and nothing had shown that a store
+# made its way, from user space through /dev/mem, changes any register on this Mac. This makes
+# one such store where nothing is at stake: awake, WD2 isn't armed, and the engine's sequences
+# write the bite themselves before they arm it. First wd2_poke check, read-only: WD2's control,
+# count and bite. Its output, and a line that says the write comes next, are saved to the boot
+# partition (sleep-drain-safe save) before anything is written, so a crash at the write keeps
+# them. Then wd2_poke patch: it reads the three words again, writes only if WD2 is as it is
+# awake (control 0, bite 90 s), and reads all three back. Its output is saved too.
+#
+# Nothing puts the 90 s back: the OK is for one value. The bite of a watchdog that isn't armed
+# changes nothing by itself, and a restart brings the 90 s back (inferred).
+#
+# The OK is for one store from user space, so this makes one in a boot and no more: before
+# the store it leaves a mark in /run, with how the store went written over it after, and a
+# later run in the same boot checks, saves, and gives that store's result without storing
+# again. A bite that reads 120 s with no such mark wasn't put there in this boot: nothing is
+# written, and that isn't called a store that took.
+#
+# kernel.panic is set to 10 before the store, as run-floor sets it: an access that faults then
+# restarts the Mac 10 s later instead of leaving it hung.
+#
+# Each step has a directory of its own, /var/log/sleep-drain/wd2-bite-<time>-<step>/, never
+# changed after its save.
+#
+# Exit status: 0, this boot's store was made and the bite reads 120 s: a store of this kind
+# works here; 5, this boot's store was made and the bite still reads 90 s: that's a result
+# too, and the run can go on; 7, the bite read 120 s before any store in this boot, so
+# nothing was written and the control wasn't made; 3, WD2 isn't as it is awake, and nothing was written; 4, it stopped
+# before it read anything, for a reason that can be put right in this boot (a tool to
+# rebuild, not root, a directory of the same second), or at the write's directory the same
+# way, and nothing was written; 1, anything else (the check or the writer failed, a save
+# failed, before the write or after it, or the write was made and WD2 reads some other way).
+# run-floor goes on after 0, 5 and 7 alone, and each means the record is on the boot partition:
+# a save that fails is never one of them, since it can leave the boot partition mounted,
+# and sleep-drain-safe then says to restart. Its own message is shown.
+set -u
+
+fail=4
+die() { echo "wd2-bite: $*" >&2; exit "$fail"; }
+
+HERE=$(dirname "$(realpath "$0")")
+POKE=${WD2_POKE:-$HERE/wd2_poke}
+POKE_SRC=${WD2_POKE_SRC:-$HERE/wd2_poke.c}
+HEADER=${WD2_HEADER:-$HERE/wd2_bite.h}
+SAFE_FLAG=${WD2_SAFE_FLAG:-/run/sleep-drain-safe/active}
+SAVE=${WD2_SAVE:-/usr/local/bin/sleep-drain-safe}
+LOG_ROOT=${WD2_LOG_ROOT:-/var/log/sleep-drain}
+SYSCTL=${WD2_SYSCTL:-/proc/sys/kernel}
+# This boot's one store: "started" before it, then "took" or "dropped". /run doesn't outlive the boot.
+MARK=${WD2_MARK:-/run/sleep-drain-wd2-bite}
+
+if (($# != 0)); then
+  fail=1
+  die "usage: wd2-bite"
+fi
+# Until the writer starts, a stop means nothing was written: run-floor goes by that.
+[[ $EUID -eq 0 ]] || die "run as root (pkexec)"
+[[ -f $SAFE_FLAG ]] || die "this runs in a safe boot only: pkexec sleep-drain-safe boot, then restart"
+# The tool is built from the header too.
+[[ -x $POKE && $POKE -nt $POKE_SRC && $POKE -nt $HEADER ]] || die "$POKE is missing or older than its source: cc -O2 -Wall -o $POKE $POKE_SRC"
+
+now=$(date +%Y%m%dT%H%M%S)
+
+# A step's output is in the boot partition's save before the next step.
+keep() {
+  sync -f "$1"
+  "$SAVE" save > /dev/null
+}
+
+# dir NAME: a step's own directory, new: one that exists is another run's, a second ago, and may be in a save already.
+# Sets out and log.
+dir() {
+  out=$LOG_ROOT/wd2-bite-$now-$1
+  mkdir "$out" 2> /dev/null || die "couldn't make $out (if it's there already, wait a second and run this again)"
+  log=$out/log.txt
+}
+
+# For a stop that is itself a result: say so if its record didn't reach the boot partition. The save's own message
+# stays on the screen: it says when the boot partition was left mounted.
+keep_or_say() {
+  keep "$1" > /dev/null || echo "wd2-bite: NOT SAVED: the lines above are the only record, so photograph them before any restart" >&2
+}
+
+# run PROGRAM ARGS...: its output shown, and appended to $log. Sets rc.
+run() {
+  local st
+  "$@" 2>&1 | tee -a "$log"
+  st=("${PIPESTATUS[@]}")
+  rc=${st[0]}
+  if ((st[1] != 0)); then
+    keep "$log" > /dev/null 2>&1
+    die "couldn't write $log (tee exit ${st[1]}); ${1##*/} exited $rc"
+  fi
+}
+
+# From the writer's start to a finished, saved write, any way out says what state the register may be in.
+started=0
+warn() {
+  ((started)) || return 0
+  echo "wd2-bite: WD2'S BITE MAY READ 120 s NOW: the writer ran, and this ended before its record was complete. WD2 isn't armed awake, so that changes nothing by itself, and a restart undoes it" >&2
+}
+trap warn EXIT
+
+echo "wd2-bite: saving under $LOG_ROOT/wd2-bite-$now-*/"
+dir check
+# From the first read on, a stop isn't one to simply run again after.
+fail=1
+run "$POKE" check
+if ((rc == 3)); then
+  keep_or_say "$log"
+  echo "wd2-bite: WD2 isn't as it is awake (above): nothing written. That's a result." >&2
+  exit 3
+fi
+if ((rc != 0 && rc != 7)); then
+  echo "the check failed (exit $rc); nothing written" | tee -a "$log"
+  keep_or_say "$log"
+  die "the check failed (exit $rc); nothing written"
+fi
+
+# The one store of this boot is made already, or can't be made: no store here, and the earlier one's result, or none.
+# A mark that's there counts whatever it says, an empty one too: a store was begun.
+marked=0
+prior=
+if [[ -e $MARK || -L $MARK ]]; then
+  marked=1
+  prior=$(cat "$MARK" 2> /dev/null) || prior=unreadable
+fi
+if ((marked || rc == 7)); then
+  case "$marked:$prior:$rc" in
+  1:took:7)
+    note="this boot's one store was made earlier and took: the bite reads 120 s. Nothing is written now"
+    st=0
+    ;;
+  1:dropped:0)
+    note="this boot's one store was made earlier and didn't take: the bite reads 90 s. It isn't made again (the OK is for one)"
+    st=5
+    ;;
+  0::7)
+    note="WD2's bite reads 120 s, and no store was made in this boot: it was there before (it survived a restart, or something else wrote it). Nothing is written, and the control isn't made"
+    st=7
+    ;;
+  *)
+    note="a store was begun earlier in this boot ($MARK says \"$prior\") and WD2 doesn't read as that store left it. Nothing is written now. Restart the Mac"
+    st=1
+    ;;
+  esac
+  echo "$note" | tee -a "$log"
+  keep "$log" || die "couldn't save that (sleep-drain-safe's own message is above); nothing written. Restart the Mac before anything else"
+  ((st != 1)) || echo "wd2-bite: nothing written. Restart the Mac before anything else" >&2
+  exit "$st"
+fi
+
+echo "next: wd2_poke patch, one 32-bit store from user space, 0x2922b0024 := 0xaba95000 (120 s), if the check above still holds" | tee -a "$log"
+if ! keep "$log"; then
+  die "couldn't save the check (sleep-drain-safe's own message is above); nothing written. Restart the Mac before anything else"
+fi
+# A store that faults: a restart 10 s later, not a hang (run-floor's own setting, for a run by hand).
+echo 10 > "$SYSCTL/panic" || die "couldn't set kernel.panic; nothing written"
+
+fail=4
+dir write
+fail=1
+# Before the store, so that whatever it does it's this boot's one.
+echo started > "$MARK" || die "couldn't write $MARK; nothing written"
+started=1
+run "$POKE" patch
+case $rc in
+0)
+  echo took > "$MARK" || true
+  ;;
+3 | 7)
+  # The writer read the three words again and refused: no store was made.
+  started=0
+  keep_or_say "$log"
+  echo "wd2-bite: WD2 changed between the check and the write: nothing written. Restart the Mac." >&2
+  exit "$((rc == 3 ? 3 : 1))"
+  ;;
+5)
+  # The writer's own lines say the bite still reads 90 s, so nothing is left changed.
+  started=0
+  echo dropped > "$MARK" || true
+  echo "wd2-bite: THE WRITE DIDN'T TAKE: a store from user space didn't change this register. That's a result: runs 13 and 14 then say nothing about the SRAM." >&2
+  # run-floor goes on after this exit, so the record has to be on the boot partition first.
+  keep "$log" || die "that result's record couldn't be saved (sleep-drain-safe's own message is above): photograph these lines, and restart the Mac before anything else"
+  exit 5
+  ;;
+*)
+  keep_or_say "$log"
+  die "wd2_poke failed (exit $rc)"
+  ;;
+esac
+keep "$log" || die "couldn't save the write's record"
+started=0
+echo "wd2-bite: done: WD2's bite reads 120 s after this store, so a store from user space changes a register here. It stays 120 s until the engine arms WD2 or the Mac restarts."
+exit 0

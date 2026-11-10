@@ -8,3 +8,4 @@ modules.order
 .module-common.o
 recfg_peek
 recfg_poke
+wd2_poke

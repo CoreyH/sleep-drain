@@ -3173,6 +3173,9 @@ That's step 1's reading with the engine's own program left alone, with step 1's 
 time narrows the cases and a second bite value decides between them. It's one new register write. WD2
 has been on e1_hook's never-written list so far, so it needs Corey's OK. PLAN.md has the order.
 
+Corey's OK came on 2026-11-10, for that register and value at those two moments, and it's built (#66,
+`run-floor --m1-wd2-bite`; not run yet). PLAN.md has what the build does.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
