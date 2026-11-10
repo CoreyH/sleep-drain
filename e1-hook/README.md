@@ -110,24 +110,40 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
 `probe=1` (`pkexec e1-hook/probe`, in a safe boot; needs `wd1_mark=1`, so the launcher loads `--m1-mark`'s
 parameters with it) reads the three coprocessor words B2 polls before its op 224, bit 1 of SIO's, ANS's
 and the PMP's ASC + 0x8000, in the state the recipe leaves those coprocessors in (`asc_probe.h` has the
-ops and the bytes; RESEARCH.md, "After run 17", why). With it loaded nothing replays and nothing sleeps:
-`e1_replay()` returns at once, `prepare` takes none of the replay's steps, and `prepare_late` fails every
-suspend with -EIO. In the first suspend to reach `prepare` it takes `sio_stop=1`'s steps on SIO there
-(after putting SIO_CPU fully on with the table's own word), and after noirq `pmp_out=1`'s steps on the PMP
-and `sio_on=1`'s raise, reading each word before, between and after; a word is read only while its domain
-reads actual f, and for up to 100 ms when bit 1 reads clear. The one word it writes that no run does is
-ANS2, B2's own 0x0f00030f and then the value found. It leaves the DCPs, the SMC and the cores alone. Its
-lines are `pr_info` (journald broadcasts `pr_emerg` over the terminal), and three bytes at 0x6005 to
-0x6007 under stage 0x0e, which no run uses, repeat what bit 1 read, for `m1-crumbs`, in case the screen
-doesn't come back. What a read says is a lead: B2 polls later, after its own raises.
+ops, the steps and the bytes; RESEARCH.md, "After run 17", why, and "The probe as built" the rest). With
+it loaded nothing replays and nothing sleeps: `e1_replay()` returns at once, `prepare` takes none of the
+replay's steps, and `prepare_late` fails every suspend with -EIO.
+
+- At load: the table's entry 61 has to be a raise of SIO_CPU and ANS2 off the never-write list; ANS's
+  and the PMP's words are read once each, with no poll. ANS's read there is the only one with its
+  firmware running (the NVMe driver's suspend shuts it down before `prepare`), and it's kept for its byte.
+- In the first suspend to reach `prepare`: SIO_CPU fully on with the table's own word, then
+  `sio_stop=1`'s steps on SIO; after noirq ANS2 raised if it's off, `pmp_out=1`'s steps on the PMP and
+  `sio_on=1`'s raise. Each word is read before, between and after, only while its domain reads actual
+  f, and again while bit 1 reads clear (B2's 255 tries, about 100 ms).
+- The one word it writes that no run does is ANS2: B2's own 0x0f00030f, then the value found less BUSY
+  and the two write-1-to-clear flags, checked for 10 ms. It leaves the DCPs, the SMC and the cores
+  alone.
+- Its lines are `pr_info` (journald broadcasts `pr_emerg` over the terminal). In the PMU: stage 0x0e,
+  which no run uses, at the start of `prepare`; the step about to be taken at 0x6010 from then on, so
+  that a Mac that goes down inside the probe says where; three bytes at 0x6005 to 0x6007 at the end.
+  The SUMMARY line is read from those bytes, as `m1-crumbs` reads them: SET, clear, or NOT READ where
+  the read in the state B2 finds wasn't made (the domain didn't read actual f, or the PMP's RUN wasn't
+  cleared).
+- What a read says is a lead: B2 polls later, after its own raises.
 
 `e1-hook/probe` refuses outside a safe boot, with the module loaded, a stale or foreign `e1_hook.ko`,
-`pm_test` set, or breadcrumbs left; unloads a module that doesn't read `probe=Y` before any suspend is
-asked for; asks again, three times at most, only while the module's `prepare` hasn't run (nothing is
-stopped until then), and unloads the module if none got there; then prints the module's lines for a
-photo and saves them with `sleep-drain-safe save`. After a probe SIO's firmware and the PMP's stay
-stopped (the kernel's drivers do nothing about either at resume), so the Mac is restarted, and the
-breadcrumbs cleared as after a run. The charger may stay in (`tests/e1_hook_probe_test.py`).
+`pm_test` set, or breadcrumbs left. Before the load it has `pmp_sleep_release` withdraw the PMP's
+display report requests at noirq (`sleep-drain-pmp release 0xc 0xd`), as run-floor does, so that the PMP
+is idled as in the runs; at resume that module asserts them again to a PMP that's stopped by then, which
+times out and is logged. A module that doesn't read `probe=Y` once loaded has its replay called off and
+is unloaded, and no suspend is asked for. It asks for the suspend through
+`/sys/power/state` (no sleep hook, so no line in the sleep log and the radios as they are), again,
+three times at most, only while the module's `prepare` hasn't run (nothing is stopped until then), and
+unloads the module if none got there; then prints the module's lines for a photo and saves them with
+`sleep-drain-safe save`. After a probe SIO's firmware and the PMP's stay stopped (the kernel's drivers
+do nothing about either at resume), so the Mac is restarted, and the breadcrumbs cleared as after a
+run. The charger may stay in (`tests/e1_hook_probe_test.py`).
 
 ## What holds for every one-way run
 

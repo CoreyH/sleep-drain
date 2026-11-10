@@ -1128,13 +1128,14 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         ppath = os.path.join(tmp, "nvmem")
 
-        def pdec(stage, parked, left, down):
-            fake(ppath, scratch(stage, parked=parked, left=left, down=down), rtc_secs=121761)
+        def pdec(stage, parked, left, down, at):
+            # at: 0x6010, where the probe leaves the step it has reached (the low byte of a run's second).
+            fake(ppath, scratch(stage, parked=parked, left=left, down=down, secs=at), rtc_secs=121761)
             r = run(ppath)
             return r.returncode, r.stdout, r.stderr
 
         probe_tests(g, src, pdec)
-        before = fake(ppath, scratch(0x0e, parked=0xf7, left=0xf7, down=0x8d), rtc_secs=121761, alarm=(0x41, 999999, 0, 0))
+        before = fake(ppath, scratch(0x0e, parked=0xf7, left=0xf7, down=0x8d, secs=21), rtc_secs=121761, alarm=(0x41, 999999, 0, 0))
         r = run(ppath, "--clear")
         after = open(ppath, "rb").read()
         want = bytearray(before)
@@ -1604,14 +1605,240 @@ int main(void)
 	unsigned int a, v;
 
 	printf("consts %llx %llx %llx %x %x %x %x\n", ASC_SIO_MBOX, ASC_ANS_MBOX, ASC_PMP_MBOX, ASC_READY, ASC_ANS2_UP, ASC_PROBE_STAGE, ASC_PROBE_MARK);
+	printf("more %d %x %x %x\n", ASC_TRIES, ASC_PS_NOT_WRITTEN, ASC_PS_STATE, ASC_PROBE_AT);
+	printf("at %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", ASC_AT_NONE, ASC_AT_PREPARE, ASC_AT_SIO_RUN, ASC_AT_ANS_PREP,
+	       ASC_AT_PMP_RUN, ASC_AT_SIO_IDLE, ASC_AT_SIO_IDLED, ASC_AT_SIO_STOP, ASC_AT_SIO_STOPPED, ASC_AT_NOIRQ, ASC_AT_LATE, ASC_AT_ANS_UP,
+	       ASC_AT_ANS_LATE, ASC_AT_ANS_BACK, ASC_AT_PMP_LATE, ASC_AT_PMP_IDLE, ASC_AT_PMP_IDLED, ASC_AT_PMP_STOP, ASC_AT_PMP_STOPPED,
+	       ASC_AT_SIO_UP, ASC_AT_SIO_LATE, ASC_AT_DONE);
 	for (a = 0; a < sizeof(ps) / sizeof(ps[0]); a++)
 		printf("on %x %d\n", ps[a], asc_ps_on(ps[a]));
 	for (v = 0; v < 128; v++)
 		printf("sio %u %x\n", v, asc_sio_byte(v & 1, v >> 1 & 1, v >> 2 & 1, v >> 3 & 1, v >> 4 & 1, v >> 5 & 1, v >> 6 & 1));
 	for (v = 0; v < 128; v++)
 		printf("pmp %u %x\n", v, asc_pmp_byte(v & 1, v >> 1 & 1, v >> 2 & 1, v >> 3 & 1, v >> 4 & 1, v >> 5 & 1, v >> 6 & 1));
-	for (v = 0; v < 16; v++)
-		printf("ans %u %x\n", v, asc_ans_byte(v & 1, v >> 1 & 1, v >> 2 & 1, v >> 3 & 1));
+	for (v = 0; v < 128; v++)
+		printf("ans %u %x\n", v, asc_ans_byte(v & 1, v >> 1 & 1, v >> 2 & 1, v >> 3 & 1, v >> 4 & 1, v >> 5 & 1, v >> 6 & 1));
+	for (v = 0; v < 256; v++)
+		printf("final %u %d %d %d %s %s %s\n", v, asc_sio_final(v), asc_pmp_final(v), asc_ans_final(v), asc_final_str(asc_sio_final(v)),
+		       asc_final_str(asc_pmp_final(v)), asc_final_str(asc_ans_final(v)));
+	printf("str %s|%s|%s\n", asc_final_str(-1), asc_final_str(0), asc_final_str(1));
+	return 0;
+}
+"""
+
+PROBE_RUN_PRELUDE = r"""
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+#include "asc_probe.h"
+typedef uint16_t u16;
+typedef uint64_t u64;
+#define __iomem
+#define BIT(n) (1U << (n))
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define cpu_relax() do { } while (0)
+#define udelay(us) do { } while (0)
+#define dsb(x) do { } while (0)
+#define div64_u64(a, b) ((a) / (b))
+#define ENODEV 19
+#define ETIME 62
+"""
+PROBE_RUN_MODEL = r"""
+/*
+ * A model of the registers the probe touches. A power word takes a write's target, and its actual state, bits 7:4,
+ * follows if the scenario lets that domain rise; its BUSY bit and two flags are cleared by a 1 written to them and
+ * otherwise kept. A read of a coprocessor's word while its domain's actual state isn't f prints FAULT, a write to
+ * ps_pmp NEVER, anything outside the model STRAY: none of the three may ever print. A write to the PMU's 0x6010,
+ * the step about to be taken, prints as "at N".
+ */
+enum { R_SIO, R_SIO_CPU, R_UART_P, R_SPI_P, R_ANS2, R_PS_PMP, R_GATE44, R_GATE40, R_FAB, R_DCS, R_THIRD, R_SIO_CTRL, R_SIO_STAT,
+       R_PMP_CTRL, R_PMP_STAT, R_SIO_MBOX, R_ANS_MBOX, R_PMP_MBOX, R_N };
+static const char *const rname[R_N] = { "SIO", "SIO_CPU", "UART_P", "SPI_P", "ANS2", "ps_pmp", "gate44", "gate40", "fabric", "DCS", "third",
+	"SIO_CTRL", "SIO_STAT", "PMP_CTRL", "PMP_STAT", "SIO_MBOX", "ANS_MBOX", "PMP_MBOX" };
+static unsigned char sio_page[0x1000], ps_page[0x1000], pos_page[0x1000], fab_page[0x1000], sio_asc_page[0x1000], pmp_asc_page[0x1000],
+	mbox_page[3][0x10];
+static void *m1_sio = sio_page, *m1_ps = ps_page, *m1_pos = pos_page, *m1_sio_asc = sio_asc_page, *m1_pmp_asc = pmp_asc_page;
+static void *m1_sio_mbox = mbox_page[0], *m1_ans_mbox = mbox_page[1], *m1_pmp_mbox = mbox_page[2];
+static int sio_rtk_obj, pmp_rtk_obj;
+static void *m1_sio_rtk = &sio_rtk_obj, *m1_pmp_rtk = &pmp_rtk_obj;
+static struct { u32 val; } e1_post_slpa[M1_SIO_ENTRY + 1] = { [M1_SIO_ENTRY] = { 0x0400024f } };
+static void *post_map[M1_SIO_ENTRY + 1] = { [M1_SIO_ENTRY] = sio_page + M1_PS_SIO_CPU };
+static u64 m1_tps = 1000, fake_now;
+static u32 reg[R_N];
+static unsigned int mreads[3];
+static int late;
+static struct scenario {
+	int sio_cpu_rises, sio_cpu_rises_late, ans2_rises, sio_running, sio_idle_ret, pmp_running, pmp_idle_ret, pmp_goes_idle, kwrite_ret;
+	u32 ans2_late, ps_pmp, mbox[3], mbox_late[3];
+	int ans2_stuck, pmp_on_at_idle, pmp_off_at_stop;
+} sc;
+
+static u64 m1_now(void) { return fake_now++; }
+static void *m1_fab(void) { return fab_page; }
+static void msleep(unsigned int ms) { (void)ms; }
+static int reg_of(const void *p)
+{
+	static const struct { const unsigned char *at; int r; } map[] = {
+		{ sio_page + M1_PS_SIO, R_SIO }, { sio_page + M1_PS_SIO_CPU, R_SIO_CPU }, { sio_page + M1_PS_UART_P, R_UART_P },
+		{ sio_page + M1_PS_SPI_P, R_SPI_P }, { sio_page + M1_PS_ANS2, R_ANS2 }, { ps_page + M1_PS_PMP_RO, R_PS_PMP },
+		{ pos_page + M1_POS_GATE44, R_GATE44 }, { pos_page + M1_POS_GATE40, R_GATE40 }, { fab_page, R_FAB }, { fab_page + 0x800, R_DCS },
+		{ fab_page + 0x400, R_THIRD }, { sio_asc_page + M1_ASC_CPU_CONTROL, R_SIO_CTRL }, { sio_asc_page + M1_ASC_CPU_STATUS, R_SIO_STAT },
+		{ pmp_asc_page + M1_ASC_CPU_CONTROL, R_PMP_CTRL }, { pmp_asc_page + M1_ASC_CPU_STATUS, R_PMP_STAT },
+		{ mbox_page[0], R_SIO_MBOX }, { mbox_page[1], R_ANS_MBOX }, { mbox_page[2], R_PMP_MBOX },
+	};
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(map); i++) {
+		if (map[i].at == (const unsigned char *)p)
+			return map[i].r;
+	}
+	return -1;
+}
+static u32 readl(const void *p)
+{
+	static const int dom[3] = { R_SIO_CPU, R_ANS2, R_PS_PMP };
+	int r = reg_of(p);
+
+	if (r < 0) {
+		printf("STRAY read\n");
+		return 0xdead0000;
+	}
+	if (r >= R_SIO_MBOX) {
+		if (!asc_ps_on(reg[dom[r - R_SIO_MBOX]]))
+			printf("FAULT %s read with %s %08x\n", rname[r], rname[dom[r - R_SIO_MBOX]], reg[dom[r - R_SIO_MBOX]]);
+		mreads[r - R_SIO_MBOX]++;
+	}
+	return reg[r];
+}
+static void writel(u32 v, void *p)
+{
+	int r = reg_of(p), rises = 1;
+
+	if (r < 0) {
+		printf("STRAY write %08x\n", v);
+		return;
+	}
+	printf("w %s %08x\n", rname[r], v);
+	if (r == R_SIO_CPU)
+		rises = late ? sc.sio_cpu_rises_late : sc.sio_cpu_rises;
+	if (r == R_ANS2)
+		rises = sc.ans2_rises;
+	if (r == R_SIO || r == R_SIO_CPU || r == R_UART_P || r == R_SPI_P || r == R_ANS2) {
+		int up = (v & 0xf) == 0xf && rises;
+
+		/* ans2_stuck: once up, ANS2 doesn't come down again. */
+		if (r == R_ANS2 && sc.ans2_stuck && asc_ps_on(reg[r]))
+			up = 1;
+		reg[r] = (reg[r] & ASC_PS_NOT_WRITTEN & ~v) | (v & ~(ASC_PS_NOT_WRITTEN | 0xf0U)) | (up ? 0xf0 : 0);
+	} else if (r == R_SIO_CTRL || r == R_PMP_CTRL) {
+		reg[r] = v;
+		/* pmp_off_at_stop: ps_pmp stops reading on once the PMP's RUN is cleared. */
+		if (r == R_PMP_CTRL && sc.pmp_off_at_stop)
+			reg[R_PS_PMP] = 0x00000300;
+	} else if (r == R_PS_PMP) {
+		printf("NEVER ps_pmp written\n");
+	} else {
+		printf("STRAY write to %s\n", rname[r]);
+	}
+}
+#define writel_relaxed writel
+static bool apple_rtkit_is_running(void *rtk) { return rtk == m1_sio_rtk ? sc.sio_running : sc.pmp_running; }
+static int apple_rtkit_idle(void *rtk)
+{
+	int sio = rtk == m1_sio_rtk, ret = sio ? sc.sio_idle_ret : sc.pmp_idle_ret;
+
+	printf("idle %s %d\n", sio ? "SIO" : "PMP", ret);
+	if (!ret && (sio || sc.pmp_goes_idle))
+		reg[sio ? R_SIO_STAT : R_PMP_STAT] |= 1;
+	/* pmp_on_at_idle: ps_pmp reads on only from the PMP's idle pair on. */
+	if (!sio && sc.pmp_on_at_idle)
+		reg[R_PS_PMP] = 0x0f0002ff;
+	return ret;
+}
+static int m1_kwrite(unsigned int addr, const u8 *b, unsigned int n)
+{
+	unsigned int i;
+
+	/* The module's own gate on what may be written to the PMU, as m1_kwrite() applies it. */
+	if (!m1_pmu_ok(true, addr, b, n))
+		printf("STRAY write to the PMU's %x, which m1_pmu_ok() refuses\n", addr);
+	if (addr == ASC_PROBE_AT && n == 1) {
+		printf("at %u\n", b[0]);
+		return sc.kwrite_ret;
+	}
+	printf("kwrite %x", addr);
+	for (i = 0; i < n; i++)
+		printf(" %02x", b[i]);
+	printf(" ret %d\n", sc.kwrite_ret);
+	return sc.kwrite_ret;
+}
+static void pr_info(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("log "); vprintf(fmt, ap); va_end(ap); }
+"""
+PROBE_RUN_MAIN = r"""
+static void run(unsigned int n, const struct scenario *s)
+{
+	sc = *s;
+	late = 0;
+	fake_now = 0;
+	memset(reg, 0, sizeof(reg));
+	memset(&m1_pr, 0, sizeof(m1_pr));
+	memset(mreads, 0, sizeof(mreads));
+	/* As m1_probe_init() leaves them when ANS's word read set at load. */
+	m1_pr.ans_load = m1_pr.ans_load_read = true;
+	/* Awake, after the drivers' late suspend: SIO's subtree on, SIO_CPU gating itself (actual 4), the NVMe's domain still on. */
+	reg[R_SIO] = 0x0f0000ff;
+	reg[R_UART_P] = reg[R_SPI_P] = 0xff;
+	reg[R_SIO_CPU] = 0x1400024f;
+	reg[R_ANS2] = 0x0f0000ff;
+	reg[R_PS_PMP] = sc.ps_pmp;
+	reg[R_SIO_CTRL] = reg[R_PMP_CTRL] = M1_ASC_CPU_RUN;
+	reg[R_SIO_MBOX] = sc.mbox[0];
+	reg[R_ANS_MBOX] = sc.mbox[1];
+	reg[R_PMP_MBOX] = sc.mbox[2];
+	printf("case %u\n", n);
+	m1_probe_prepare();
+	printf("mreads %u %u %u\n", mreads[0], mreads[1], mreads[2]);
+	/* The noirq pass: genpd cuts SIO's subtree, and ANS2 unless the scenario keeps it. */
+	late = 1;
+	reg[R_SIO] = 0x300;
+	reg[R_UART_P] = reg[R_SPI_P] = 0x200;
+	reg[R_SIO_CPU] = 0x04000200;
+	reg[R_ANS2] = sc.ans2_late;
+	reg[R_SIO_MBOX] = sc.mbox_late[0];
+	reg[R_ANS_MBOX] = sc.mbox_late[1];
+	reg[R_PMP_MBOX] = sc.mbox_late[2];
+	printf("noirq\n");
+	m1_probe_late();
+	printf("mreads %u %u %u\n", mreads[0], mreads[1], mreads[2]);
+	printf("end ANS2 %08x SIO_CTRL %08x PMP_CTRL %08x\n", reg[R_ANS2], reg[R_SIO_CTRL], reg[R_PMP_CTRL]);
+}
+
+int main(void)
+{
+	const struct scenario good = { 1, 1, 1, 1, 0, 1, 0, 1, 0, 0x00000300, 0x0f0002ff, { 2, 2, 2 }, { 2, 2, 2 }, 0, 0, 0 };
+	struct scenario s[16];
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(s); i++)
+		s[i] = good;
+	s[1].ans2_rises = 0;			/* the raise of ANS2 never reaches actual f */
+	s[2].ans2_late = 0x0f0000ff;		/* Linux left ANS2 on */
+	s[3].pmp_idle_ret = -ETIME;		/* the PMP's idle pair fails */
+	s[4].pmp_goes_idle = 0;			/* it returns 0, but the PMP never reads idle */
+	s[5].sio_idle_ret = -ETIME;		/* SIO's idle pair fails */
+	s[6].sio_cpu_rises_late = 0;		/* SIO_CPU doesn't come up after noirq */
+	s[7].ps_pmp = 0x00000300;		/* ps_pmp doesn't read on */
+	s[8].kwrite_ret = -5;			/* the PMU doesn't take the bytes */
+	s[9].mbox_late[0] = s[9].mbox_late[1] = s[9].mbox_late[2] = 0x80000000;	/* bit 1 clear on all three after noirq */
+	s[10].sio_cpu_rises = 0;		/* SIO_CPU doesn't come up at prepare */
+	s[11].sio_running = s[11].pmp_running = 0;	/* neither RTKit says it's running */
+	s[12].ans2_late = 0x04000b00;		/* ANS2 found with BUSY and both flags set, and a PS_AUTO of its own */
+	s[13].ans2_stuck = 1;			/* ANS2 doesn't come down again after the write-back */
+	s[14].ps_pmp = 0x00000300;		/* ps_pmp reads on only from the PMP's idle pair on */
+	s[14].pmp_on_at_idle = 1;
+	s[15].pmp_off_at_stop = 1;		/* ps_pmp stops reading on when the PMP's RUN is cleared */
+	for (i = 0; i < ARRAY_SIZE(s); i++)
+		run(i, &s[i]);
 	return 0;
 }
 """
@@ -1622,8 +1849,9 @@ PROBE_FN_PRELUDE = r"""
 typedef uint64_t u64;
 #define __iomem
 #define cpu_relax() do { } while (0)
+#define udelay(us) do { } while (0)
 #define div64_u64(a, b) ((a) / (b))
-/* A page whose reads follow a script (its last value from then on); the clock ticks once a look, 1000 to the second. */
+/* A page whose reads follow a script (its last value from then on); the clock ticks once a look, 1000 to the second unless a case says otherwise. */
 static unsigned char page[0x100];
 static u64 m1_tps = 1000, fake_now;
 static const u32 *seq;
@@ -1636,17 +1864,20 @@ PROBE_FN_MAIN = r"""
 int main(void)
 {
 	static const u32 r0[] = { 2 }, r1[] = { 0, 0, 0x80000002 }, r2[] = { 0x80000000 }, r3[] = { 0xfffffffd }, r4[] = { 0x00000003 };
-	static const struct { const u32 *s; unsigned int n; u32 ps; } c[] = {
-		{ r0, 1, 0x040002ff }, { r1, 3, 0x0f0000ff }, { r2, 1, 0x1f0f03ff }, { r3, 1, 0x000000f0 }, { r4, 1, 0x000000f0 },
-		{ r0, 1, 0x1400024f }, { r0, 1, 0 }, { r0, 1, 0x000000e0 },
+	/* The last three: no poll; a clock too slow for the 100 ms to end the poll, so B2's count does; and no poll with bit 1 set. */
+	static const struct { const u32 *s; unsigned int n; u32 ps; bool poll; u64 tps; } c[] = {
+		{ r0, 1, 0x040002ff, true, 1000 }, { r1, 3, 0x0f0000ff, true, 1000 }, { r2, 1, 0x1f0f03ff, true, 1000 },
+		{ r3, 1, 0x000000f0, true, 1000 }, { r4, 1, 0x000000f0, true, 1000 }, { r0, 1, 0x1400024f, true, 1000 }, { r0, 1, 0, true, 1000 },
+		{ r0, 1, 0x000000e0, true, 1000 }, { r2, 1, 0x1f0f03ff, false, 1000 }, { r2, 1, 0x1f0f03ff, true, 10000000 },
+		{ r0, 1, 0x040002ff, false, 1000 },
 	};
 	unsigned int i;
 
 	for (i = 0; i < sizeof(c) / sizeof(c[0]); i++) {
 		int ret;
 
-		seq = c[i].s; nseq = c[i].n; reads = 0; said = 0;
-		ret = m1_probe_word("WHO", "WHEN", page + 0x10, c[i].ps);
+		seq = c[i].s; nseq = c[i].n; reads = 0; said = 0; m1_tps = c[i].tps;
+		ret = m1_probe_word("WHO", "WHEN", page + 0x10, c[i].ps, c[i].poll);
 		printf("word %u ret %d reads %u said %u\n", i, ret, reads, said);
 	}
 	return 0;
@@ -1672,6 +1903,14 @@ def probe_tests(g, src, dec):
 
         hdr = [line.split() for line in build("phdr", PROBE_HDR)]
         fn = build("pfn", PROBE_FN_PRELUDE + cut("static bool m1_probe_word(", "\n}\n") + PROBE_FN_MAIN)
+        defs = "".join(line + "\n" for line in src.splitlines()
+                       if re.match(r"#define (M1_PS_SIO|M1_PS_SIO_CPU|M1_PS_UART_P|M1_PS_SPI_P|M1_PS_ANS2|M1_PS_PMP_RO|M1_POS_GATE44|M1_POS_GATE40|"
+                                   r"M1_ASC_CPU_CONTROL|M1_ASC_CPU_STATUS|M1_ASC_CPU_RUN|M1_ASC_IDLE|M1_SIO_ENTRY|M1_PMU_ALARM\w*|M1_PMU_RTC|"
+                                   r"M1_ALARM_ON)\s", line))
+        ran = build("prun", PROBE_RUN_PRELUDE + defs + "static bool alarm = true;\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+                    + PROBE_RUN_MODEL + cut("static struct {\n\tbool sio_run,", "} m1_pr;\n")
+                    + cut("static bool m1_probe_word(", "\n}\n") + cut("static void m1_probe_at(u8 step)", "\n}\n")
+                    + cut("static bool m1_sio_raise(void)", "\n}\n") + cut("static void m1_probe_prepare(void)\n{", "\n}\n") + cut("static void m1_probe_late(void)", "\n}\n") + PROBE_RUN_MAIN)
 
     consts = [int(x, 16) for x in hdr[0][1:]]
     check(consts == [0x39bc08000, 0x38f408000, 0x28ec08000, 2, 0x0f00030f, 0x0e, 0x80] and g["PROBE_STAGE"] == 0x0e and g["PROBE_MARK"] == 0x80,
@@ -1684,18 +1923,146 @@ def probe_tests(g, src, dec):
     check(len(on) == 10 and all(v == ((k >> 4 & 0xf) == 0xf) for k, v in on.items()), "asc_probe.h: a domain is on when its power word's bits 7:4 read f", str(on))
     bad = [r for r in hdr if r[0] in ("sio", "pmp") and int(r[2], 16) != (0x80 | int(r[1]))] + \
           [r for r in hdr if r[0] == "ans" and int(r[2], 16) != (0x80 | int(r[1]))]
-    check(len(hdr) == 1 + 10 + 128 + 128 + 16 and not bad,
+    check(len(hdr) == 3 + 10 + 128 + 128 + 128 + 256 + 1 and not bad,
           "asc_probe.h's three bytes: bit 7 the mark, and each argument its own bit, in the order the header's comment gives", str(bad[:4]))
+    check(hdr[1] == ["more", "255", "b00", "ff", "6010"] and hdr[2] == ["at"] + [str(i) for i in range(22)]
+          and len(g["PROBE_AT"]) == 22 and g["PROBE_DONE"] == 21 and (0x6010, 7) in g["CRUMBS"],
+          "asc_probe.h: B2's 255 tries; BUSY and the two flags left out of a write-back; the step goes to 0x6010, which --clear zeroes; 22"
+          " steps, numbered as m1-crumbs has them", str(hdr[1:3]))
+    # What a byte says of the read in the state B2 finds: the header's three functions, m1-crumbs' one, and a reading of the comment.
+    word = {-1: "NOT READ", 0: "clear", 1: "SET"}
+    num = {None: -1, False: 0, True: 1}
+    finals = {int(r[1]): ([int(x) for x in r[2:5]], " ".join(r[5:])) for r in hdr if r[0] == "final"}
+    mine = {v: [(-1 if not v & 0x80 or not v & 0x40 else v >> 3 & 1), (-1 if not v & 0x80 or not v & 0x40 or not v & 0x20 else v >> 3 & 1),
+                (-1 if not v & 0x80 or not v & 0x0a else v >> 2 & 1)] for v in range(256)}
+    bad = [v for v in range(256) if finals[v][0] != mine[v] or finals[v][1] != " ".join(word[x] for x in mine[v])
+           or [num[g["probe_final"](k, v)] for k in ("SIO", "PMP", "ANS")] != mine[v]]
+    check(len(finals) == 256 and not bad and hdr[-1] == ["str", "NOT", "READ|clear|SET"],
+          "the read in the state B2 finds, for every byte: not read unless the byte landed and says that read was made (for the PMP, with RUN"
+          " cleared too); asc_probe.h's three functions and m1-crumbs' agree", str([(hex(v), finals[v], mine[v]) for v in bad[:3]]))
+
+    # m1_probe_prepare() and m1_probe_late() as they stand, against a model of the registers: twelve scenarios.
+    cases, cur = [], None
+    for line in ran:
+        if line.startswith("case "):
+            cur = {"prep": [], "late": [], "at": "prep"}
+            cases.append(cur)
+        elif line == "noirq":
+            cur["at"] = "late"
+        else:
+            cur[cur["at"]].append(line)
+    stray = [line for line in ran if line.split()[0] in ("FAULT", "STRAY", "NEVER")]
+    check(len(cases) == 16 and not stray,
+          "in none of sixteen scenarios does the probe read a coprocessor's word while its domain's actual state isn't f, write ps_pmp, touch"
+          " a register outside its own, or write a PMU byte the module's own gate refuses", "\n".join(stray[:6]))
+
+    def ops(c, at, marks=True):
+        return [line for line in c[at] if line.split()[0] in (("w", "idle", "kwrite", "at") if marks else ("w", "idle", "kwrite"))]
+
+    def marks(c, at):
+        return [int(line.split()[1]) for line in c[at] if line.startswith("at ")]
+
+    def summary(c):
+        s = [line for line in c["late"] if line.startswith("log probe: SUMMARY: ")]
+        return s[0][len("log probe: SUMMARY: "):] if len(s) == 1 else ""
+
+    def kbytes(c):
+        k = [line.split() for line in c["late"] if line.startswith("kwrite 6005 ")]
+        return [int(x, 16) for x in k[0][2:5]] if len(k) == 1 else None
+
+    good_prep = ["kwrite 6004 0e ret 0", "at 1", "w SIO_CPU 0400024f", "at 2", "at 3", "at 4", "at 5", "idle SIO 0", "at 6", "at 7",
+                 "w SIO_CTRL 00000000", "at 8", "at 9"]
+    good_late = ["at 10", "at 11", "w ANS2 0f00030f", "at 12", "at 13", "w ANS2 00000000", "at 14", "at 15", "idle PMP 0", "at 16", "at 17",
+                 "w PMP_CTRL 00000000", "at 18", "at 19", "w SIO 0f00000f", "w UART_P 0000000f", "w SPI_P 0000000f", "w SIO_CPU 0400024f", "at 20",
+                 "at 21", "kwrite 6005 ff ff fd ret 0"]
+    c = cases[0]
+    check(ops(c, "prep") == good_prep and ops(c, "late") == good_late
+          and summary(c) == "bit 1 in the state B2 finds: SIO SET, ANS SET, PMP SET; bytes ff ff fd, written to the PMU: 0"
+          and c["late"][-1] == "end ANS2 00000000 SIO_CTRL 00000000 PMP_CTRL 00000000" and c["prep"][-1] == "mreads 3 1 1"
+          and c["late"][-2] == "mreads 4 2 4",
+          "the probe as it's meant to go: the stage, then SIO_CPU fully on and SIO stopped at prepare; after noirq ANS2 up and back as found,"
+          " the PMP stopped, SIO raised; every word read at each step, each step marked before it's taken; the bytes last",
+          "\n".join(c["prep"] + c["late"]))
+    # The mark before each thing the probe does to the hardware is that thing's, in every scenario: a Mac that goes down there says so.
+    before = {"idle SIO": 5, "w SIO_CTRL": 7, "w ANS2 0f00030f": 11, "idle PMP": 15, "w PMP_CTRL": 17, "w SIO ": 19, "w UART_P": 19, "w SPI_P": 19}
+    bad = []
+    for i, c in enumerate(cases):
+        for at in ("prep", "late"):
+            last = None
+            for line in ops(c, at):
+                if line.startswith("at "):
+                    last = int(line.split()[1])
+                elif not line.startswith("kwrite"):
+                    want_at = next((v for k, v in before.items() if line.startswith(k)), None)
+                    if want_at is None:
+                        want_at = (1 if at == "prep" else 19) if line.startswith("w SIO_CPU") else 13 if line.startswith("w ANS2 ") else -1
+                    if last != want_at:
+                        bad.append((i, at, line, last))
+    check(not bad and all(marks(c, "prep")[:1] == [1] and marks(c, "prep")[-1:] == [9] and marks(c, "late")[:1] == [10]
+                          and marks(c, "late")[-1:] == [21] and marks(c, "prep") + marks(c, "late") == sorted(marks(c, "prep") + marks(c, "late"))
+                          for c in cases)
+          and marks(cases[5], "prep") == [1, 2, 3, 4, 5, 6, 9] and marks(cases[2], "late") == [10, 12, 14, 15, 16, 17, 18, 19, 20, 21]
+          and marks(cases[3], "late") == [10, 11, 12, 13, 14, 15, 16, 19, 20, 21] and ops(c, "prep")[0] == "kwrite 6004 0e ret 0",
+          "every write and idle pair comes right after its own step's mark, the marks only rise, and a step that's skipped isn't marked",
+          str(bad[:4]))
+    # ANS2 in every scenario: written twice, B2's value and then the value found less BUSY and the two flags, or not at all if it read
+    # on; and it ends with the target and actual state it was found with, unless the model won't let it down.
+    found = {i: 0x0f0000ff if i == 2 else 0x04000b00 if i == 12 else 0x00000300 for i in range(len(cases))}
+    bad = [i for i, c in enumerate(cases)
+           if [line for line in ops(c, "late", False) if line.startswith("w ANS2 ")] != ([] if i == 2 else ["w ANS2 0f00030f", f"w ANS2 {found[i] & ~0xb00:08x}"])
+           or (i != 13 and (int(c["late"][-1].split()[2], 16) ^ found[i]) & 0x0f0000ff)
+           or any(line.startswith("w ANS2 ") for line in c["prep"])]
+    check(not bad and cases[13]["late"][-1].startswith("end ANS2 000000f0 ")
+          and any("ANS2 found 00000300, written back 00000000: it reads 000000f0, its target and actual state NOT as found within 10 ms" in line
+                  for line in cases[13]["late"])
+          and any("ANS2 found 04000b00, written back 04000000: it reads 04000800, its target and actual state as found" in line for line in cases[12]["late"]),
+          "in every scenario ANS2 is raised and written back as found, less the bits the kernel never writes back, or, where it read on, never"
+          " written; and a write-back that doesn't take is said", str(bad))
+    want = {1: ("SIO SET, ANS NOT READ, PMP SET", [0xff, 0xff, 0xf1]), 2: ("SIO SET, ANS SET, PMP SET", [0xff, 0xff, 0xf7]),
+            3: ("SIO SET, ANS SET, PMP NOT READ", [0xff, 0xc7, 0xfd]), 4: ("SIO SET, ANS SET, PMP NOT READ", [0xff, 0xd7, 0xfd]),
+            5: ("SIO SET, ANS SET, PMP SET", [0xcb, 0xff, 0xfd]), 6: ("SIO NOT READ, ANS SET, PMP SET", [0xb7, 0xff, 0xfd]),
+            7: ("SIO SET, ANS SET, PMP NOT READ", [0xff, 0xb0, 0xfd]), 8: ("SIO SET, ANS SET, PMP SET", [0xff, 0xff, 0xfd]),
+            9: ("SIO clear, ANS clear, PMP clear", [0xf7, 0xf1, 0xf9]), 10: ("SIO SET, ANS SET, PMP SET", [0xf8, 0xff, 0xfd]),
+            11: ("SIO SET, ANS SET, PMP NOT READ", [0xcb, 0xc7, 0xfd]), 12: ("SIO SET, ANS SET, PMP SET", [0xff, 0xff, 0xfd]),
+            13: ("SIO SET, ANS SET, PMP SET", [0xff, 0xff, 0xbd]), 14: ("SIO SET, ANS SET, PMP NOT READ", [0xff, 0xbc, 0xfd]),
+            15: ("SIO SET, ANS SET, PMP NOT READ", [0xff, 0xb7, 0xfd])}
+    bad = [(i, summary(cases[i]), kbytes(cases[i])) for i, (s, b) in want.items()
+           if kbytes(cases[i]) != b or not summary(cases[i]).startswith("bit 1 in the state B2 finds: " + s + "; bytes " + " ".join(f"{x:02x}" for x in b))]
+    check(not bad, "the SUMMARY line and the bytes in the fifteen scenarios where something goes another way: a read that wasn't made says NOT"
+          " READ, never clear (Pullfrog on #76), and the PMP's last read counts only if ps_pmp read on for every read of its word", str(bad[:3]))
+    bad = [i for i, c in enumerate(cases) if kbytes(c) is None
+           or summary(c).split(";")[0] != "bit 1 in the state B2 finds: " + ", ".join(
+               f"{k} {word[num[g['probe_final'](k, kbytes(c)[j])]]}" for k, j in (("SIO", 0), ("ANS", 2), ("PMP", 1)))]
+    check(not bad, "in every scenario the SUMMARY line says of the bytes what m1-crumbs would", str(bad))
+    # The steps that depend on the one before: RUN is cleared only after an idle pair that worked (for the PMP, and read idle), and the
+    # stage goes out only if the bytes did.
+    check(ops(cases[5], "prep", False) == ["kwrite 6004 0e ret 0", "w SIO_CPU 0400024f", "idle SIO -62"]
+          and ops(cases[11], "prep", False) == ["kwrite 6004 0e ret 0", "w SIO_CPU 0400024f"]
+          and not any("PMP_CTRL" in line for i in (3, 4, 11) for line in ops(cases[i], "late"))
+          and "idle PMP -62" in ops(cases[3], "late") and not any(line.startswith("idle") for line in ops(cases[11], "late"))
+          and ops(cases[8], "late")[-1] == "kwrite 6005 ff ff fd ret -5" and summary(cases[8]).endswith("written to the PMU: -5")
+          and all(c["late"][-1].endswith("SIO_CTRL 00000010 PMP_CTRL 00000000") for c in (cases[5],))
+          and cases[3]["late"][-1].endswith("PMP_CTRL 00000010") and cases[4]["late"][-1].endswith("PMP_CTRL 00000010"),
+          "SIO's RUN is cleared only after an idle pair that returned 0, the PMP's only if it then read idle; neither idle pair is sent to an RTKit"
+          " that isn't running; bytes the PMU didn't take are said", "\n".join(ops(cases[5], "prep") + ops(cases[3], "late")))
+    # What isn't read: nothing of SIO's at prepare if SIO_CPU didn't come up, nothing of it after noirq if it didn't then; nothing of the
+    # PMP's if ps_pmp doesn't read on; ANS's after noirq only once ANS2 reads on.
+    check(cases[10]["prep"][-1] == "mreads 0 1 1" and cases[6]["late"][-2].split()[1] == cases[6]["prep"][-1].split()[1]
+          and cases[7]["late"][-2].split()[3] == "0" and cases[1]["late"][-2].split()[2] == cases[1]["prep"][-1].split()[2] == "1"
+          and cases[9]["late"][-2] == "mreads 103 101 301",
+          "a word is left unread wherever its domain doesn't read on, and read for 100 ms and no longer where bit 1 stays clear",
+          " | ".join(cases[i]["prep"][-1] + " / " + cases[i]["late"][-2] for i in (1, 6, 7, 9, 10)))
 
     # m1_probe_word(): a word is read only if its domain reads on; then until bit 1 shows or 100 ms have gone; one line of log either way.
     word = [line for line in fn if line.startswith("word ")]
     # Case 5 is SIO_CPU as it reads awake, 0x1400024f: target f but actual 4, its clock gating itself. Not read.
     check(word == ["word 0 ret 1 reads 1 said 1", "word 1 ret 1 reads 3 said 1", "word 2 ret 0 reads 100 said 1", "word 3 ret 0 reads 100 said 1",
-                   "word 4 ret 1 reads 1 said 1", "word 5 ret 0 reads 0 said 1", "word 6 ret 0 reads 0 said 1", "word 7 ret 0 reads 0 said 1"],
-          "m1_probe_word(): no read of a domain whose actual state isn't f; bit 1 set ends it; bit 1 clear is read for 100 ms and no longer; one log line each",
-          "\n".join(fn))
+                   "word 4 ret 1 reads 1 said 1", "word 5 ret 0 reads 0 said 1", "word 6 ret 0 reads 0 said 1", "word 7 ret 0 reads 0 said 1",
+                   "word 8 ret 0 reads 1 said 1", "word 9 ret 0 reads 255 said 1", "word 10 ret 1 reads 1 said 1"],
+          "m1_probe_word(): no read of a domain whose actual state isn't f; bit 1 set ends it; bit 1 clear is read for 100 ms and no longer, and"
+          " never more than B2's 255 times; without poll, once; one log line each", "\n".join(fn))
     logs = [line for line in fn if line.startswith("log ")]
-    check("log probe: WHO, WHEN: power word 0f0000ff; ASC+0x8000 read 00000000 at first and 80000002 " in logs[1] and logs[1].endswith("bit 1 SET")
+    check("log probe: WHO, WHEN: power word 0f0000ff; ASC+0x8000 read 00000000 at first and 80000002 after 3 reads in " in logs[1] and logs[1].endswith("bit 1 SET")
           and logs[2].endswith("bit 1 clear") and "its power word reads 1400024f, actual not f, so its word isn't read" in logs[5],
           "m1_probe_word() logs the power word, the first and the last value read in full, and what bit 1 was", "\n".join(logs))
 
@@ -1733,29 +2100,41 @@ def probe_tests(g, src, dec):
     plate = cut("static void m1_probe_late(void)", "\n}\n")
     check(re.findall(wr, pprep) == ["writel_relaxed(e1_post_slpa[M1_SIO_ENTRY].val, post_map[M1_SIO_ENTRY]);",
                                     "writel(ctrl & ~M1_ASC_CPU_RUN, m1_sio_asc + M1_ASC_CPU_CONTROL);"]
-          and re.findall(wr, plate) == ["writel(ASC_ANS2_UP, m1_sio + M1_PS_ANS2);", "writel(ps, m1_sio + M1_PS_ANS2);",
+          and re.findall(wr, plate) == ["writel(ASC_ANS2_UP, m1_sio + M1_PS_ANS2);", "writel(ps & ~ASC_PS_NOT_WRITTEN, m1_sio + M1_PS_ANS2);",
                                         "writel(ctrl & ~M1_ASC_CPU_RUN, m1_pmp_asc + M1_ASC_CPU_CONTROL);",
                                         "writel_relaxed(e1_post_slpa[M1_SIO_ENTRY].val, post_map[M1_SIO_ENTRY]);"]
           and not re.findall(wr, cut("static bool m1_probe_word(", "\n}\n")) and not re.findall(wr, cut("static int __init m1_probe_init(void)", "\n}\n"))
-          and plate.count("m1_sio_raise()") == 1 and "\traised = m1_sio_raise();\n\tpr_info(" in plate and plate.count("m1_kwrite(") == 2 and "apple_smc_write" not in pprep + plate
+          and not re.findall(wr, cut("static void m1_probe_at(u8 step)", "\n}\n"))
+          and plate.count("m1_sio_raise()") == 1 and "\traised = m1_sio_raise();\n\tpr_info(" in plate
+          and (pprep + plate).count("m1_kwrite(") == 2 and "\tm1_kwrite(0x6004, &stage, 1);\n\tm1_probe_at(ASC_AT_PREPARE);\n" in pprep
+          and "\tret = m1_kwrite(0x6005, b, 3);\n" in plate and "apple_smc_write" not in pprep + plate
+          and "m1_ans_mbox, up, true);\n\tm1_pr.ans_back = true;\n\tif (off) {" in plate
+          and "\tif (!ret && !(st & M1_ASC_IDLE))\n\t\tst = readl(m1_pmp_asc + M1_ASC_CPU_STATUS);\n\tpr_info(\"probe: PMP: its idle pair" in plate
           and "E1_S2R_COMMIT" not in pprep + plate and "m1_after_slpa" not in pprep + plate and "post_map[ARRAY_SIZE" not in pprep + plate,
           "the probe's MMIO writes are six: SIO_CPU's table word at prepare and after noirq, SIO's RUN, ANS2 up and back, the PMP's RUN; no key, no commit",
           "\n".join(re.findall(wr, pprep) + re.findall(wr, plate)))
-    check(in_order_of(plate, ["ps = readl(m1_sio + M1_PS_ANS2);\n\tm1_pr.ans_was_on = asc_ps_on(ps);\n\tif (!m1_pr.ans_was_on) {\n\t\twritel(ASC_ANS2_UP, m1_sio + M1_PS_ANS2);",
-                              "m1_pr.ans_late = m1_probe_word(", "\tif (!m1_pr.ans_was_on) {\n\t\twritel(ps, m1_sio + M1_PS_ANS2);",
-                              "m1_pr.pmp_late = m1_probe_word(", "apple_rtkit_idle(m1_pmp_rtk)", "m1_pr.pmp_idle = m1_probe_word(",
-                              "if (!ret && (st & M1_ASC_IDLE)) {", "m1_pr.pmp_stopped = m1_probe_word(", "m1_sio_raise()",
-                              "m1_pr.sio_late = m1_probe_word(", "ret = m1_kwrite(0x6005, b, 3);\n\tret = ret ?: m1_kwrite(0x6004, &stage, 1);"])
-          and in_order_of(pprep, ["writel_relaxed(e1_post_slpa[M1_SIO_ENTRY].val, post_map[M1_SIO_ENTRY]);", "m1_pr.sio_run = m1_probe_word(", "apple_rtkit_idle(m1_sio_rtk)", "m1_pr.sio_idle = m1_probe_word(", "\tif (ret)\n\t\treturn;\n",
-                                  "writel(ctrl & ~M1_ASC_CPU_RUN, m1_sio_asc + M1_ASC_CPU_CONTROL);", "m1_pr.sio_stopped = m1_probe_word("])
-          and "#define M1_PS_ANS2\t\t0x3b8" in src and "#define M1_PS_PMP_RO\t\t0x2d8" in src
-          and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\([^;]*M1_PS_PMP_RO", code_only),
-          "ANS2 is raised only if it read off and is written back as found; each of SIO's and the PMP's steps has a read before and after;"
-          " SIO's RUN is left alone if its idle pair failed; ps_pmp is only read; the bytes go out before the stage", plate)
+    pinit = cut("static int __init m1_probe_init(void)", "\n}\n")
+    check("#define M1_PS_ANS2\t\t0x3b8" in src and "#define M1_PS_PMP_RO\t\t0x2d8" in src
+          and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\([^;]*M1_PS_PMP_RO", code_only)
+          and "static_assert(M1_PS_SIO_PAGE + M1_PS_ANS2 == 0x28e5803b8ULL && M1_PMGR_PS + M1_PS_PMP_RO == 0x28e0802d8ULL);\n" in src
+          and "static_assert(M1_SIO_ASC + 0x8000 == ASC_SIO_MBOX && M1_PMP_ASC + 0x8000 == ASC_PMP_MBOX && ASC_READY == BIT(1));\n" in src
+          and in_order_of(pinit, ["\tif (w->addr != M1_PS_SIO_PAGE + M1_PS_SIO_CPU || w->width != 4 || (w->val & 0xf) != 0xf) {\n\t\tpr_err(",
+                                  "\t\treturn -EINVAL;\n\t}\n\tif (m1_never(M1_PS_SIO_PAGE + M1_PS_ANS2, 1)) {\n\t\tpr_err(", "\t\treturn -EPERM;\n\t}\n",
+                                  "\tm1_sio_mbox = ioremap_np(ASC_SIO_MBOX, PAGE_SIZE);\n\tm1_ans_mbox = ioremap_np(ASC_ANS_MBOX, PAGE_SIZE);\n"
+                                  "\tm1_pmp_mbox = ioremap_np(ASC_PMP_MBOX, PAGE_SIZE);\n\tif (!m1_sio_mbox || !m1_ans_mbox || !m1_pmp_mbox) {\n",
+                                  "\t\treturn -ENOMEM;\n\t}\n", "m1_probe_word("])
+          and pinit.count("m1_probe_word(") == 3 and pinit.count(", false);") == 3 and ", true)" not in pinit
+          and "\tps = readl(m1_sio + M1_PS_ANS2);\n\tm1_pr.ans_load_read = asc_ps_on(ps);\n\tm1_pr.ans_load = m1_probe_word(\"ANS\", " in pinit
+          and "m1_ans_mbox, ps, false);" in pinit and "const struct e1_mmio_write *w = &e1_post_slpa[M1_SIO_ENTRY];" in pinit,
+          "the load: ANS2's and ps_pmp's addresses and the three mailbox pages pinned; refused unless the table's entry 61 raises SIO_CPU and ANS2 is"
+          " off the never-write list; each mapping its own coprocessor's; one read each with no poll, ANS's kept for its byte", pinit)
 
     # The bytes through m1-crumbs: stage 0x71 is the probe's, not a run's.
-    rc, out, err = dec(0x0e, 0xff, 0xff, 0x8f)
+    rc, out, err = dec(0x0e, 0xff, 0xff, 0xf7, 21)
     check(rc == 0 and "stage 0x6004 = 0x0e: probe=1 (e1-hook/probe), not a run: nothing replayed and nothing was committed." in out
+          and "0x6010 = 0x15: every step taken: the three bytes written\n" in out
+          and "  awake, at the module's load, its firmware running: SET\n" in out
+          and "  at prepare, its firmware shut down by the NVMe driver's suspend, ANS2 still on: SET\n" in out and "did NOT read as found" not in out
           and "0x6005 = 0xff: SIO, bit 1 of its ASC + 0x8000 (0x39bc08000), which B2's op 51 waits for:\n" in out
           and "  after noirq, its parents and SIO_CPU raised again, the state B2's op 51 finds: SET\n" in out
           and "  after RUN was cleared, the state B2's op 159 finds: SET\n" in out and "  after noirq, ANS2 still on, the state B2's op 151 finds: SET\n" in out
@@ -1764,18 +2143,36 @@ def probe_tests(g, src, dec):
           and "parked (0x6005" not in out and "the SoC restarted" not in out and "PMU alarm" not in out,
           "the probe's bytes, all set: decoded as the probe's, with no run's lines", out + err)
     # 0x71 is the observer's stage under pmgr_late, as it was: the probe took another number for that reason.
-    rc, out, err = dec(0x71, 0xff, 0x04, 0x1e)
+    rc, out, err = dec(0x71, 0xff, 0x04, 0x1e, 0)
     check(rc == 0 and "probe=1" not in out, "stage 0x71 is still the observer's", out + err)
-    rc, out, err = dec(0x0e, 0xf7, 0xf7, 0x8d)
+    rc, out, err = dec(0x0e, 0xf7, 0xf7, 0x8d, 21)
     check(rc == 0 and "the state B2's op 51 finds: clear\n" in out and "the state B2's op 159 finds: clear\n" in out
           and "ANS2 off, raised as B2's op 149 raises it, the state B2's op 151 finds: SET\n" in out
+          and "  awake, at the module's load, its firmware running: not read\n" in out
+          and "  ANS2's target and actual state did NOT read as found within 10 ms of being written back\n" in out
           and "  so: in the state the recipe leaves, bit 1 read CLEAR for SIO, PMP, for 100 ms. That's a lead for where B2 stops, not its location:" in out,
-          "the probe's bytes with SIO's and the PMP's last reads clear: both named, as a lead", out + err)
+          "the probe's bytes with SIO's and the PMP's last reads clear: both named, as a lead; ANS's load read not made and its write-back not"
+          " taken: both said", out + err)
+    # A Mac that went down inside the probe: the stage and a step, and no bytes. And one whose bytes' write alone was lost.
+    rc, out, err = dec(0x0e, 0, 0, 0, 12)
+    check(rc == 0 and "0x6010 = 0x0c: THE PROBE BEGAN AND DIDN'T FINISH. The last step it marked: ANS's word read. The Mac went down in that step, or"
+          " after it and before the next was marked" in out and out.count("byte didn't land") == 3 and "nothing decided for any of them" in out
+          and "SET" not in out.split("0x6010 = ")[1],
+          "stage 0x0e with a step and no bytes: the probe began and didn't finish, the step is named, and nothing is read from the bytes", out + err)
+    rc, out, err = dec(0x0e, 0, 0, 0, 21)
+    check(rc == 0 and "0x6010 = 0x15: every step was taken, and the write of the three bytes didn't land, or not all of it\n" in out
+          and "DIDN'T FINISH" not in out, "stage 0x0e with the last step and no bytes: every step taken, the bytes lost", out + err)
+    rc, out, err = dec(0x0e, 0, 0, 0, 0)
+    check(rc == 0 and "0x6010 = 0x00: THE PROBE BEGAN AND DIDN'T FINISH. The last step it marked: nothing marked." in out,
+          "stage 0x0e with no step: said", out + err)
+    check(g["probe_at_line"](22, False).startswith("0x6010 = 0x16: THE PROBE BEGAN AND DIDN'T FINISH. The last step it marked: not a step's number.")
+          and g["probe_at_line"](9, True) == "0x6010 = 0x09: prepare done: the kernel's noirq pass: NOT the last step's number, though the bytes landed",
+          "a step number past the last, and bytes landed under a step short of it: both said")
     wrong = []
     for sio in range(256):
         for pmp in (0x00, 0x7f, 0x80, 0x88, 0xa8, 0xe8, 0xe0, 0xc8, 0xff, 0xf7):
             for ans in (0x00, 0x80, 0x82, 0x86, 0x88, 0x8c, 0x84, 0x8f):
-                lines = g["probe_lines"](sio, pmp, ans)
+                lines = g["probe_lines"](sio, pmp, ans, 21)
                 so = [line for line in lines if line.startswith("  so: ")]
                 # Read here from asc_probe.h's comment: the last read counts if the domain was on for it (and, for the PMP, RUN was cleared).
                 f = {"SIO": (bool(sio & 8) if sio & 0x40 else None) if sio & 0x80 else None,

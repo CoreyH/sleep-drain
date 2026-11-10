@@ -428,11 +428,15 @@ steps, and restarting the DCP and the PMP afterwards.
       (not `pm_test=platform`, as first planned: nothing outside the module has to be set). In it the
       module takes the recipe's own steps on SIO and the PMP (the idle pair, RUN cleared, SIO's parents
       raised: writes the runs already make) and reads the three words around each, into the kernel log
-      and, as a fallback if the resume fails, three bytes in the breadcrumbs under stage 0x0e. It reads
-      three addresses that are new to the hook, in mailbox blocks Linux's own driver has mapped, and
-      writes one word no run has: ANS2, raised as B2 raises it and written back as found. The charger
-      may stay in. Afterwards SIO's firmware and the PMP's are stopped, so the Mac is restarted; then
-      `m1-crumbs --clear` and `sleep-drain-safe collect` as after a run.
+      and, as a fallback if the resume fails, a record in the breadcrumbs under stage 0x0e: the step it
+      has reached, at 0x6010, and three bytes at the end. New as reads: the three mailbox words, in
+      blocks Linux's own driver has mapped, and ANS2's and `ps_pmp`'s power words. It writes one word no
+      run has: ANS2, raised as B2 raises it and written back as found. The PMP's display report
+      requests are withdrawn at noirq as in the runs (`sleep-drain-pmp release 0xc 0xd`); that module
+      asserts them again at resume, here to a stopped PMP, which times out and is logged. The charger
+      may stay in. Afterwards SIO's firmware and the PMP's are stopped,
+      so the Mac is restarted; then `m1-crumbs --clear` and `sleep-drain-safe collect` as after a run.
+      If the Mac goes dark in the probe instead, `m1-crumbs` after the restart says at which step.
       After it, by its reading, which is a lead and not the stall's location (the probe samples the
       recipe's state before any commit, and B2 polls later, after its own raises): a word that never
       shows bit 1 is the next run's change, that coprocessor left differently (idled but not stopped,

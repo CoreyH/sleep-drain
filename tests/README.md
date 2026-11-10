@@ -21,12 +21,17 @@ used to sit in CLAUDE.md, entry for entry):
   compiling `e1-hook/m1_position.h` itself, cluster_ack=1's three values and its waits by compiling
   `e1_hook.c`'s own table and wait functions, and fabric_up=1's and wd1_mark=1's writes by compiling the
   two functions that make them against a page that logs every write. For probe=1 it compiles
-  `asc_probe.h`'s bytes and `m1_probe_word()` against a scripted page, pins the guards that keep the
-  replay from running and the probe's six MMIO writes, and decodes stage 0x0e.
+  `asc_probe.h`'s bytes and `m1_probe_word()` against a scripted page, runs `m1_probe_prepare()` and
+  `m1_probe_late()` as they stand against a model of the registers in sixteen scenarios (no word read
+  with its domain off, every step marked before it's taken, ANS2 left as found, `ps_pmp` never
+  written, a read that wasn't made never called clear), pins the guards that keep the replay from
+  running and what the load checks, and decodes stage 0x0e.
 - `tests/e1_hook_probe_test.py` runs `e1-hook/probe` as uid 0 in a bubblewrap user namespace against stub
   `insmod`, `rmmod`, `modinfo`, `dmesg`, `sleep`, `m1-crumbs` and `sleep-drain-safe`: the parameters it
-  loads, that a module which doesn't read `probe=Y` is unloaded with no suspend ever asked for, when it
-  asks again and when it doesn't, and every refusal.
+  loads, that a module which doesn't read `probe=Y` has its replay called off and is unloaded with no
+  suspend ever asked for, when it asks again and when it doesn't, and every refusal. The suspend file and
+  the module's `prepare_calls` are FIFOs with a thread at their other ends, so that what the launcher
+  reads depends on how many suspends it has asked for, as on the Mac.
 - `tests/recfg_peek_test.py` runs `e1-hook/recfg_peek` on a sparse file standing in for /dev/mem and its
   launcher with stubs.
 - `tests/recfg_bite_test.py` runs `e1-hook/recfg_poke` on the same kind of file (exactly one word changes, or

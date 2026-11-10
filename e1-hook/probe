@@ -16,8 +16,8 @@
 # prepare and prepare_late it stops SIO's firmware and the PMP's as the recipe
 # does, raises SIO's power again as the recipe does, raises ANS2 as the engine
 # does and puts it back, reads the three words around each step, and then fails
-# the suspend, so the Mac comes straight back awake. No key goes to the SMC and
-# nothing is committed (e1-hook/asc_probe.h has the steps and the bytes).
+# the suspend, so the Mac comes straight back awake. No key is written to the
+# SMC and nothing is committed (e1-hook/asc_probe.h has the steps and the bytes).
 #
 # Then it prints what the module logged, for a photo, and saves it with
 # sleep-drain-safe save. After the probe SIO's firmware and the PMP's are
@@ -27,8 +27,20 @@
 # through SIO, won't work. In case more is gone than that, once the probe has
 # run this uses only bash builtins and files in RAM, as e1a-platform does, and
 # the one thing left to do is restart the Mac (hold the power key if nothing
-# else works). If the screen never comes back at all, the module has left three
-# bytes in the PMU: e1-hook/m1-crumbs reads them after the restart.
+# else works). If the screen never comes back at all, the module has left its
+# record in the PMU, the step it reached and three bytes: e1-hook/m1-crumbs
+# reads it after the restart.
+#
+# It asks for the suspend through /sys/power/state, so systemd's sleep hook
+# doesn't run: no line in the sleep log, and the radios stay as they are.
+#
+# Before the load it has pmp_sleep_release withdraw the PMP's display report
+# requests at this suspend's noirq (sleep-drain-pmp release 0xc 0xd), as
+# run-floor does for every run since run 7 and as T8140's driver does before it
+# idles the PMP: the PMP has never been idled here with them asserted. That
+# module asserts them again at resume, which here is to a stopped PMP: each
+# times out after 0.1 s and is logged as an error, and nothing else follows from
+# it (pmp_sleep_release.c). It stays loaded until the restart.
 set -u
 die() { echo "probe: $*" >&2; exit 1; }
 
@@ -41,6 +53,7 @@ PM_TEST=${PROBE_PM_TEST:-/sys/power/pm_test}
 MEM_SLEEP=${PROBE_MEM_SLEEP:-/sys/power/mem_sleep}
 LOGDIR=${PROBE_LOGDIR:-/var/log/sleep-drain}
 SAVE=${PROBE_SAVE:-/usr/local/bin/sleep-drain-safe}
+PMP=${PROBE_PMP:-/usr/local/bin/sleep-drain-pmp}
 CRUMBS=${PROBE_CRUMBS:-$here/m1-crumbs}
 # --m1-mark's parameters, the latest recipe's, and probe=1 on top: the module refuses probe=1 without them.
 PARAMS=(replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1
@@ -77,7 +90,7 @@ get() {
   fi
 }
 # The kernel log's lines that contain $1. dmesg and grep are programs on the disk, and so is sleep (used only
-# while nothing has been stopped): each runs once before the suspend, so they're in memory after it.
+# while nothing has been stopped): this very pipeline runs once before the suspend, so they're in memory after it.
 klog() {
   local lines line
   if lines=$(dmesg 2>&1 | grep -F -- "$1"); then
@@ -87,8 +100,7 @@ klog() {
   fi
 }
 
-# Into memory now, for after the suspend.
-dmesg > /dev/null; grep -F x /dev/null; sleep 0
+"$PMP" release 0xc 0xd > /dev/null 2>&1 || die "couldn't load the PMP report-release module (pkexec bash install.sh?): nothing loaded, nothing probed"
 log "$(now) loading e1_hook with ${PARAMS[*]}"
 if ! insmod "$ko" "${PARAMS[@]}"; then
   log "e1_hook didn't load; nothing was probed. The kernel's last lines from it:"
@@ -96,16 +108,22 @@ if ! insmod "$ko" "${PARAMS[@]}"; then
   "$SAVE" save "$out" > /dev/null 2>&1 || log "(that wasn't saved: the lines above are the record)"
   exit 1
 fi
-# A build that doesn't know probe would load with it ignored: then this would be a one-way run. Never go on without it.
+# A build that doesn't know probe would load with it ignored: then this would be a one-way run. Never go on without it:
+# its replay is called off first, so that even a module that won't unload can't run it.
 if [[ $(get "$MODDIR/parameters/probe") != Y ]]; then
-  rmmod e1_hook 2> /dev/null
-  die "e1_hook didn't take probe=1, and was unloaded: nothing was probed. make -C $here"
+  if printf 1 > "$MODDIR/parameters/cancel" 2> /dev/null; then off="its replay is called off"; else off="ITS REPLAY COULD NOT BE CALLED OFF"; fi
+  rmmod e1_hook 2> /dev/null && die "e1_hook didn't take probe=1, and was unloaded: nothing was probed. make -C $here"
+  die "e1_hook didn't take probe=1 and DID NOT UNLOAD ($off): restart the Mac now, and don't let it suspend first. Nothing was probed"
 fi
+# Into memory now, for after the probe: the pipeline klog runs, on the kernel log as it is, and sleep.
+dmesg 2>&1 | grep -F -- "e1_hook: probe:" > /dev/null; sleep 0
 # A suspend that ends before the module's prepare (a key still going up, a device that says no) has probed nothing
-# and stopped nothing: it's asked for again, twice at most. Once prepare has run there is no second try.
-rc=1
+# and stopped nothing: it's asked for again, twice at most. Once prepare has run, in this script's suspend or in one
+# something else asked for meanwhile (the lid, logind), there is no other.
+rc=none
 for try in 1 2 3; do
-  log "$(now) asking for the suspend ($try of 3 at most). The screen may flicker; the Mac does not sleep: the module fails the suspend when it's done"
+  [[ $(get "$MODDIR/parameters/prepare_calls") == 0 ]] || break
+  log "$(now) asking for the suspend ($try of 3 at most). HANDS OFF the keyboard and trackpad until the photo block. The screen may flicker; the Mac does not sleep: the module fails the suspend when it's done"
   printf mem > "$STATE" 2> /dev/null
   rc=$?
   [[ $(get "$MODDIR/parameters/prepare_calls") == 0 ]] || break
@@ -127,7 +145,7 @@ if [[ $pc == 0 ]]; then
 fi
 log ""
 log "==================== TAKE A PHOTO OF THIS SCREEN ===================="
-log "$(now) back; the last suspend returned $rc (non-zero is right: the module fails it)"
+log "$(now) back; this script's last suspend returned $rc (non-zero is right: the module fails it; none: another suspend got there first)"
 log "replay_done=$(get "$MODDIR/parameters/replay_done") (0 is right: nothing replayed) prepare_calls=$pc prepare_late_calls=$plc"
 [[ $pc == 1 && $plc == 1 ]] || log "ONLY PART OF THE PROBE RAN (1 and 1 is a whole one): the lines below are what there is."
 log "kernel log, the probe's lines (the SUMMARY line is the result):"

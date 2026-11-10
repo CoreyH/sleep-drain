@@ -349,7 +349,7 @@ MODULE_PARM_DESC(wd1_mark, "With fabric_up=1: in step 4, where the kernel has al
 /* Not a run: the three coprocessor words B2 polls, read in the recipe's state, and the suspend failed (PLAN.md, "The order after run 17"). */
 static bool probe;
 module_param(probe, bool, 0444);
-MODULE_PARM_DESC(probe, "With wd1_mark=1: no replay, ever. At the prepare and prepare_late of the first suspend to get that far, the recipe's own steps on SIO and the PMP (the idle pair, RUN cleared, SIO's parents and SIO_CPU raised) with bit 1 of each one's ASC + 0x8000 read around them, and ANS's with ANS2 raised as B2 raises it and put back; all logged, three bytes left at 0x6005-0x6007 under stage 0x0e, and every suspend failed with -EIO (asc_probe.h)");
+MODULE_PARM_DESC(probe, "With wd1_mark=1: no replay, ever. At the prepare and prepare_late of the first suspend to get that far, the recipe's own steps on SIO and the PMP (the idle pair, RUN cleared, SIO's parents and SIO_CPU raised) with bit 1 of each one's ASC + 0x8000 read around them, and ANS's with ANS2 raised as B2 raises it and put back; all logged, stage 0x0e, the step reached at 0x6010 and three bytes at 0x6005-0x6007 left in the PMU, and every suspend failed with -EIO (asc_probe.h)");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -1451,20 +1451,32 @@ static void e1_after_slpa(void)
  * and journald would broadcast pr_emerg lines over the screen it prints them on.
  * At that suspend's prepare, m1_probe_prepare() puts SIO_CPU fully on with
  * the table's own word, entry 61's (awake it reads actual 4, its clock gating
- * itself, and B2 reads SIO's word at actual f), then takes sio_stop=1's steps on
+ * itself, and B2 reads SIO's word at actual f; no run writes that word before
+ * noirq, with SIO's firmware still running), then takes sio_stop=1's steps on
  * SIO, the idle pair and then RUN cleared, reading SIO's word before, between
- * and after, and ANS's and the PMP's as they run. At its prepare_late,
- * m1_probe_late() logs what the noirq pass left; reads ANS's word, after raising
- * ANS2 as B2's op 149 does if Linux has it off, and then writes ANS2 back as it
- * was; takes pmp_out=1's steps on the PMP, reading its word before, between and
- * after; and raises SIO's parents (sio_on=1's three writes) and SIO_CPU (the
+ * and after, and ANS's and the PMP's once each. ANS's firmware isn't running
+ * there: the NVMe driver's suspend has shut it down already, so the load's read
+ * is the one made with it running. At its prepare_late, m1_probe_late() logs
+ * what the noirq pass left; reads ANS's word, after raising ANS2 as B2's op 149
+ * does if Linux has it off, and then writes ANS2 back as it was, less the bits
+ * the kernel's driver never writes back, and waits up to 10 ms for it to read
+ * as found; takes pmp_out=1's steps on the PMP, reading its word before, between
+ * and after; and raises SIO's parents (sio_on=1's three writes) and SIO_CPU (the
  * table's entry 61) and reads SIO's word in the state B2's op 51 finds. A word
- * is read only when its domain's power word reads actual f, and for up to
- * 100 ms when bit 1 reads clear. Every word is logged in full. Three bytes go to
- * 0x6005-0x6007 through the kernel's path, then stage 0x0e, for the case that
- * the resume doesn't bring the log back. What it writes that no run has: ANS2,
- * twice (B2's own value, then the value found). What a read says is a lead: B2
- * polls later, after its own raises, and what bit 1 means isn't known.
+ * is read only when its domain's power word reads actual f, and again while bit
+ * 1 reads clear, B2's 255 tries over about 100 ms. Every word is logged in full.
+ * The record in the PMU, for the case that the resume doesn't bring the log
+ * back: stage 0x0e at the start of prepare, the step about to be taken at
+ * 0x6010 from then on, so that a Mac that goes down inside the probe says where,
+ * and three bytes at 0x6005-0x6007 at the end; the SUMMARY line is read from
+ * those bytes, and says NOT READ where a read in the state B2 finds wasn't made.
+ * What it writes that no run has: ANS2, twice (B2's own value, then the value
+ * found). What it leaves out of the recipe's state: the DCPs' shutdown and the
+ * SMC's keys. The PMP's display report requests are withdrawn at noirq as in
+ * the runs, by pmp_sleep_release, which e1-hook/probe loads as run-floor does;
+ * that module asserts them again at resume, here to a stopped PMP, which times
+ * out and is logged. What a read says is a lead: B2 polls later, after its own
+ * raises, and what bit 1 means isn't known.
  *
  * Left out: Naeem's WD1 dead-man unless wd1_mark=1 (above), so that a completed
  * entry stays dark for a
@@ -1587,7 +1599,7 @@ static_assert(M1_ACK_VAL == M1_ACK_FLAG);
 /* probe=1 reads these two: ANS2, in reg[2]'s page, which it also raises and puts back, and ps_pmp, read here and never written anywhere. */
 #define M1_PS_ANS2		0x3b8
 #define M1_PS_PMP_RO		0x2d8
-/* sio_on=1 raises them just before this entry of e1_post_slpa, SIO_CPU's word (checked at load). */
+/* sio_on=1 raises them just before this entry of e1_post_slpa, SIO_CPU's word (checked at load with position=1, and with probe=1). */
 #define M1_SIO_ENTRY		61
 /* wdt reg[0]: WD0, WD1 (apple_wdt's) and WD2 (the S2R engine's): count, bite, control (bit 2 RESET_EN). */
 #define M1_WD_CUR(n)		(0x10 * (n))
@@ -3521,17 +3533,19 @@ static void __iomem *m1_sio_mbox, *m1_ans_mbox, *m1_pmp_mbox;
 static struct {
 	bool sio_run, sio_idle, sio_stopped, sio_late, sio_idle_ok, sio_stop_ok, sio_on;
 	bool pmp_run, pmp_late, pmp_idle, pmp_stopped, pmp_idle_ok, pmp_stop_ok, pmp_on;
-	bool ans_run, ans_was_on, ans_late, ans_raised;
+	bool ans_prep, ans_was_on, ans_late, ans_raised, ans_load, ans_load_read, ans_back;
 } m1_pr;
 static_assert(M1_PS_SIO_PAGE + M1_PS_ANS2 == 0x28e5803b8ULL && M1_PMGR_PS + M1_PS_PMP_RO == 0x28e0802d8ULL);
 static_assert(M1_SIO_ASC + 0x8000 == ASC_SIO_MBOX && M1_PMP_ASC + 0x8000 == ASC_PMP_MBOX && ASC_READY == BIT(1));
 
 /*
- * probe=1: one coprocessor's word, mbox, read only if its domain's power word, ps, reads actual f; and then for up to
- * 100 ms more while bit 1 reads clear, since B2 tries 255 times. Logged in full. True if bit 1 read set.
+ * probe=1: one coprocessor's word, mbox, read only if its domain's power word, ps, reads actual f. With poll, read
+ * again while bit 1 reads clear, as B2 does: ASC_TRIES reads at most, 400 us apart, and no longer than 100 ms.
+ * Logged in full. True if bit 1 read set.
  */
-static bool m1_probe_word(const char *who, const char *when, void __iomem *mbox, u32 ps)
+static bool m1_probe_word(const char *who, const char *when, void __iomem *mbox, u32 ps, bool poll)
 {
+	unsigned int n = 1;
 	u32 first, w;
 	u64 t0;
 
@@ -3541,59 +3555,86 @@ static bool m1_probe_word(const char *who, const char *when, void __iomem *mbox,
 	}
 	first = w = readl(mbox);
 	t0 = m1_now();
-	while (!(w & ASC_READY) && m1_now() - t0 < m1_tps / 10) {
-		cpu_relax();
+	while (poll && !(w & ASC_READY) && n < ASC_TRIES && m1_now() - t0 < m1_tps / 10) {
+		udelay(400);
 		w = readl(mbox);
+		n++;
 	}
-	pr_info("probe: %s, %s: power word %08x; ASC+0x8000 read %08x at first and %08x %llu ms on: bit 1 %s\n", who, when, ps,
-		 first, w, div64_u64((m1_now() - t0) * 1000, m1_tps), w & ASC_READY ? "SET" : "clear");
+	pr_info("probe: %s, %s: power word %08x; ASC+0x8000 read %08x at first and %08x after %u reads in %llu ms: bit 1 %s\n", who,
+		when, ps, first, w, n, div64_u64((m1_now() - t0) * 1000, m1_tps), w & ASC_READY ? "SET" : "clear");
 	return w & ASC_READY;
 }
 
-/* probe=1, the first suspend's prepare: sio_stop=1's steps on SIO, with its word read around each; ANS's and the PMP's as they run. */
+/*
+ * probe=1: the step about to be taken, to the PMU's scratch, so that a Mac that goes down inside the probe says
+ * where (asc_probe.h). Through the kernel's path, which the runs use after noirq too (K3's and K4's writes).
+ */
+static void m1_probe_at(u8 step)
+{
+	m1_kwrite(ASC_PROBE_AT, &step, 1);
+}
+
+/*
+ * probe=1, the prepare of the first suspend to get here: sio_stop=1's steps on SIO, with its word read around each;
+ * ANS's and the PMP's as they are. ANS's firmware isn't running by now: the NVMe driver's suspend has shut it down
+ * and cleared its CPU's RUN, and genpd cuts ANS2 only at noirq.
+ */
 static void m1_probe_prepare(void)
 {
+	static const u8 stage = ASC_PROBE_STAGE;
 	u32 ctrl;
 	u64 t0;
 	int ret;
 
+	/* The stage first: from here on the record says the probe began, and 0x6010 how far it got. */
+	m1_kwrite(0x6004, &stage, 1);
+	m1_probe_at(ASC_AT_PREPARE);
 	/* SIO_CPU fully on first, as B2 has it for its read: the table's own word, entry 61's, which ends its clock's self-gating. */
 	writel_relaxed(e1_post_slpa[M1_SIO_ENTRY].val, post_map[M1_SIO_ENTRY]);
 	dsb(sy);
 	t0 = m1_now();
 	while (!asc_ps_on(readl(m1_sio + M1_PS_SIO_CPU)) && m1_now() - t0 < m1_tps / 100)
 		cpu_relax();
-	m1_pr.sio_run = m1_probe_word("SIO", "at prepare, its firmware running", m1_sio_mbox, readl(m1_sio + M1_PS_SIO_CPU));
-	m1_pr.ans_run = m1_probe_word("ANS", "at prepare, its firmware running", m1_ans_mbox, readl(m1_sio + M1_PS_ANS2));
-	m1_pr.pmp_run = m1_probe_word("PMP", "at prepare, its firmware running", m1_pmp_mbox, readl(m1_ps + M1_PS_PMP_RO));
+	m1_probe_at(ASC_AT_SIO_RUN);
+	m1_pr.sio_run = m1_probe_word("SIO", "at prepare, its firmware running", m1_sio_mbox, readl(m1_sio + M1_PS_SIO_CPU), true);
+	m1_probe_at(ASC_AT_ANS_PREP);
+	m1_pr.ans_prep = m1_probe_word("ANS", "at prepare, its firmware shut down by the NVMe driver's suspend, ANS2 still on", m1_ans_mbox,
+				       readl(m1_sio + M1_PS_ANS2), true);
+	m1_probe_at(ASC_AT_PMP_RUN);
+	m1_pr.pmp_run = m1_probe_word("PMP", "at prepare, its firmware running", m1_pmp_mbox, readl(m1_ps + M1_PS_PMP_RO), true);
+	m1_probe_at(ASC_AT_SIO_IDLE);
 	ret = apple_rtkit_is_running(m1_sio_rtk) ? apple_rtkit_idle(m1_sio_rtk) : -ENODEV;
 	m1_pr.sio_idle_ok = !ret;
 	pr_info("probe: SIO: its idle pair returned %d; CPU_CONTROL %08x CPU_STATUS %08x\n", ret,
 		 readl(m1_sio_asc + M1_ASC_CPU_CONTROL), readl(m1_sio_asc + M1_ASC_CPU_STATUS));
-	m1_pr.sio_idle = m1_probe_word("SIO", "after its idle pair", m1_sio_mbox, readl(m1_sio + M1_PS_SIO_CPU));
-	if (ret)
-		return;
-	ctrl = readl(m1_sio_asc + M1_ASC_CPU_CONTROL);
-	writel(ctrl & ~M1_ASC_CPU_RUN, m1_sio_asc + M1_ASC_CPU_CONTROL);
-	dsb(sy);
-	m1_pr.sio_stop_ok = (ctrl & M1_ASC_CPU_RUN) && !(readl(m1_sio_asc + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN);
-	pr_info("probe: SIO: RUN cleared: CPU_CONTROL %08x before, %08x after; CPU_STATUS %08x\n", ctrl,
-		 readl(m1_sio_asc + M1_ASC_CPU_CONTROL), readl(m1_sio_asc + M1_ASC_CPU_STATUS));
-	m1_pr.sio_stopped = m1_probe_word("SIO", "after RUN was cleared", m1_sio_mbox, readl(m1_sio + M1_PS_SIO_CPU));
-	/* As m1_sio_fw_stop(): genpd cuts its power at noirq. */
-	msleep(2);
+	m1_probe_at(ASC_AT_SIO_IDLED);
+	m1_pr.sio_idle = m1_probe_word("SIO", "after its idle pair", m1_sio_mbox, readl(m1_sio + M1_PS_SIO_CPU), true);
+	if (!ret) {
+		m1_probe_at(ASC_AT_SIO_STOP);
+		ctrl = readl(m1_sio_asc + M1_ASC_CPU_CONTROL);
+		writel(ctrl & ~M1_ASC_CPU_RUN, m1_sio_asc + M1_ASC_CPU_CONTROL);
+		dsb(sy);
+		m1_pr.sio_stop_ok = (ctrl & M1_ASC_CPU_RUN) && !(readl(m1_sio_asc + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN);
+		pr_info("probe: SIO: RUN cleared: CPU_CONTROL %08x before, %08x after; CPU_STATUS %08x\n", ctrl,
+			 readl(m1_sio_asc + M1_ASC_CPU_CONTROL), readl(m1_sio_asc + M1_ASC_CPU_STATUS));
+		m1_probe_at(ASC_AT_SIO_STOPPED);
+		m1_pr.sio_stopped = m1_probe_word("SIO", "after RUN was cleared", m1_sio_mbox, readl(m1_sio + M1_PS_SIO_CPU), true);
+		/* As m1_sio_fw_stop(): genpd cuts its power at noirq. */
+		msleep(2);
+	}
+	m1_probe_at(ASC_AT_NOIRQ);
 }
 
-/* probe=1, the first suspend's prepare_late, after the noirq pass: ANS, then pmp_out=1's steps on the PMP, then SIO raised again. */
+/* probe=1, that suspend's prepare_late, after the noirq pass: ANS, then pmp_out=1's steps on the PMP, then SIO raised again. */
 static void m1_probe_late(void)
 {
-	static const u8 stage = ASC_PROBE_STAGE;
-	u32 ps, ctrl, st;
-	bool raised;
+	u32 ps, up, ctrl, st;
+	bool off, raised;
 	u8 b[3];
 	u64 t0;
 	int ret;
 
+	m1_probe_at(ASC_AT_LATE);
 	pr_info("probe: after noirq: SIO %08x SIO_CPU %08x UART_P %08x SPI_P %08x ANS2 %08x ps_pmp %08x; 0x2922c0044 %08x 0x2922c0040 %08x; fabric %08x DCS %08x 0x28e20c400 %08x\n",
 		 readl(m1_sio + M1_PS_SIO), readl(m1_sio + M1_PS_SIO_CPU), readl(m1_sio + M1_PS_UART_P), readl(m1_sio + M1_PS_SPI_P),
 		 readl(m1_sio + M1_PS_ANS2), readl(m1_ps + M1_PS_PMP_RO), readl(m1_pos + M1_POS_GATE44), readl(m1_pos + M1_POS_GATE40),
@@ -3601,48 +3642,75 @@ static void m1_probe_late(void)
 
 	/* ANS, as B2's ops 149-151 find it: ANS2 raised if Linux has it off, the word read, ANS2 written back as it was. */
 	ps = readl(m1_sio + M1_PS_ANS2);
-	m1_pr.ans_was_on = asc_ps_on(ps);
-	if (!m1_pr.ans_was_on) {
+	off = !asc_ps_on(ps);
+	if (off) {
+		m1_probe_at(ASC_AT_ANS_UP);
 		writel(ASC_ANS2_UP, m1_sio + M1_PS_ANS2);
 		dsb(sy);
 		t0 = m1_now();
 		while (!asc_ps_on(readl(m1_sio + M1_PS_ANS2)) && m1_now() - t0 < m1_tps / 100)
 			cpu_relax();
-		m1_pr.ans_raised = asc_ps_on(readl(m1_sio + M1_PS_ANS2));
 	}
-	m1_pr.ans_late = m1_probe_word("ANS", m1_pr.ans_was_on ? "after noirq, ANS2 still on" : "after noirq, ANS2 raised as B2's op 149 raises it",
-				       m1_ans_mbox, readl(m1_sio + M1_PS_ANS2));
-	if (!m1_pr.ans_was_on) {
-		writel(ps, m1_sio + M1_PS_ANS2);
+	m1_probe_at(ASC_AT_ANS_LATE);
+	/* The byte's two bits and the read go by one look at ANS2: the word is read with was_on or raised, and only then. */
+	up = readl(m1_sio + M1_PS_ANS2);
+	m1_pr.ans_was_on = !off && asc_ps_on(up);
+	m1_pr.ans_raised = off && asc_ps_on(up);
+	m1_pr.ans_late = m1_probe_word("ANS", off ? "after noirq, ANS2 raised as B2's op 149 raises it" : "after noirq, ANS2 still on",
+				       m1_ans_mbox, up, true);
+	m1_pr.ans_back = true;
+	if (off) {
+		m1_probe_at(ASC_AT_ANS_BACK);
+		/* As found, less what the kernel's driver never writes back either: BUSY and the two write-1-to-clear flags. */
+		writel(ps & ~ASC_PS_NOT_WRITTEN, m1_sio + M1_PS_ANS2);
 		dsb(sy);
-		pr_info("probe: ANS2 written back as found, %08x: it reads %08x\n", ps, readl(m1_sio + M1_PS_ANS2));
+		t0 = m1_now();
+		do {
+			up = readl(m1_sio + M1_PS_ANS2);
+		} while (((up ^ ps) & ASC_PS_STATE) && m1_now() - t0 < m1_tps / 100);
+		m1_pr.ans_back = !((up ^ ps) & ASC_PS_STATE);
+		pr_info("probe: ANS2 found %08x, written back %08x: it reads %08x, its target and actual state %s\n", ps,
+			 ps & ~ASC_PS_NOT_WRITTEN, up, m1_pr.ans_back ? "as found" : "NOT as found within 10 ms");
 	}
 
 	/* The PMP: pmp_out=1's steps, K4's, with its word read around each. */
+	m1_probe_at(ASC_AT_PMP_LATE);
 	ps = readl(m1_ps + M1_PS_PMP_RO);
 	m1_pr.pmp_on = asc_ps_on(ps);
-	m1_pr.pmp_late = m1_probe_word("PMP", "after noirq, before its idle pair", m1_pmp_mbox, ps);
+	m1_pr.pmp_late = m1_probe_word("PMP", "after noirq, before its idle pair", m1_pmp_mbox, ps, true);
+	m1_probe_at(ASC_AT_PMP_IDLE);
 	ret = apple_rtkit_is_running(m1_pmp_rtk) ? apple_rtkit_idle(m1_pmp_rtk) : -ENODEV;
 	m1_pr.pmp_idle_ok = !ret;
+	st = readl(m1_pmp_asc + M1_ASC_CPU_STATUS);
 	t0 = m1_now();
-	do {
+	while (!ret && !(st & M1_ASC_IDLE) && m1_now() - t0 < m1_tps / 100)
 		st = readl(m1_pmp_asc + M1_ASC_CPU_STATUS);
-	} while (!ret && !(st & M1_ASC_IDLE) && m1_now() - t0 < m1_tps / 100);
+	/* Preemptible here: a last read, so that a long preemption can't end the poll on a stale value, as in m1_pmp_out(). */
+	if (!ret && !(st & M1_ASC_IDLE))
+		st = readl(m1_pmp_asc + M1_ASC_CPU_STATUS);
 	pr_info("probe: PMP: its idle pair returned %d; CPU_CONTROL %08x CPU_STATUS %08x\n", ret,
 		 readl(m1_pmp_asc + M1_ASC_CPU_CONTROL), st);
-	m1_pr.pmp_idle = m1_probe_word("PMP", "after its idle pair", m1_pmp_mbox, readl(m1_ps + M1_PS_PMP_RO));
+	m1_probe_at(ASC_AT_PMP_IDLED);
+	/* pmp_on stays true only if ps_pmp read actual f for every read of the word made here, the last one too. */
+	ps = readl(m1_ps + M1_PS_PMP_RO);
+	m1_pr.pmp_on = m1_pr.pmp_on && asc_ps_on(ps);
+	m1_pr.pmp_idle = m1_probe_word("PMP", "after its idle pair", m1_pmp_mbox, ps, true);
 	if (!ret && (st & M1_ASC_IDLE)) {
+		m1_probe_at(ASC_AT_PMP_STOP);
 		ctrl = readl(m1_pmp_asc + M1_ASC_CPU_CONTROL);
 		writel(ctrl & ~M1_ASC_CPU_RUN, m1_pmp_asc + M1_ASC_CPU_CONTROL);
 		dsb(sy);
 		m1_pr.pmp_stop_ok = (ctrl & M1_ASC_CPU_RUN) && !(readl(m1_pmp_asc + M1_ASC_CPU_CONTROL) & M1_ASC_CPU_RUN);
 		pr_info("probe: PMP: RUN cleared: CPU_CONTROL %08x before, %08x after; CPU_STATUS %08x\n", ctrl,
 			 readl(m1_pmp_asc + M1_ASC_CPU_CONTROL), readl(m1_pmp_asc + M1_ASC_CPU_STATUS));
-		m1_pr.pmp_stopped = m1_probe_word("PMP", "after RUN was cleared, as B2's op 159 finds it", m1_pmp_mbox,
-						  readl(m1_ps + M1_PS_PMP_RO));
+		m1_probe_at(ASC_AT_PMP_STOPPED);
+		ps = readl(m1_ps + M1_PS_PMP_RO);
+		m1_pr.pmp_on = m1_pr.pmp_on && asc_ps_on(ps);
+		m1_pr.pmp_stopped = m1_probe_word("PMP", "after RUN was cleared, as B2's op 159 finds it", m1_pmp_mbox, ps, true);
 	}
 
 	/* SIO: its parents raised (sio_on=1's writes), SIO_CPU on with the table's own word, then what B2's op 51 polls. */
+	m1_probe_at(ASC_AT_SIO_UP);
 	raised = m1_sio_raise();
 	pr_info("probe: SIO: its parents %s; SIO %08x UART_P %08x SPI_P %08x\n",
 		 raised ? "all read actual f within 10 ms" : "did NOT all read actual f within 10 ms", readl(m1_sio + M1_PS_SIO),
@@ -3652,25 +3720,40 @@ static void m1_probe_late(void)
 	t0 = m1_now();
 	while (!asc_ps_on(readl(m1_sio + M1_PS_SIO_CPU)) && m1_now() - t0 < m1_tps / 100)
 		cpu_relax();
+	m1_probe_at(ASC_AT_SIO_LATE);
 	ps = readl(m1_sio + M1_PS_SIO_CPU);
 	m1_pr.sio_on = asc_ps_on(ps);
-	m1_pr.sio_late = m1_probe_word("SIO", "after noirq, its parents and SIO_CPU raised, as B2's op 51 finds it", m1_sio_mbox, ps);
+	m1_pr.sio_late = m1_probe_word("SIO", "after noirq, its parents and SIO_CPU raised, as B2's op 51 finds it", m1_sio_mbox, ps, true);
+	m1_probe_at(ASC_AT_DONE);
 
 	b[0] = asc_sio_byte(m1_pr.sio_run, m1_pr.sio_idle, m1_pr.sio_stopped, m1_pr.sio_late, m1_pr.sio_idle_ok, m1_pr.sio_stop_ok,
 			    m1_pr.sio_on);
 	b[1] = asc_pmp_byte(m1_pr.pmp_run, m1_pr.pmp_late, m1_pr.pmp_idle, m1_pr.pmp_stopped, m1_pr.pmp_idle_ok, m1_pr.pmp_stop_ok,
 			    m1_pr.pmp_on);
-	b[2] = asc_ans_byte(m1_pr.ans_run, m1_pr.ans_was_on, m1_pr.ans_late, m1_pr.ans_raised);
+	b[2] = asc_ans_byte(m1_pr.ans_prep, m1_pr.ans_was_on, m1_pr.ans_late, m1_pr.ans_raised, m1_pr.ans_load, m1_pr.ans_load_read,
+			    m1_pr.ans_back);
 	ret = m1_kwrite(0x6005, b, 3);
-	ret = ret ?: m1_kwrite(0x6004, &stage, 1);
+	/* From the bytes, as m1-crumbs reads them: a read that wasn't made says NOT READ, never clear. */
 	pr_info("probe: SUMMARY: bit 1 in the state B2 finds: SIO %s, ANS %s, PMP %s; bytes %02x %02x %02x, written to the PMU: %d\n",
-		 m1_pr.sio_late ? "SET" : "clear", m1_pr.ans_late ? "SET" : "clear", m1_pr.pmp_stopped ? "SET" : "clear", b[0], b[1],
+		 asc_final_str(asc_sio_final(b[0])), asc_final_str(asc_ans_final(b[2])), asc_final_str(asc_pmp_final(b[1])), b[0], b[1],
 		 b[2], ret);
 }
 
-/* probe=1 at load: the three mailbox pages mapped, ANS2 off the never-write list, and the three words awake, for the record. Reads only. */
+/*
+ * probe=1 at load: the table's entry 61 a raise of SIO_CPU, ANS2 off the never-write list, the three mailbox pages
+ * mapped, and ANS's and the PMP's words awake, one read each with no poll: both firmwares are in use. SIO's isn't
+ * read here (SIO_CPU gates its own clock awake, actual 4). ANS's read goes into its byte: it's the only one made
+ * with ANS's firmware running. Reads only.
+ */
 static int __init m1_probe_init(void)
 {
+	const struct e1_mmio_write *w = &e1_post_slpa[M1_SIO_ENTRY];
+	u32 ps;
+
+	if (w->addr != M1_PS_SIO_PAGE + M1_PS_SIO_CPU || w->width != 4 || (w->val & 0xf) != 0xf) {
+		pr_err("m1: probe: entry %u of the post-slpa table isn't a raise of SIO_CPU; refusing\n", M1_SIO_ENTRY);
+		return -EINVAL;
+	}
 	if (m1_never(M1_PS_SIO_PAGE + M1_PS_ANS2, 1)) {
 		pr_err("m1: probe: ANS2's word is on the never-write list; refusing\n");
 		return -EPERM;
@@ -3684,9 +3767,11 @@ static int __init m1_probe_init(void)
 	}
 	pr_info("m1: probe: no replay with this load; awake: SIO_CPU %08x ANS2 %08x ps_pmp %08x\n", readl(m1_sio + M1_PS_SIO_CPU),
 		readl(m1_sio + M1_PS_ANS2), readl(m1_ps + M1_PS_PMP_RO));
-	m1_probe_word("SIO", "awake, at load", m1_sio_mbox, readl(m1_sio + M1_PS_SIO_CPU));
-	m1_probe_word("ANS", "awake, at load", m1_ans_mbox, readl(m1_sio + M1_PS_ANS2));
-	m1_probe_word("PMP", "awake, at load", m1_pmp_mbox, readl(m1_ps + M1_PS_PMP_RO));
+	m1_probe_word("SIO", "awake, at load", m1_sio_mbox, readl(m1_sio + M1_PS_SIO_CPU), false);
+	ps = readl(m1_sio + M1_PS_ANS2);
+	m1_pr.ans_load_read = asc_ps_on(ps);
+	m1_pr.ans_load = m1_probe_word("ANS", "awake, at load, its firmware running", m1_ans_mbox, ps, false);
+	m1_probe_word("PMP", "awake, at load, its firmware running", m1_pmp_mbox, readl(m1_ps + M1_PS_PMP_RO), false);
 	return 0;
 }
 
