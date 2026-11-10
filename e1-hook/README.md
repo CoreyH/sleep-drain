@@ -163,14 +163,24 @@ so the Mac should come back as from any failed suspend; that hasn't been tried, 
 didn't come back isn't explained (RESEARCH.md, "The probe's run").
 
 `probe=1 look=1 gate=1` (`pkexec e1-hook/probe --gate`; `gate_test.h`) is the look and one test after
-it, the only part of a look that writes registers. After the look that follows noirq it switches off
-the five UARTs Linux's suspend leaves at 4 (0x200, `ps_words=1`'s value), waits up to 100 ms for bit 30
-of 0x28e5a0050, the gate word B2 polls after SIO's subtree, gives the fabric lane above SIO, AFNC2_LW1,
-macOS's 0x1000030f and reads it back, waits for the gate again, and writes all six words back as found,
-less the bits the kernel never writes back. Each word goes out once and back once, through one function.
-Everything is logged in full; the step is at 0x6010 with 0x20 set, and a byte at 0x6005 says how each
-part went. The launcher asks the module for `gate=Y` as it does for `look=Y`, and prints the test's
-lines for the photo. RESEARCH.md, "The gate test as built", has why.
+it, the only part of a look that writes registers. After the look that follows noirq it reads the six
+words it may write and SIO's own, and stops there, writing nothing, if SIO reads on or a UART is in
+use. Otherwise it switches off the five UARTs Linux's suspend leaves at 4 (0x200, `ps_words=1`'s
+value), waits up to 100 ms for bit 30 of 0x28e5a0050, the gate word B2 polls after SIO's subtree, reads
+the lane and the gate once more, gives the fabric lane above SIO, AFNC2_LW1, macOS's 0x1000030f and
+reads it back, waits for the gate again, and writes all six words back as found, less the bits the
+kernel never writes back. Each word goes out once and back once, through one function, and the load
+refuses if one of them is on the never-write list.
+
+**It may not come back.** If the gate closes, SIO's island loses power with SIO's firmware running, and
+the kernel can't restart that firmware: the screen may stay dark, as after the probe (the launcher says
+so, and what to do then, before it asks for the suspend). So the record is
+made to stand without the kernel log: the step at 0x6010 with 0x20 set, the result byte at 0x6005
+(zeroed when the test starts), and the lane's three reads, two bytes each, at 0x6011-0x6016, written
+before anything is put back. `m1-crumbs` reads all of it after the restart. When it does come back,
+everything is in the kernel log in full, and the launcher prints the look's lines above the photo's
+block and the test's lines in it, as it asks the module for `gate=Y` as it does for `look=Y`.
+RESEARCH.md, "The gate test as built", has why, and what the review of #80 changed.
 
 ## What holds for every one-way run
 

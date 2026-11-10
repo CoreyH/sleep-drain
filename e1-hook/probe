@@ -45,7 +45,10 @@
 # of a look that writes registers: after the second look the module switches
 # off the five UARTs Linux's suspend leaves at 4, watches the gate the engine
 # waits on after SIO's subtree, gives the fabric lane above SIO macOS's value,
-# watches again, and writes all six words back as it found them.
+# watches again, and writes all six words back as it found them. If the gate
+# does close, SIO's island loses power with SIO's firmware running, which
+# Linux's own suspend doesn't do here: the Mac may then not come back, as after
+# the probe, and e1-hook/m1-crumbs reads the test's record from the PMU.
 #
 # It asks for the suspend through /sys/power/state, so systemd's sleep hook
 # doesn't run: no line in the sleep log, and the radios stay as they are.
@@ -194,6 +197,8 @@ fi
 # and stopped nothing: it's asked for again, twice at most. Once that part has begun, in this script's suspend or in
 # one something else asked for meanwhile (the lid, logind), there is no other.
 rc=none
+# The gate test's other ending, said before it can happen: afterwards there may be no screen to say it on.
+((!gate)) || log "THE GATE TEST MAY NOT COME BACK. If the screen goes dark and is still dark after a minute, hold the power key until the Mac restarts, log in, and tell Claude: that is one of this test's two endings, and its result is then in the PMU."
 for try in 1 2 3; do
   [[ $(get "$MODDIR/parameters/$count") == 0 ]] || break
   log "$(now) asking for the suspend ($try of 3 at most). HANDS OFF the keyboard and trackpad until the photo block. The screen may flicker; the Mac does not sleep: the module fails the suspend when it's done"
@@ -217,6 +222,11 @@ if [[ $began == 0 ]]; then
   keep "$out" || log "(that wasn't saved: the lines above are the record)"
   exit 1
 fi
+# The gate test's look after noirq goes above the photo block: below it, its thirty lines would push the SUMMARY off the screen.
+if ((gate)); then
+  log "kernel log, the look after noirq, which came before the gate test:"
+  klog "e1_hook: look: after noirq"
+fi
 log ""
 log "==================== TAKE A PHOTO OF THIS SCREEN ===================="
 log "$(now) back; this script's last suspend returned $rc (non-zero is right: the module fails it; none: another suspend got there first)"
@@ -224,7 +234,7 @@ log "replay_done=$(get "$MODDIR/parameters/replay_done") (0 is right: nothing re
 if ((look)); then
   [[ $plc == 1 ]] || log "THE LOOK AFTER NOIRQ RAN AT ANOTHER SUSPEND THAN THIS SCRIPT'S LAST (prepare_late_calls 1 is the plain case): the lines below are what there is."
   if ((gate)); then
-    log "kernel log, the gate test (the SUMMARY line is the result; both looks are in the saved file):"
+    log "kernel log, the gate test (the SUMMARY line is the result; both looks are above, and in the saved file):"
     klog "e1_hook: look: gate:"
   else
     log "kernel log, the look after noirq (the look at the load is above, and in the saved file):"
@@ -237,10 +247,6 @@ else
 fi
 log "====================================================================="
 log ""
-if ((gate)); then
-  log "kernel log, the look after noirq, which came before the gate test:"
-  klog "e1_hook: look: after noirq"
-fi
 log "Saving to the boot partition. If nothing more appears within a minute, the photo is the result: restart the Mac."
 if keep "$out"; then
   log "Saved. Now restart the Mac (hold the power key if the keyboard doesn't answer), log in, and tell Claude."

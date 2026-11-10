@@ -2237,11 +2237,13 @@ typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
 #include "look.h"
+#include "gate_test.h"
 #define __iomem
 #define __init
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define scnprintf snprintf
 #define PAGE_SIZE 0x4000UL
+#define EPERM 1
 #define ENOMEM 12
 #define ENODEV 19
 """
@@ -2259,6 +2261,14 @@ static void *post_map[1];
 static const struct { unsigned int idx; } m1_waits[1] = { { 0 } };
 static void *m1_fab(void) { return post_map[m1_waits[0].idx]; }
 static unsigned int maps, map_fail;
+/* gate=1's check at load: each address it asks about is printed, and the one the scenario names is on the list. */
+static bool gate;
+static u64 never_at;
+static bool m1_never(u64 pa, unsigned int n)
+{
+	printf("never %llx %u\n", (unsigned long long)pa, n);
+	return pa == never_at;
+}
 /* ioremap_np(): the page of each range the look may map, or NULL for the map_fail-th call. */
 static void *ioremap_np(unsigned long long phys, unsigned long size)
 {
@@ -2336,6 +2346,14 @@ int main(void)
 	load(4, true, false, true, 0);	/* SIO's page isn't there */
 	load(5, true, true, false, 0);	/* the p-state page isn't there */
 	load(6, true, true, true, 0);
+	gate = true;
+	load(7, true, true, true, 0);	/* gate=1: its six words asked about, none on the list */
+	never_at = 0x28e580268ULL;
+	load(8, true, true, true, 0);	/* a UART's word on the list */
+	never_at = 0x28e580160ULL;
+	load(9, true, true, true, 0);	/* the lane's */
+	never_at = 0;
+	gate = false;
 	printf("plain\n");
 	m1_look("WHEN", 0);
 	return 0;
@@ -2418,7 +2436,7 @@ def look_tests(g, src, dec):
 
     maps3 = ["map 28e000000 1e000", "map 28e5a0000 4000", "map 28e09c000 4000"]
     whole = looked(0x10) + ["k 6010 00", "k 6004 00"]
-    check(len(loads) == 7 and not stray
+    check(len(loads) == 10 and not stray and not any(line.startswith("never ") for i in range(7) for line in loads[i])
           and [line for line in loads[0] if line.startswith("map ")] == maps3 + ["map 2922c0000 4000"] and ev(loads[0]) == whole and loads[0][-1] == "ret 0"
           and [line for line in loads[1] if line.startswith("map ")] == maps3 and ev(loads[1]) == whole and loads[1][-1] == "ret 0"
           and sum(line.startswith("log look: awake, at load: ") for line in loads[0]) == 32,
@@ -2430,6 +2448,14 @@ def look_tests(g, src, dec):
               for i, want_ret in ((2, "ret -12"), (3, "ret -12"), (4, "ret -19"), (5, "ret -19"))),
           "a load where a mapping fails, or where SIO's page or the p-state page isn't there: refused, with nothing read and nothing marked",
           "\n".join(" | ".join(loads[i][-3:]) for i in (2, 3, 4, 5)))
+    # gate=1 at load: each of its six words is asked about before anything is read or marked, and one on the list refuses the load.
+    asked = [f"never {a:x} 1" for a in (0x28e580250, 0x28e580258, 0x28e580260, 0x28e580268, 0x28e580270, 0x28e580160)]
+    check([line for line in loads[7] if line.startswith("never ")] == asked and ev(loads[7]) == whole and loads[7][-1] == "ret 0"
+          and loads[7].index(asked[-1]) < loads[7].index("k 6004 0f")
+          and [line for line in loads[8] if line.startswith("never ")] == asked[:4] and [line for line in loads[9] if line.startswith("never ")] == asked
+          and all(loads[i][-1] == "ret -1" and not ev(loads[i]) and sum(line.startswith("err ") for line in loads[i]) == 1 for i in (8, 9)),
+          "gate=1 at load: its five UART words and the lane's are checked against the never-write list before the load's look, and the"
+          " load is refused, with nothing read or marked, if one of them is on it", "\n".join(loads[7][:10] + loads[8][-3:] + loads[9][-3:]))
     ran = ran[ran.index("plain") + 1:]
     events = [line for line in ran if line.split()[0] in ("r", "k")]
     check(events == want and not stray and len(events) == 8 + 3 + 6 + 43 + 1 + 7 + 6 + 30 + 2
@@ -2472,7 +2498,7 @@ def look_tests(g, src, dec):
     check(in_order_of(linit, ["\tm1_look_clk = ioremap_np(LOOK_CLKGEN, LOOK_CLKGEN_N * LOOK_CLKGEN_STEP);\n\tm1_look_ga = ioremap_np(LOOK_GATE_A, PAGE_SIZE);\n"
                               "\tm1_look_gb = ioremap_np(LOOK_GATE_B, PAGE_SIZE);\n\tif (!m1_pos)\n\t\tm1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);\n"
                               "\tif (!m1_look_clk || !m1_look_ga || !m1_look_gb || !m1_pos) {\n", "\t\treturn -ENOMEM;\n\t}\n"
-                              "\tif (!m1_sio || !m1_ps || !post_map[m1_waits[0].idx]) {\n", "\t\treturn -ENODEV;\n\t}\n"
+                              "\tif (!m1_sio || !m1_ps || !post_map[m1_waits[0].idx]) {\n", "\t\treturn -ENODEV;\n\t}\n",
                               "\tm1_look(\"awake, at load\", LOOK_LOAD);\n\tm1_look_at(LOOK_AT_NONE);\n\tm1_kwrite(0x6004, &zero, 1);\n\treturn 0;\n"])
           and not re.search(wr, linit) and not re.search(wr, cut("static void m1_look(const char *when, u8 pass)", "\n}\n"))
           and not re.search(wr, cut("static void m1_look_at(u8 group)", "\n}\n"))
@@ -2514,19 +2540,27 @@ GATE_HDR = r"""
 #include "gate_test.h"
 int main(void)
 {
-	static const unsigned short uart[GATE_UART_N] = GATE_UARTS;
-	static const u32 w[] = { 0x1000030f, 0x1f0000ff, 0x1f0003ff, 0x100000ff, 0x1000000f, 0x0000030f, 0x1400024f, 0x00000244, 0x00000200, 0x00000044, 0 };
+	static const unsigned short uart[GATE_UART_N] = GATE_UARTS, kid[GATE_KID_N] = GATE_KIDS;
+	static const u32 w[] = { 0x1000030f, 0x1f0000ff, 0x1f0003ff, 0x100000ff, 0x1000000f, 0x0000030f, 0x1400024f, 0x00000244, 0x00000200, 0x00000044, 0,
+				 0x1f000bff, 0x0000080f };
 	unsigned int i, j;
+	u8 p[2];
 
 	printf("consts %x %x %x %x %x %x %x %x %d", GATE_LANE, GATE_LANE_VAL, GATE_UART_VAL, GATE_PS_SET, GATE_PS_ACTUAL, GATE_SIO, GATE_CLOSED, GATE_PASS,
 	       GATE_UART_N);
 	for (i = 0; i < GATE_UART_N; i++)
 		printf(" %x", uart[i]);
+	printf("\nkids");
+	for (i = 0; i < GATE_KID_N; i++)
+		printf(" %x", kid[i]);
 	printf("\nat %d %d %d %d %d %d %d %d %d\n", GATE_AT_NONE, GATE_AT_READ, GATE_AT_UARTS, GATE_AT_WAIT1, GATE_AT_LANE, GATE_AT_WAIT2,
 	       GATE_AT_LANE_BACK, GATE_AT_UARTS_BACK, GATE_AT_DONE);
-	for (i = 0; i < sizeof(w) / sizeof(w[0]); i++)
+	for (i = 0; i < sizeof(w) / sizeof(w[0]); i++) {
+		gate_pack(w[i], p);
+		printf("one %x %d %d %d %02x %02x\n", w[i], gate_wanted(w[i]), gate_actual(w[i], 0), gate_actual(w[i], 0xf0), p[0], p[1]);
 		for (j = 0; j < sizeof(w) / sizeof(w[0]); j++)
 			printf("cmp %x %x %d %d\n", w[i], w[j], gate_took(w[i], w[j]), gate_back(w[i], w[j]));
+	}
 	for (i = 0; i < 128; i++)
 		printf("byte %u %x\n", i, gate_byte(i & 1, i >> 1 & 1, i >> 2 & 1, i >> 3 & 1, i >> 4 & 1, i >> 5 & 1, i >> 6 & 1));
 	return 0;
@@ -2549,22 +2583,25 @@ typedef uint64_t u64;
 """
 GATE_RUN_MODEL = r"""
 /*
- * A model of what the gate test touches: the five UARTs' power words and the lane's in SIO's page, and the six gate
- * words. A power word takes a write's target, and its actual state follows unless the scenario says the word is
- * stuck; the lane takes a write's auto fields only if the scenario lets it, and gates itself (actual 0) when its
- * floor is 0, auto is on, every UART is off and the scenario lets it. Bit 30 of 0x28e5a0050 follows the scenario's
- * rule. A write anywhere else, or a read of anything else, prints STRAY.
+ * A model of what the gate test touches: the five UARTs' power words, the lane's, and SIO's and the lane's other
+ * children's in SIO's page, and the six gate words. A power word takes a write's target, and its actual state
+ * follows unless the scenario says the word is stuck; the lane takes a write's auto fields only if the scenario lets
+ * it, and gates itself (actual 0) under UARTs that are all off, with a floor of 0 and auto on, or at any floor, as
+ * the scenario has it. Bit 30 of 0x28e5a0050 follows the scenario's rule. A write to anything but the six, or a
+ * read of anything else, prints STRAY. The clock ticks a millisecond a look at it.
  */
 static unsigned char sio_page[0x1000], ga_page[0x1000], gb_page[0x1000];
 static void *m1_sio = sio_page, *m1_look_ga = ga_page, *m1_look_gb = gb_page;
-static const u16 uart_off[GATE_UART_N] = GATE_UARTS;
+static const u16 uart_off[GATE_UART_N] = GATE_UARTS, kid_off[GATE_KID_N] = GATE_KIDS;
 static u32 uart[GATE_UART_N], lane;
 static unsigned int nread[GATE_UART_N + 1];
-static u64 m1_tps = 1000, fake_now;
+static u64 m1_tps = 1000, fake_now, off_tick;
 static struct scenario {
-	int rule;		/* the gate closes: 0 when every UART is off; 1 when the lane has gated itself too; 2 never */
-	int lane_takes, lane_gates, uart_stuck, lane_back_fails, uart_back_fails;
-	u32 uart_found, lane_found;
+	int rule;	/* the gate closes: 0 when every UART is off; 1 when the lane has gated itself too; 2 never; 3 late ticks after the UARTs went off */
+	int lane_takes, lane_gates, lane_gates_at_f, uart_stuck, lane_back_fails, uart_back_fails;
+	u32 uart_found[GATE_UART_N], lane_found, sio_found;
+	unsigned int late;
+	int lane_stays_gated;	/* once gated, the lane's actual state stays 0, whatever is written back */
 } sc;
 static int restoring;
 
@@ -2583,7 +2620,9 @@ static void settle(void)
 {
 	int floor0 = (lane >> 28 & 1) && !(lane >> 24 & 0xf);
 
-	lane = (lane & ~0xf0U) | (floor0 && uarts_off() && sc.lane_gates ? 0 : (lane & 0xf) << 4);
+	if (sc.lane_stays_gated && restoring)
+		return;
+	lane = (lane & ~0xf0U) | (uarts_off() && ((floor0 && sc.lane_gates) || sc.lane_gates_at_f) ? 0 : (lane & 0xf) << 4);
 }
 static int which(const void *p)
 {
@@ -2610,8 +2649,13 @@ static u32 readl(const void *p)
 		return uart[r];
 	if (r == GATE_UART_N)
 		return lane;
+	for (i = 0; i < GATE_KID_N; i++) {
+		if (q == sio_page + kid_off[i])
+			return i ? 0x00000300 : sc.sio_found;
+	}
 	if (q == ga_page + GATE_SIO) {
-		int closed = sc.rule == 0 ? uarts_off() : sc.rule == 1 ? uarts_off() && !(lane & 0xf0) : 0;
+		int closed = sc.rule == 0 ? uarts_off() : sc.rule == 1 ? uarts_off() && !(lane & 0xf0) :
+			     sc.rule == 3 ? uarts_off() && fake_now - off_tick >= sc.late : 0;
 
 		return gav[0] | (closed ? GATE_CLOSED : 0);
 	}
@@ -2626,7 +2670,7 @@ static u32 readl(const void *p)
 }
 static void writel(u32 v, void *p)
 {
-	int r = which(p);
+	int r = which(p), were_off = uarts_off();
 
 	if (r < 0) {
 		printf("STRAY write %08x\n", v);
@@ -2642,6 +2686,8 @@ static void writel(u32 v, void *p)
 		/* The target lands, the auto fields don't. */
 		lane = (lane & ~0xfU) | (v & 0xf);
 	}
+	if (!were_off && uarts_off())
+		off_tick = fake_now;
 	settle();
 }
 static int m1_kwrite(unsigned int addr, const u8 *b, unsigned int n)
@@ -2671,9 +2717,10 @@ static void run(unsigned int n, const struct scenario *s)
 
 	sc = *s;
 	fake_now = 0;
+	off_tick = 0;
 	restoring = 0;
 	for (i = 0; i < GATE_UART_N; i++)
-		uart[i] = sc.uart_found;
+		uart[i] = sc.uart_found[i];
 	lane = sc.lane_found;
 	memset(nread, 0, sizeof(nread));
 	printf("case %u\n", n);
@@ -2684,8 +2731,8 @@ static void run(unsigned int n, const struct scenario *s)
 
 int main(void)
 {
-	const struct scenario base = { 0, 1, 1, 0, 0, 0, 0x00000244, 0x1f0000ff };
-	struct scenario s[9];
+	const struct scenario base = { 0, 1, 1, 0, 0, 0, 0, { 0x244, 0x244, 0x244, 0x244, 0x244 }, 0x1f0000ff, 0x0f000200, 0, 0 };
+	struct scenario s[15];
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(s); i++)
@@ -2697,7 +2744,15 @@ int main(void)
 	s[5].uart_stuck = 1;			/* one UART doesn't go off */
 	s[6].lane_back_fails = 1;		/* the lane doesn't take its value back */
 	s[7].uart_back_fails = 1;		/* the UARTs don't take theirs back */
-	s[8].uart_found = 0x00000200; s[8].lane_found = 0x1f0003ff;	/* UARTs off already; the lane with its two flags set */
+	for (i = 0; i < GATE_UART_N; i++)	/* UARTs off already; the lane with its two flags set */
+		s[8].uart_found[i] = 0x00000200;
+	s[8].lane_found = 0x1f0003ff;
+	s[9].sio_found = 0x1f0000ff;		/* SIO reads on after noirq: not the state the test is for */
+	s[10].uart_found[3] = 0x000000ff;	/* something has a UART on */
+	s[11].rule = 1; s[11].lane_gates_at_f = 1;	/* the lane gates at Linux's own floor once the UARTs are off */
+	s[12].uart_found[1] = 0x00000200; s[12].uart_found[2] = 0x00000044; s[12].uart_found[4] = 0x00000200;	/* each UART found its own way */
+	s[13].rule = 3; s[13].late = LATE;	/* the gate closes late, by itself: after the first poll, before the lane's write */
+	s[14].lane_stays_gated = 1;		/* the lane takes its settings back, and its actual state stays 0 */
 	for (i = 0; i < ARRAY_SIZE(s); i++)
 		run(i, &s[i]);
 	return 0;
@@ -2707,7 +2762,7 @@ int main(void)
 
 def gate_tests(g, src, dec):
     """probe=1 look=1 gate=1 (e1-hook/probe --gate): gate_test.h against an independent reading of it; m1_gate_test() and its three
-    helpers as they stand against a model of the six power words and the gate; the places that call it; and its record through
+    helpers as they stand against a model of the power words and the gate; the places that call it; and its record through
     m1-crumbs. dec(stage, parked, left, down, at) runs m1-crumbs on a record."""
     def cut(start, end):
         at = src.index(start)
@@ -2723,31 +2778,41 @@ def gate_tests(g, src, dec):
 
         hdr = [line.split() for line in build("ghdr", GATE_HDR)]
         defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_PMU_RTC|M1_ALARM_ON)\s", line))
-        ran = build("grun", GATE_RUN_PRELUDE + defs + "static bool alarm = true;\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        # LATE: the model's gate closes this many ticks after the UARTs went off: past the first poll's last read, and before the
+        # read that comes right before the lane's write.
+        ran = build("grun", GATE_RUN_PRELUDE + "#define LATE 103\n" + defs + "static bool alarm = true;\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                     + GATE_RUN_MODEL + cut("static void m1_look_at(u8 group)", "\n}\n") + cut("static void m1_gate_log(const char *when)", "\n}\n")
                     + cut("static bool m1_gate_wait(const char *when)", "\n}\n") + cut("static u32 m1_gate_write(void __iomem *p,", "\n}\n")
                     + cut("static void m1_gate_test(void)", "\n}\n") + GATE_RUN_MAIN)
 
-    # The header: the lane and its value, the five UARTs and theirs, the gate word and its bit; what "took" and "back" compare.
+    # The header: the lane and its value, the five UARTs and theirs, the words only read, the gate word and its bit.
     uarts = [0x250, 0x258, 0x260, 0x268, 0x270]
     check(hdr[0] == ["consts", "160", "1000030f", "200", "1f00000f", "f0", "50", "40000000", "20", "5"] + [f"{u:x}" for u in uarts]
-          and hdr[1] == ["at"] + [str(i) for i in range(9)] and g["GATE_PASS"] == 0x20 and len(g["GATE_AT"]) == 9 and g["GATE_DONE"] == 8
+          and hdr[1] == ["kids", "180", "378", "380", "388", "3a8"]
+          and hdr[2] == ["at"] + [str(i) for i in range(9)] and g["GATE_PASS"] == 0x20 and len(g["GATE_AT"]) == 9 and g["GATE_DONE"] == 8
           and g["GATE_MARK"] == 0x80,
-          "gate_test.h: AFNC2_LW1 and macOS's value for it, UART2, 3, 4, 6, 7 and 0x200, the gate word 0x28e5a0050 and bit 30; nine marks"
-          " with 0x20 set, as m1-crumbs has them", str(hdr[:2]))
-    pw = {(src_name, ps_addr): val for src_name, ps_addr, val in
-          [("lane", 0x28e580160, 0x1000030f)] + [("uart", 0x28e580000 + u, 0x200) for u in uarts]}
+          "gate_test.h: AFNC2_LW1 and macOS's value for it, UART2, 3, 4, 6, 7 and 0x200, SIO's word and the lane's four other children to"
+          " read, the gate word 0x28e5a0050 and bit 30; nine marks with 0x20 set, as m1-crumbs has them", str(hdr[:3]))
+    pw = [(0x28e580160, 0x1000030f)] + [(0x28e580000 + u, 0x200) for u in uarts]
     table = cut("} m1_pw[] = {", "\n};\n")
-    check(all(f"{{ 0x{addr:x}ULL, 0x{val:08x}, " in table for (_, addr), val in pw.items()),
+    check(all(f"{{ 0x{addr:x}ULL, 0x{val:08x}, " in table for addr, val in pw),
           "the gate test's six words and values are ps_words=1's own for them: nothing is written that the runs don't write")
     cmp_bad = [r for r in hdr if r[0] == "cmp"
                and (int(r[3]) != (not (int(r[1], 16) ^ int(r[2], 16)) & 0x1f00000f) or int(r[4]) != (not (int(r[1], 16) ^ int(r[2], 16)) & 0x1f0000ff))]
     byte_bad = [r for r in hdr if r[0] == "byte" and int(r[2], 16) != (0x80 | int(r[1]))]
-    check(sum(r[0] == "cmp" for r in hdr) == 121 and not cmp_bad and sum(r[0] == "byte" for r in hdr) == 128 and not byte_bad,
-          "gate_test.h: a word took a value when its auto-enable, auto floor and target read as the value's, and is back as found when its"
-          " actual state does too; the byte has bit 7 and one bit an argument, in order", str(cmp_bad[:3] + byte_bad[:3]))
 
-    # m1_gate_test() as it stands, nine scenarios.
+    def packed(v):
+        return [v & 0xff, (v >> 24 & 0x1f) | (0x20 if v & 0x100 else 0) | (0x40 if v & 0x200 else 0) | (0x80 if v & 0x800 else 0)]
+
+    one_bad = [r for r in hdr if r[0] == "one" and (int(r[2]) != (int(r[1], 16) & 0xf == 0xf) or int(r[3]) != (not int(r[1], 16) & 0xf0)
+                                                    or int(r[4]) != (int(r[1], 16) & 0xf0 == 0xf0) or [int(r[5], 16), int(r[6], 16)] != packed(int(r[1], 16)))]
+    check(sum(r[0] == "cmp" for r in hdr) == 169 and not cmp_bad and sum(r[0] == "byte" for r in hdr) == 128 and not byte_bad
+          and sum(r[0] == "one" for r in hdr) == 13 and not one_bad,
+          "gate_test.h: a word took a value when its auto-enable, auto floor and target read as the value's, and is back as found when its"
+          " actual state does too; wanted is a target of f; the two packed bytes keep target, actual, the auto fields and three flags;"
+          " the byte has bit 7 and one bit an argument, in order", str(cmp_bad[:3] + byte_bad[:3] + one_bad[:3]))
+
+    # m1_gate_test() as it stands, fifteen scenarios.
     cases, cur = [], None
     for line in ran:
         if line.startswith("case "):
@@ -2756,26 +2821,40 @@ def gate_tests(g, src, dec):
         else:
             cur.append(line)
     stray = [line for line in ran if line.startswith("STRAY")]
+    found_u = {i: [0x244] * 5 for i in range(15)}
+    found_u[8] = [0x200] * 5
+    found_u[12] = [0x244, 0x200, 0x44, 0x244, 0x200]
+    found_l = {i: 0x1f0003ff if i == 8 else 0x1f0000ff for i in range(15)}
+    # What 0x6011-0x6016 gets: the lane packed three times. Before its write, after it, after the second poll.
+    packs = {0: "ff 1f 0f 10 0f 10", 1: "ff 1f 0f 10 0f 10", 2: "ff 1f ff 1f ff 1f", 3: "ff 1f 0f 10 0f 10", 4: "ff 1f ff 10 ff 10", 5: "ff 1f ff 10 ff 10",
+             6: "ff 1f 0f 10 0f 10", 7: "ff 1f 0f 10 0f 10", 8: "ff 7f 0f 10 0f 10", 11: "0f 1f 0f 10 0f 10", 12: "ff 1f 0f 10 0f 10", 13: "ff 1f 0f 10 0f 10",
+             14: "ff 1f 0f 10 0f 10"}
+    # Case 5: one UART stays on, so the model's lane, which gates itself only under a subtree that's all off, doesn't.
+    want = {0: 0xff, 1: 0xfd, 2: 0xe1, 3: 0xf5, 4: 0xe5, 5: 0xe4, 6: 0xdf, 7: 0xbf, 8: 0xff, 9: 0xe0, 10: 0xe0, 11: 0xff, 12: 0xff, 13: 0xff, 14: 0xdf}
 
     def ev(c, kinds=("w", "at", "k")):
         return [line for line in c if line.split()[0] in kinds]
 
-    def want_ev(uart_found, lane_found, byte):
-        back = [f"w 28e580{u:03x} {uart_found & ~0xb00:08x}" for u in uarts]
-        return (["at 21", "at 22"] + [f"w 28e580{u:03x} 00000200" for u in uarts] + ["at 23", "at 24", "w 28e580160 1000030f", "at 25", "at 26",
-                f"w 28e580160 {lane_found & ~0xb00:08x}", "at 27"] + back + ["at 28", f"k 6005 {byte:02x}"])
+    def want_ev(i):
+        if i in (9, 10):
+            return ["at 21", "k 6005 00", "at 28", f"k 6005 {want[i]:02x}"]
+        return (["at 21", "k 6005 00", "at 22"] + [f"w 28e580{u:03x} 00000200" for u in uarts] + ["at 23", "at 24", "w 28e580160 1000030f", "at 25",
+                "k 6011 " + packs[i], "at 26", f"w 28e580160 {found_l[i] & ~0xb00:08x}", "at 27"]
+                + [f"w 28e580{u:03x} {f & ~0xb00:08x}" for u, f in zip(uarts, found_u[i])] + ["at 28", f"k 6005 {want[i]:02x}"])
 
-    # Case 5: one UART stays on, so the model's lane, which gates itself only under a subtree that's all off, doesn't.
-    want = {0: 0xff, 1: 0xfd, 2: 0xe1, 3: 0xf5, 4: 0xe5, 5: 0xe4, 6: 0xdf, 7: 0xbf, 8: 0xff}
-    bad = [(i, ev(c)) for i, c in enumerate(cases) if ev(c) != want_ev(0x200 if i == 8 else 0x244, 0x1f0003ff if i == 8 else 0x1f0000ff, want[i])]
-    check(len(cases) == 9 and not stray and not bad,
-          "m1_gate_test() in nine scenarios: twelve writes and no other, each word once out and once back, to the five UARTs and the lane"
-          " alone, ps_words=1's values out and the found ones back less the bits the kernel leaves out, each step after its mark, the byte"
-          " last; and whatever the gate or the lane did in between, everything is written back", "\n".join(stray[:4] + [str(b) for b in bad[:2]]))
+    bad = [(i, [f"{a} | {b}" for a, b in zip(ev(c), want_ev(i)) if a != b] or [len(ev(c)), len(want_ev(i))]) for i, c in enumerate(cases) if ev(c) != want_ev(i)]
+    check(len(cases) == 15 and not stray and not bad,
+          "m1_gate_test() in fifteen scenarios: twelve writes and no other, each word once out and once back, to the five UARTs and the"
+          " lane alone, ps_words=1's values out and each word's own found value back less the bits the kernel leaves out; each step after"
+          " its mark; 0x6005 zeroed first, the lane's three reads to the PMU before anything is written back, the byte last; whatever the"
+          " gate or the lane did in between, everything is written back; and where SIO reads on or a UART is in use, nothing is written at"
+          " all", "\n".join(stray[:4] + [str(b) for b in bad[:3]]))
     # The model keeps a word's target, actual state and auto fields, not its two sticky flags: "as found" is by those, as gate_back() has it.
     ends = [[int(x, 16) & 0x1f0000ff for x in c[-1].split()[1:]] for c in cases]
-    check(all(ends[i] == [0x44] * 5 + [0x1f0000ff] for i in (0, 1, 2, 3, 4, 5)) and ends[8] == [0] * 5 + [0x1f0000ff]
-          and ends[6] == [0x44] * 5 + [0x100000ff] and ends[7] == [0] * 5 + [0x1f0000ff],
+    asfound = {i: [f & 0x1f0000ff for f in found_u[i]] + [0x1f0000ff] for i in range(15)}
+    asfound[10] = [0x44, 0x44, 0x44, 0xff, 0x44, 0x1f0000ff]
+    check(all(ends[i] == asfound[i] for i in range(15) if i not in (6, 7, 14)) and ends[6] == [0x44] * 5 + [0x100000ff] and ends[7] == [0] * 5 + [0x1f0000ff]
+          and ends[14] == [0x44] * 5 + [0x1f00000f],
           "after the test the six words read as found, in every scenario where the hardware takes the write-back; where it doesn't, they"
           " don't, and the byte says so", "\n".join(c[-1] for c in cases))
 
@@ -2783,40 +2862,59 @@ def gate_tests(g, src, dec):
         s = [line for line in c if line.startswith("log look: gate: SUMMARY: ")]
         return s[0][len("log look: gate: SUMMARY: "):] if len(s) == 1 else ""
 
-    texts = {0: "with SIO's subtree all off: SET; AFNC2_LW1 took macOS's value, and bit 30 then: SET; put back: AFNC2_LW1 as found, the UARTs as found",
-             1: "with SIO's subtree all off: clear; AFNC2_LW1 took macOS's value, and bit 30 then: SET; put back: AFNC2_LW1 as found, the UARTs as found",
-             2: "with SIO's subtree all off: clear; AFNC2_LW1 did NOT take macOS's value, and bit 30 then: clear;",
-             3: "with SIO's subtree all off: clear; AFNC2_LW1 took macOS's value, and bit 30 then: clear;",
-             6: "put back: AFNC2_LW1 NOT as found, the UARTs as found", 7: "put back: AFNC2_LW1 as found, the UARTs NOT all as found"}
+    b30 = "bit 30 of 0x28e5a0050 before AFNC2_LW1's write: "
+    texts = {0: "SIO's subtree all off; " + b30 + "SET; AFNC2_LW1 took macOS's value, and bit 30 after that: SET; put back: AFNC2_LW1 as found, the UARTs as found",
+             1: "SIO's subtree all off; " + b30 + "clear; AFNC2_LW1 took macOS's value, and bit 30 after that: SET; put back: AFNC2_LW1 as found, the UARTs as found",
+             2: "SIO's subtree all off; " + b30 + "clear; AFNC2_LW1 did NOT take macOS's value, and bit 30 after that: clear;",
+             3: "SIO's subtree all off; " + b30 + "clear; AFNC2_LW1 took macOS's value, and bit 30 after that: clear;",
+             # A UART that stayed on: the line the launcher shows as the result says the test decided nothing (Pullfrog on #80).
+             5: "INCONCLUSIVE: the five UARTs did NOT all go off, so SIO's subtree wasn't all off; " + b30 + "clear;",
+             6: "put back: AFNC2_LW1 NOT as found, the UARTs as found", 7: "put back: AFNC2_LW1 as found, the UARTs NOT all as found",
+             9: "NOT MADE: after noirq SIO reads on, or a UART has a target of f", 10: "NOT MADE: after noirq SIO reads on, or a UART has a target of f",
+             # The lane had gated at Linux's own floor, and comes back with the UARTs: neither is put down wrongly (the review of #80).
+             11: "SIO's subtree all off; " + b30 + "SET; AFNC2_LW1 took macOS's value, and bit 30 after that: SET; put back: AFNC2_LW1 as found, the UARTs as found",
+             13: "SIO's subtree all off; " + b30 + "SET;",
+             # Its settings back and its actual state not: that isn't as found.
+             14: "put back: AFNC2_LW1 NOT as found, the UARTs as found"}
     bad = [(i, summary(cases[i])) for i, t in texts.items() if t not in summary(cases[i])]
     check(not bad and all(summary(c).endswith(f"byte {want[i]:02x}, written to the PMU: 0") for i, c in enumerate(cases))
+          and ["INCONCLUSIVE" in summary(c) for c in cases] == [i == 5 for i in range(15)]
+          and ["NOT MADE" in summary(c) for c in cases] == [i in (9, 10) for i in range(15)]
+          and any("AFNC2_LW1 reads 1f00000f with everything written back: NOT as found within 10 ms" in line for line in cases[14])
           and any("AFNC2_LW1 found 1f0000ff, := 1000030f: it read 1f0000ff at once and reads 1f0000ff: auto-enable, auto floor and target NOT as written"
                   in line for line in cases[2])
-          and any("AFNC2_LW1 reads 1000000f then: its actual state 0: it gated itself" in line for line in cases[1])
+          and any("right before AFNC2_LW1's write: it reads 1f0000ff, its actual state not 0; 0x28e5a0050 reads 8004030f: bit 30 clear" in line for line in cases[1])
+          and any("right before AFNC2_LW1's write: it reads 1f00000f, its actual state 0 already; 0x28e5a0050 reads c004030f: bit 30 SET" in line for line in cases[11])
+          and any("right before AFNC2_LW1's write: it reads 1f0000ff, its actual state not 0; 0x28e5a0050 reads c004030f: bit 30 SET" in line for line in cases[13])
+          and any("AFNC2_LW1 reads 1000000f then: its actual state 0" in line for line in cases[1])
           and any("AFNC2_LW1 reads 100000ff then: its actual state not 0" in line for line in cases[4])
+          and any("AFNC2_LW1 reads 1f0000ff with everything written back: as found" in line for line in cases[11])
+          and any("below it: SIO 0f000200 DISPDFR_FE 00000300 DISPDFR_BE 00000300 MIPI_DSI 00000300 ISP_SYS 00000300" in line for line in cases[0])
           and sum(line.startswith("log look: gate: ") and ": gates 0x28e5a0000: +050 " in line for line in cases[0]) == 4,
-          "the SUMMARY line and the lines before it say what the gate and the lane did in each scenario, with the six gate words logged"
-          " four times: as found, after each poll, and at the end", str(bad[:2]) + "\n" + "\n".join(cases[2][:14]))
-    # A write that isn't met is read for 10 ms and no longer: the lane that doesn't take (case 2), the UART that stays on (5), the lane
-    # and the UARTs that don't take their values back (6, 7).
+          "the SUMMARY line and the lines before it say what the gate and the lane did in each scenario: the lane and the gate read right"
+          " before the lane's write, so a lane gated at Linux's floor or a gate that closed late isn't put down to the write; the lane"
+          " judged with everything back; the six gate words logged four times", str(bad[:2]) + "\n" + "\n".join(cases[11][:20]))
+    # A write that's met at once is read once; one that isn't, for 10 ms and no longer.
     nreads = [[int(x) for x in line.split()[1:]] for c in cases for line in c if line.startswith("reads ")]
-    # Met at once: a UART is read as found and once after each of its two writes; the lane once more, after the second poll. A write
-    # that isn't met adds nine reads, one a millisecond of the model's clock, to its first.
-    check(len(nreads) == 9 and nreads[0] == [3, 3, 3, 3, 3, 4] and nreads[2][5] == 13 and nreads[5][2] == 12 and nreads[6][5] == 13
-          and nreads[7][:5] == [12] * 5 and max(max(r) for r in nreads) == 13,
-          "each power word is read once as found and once after each write of it that's met at once; a write that isn't met is read for"
-          " 10 ms and no longer", str(nreads))
-    polls = [[line for line in c if "0x28e5a0050 reads" in line] for c in cases]
+    check(len(nreads) == 15 and nreads[0] == [3, 3, 3, 3, 3, 6] and nreads[12] == [3, 3, 3, 3, 3, 6] and nreads[9] == [1, 1, 1, 1, 1, 1]
+          and nreads[2][5] == 15 and nreads[5][2] == 12
+          and nreads[7][:5] == [12] * 5 and max(max(r) for r in nreads) <= 25,
+          "each UART is read once as found and once after each write of it that's met at once; the lane besides before its write, after"
+          " the second poll and at the end; a write that isn't met is read for 10 ms and no longer; a test that isn't made reads each"
+          " once", str(nreads))
+    polls = [[line for line in c if "0x28e5a0050 reads" in line and "right before" not in line] for c in cases]
     # The model's clock ticks once a look at it, a millisecond a tick: a poll that's met at its first read says 1 ms, one that isn't 101.
-    check(all(len(p) == 2 for p in polls) and "after 1 ms: bit 30 SET" in polls[0][0] and "after 101 ms: bit 30 clear" in polls[1][0]
-          and "after 1 ms: bit 30 SET" in polls[1][1] and "after 101 ms: bit 30 clear" in polls[3][1],
-          "the gate is polled twice, each for 100 ms and no longer, and a set bit ends the poll at once", str(polls[:2]))
+    check(all(len(p) == (0 if i in (9, 10) else 2) for i, p in enumerate(polls)) and "after 1 ms: bit 30 SET" in polls[0][0]
+          and "after 101 ms: bit 30 clear" in polls[1][0] and "after 1 ms: bit 30 SET" in polls[1][1] and "after 101 ms: bit 30 clear" in polls[3][1]
+          and "after 101 ms: bit 30 clear" in polls[13][0],
+          "the gate is polled twice, each for 100 ms and no longer, and a set bit ends the poll at once", str(polls[:2] + polls[13:]))
 
     # Where it's called from, and what it may write through.
     code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
     late = cut("static int e1_prepare_late(void)", "\n}\n")
     params = cut("static int __init e1_check_params(void)", "\n}\n")
     gt = cut("static void m1_gate_test(void)", "\n}\n")
+    linit = cut("static int __init m1_look_init(void)", "\n}\n")
     wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\([^;]*;"
     check("static bool gate;\nmodule_param(gate, bool, 0444);\n" in src and not re.search(r"\bgate\s*=[^=]", code_only)
           and in_order_of(params, ["\tif (look && !probe) {\n", "\tif (gate && !look) {\n\t\tpr_err(", "\t\treturn -EINVAL;\n\t}\n\tif (probe && (!wd1_mark || !pmp_stop)) {"])
@@ -2828,33 +2926,80 @@ def gate_tests(g, src, dec):
           and not re.findall(wr, cut("static bool m1_gate_wait(const char *when)", "\n}\n"))
           and re.findall(wr, cut("static u32 m1_gate_write(void __iomem *p,", "\n}\n")) == ["writel(val, p);"]
           and gt.count("m1_gate_write(") == 4 and all(f"m1_gate_write(m1_sio + {t}," in gt for t in ("uart[i]", "GATE_LANE"))
-          and gt.count("m1_gate_write(m1_sio + ") == 4 and "M1_PS_PMP_RO" not in gt and gt.count("m1_kwrite(0x6005, &res, 1)") == 1
-          and "static_assert(LOOK_SIO_PAGE + GATE_LANE == 0x28e580160ULL && LOOK_GATE_A + GATE_SIO == 0x28e5a0050ULL && GATE_PASS > LOOK_LOAD);\n" in src,
+          and gt.count("m1_gate_write(m1_sio + ") == 4 and "M1_PS_PMP_RO" not in gt and "m1_ps" not in gt and gt.count("m1_kwrite(0x6005, &res, 1)") == 2
+          and "static_assert(LOOK_SIO_PAGE + GATE_LANE == 0x28e580160ULL && LOOK_GATE_A + GATE_SIO == 0x28e5a0050ULL && GATE_PASS > LOOK_LOAD);\n" in src
+          and in_order_of(linit, ["\tif (gate) {\n", "\t\t\tif (m1_never(LOOK_SIO_PAGE + uart[i], 1))\n\t\t\t\tbreak;\n",
+                                  "\t\tif (i < GATE_UART_N || m1_never(LOOK_SIO_PAGE + GATE_LANE, 1)) {\n", "\t\t\treturn -EPERM;\n", "\tm1_look(\"awake, at load\", LOOK_LOAD);"]),
           "the gate test writes registers through one function and one writel(), four times, each to SIO's page at a UART's offset or the"
-          " lane's; its addresses are pinned", gt[:600])
+          " lane's; its addresses are pinned, and the load refuses if one of the six is on the never-write list", gt[:600])
 
     # Its record through m1-crumbs.
+    def gl(at, v, pack=(0xff, 0x1f, 0x0f, 0x10, 0x0f, 0x10)):
+        return g["gate_lines"](at, v, bytes(pack))
+
     rc, out, err = dec(0x0f, 0xfd, 0, 0, 0x28)
-    check(rc == 0 and "the looks wrote no register; gate=1's test, after them, changed six power words and wrote them back (--gate)" in out
+    check(rc == 0 and "the looks wrote no register; gate=1's test, after them, changes six power words and writes them back (--gate): how far it got is below" in out
           and "0x6010 = 0x28: the gate test, after both looks: every step taken: the byte written\n" in out
-          and "  bit 30 of 0x28e5a0050, the gate B2 polls after SIO's subtree, with the subtree all off: clear, through 100 ms\n" in out
-          and "  AFNC2_LW1 (0x28e580160), written macOS's 0x1000030f: took it within 10 ms; its actual state after the second poll: 0, so it gated itself\n" in out
-          and "  bit 30 of 0x28e5a0050 after that: SET\n" in out and "  written back as found: AFNC2_LW1 yes; the UARTs yes\n" in out
-          and "closed once the lane above SIO had macOS's value" in out and "DIDN'T FINISH" not in out,
-          "the gate test's record, the gate closing only with the lane at macOS's value: decoded as that", out + err)
+          and "0x6011-0x6016 read 0: the lane's three reads weren't written" in out
+          and "  bit 30 of 0x28e5a0050, the gate B2 polls after SIO's subtree, before the lane's write: clear, through 100 ms and at the read right before the write\n" in out
+          and "  AFNC2_LW1, written macOS's 0x1000030f: took it within 10 ms; its actual state after the second poll: 0\n" in out
+          and "  bit 30 of 0x28e5a0050 after that: SET\n" in out and "  read as found with everything written back: AFNC2_LW1 yes; the UARTs yes\n" in out
+          and "Closed after it: one before and one after can't tell that from a gate that closes late by itself" in out and "DIDN'T FINISH" not in out,
+          "the gate test's record, the gate reading set only after the lane took macOS's value: decoded as closed after it, not because of"
+          " it", out + err)
+    lines = gl(0x28, 0xfd)
+    check(lines[1] == "0x6011-0x6016: AFNC2_LW1 (0x28e580160), read three times before anything was written back:"
+          and lines[2] == "  right before its write, SIO's subtree off: target f, actual state f, auto-enable on, auto floor f"
+          and lines[3] == "  after the write of macOS's 0x1000030f: target f, actual state 0, auto-enable on, auto floor 0"
+          and g["gate_word"](bytes((0x04, 0xe4))) == "target 4, actual state 0, auto-enable off, auto floor 4, was power-gated, was clock-gated, BUSY"
+          and g["gate_word"](bytes((0xf4, 0x25))) == "target 4, actual state f, auto-enable off, auto floor 5, was power-gated"
+          and g["gate_word"](bytes((0x00, 0x50))) == "target 0, actual state 0, auto-enable on, auto floor 0, was clock-gated"
+          and g["gate_word"](bytes((0x00, 0x80))) == "target 0, actual state 0, auto-enable off, auto floor 0, BUSY",
+          "the lane's three packed reads: target, actual state, auto-enable, auto floor and the three flags, each read back out", "\n".join(lines[:5]))
+    # The record as the PMU would hold it, through decode(): the three reads come from 0x6011-0x6016 and no other byte.
+    rec = bytearray(0x20)
+    rec[4], rec[5], rec[0x10], rec[0x17] = 0x0f, 0xfd, 0x28, 0x99
+    rec[0x11:0x17] = bytes((0xff, 0x1f, 0x0f, 0x10, 0x04, 0x44))
+    whole = g["decode"](bytes(rec), bytes(6))
+    check("  right before its write, SIO's subtree off: target f, actual state f, auto-enable on, auto floor f" in whole
+          and "  after the write of macOS's 0x1000030f: target f, actual state 0, auto-enable on, auto floor 0" in whole
+          and "  after the second poll of the gate: target 4, actual state 0, auto-enable off, auto floor 4, was clock-gated" in whole
+          and "0x6005 = 0xfd: the gate test's byte:" in whole,
+          "a gate test's whole record through decode(): the byte from 0x6005, the lane's three reads from 0x6011-0x6016, each in its"
+          " own line", "\n".join(whole))
+    # The last mark lost and the byte there: the test reached its end, and it isn't called unfinished (Pullfrog on #80).
+    lost = gl(0x27, 0xfd)
+    check("DIDN'T FINISH" not in lost[0] and "its byte landed" in lost[0] and "a later mark didn't land" in lost[0]
+          and "may not have been written back" not in lost[0] and any("Closed after it" in line for line in lost)
+          and "DIDN'T FINISH" in gl(0x27, 0x7d)[0] and "DIDN'T FINISH" in gl(0x27, 0)[0],
+          "an earlier step's mark with the test's byte landed: read as a lost later mark, with the byte's verdict; without the byte, as a"
+          " test that didn't finish", "\n".join(lost))
     rc, out, err = dec(0x0f, 0, 0, 0, 0x25)
     check(rc == 0 and ("0x6010 = 0x25: THE GATE TEST BEGAN AND DIDN'T FINISH, after both looks. The last step it marked: the gate polled again."
-                       in out) and "a word it had changed may not have been written back" in out and "the test's byte didn't land" in out,
+                       in out) and "a word it had changed may not have been written back" in out and "the test's byte didn't land (bit 7 clear), or the test stopped before it" in out,
           "the gate test stopped between its writes and its write-back: the step, and that a restart has undone it", out + err)
-    verdicts = {0xff: "closes once SIO's subtree is all off", 0xe1: "the lane did NOT take macOS's value", 0xf5: "something else is behind it, though the lane gated itself",
-                0xe5: "something else is behind it, and the lane didn't gate itself", 0xe4: "SIO's subtree wasn't all off",
-                0xe9: "set at the second poll though the lane did NOT take macOS's value", 0xfd: "closed once the lane above SIO had macOS's value"}
-    bad = [hex(v) for v, t in verdicts.items() if t not in "\n".join(g["gate_lines"](0x28, v))]
-    wrong = [hex(v) for v in range(128, 256) if sum(line.startswith("  so: ") for line in g["gate_lines"](0x28, v)) != 1]
-    check(not bad and not wrong and "nothing is read from it" in g["gate_lines"](0x28, 0x7f)[-1]
-          and g["gate_lines"](0x29, 0x80)[0].startswith("0x6010 = 0x29: THE GATE TEST BEGAN AND DIDN'T FINISH, after both looks. The last step it marked: not a step's number."),
-          "the gate test's verdict for each ending the model produced, one verdict for every byte, and none from a byte that didn't land",
-          str(bad) + str(wrong[:4]))
+    verdicts = {0xff: "closes once SIO's subtree is all off, before the lane was given macOS's value", 0xe1: "the lane did NOT take macOS's value",
+                0xf5: "something else is behind it, though the lane's actual state read 0",
+                0xe5: "something else is behind it, and the lane's actual state didn't read 0", 0xe4: "SIO's subtree wasn't all off",
+                0xe0: "SIO's subtree wasn't all off", 0xe9: "set at the second poll though the lane did NOT take macOS's value",
+                0xfd: "set within 100 ms after the lane took macOS's value, with the lane's actual state then 0",
+                0xed: "set within 100 ms after the lane took macOS's value though the lane's actual state wasn't 0 then"}
+    bad = [hex(v) for v, t in verdicts.items() if t not in "\n".join(gl(0x28, v))]
+    wrong = [hex(v) for v in range(128, 256) if sum(line.startswith("  so: ") for line in gl(0x28, v)) != 1]
+    check(not bad and not wrong and "nothing is read" in gl(0x28, 0x7f)[-1] and len([line for line in gl(0x28, 0x7f) if line.startswith("  so: ")]) == 0
+          and gl(0x29, 0)[0].startswith("0x6010 = 0x29: THE GATE TEST BEGAN AND DIDN'T FINISH, after both looks. The last step it marked: not a step's number."),
+          "the gate test's verdict for each ending the model produced and two more, one verdict for every byte that landed, and none from"
+          " one that didn't", str(bad) + str(wrong[:4]))
+    # Each bit of the byte by itself, in the line that's its own: none read from its neighbour's place.
+    own = {0: ("the five UARTs: all read actual 0 within 10 ms of being written 0x200", "the five UARTs: did NOT all read actual 0"),
+           1: ("before the lane's write: SET", "before the lane's write: clear"), 2: ("0x1000030f: took it", "0x1000030f: did NOT take it"),
+           3: ("bit 30 of 0x28e5a0050 after that: SET", "bit 30 of 0x28e5a0050 after that: clear"),
+           4: ("after the second poll: 0", "after the second poll: not 0"), 5: ("AFNC2_LW1 yes", "AFNC2_LW1 NOT within 10 ms"),
+           6: ("the UARTs yes", "the UARTs NOT all within 10 ms")}
+    bad = [bit for bit, (yes, no) in own.items()
+           if yes not in "\n".join(gl(0x28, 0x80 | 1 << bit)) or any(o[0] in "\n".join(gl(0x28, 0x80 | 1 << bit)) for b2, o in own.items() if b2 != bit)
+           or no not in "\n".join(gl(0x28, 0xff & ~(1 << bit))) or any(o[1] in "\n".join(gl(0x28, 0xff & ~(1 << bit))) for b2, o in own.items() if b2 != bit)]
+    check(not bad, "each of the byte's seven bits is read in its own line and no other", str(bad))
 
 
 def in_order_of(text, parts):

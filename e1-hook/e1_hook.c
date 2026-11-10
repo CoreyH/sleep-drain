@@ -3916,24 +3916,47 @@ static u32 m1_gate_write(void __iomem *p, u32 val, bool (*done)(u32, u32), u32 w
 }
 
 /*
- * gate=1, right after the look that follows noirq (gate_test.h has the steps and why): Linux's suspend has all of
- * SIO's subtree off but five UARTs. Those go off, the gate B2 waits on is watched, the lane above SIO gets macOS's
- * value, the gate is watched again, and all six words are written back as found. Each step's mark first.
+ * gate=1, right after the look that follows noirq (gate_test.h has the steps, why, and what it risks): Linux's
+ * suspend has all of SIO's subtree off but five UARTs. Those go off, the gate B2 waits on is watched, the lane above
+ * SIO gets macOS's value, the gate is watched again, and all six words are written back as found. Each step's mark
+ * first. What the adversarial review of #80 changed is marked.
  */
 static void m1_gate_test(void)
 {
-	static const u16 uart[GATE_UART_N] = GATE_UARTS;
-	bool uarts_off = true, closed1, lane_took, closed2, lane_gated, lane_back, uarts_back = true;
-	u32 was[GATE_UART_N], lane, first, v;
+	static const u16 uart[GATE_UART_N] = GATE_UARTS, kid[GATE_KID_N] = GATE_KIDS;
+	static const u8 zero;
+	bool uarts_off = true, closed1, lane_took, closed2, lane_gated, lane_back, uarts_back = true, made = true;
+	u32 was[GATE_UART_N], k[GATE_KID_N], lane, first, v, g;
+	u8 res, pack[6];
 	unsigned int i;
-	u8 res;
+	u64 t0;
 
 	m1_look_at(GATE_PASS | GATE_AT_READ);
+	/* A byte left there from before would read as this test's (the review): zeroed first. */
+	m1_kwrite(0x6005, &zero, 1);
 	for (i = 0; i < GATE_UART_N; i++)
 		was[i] = readl(m1_sio + uart[i]);
+	for (i = 0; i < GATE_KID_N; i++)
+		k[i] = readl(m1_sio + kid[i]);
 	lane = readl(m1_sio + GATE_LANE);
-	pr_info("look: gate: as found: UART2,3,4,6,7 %08x %08x %08x %08x %08x; AFNC2_LW1 %08x\n", was[0], was[1], was[2], was[3], was[4], lane);
+	pr_info("look: gate: as found: UART2,3,4,6,7 %08x %08x %08x %08x %08x; AFNC2_LW1 %08x; below it: SIO %08x DISPDFR_FE %08x DISPDFR_BE %08x MIPI_DSI %08x ISP_SYS %08x\n",
+		was[0], was[1], was[2], was[3], was[4], lane, k[0], k[1], k[2], k[3], k[4]);
 	m1_gate_log("as found");
+	/* The test is of SIO's subtree off (the review): not made if SIO itself reads on, or something has one of the UARTs on. */
+	if (!gate_actual(k[0], 0))
+		made = false;
+	for (i = 0; i < GATE_UART_N; i++) {
+		if (gate_wanted(was[i]))
+			made = false;
+	}
+	if (!made) {
+		m1_look_at(GATE_PASS | GATE_AT_DONE);
+		res = gate_byte(false, false, false, false, false, true, true);
+		i = m1_kwrite(0x6005, &res, 1);
+		pr_info("look: gate: SUMMARY: NOT MADE: after noirq SIO reads on, or a UART has a target of f, which isn't the state this test is for; nothing was written; byte %02x, written to the PMU: %d\n",
+			res, (int)i);
+		return;
+	}
 
 	m1_look_at(GATE_PASS | GATE_AT_UARTS);
 	for (i = 0; i < GATE_UART_N; i++) {
@@ -3946,22 +3969,35 @@ static void m1_gate_test(void)
 	closed1 = m1_gate_wait("SIO's subtree all off");
 
 	m1_look_at(GATE_PASS | GATE_AT_LANE);
+	/*
+	 * The lane and the gate once more, right before the write (the review): a lane that had gated at Linux's own
+	 * floor, or a gate that closed late by itself, isn't then put down to macOS's value.
+	 */
+	v = readl(m1_sio + GATE_LANE);
+	g = readl(m1_look_ga + GATE_SIO);
+	gate_pack(v, pack);
+	if (g & GATE_CLOSED)
+		closed1 = true;
+	pr_info("look: gate: right before AFNC2_LW1's write: it reads %08x, its actual state %s; 0x28e5a0050 reads %08x: bit 30 %s\n", v,
+		gate_actual(v, 0) ? "0 already" : "not 0", g, g & GATE_CLOSED ? "SET" : "clear");
 	v = m1_gate_write(m1_sio + GATE_LANE, GATE_LANE_VAL, gate_took, GATE_LANE_VAL, &first);
 	lane_took = gate_took(v, GATE_LANE_VAL);
+	gate_pack(v, pack + 2);
 	pr_info("look: gate: AFNC2_LW1 found %08x, := %08x: it read %08x at once and reads %08x: auto-enable, auto floor and target %s\n", lane,
 		GATE_LANE_VAL, first, v, lane_took ? "as written" : "NOT as written within 10 ms");
 	m1_look_at(GATE_PASS | GATE_AT_WAIT2);
 	closed2 = m1_gate_wait("AFNC2_LW1 at macOS's value");
 	v = readl(m1_sio + GATE_LANE);
 	lane_gated = gate_actual(v, 0);
-	pr_info("look: gate: AFNC2_LW1 reads %08x then: its actual state %s\n", v, lane_gated ? "0: it gated itself" : "not 0");
+	gate_pack(v, pack + 4);
+	pr_info("look: gate: AFNC2_LW1 reads %08x then: its actual state %s\n", v, lane_gated ? "0" : "not 0");
+	/* The lane's three reads to the PMU before anything is written back (the review): if the resume doesn't come, they're what's left. */
+	m1_kwrite(0x6011, pack, sizeof(pack));
 
 	/* Back as found, the lane first, each less what the kernel's driver never writes back either. */
 	m1_look_at(GATE_PASS | GATE_AT_LANE_BACK);
-	v = m1_gate_write(m1_sio + GATE_LANE, lane & ~ASC_PS_NOT_WRITTEN, gate_back, lane, &first);
-	lane_back = gate_back(v, lane);
-	pr_info("look: gate: AFNC2_LW1 written back %08x: it reads %08x, %s\n", lane & ~ASC_PS_NOT_WRITTEN, v,
-		lane_back ? "as found" : "NOT as found within 10 ms");
+	v = m1_gate_write(m1_sio + GATE_LANE, lane & ~ASC_PS_NOT_WRITTEN, gate_took, lane, &first);
+	pr_info("look: gate: AFNC2_LW1 written back %08x: it reads %08x\n", lane & ~ASC_PS_NOT_WRITTEN, v);
 	m1_look_at(GATE_PASS | GATE_AT_UARTS_BACK);
 	for (i = 0; i < GATE_UART_N; i++) {
 		v = m1_gate_write(m1_sio + uart[i], was[i] & ~ASC_PS_NOT_WRITTEN, gate_back, was[i], &first);
@@ -3969,11 +4005,19 @@ static void m1_gate_test(void)
 		if (!gate_back(v, was[i]))
 			uarts_back = false;
 	}
+	/* The lane is judged last, with the UARTs back (the review): its actual state follows what's below it. */
+	t0 = m1_now();
+	while (!gate_back(v = readl(m1_sio + GATE_LANE), lane) && m1_now() - t0 < m1_tps / 100)
+		cpu_relax();
+	lane_back = gate_back(v, lane);
+	pr_info("look: gate: AFNC2_LW1 reads %08x with everything written back: %s\n", v, lane_back ? "as found" : "NOT as found within 10 ms");
 	m1_look_at(GATE_PASS | GATE_AT_DONE);
 	m1_gate_log("after both were put back");
 	res = gate_byte(uarts_off, closed1, lane_took, closed2, lane_gated, lane_back, uarts_back);
 	i = m1_kwrite(0x6005, &res, 1);
-	pr_info("look: gate: SUMMARY: bit 30 of 0x28e5a0050 with SIO's subtree all off: %s; AFNC2_LW1 %s macOS's value, and bit 30 then: %s; put back: AFNC2_LW1 %s, the UARTs %s; byte %02x, written to the PMU: %d\n",
+	/* A UART that didn't go off means neither poll was of the state B2 polls in: said first, so the rest isn't read as a result. */
+	pr_info("look: gate: SUMMARY: %s; bit 30 of 0x28e5a0050 before AFNC2_LW1's write: %s; AFNC2_LW1 %s macOS's value, and bit 30 after that: %s; put back: AFNC2_LW1 %s, the UARTs %s; byte %02x, written to the PMU: %d\n",
+		uarts_off ? "SIO's subtree all off" : "INCONCLUSIVE: the five UARTs did NOT all go off, so SIO's subtree wasn't all off",
 		closed1 ? "SET" : "clear", lane_took ? "took" : "did NOT take", closed2 ? "SET" : "clear", lane_back ? "as found" : "NOT as found",
 		uarts_back ? "as found" : "NOT all as found", res, (int)i);
 }
@@ -4003,6 +4047,20 @@ static int __init m1_look_init(void)
 	if (!m1_sio || !m1_ps || !post_map[m1_waits[0].idx]) {
 		pr_err("m1: look: SIO's page, the first power page or the p-state page isn't mapped; refusing\n");
 		return -ENODEV;
+	}
+	/* gate=1: the six words it writes, off the never-write list, as every other writer here checks its own at load. */
+	if (gate) {
+		static const u16 uart[GATE_UART_N] = GATE_UARTS;
+		unsigned int i;
+
+		for (i = 0; i < GATE_UART_N; i++) {
+			if (m1_never(LOOK_SIO_PAGE + uart[i], 1))
+				break;
+		}
+		if (i < GATE_UART_N || m1_never(LOOK_SIO_PAGE + GATE_LANE, 1)) {
+			pr_err("m1: gate: one of its six words is on the never-write list; refusing\n");
+			return -EPERM;
+		}
 	}
 	m1_look("awake, at load", LOOK_LOAD);
 	m1_look_at(LOOK_AT_NONE);

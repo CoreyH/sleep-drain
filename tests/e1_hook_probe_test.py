@@ -37,8 +37,8 @@ KLOG = ("[  100.1] e1_hook: m1: probe: no replay with this load; awake: SIO_CPU 
         "[  131.2] e1_hook: look: after noirq: AON 0x2922c0000: +038 00000000 +03c 00000101 +040 00000003 +044 00000008 +10c 80000000 +110 00000000\n"
         "[  131.3] e1_hook: look: after noirq: done\n"
         "[  131.31] e1_hook: look: gate: as found: UART2,3,4,6,7 00000244 00000244 00000244 00000244 00000244; AFNC2_LW1 1f0000ff\n"
-        "[  131.35] e1_hook: look: gate: SUMMARY: bit 30 of 0x28e5a0050 with SIO's subtree all off: clear; AFNC2_LW1 took macOS's value, and bit 30 then: SET;"
-        " put back: AFNC2_LW1 as found, the UARTs as found; byte fd, written to the PMU: 0\n")
+        "[  131.35] e1_hook: look: gate: SUMMARY: SIO's subtree all off; bit 30 of 0x28e5a0050 before AFNC2_LW1's write: clear; AFNC2_LW1 took macOS's value,"
+        " and bit 30 after that: SET; put back: AFNC2_LW1 as found, the UARTs as found; byte fd, written to the PMU: 0\n")
 
 failed = 0
 
@@ -381,7 +381,7 @@ def main():
         check(r.returncode == 0 and state == "mem" and "THE LOOK AFTER NOIRQ RAN AT ANOTHER SUSPEND THAN THIS SCRIPT'S LAST" in r.stdout
               and "prepare_late_calls=2" in r.stdout and "TAKE A PHOTO" in r.stdout,
               "--look with prepare_late_calls 2 after its suspend: said", r.stdout + r.stderr)
-    # --gate: --look's load with gate=1 as well; the gate test's lines in the photo block, the look after noirq below it.
+    # --gate: --look's load with gate=1 as well; the look after noirq above the photo block, the gate test's lines in it.
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, look=True)
         r, state = run(tmp, d, ["--gate"])
@@ -391,10 +391,16 @@ def main():
               and r.stdout.count("asking for the suspend") == 1 and not changed(tmp),
               "--gate: the probe's parameters with look=1 and gate=1, no PMP release, the load's look saved before the one suspend, the record"
               " after it", r.stdout + r.stderr + "\n".join(c))
-        check(r.stdout.count("e1_hook: look: gate: SUMMARY: bit 30 of 0x28e5a0050 with SIO's subtree all off: clear; AFNC2_LW1 took macOS's value") == 1
-              and r.stdout.index("TAKE A PHOTO") < r.stdout.index("look: gate: as found") < r.stdout.index("look: gate: SUMMARY") < r.stdout.index("=====\n\n")
-              < r.stdout.index("look: after noirq: AON") < r.stdout.index("Saved.") and "e1_hook: probe: SUMMARY" not in r.stdout,
-              "--gate prints the gate test's lines between the photo's two rules, its SUMMARY among them, and the look after noirq below",
+        check(r.stdout.count("e1_hook: look: gate: SUMMARY: SIO's subtree all off; bit 30 of 0x28e5a0050 before AFNC2_LW1's write: clear; AFNC2_LW1 took") == 1
+              and r.stdout.index("kernel log, the look after noirq, which came before the gate test:") < r.stdout.index("look: after noirq: AON")
+              < r.stdout.index("look: after noirq: done") < r.stdout.index("TAKE A PHOTO") < r.stdout.index("look: gate: as found")
+              < r.stdout.index("look: gate: SUMMARY") < r.stdout.index("=====\n\n") < r.stdout.index("Saved.")
+              and r.stdout.count("look: after noirq: AON") == 1 and r.stdout.count("look: gate: as found") == 1 and "e1_hook: probe: SUMMARY" not in r.stdout
+              # What to do if the screen stays dark, said before the suspend is asked for.
+              and r.stdout.index("(saved: the look at the load is on the boot partition)") < r.stdout.index("THE GATE TEST MAY NOT COME BACK. If the screen goes dark")
+              < r.stdout.index("asking for the suspend") and "hold the power key until the Mac restarts" in r.stdout,
+              "--gate prints the look after noirq above the photo's block, and between the block's two rules the gate test's lines and no"
+              " other of the kernel's, its SUMMARY among them: the result fits the photo",
               r.stdout + r.stderr)
     # A module that doesn't say gate=Y would run a plain look and leave the test undone: unloaded, no suspend. And a build without it.
     for kw, said, loaded in ((dict(gate_takes="N"), "didn't take gate=1, and was unloaded", True),
@@ -412,7 +418,7 @@ def main():
         d = setup(tmp, look=True)
         r, state = run(tmp, d, ["--look"])
         check(r.returncode == 0 and "gate=1" not in calls(tmp)[0] and open(os.path.join(tmp, "module", "parameters", "gate")).read().strip() == "N"
-              and "kernel log, the gate test" not in r.stdout,
+              and "kernel log, the gate test" not in r.stdout and "MAY NOT COME BACK" not in r.stdout,
               "--look loads no gate=1 and prints no gate test", r.stdout + "\n".join(calls(tmp)))
 
     # Without --look nothing of the look's: no look=1, and the module's look reads N.
