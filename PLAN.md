@@ -51,14 +51,17 @@ the PR with that session's work.
   - A look that only reads (2026-11-10) came back, as the probe hadn't, with 98 words read twice: the
     engine's own page, its clock generators and its six gates' enables are all as its wake sequence
     leaves them. Nothing out of place there.
-  - **Next: the gate test,** a second look with six power words changed and put back: does the gate
-    B2 waits on after SIO's subtree close in Linux's state, and does the fabric lane above SIO take
-    macOS's value (the group that hasn't read back as written since run 12)? Built, not run:
-    `pkexec e1-hook/probe --gate` in a safe boot (the charger may stay in). If the gate stays open
-    it should come back as the look did; if it closes, SIO's island loses power under its running
-    firmware and the Mac may stay dark, and then the PMU's record is the result (`m1-crumbs`).
-    Then A2's three moves made by the AP before the commit, not built. "The order
-    after the look", in Track A below, is the place to start.
+  - The gate test (2026-11-10, run once; the Mac didn't come back, the PMU has the result): with
+    all of SIO's subtree off, the gate B2 waits on there (0x28e5a0050) stayed open, and the fabric
+    lane above SIO read as macOS has it before the test wrote it. So the lane isn't what holds
+    that gate, nothing on SIO's page is, and B2's poll of it (op 140) stands higher as the stall.
+  - **Next, not built: read the six gate words in the recipe's state,** in a one-way run of
+    `--m1-mark`'s recipe, right before the commit, their bit 30s left in the PMU. Reads only. Then
+    A2's three moves made by the AP before the commit, not built. "The order after the look", in
+    Track A below, is the place to start.
+  - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
+    started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
+    the full mutant run; write-ups stay short.
 
 ## Picking this up
 
@@ -456,6 +459,17 @@ steps, and restarting the DCP and the PMP afterwards.
       open either way, with something else behind it. Each is read in Linux's suspended state, which
       isn't the recipe's (the PMP and SIO's firmware run, the cores are up, macOS's table hasn't gone
       out), so a result here is a lead for the next one-way run, not the stall's location.
+      **Run once, 2026-11-10** (RESEARCH.md, "The gate test's run"; `results/gate-20261110/`): the
+      gate stayed open through both polls; the lane read 0x1000030f, macOS's value, before the
+      test wrote it; the Mac didn't resume (black, a restart by itself at about 30 s), so the PMU's
+      record is all there is. The lane lead is closed, and `--gate` is one-way in practice.
+      Next, **not built: `gates_mark=1`, the six gate words read in the recipe's state.** On
+      `--m1-mark`'s recipe, after its last step and right before the commit, CPU0 reads
+      0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338 and 0x28e09c34c and leaves
+      their bit 30s in one byte of the PMU's scratch, with the lane's word packed beside it if a
+      byte is free. No register is written, so it needs Pullfrog and no adversarial pass. If
+      0x28e5a0050 reads open there too, B2's op 140 is the stall's likeliest place and what holds
+      that gate is the question; if it reads closed, this poll is cleared and `a2_pre=1` is next.
       After it, **not built: `a2_pre=1`, A2's three moves made by the AP.** On `--m1-mark`'s recipe,
       after macOS's table and before the commit, CPU0 does what A2 does inside the first handshake, in
       A2's order: DCS := 2 (0x28e20c800, from the 5 the table leaves) and a bounded wait for it to

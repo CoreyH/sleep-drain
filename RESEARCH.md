@@ -3887,6 +3887,49 @@ look".
   block last, so a clear that stops halfway leaves the stage and no launcher takes the PMU for clear, and
   `e1-hook/probe` refuses if 0x6010-0x6016 aren't zero under a zero stage.
 
+### The gate test's run: the gate stayed open, the lane already read as macOS has it, and the Mac didn't come back (2026-11-10)
+
+Run once, about 22:02, in a safe boot, on the charger, by Corey: `pkexec e1-hook/probe --gate` at a7d9772.
+The screen went black for about 30 s and the Mac restarted by itself. The test's kernel log is lost with
+that; the look at the load was saved before the suspend. On file in `results/gate-20261110/`: the PMU's
+record as `m1-crumbs` read it (`crumbs.txt`: stage 0x0f, mark 0x28, byte 0xb5, the lane's reads `0f 70`
+three times), the load's look (`gate-load.txt`), and the clear and collect.
+
+- **The test was made and ran to its end.** Every step's mark and the byte landed, so all twelve writes
+  were issued, the write-backs among them.
+- **The five UARTs went off,** each reading actual 0 within 10 ms.
+- **The gate stayed open.** Bit 30 of 0x28e5a0050 read clear through 100 ms with all of SIO's subtree
+  off, at the read right before the lane's write, and through 100 ms after it.
+- **The lane read as macOS has it before the test wrote it.** Right before its write AFNC2_LW1 read
+  target f, actual 0, auto-enable on, auto floor 0, both was-gated flags set: 0x1000030f. The same after
+  the write and after the second poll. So with nothing below it on, the lane had gated itself, and its
+  word then reads as macOS's does at sleep entry. What it read as found, with the UARTs still at 4, was
+  in the lost log; its last read matched that, whichever it was.
+- **Put back:** the lane read as found; the UARTs didn't all read as found within 10 ms. Which, and what
+  it read, was in the log.
+- **Then no resume,** and not the ending the build warned of: the gate never read closed, so by bit 30
+  SIO's island kept its power. Why the resume failed isn't known. A restart by itself at about 30 s fits
+  a watchdog that a resume re-armed and nothing then fed (inferred; nothing on file says which).
+
+What it settles, all of it in Linux's suspended state:
+- **The lane lead is closed.** Linux's lane and macOS's read alike once everything below is off: there
+  is no floor for the recipe to fix, and the gate doesn't follow the lane.
+- **"Didn't all read back as written"** (0x6013 = 0xdf since run 12) **stays unexplained.** That check
+  compares auto-enable, the auto floor and the target only (`m1_pw_write()`, 0x1f00000f), so a lane
+  that is up where macOS's is gated passes it: at least one of the four words differed in those fields,
+  and this run doesn't say which or how (Pullfrog on #81). What the run adds: the lane's floor read 0
+  here before anything of ours wrote it, where Linux has f awake, so that field isn't simply what was
+  last written. When it changed was in the lost log.
+- **Something else holds 0x28e5a0050 open,** and it isn't on SIO's page: the look's run read every word
+  there off after noirq but these five UARTs (SIO and SIO_CPU 0x0f000200). What it is isn't known.
+- **So B2's poll of that gate (op 140) stands higher as the stall than before.** Unless something in
+  the recipe's state closes it (SIO's and the PMP's firmware stopped, the cores parked, macOS's table),
+  B2 would wait there for good, before op 224, which is where run 17 put the stall. Read in the
+  recipe's state it never has been.
+
+What was wrong in the build: "if the gate stays open it should come back as the look did". It doesn't. A
+`--gate` run is to be treated as one-way.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

@@ -1,0 +1,15 @@
+0x6000: 00 30 00 30 0f b5 00 00  00 00 00 00 00 00 00 00
+0x6010: 28 0f 70 0f 70 0f 70 00  00 00 00 00 00 00 00 00
+stage 0x6004 = 0x0f: probe=1 look=1 (e1-hook/probe --look), not a run: nothing replayed, nothing was committed, nothing was stopped and the looks wrote no register; gate=1's test, after them, changes six power words and writes them back (--gate): how far it got is below. What it read is in the kernel log it saved, if the Mac was up to save it
+0x6010 = 0x28: the gate test, after both looks: every step taken: the byte written
+0x6011-0x6016: AFNC2_LW1 (0x28e580160), read three times before anything was written back:
+  right before its write, SIO's subtree off: target f, actual state 0, auto-enable on, auto floor 0, was power-gated, was clock-gated
+  after the write of macOS's 0x1000030f: target f, actual state 0, auto-enable on, auto floor 0, was power-gated, was clock-gated
+  after the second poll of the gate: target f, actual state 0, auto-enable on, auto floor 0, was power-gated, was clock-gated
+0x6005 = 0xb5: the gate test's byte:
+  the five UARTs: all read actual 0 within 10 ms of being written 0x200
+  bit 30 of 0x28e5a0050, the gate B2 polls after SIO's subtree, before the lane's write: clear, through 100 ms and at the read right before the write
+  AFNC2_LW1, written macOS's 0x1000030f: took it within 10 ms; its actual state after the second poll: 0
+  bit 30 of 0x28e5a0050 after that: clear, through 100 ms
+  read as found with everything written back: AFNC2_LW1 yes; the UARTs NOT all within 10 ms
+  so: the gate stayed open with SIO's subtree all off and the lane at macOS's value: something else is behind it, though the lane's actual state read 0
