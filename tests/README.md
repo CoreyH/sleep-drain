@@ -25,13 +25,19 @@ used to sit in CLAUDE.md, entry for entry):
   `m1_probe_late()` as they stand against a model of the registers in sixteen scenarios (no word read
   with its domain off, every step marked before it's taken, ANS2 left as found, `ps_pmp` never
   written, a read that wasn't made never called clear), pins the guards that keep the replay from
-  running and what the load checks, and decodes stage 0x0e.
+  running and what the load checks, and decodes stage 0x0e. For look=1 it runs `m1_look()` and
+  `m1_look_init()` as they stand against pages that say what was read, with no `writel()` for them to
+  call: the 98 words of PLAN.md's list and no other, each group after its mark, each logged under its
+  address, and the load's start-up from the pointers a load can find (one not yet mapped, a mapping
+  that fails).
 - `tests/e1_hook_probe_test.py` runs `e1-hook/probe` as uid 0 in a bubblewrap user namespace against stub
   `insmod`, `rmmod`, `modinfo`, `dmesg`, `sleep`, `m1-crumbs` and `sleep-drain-safe`: the parameters it
   loads, that a module which doesn't read `probe=Y` has its replay called off and is unloaded with no
-  suspend ever asked for, when it asks again and when it doesn't, and every refusal. The suspend file and
-  the module's `prepare_calls` are FIFOs with a thread at their other ends, so that what the launcher
-  reads depends on how many suspends it has asked for, as on the Mac.
+  suspend ever asked for, when it asks again and when it doesn't, `--look` (no PMP release, and no
+  suspend unless the module reads `look=Y`; the load's look saved before the suspend), that no file of
+  the log directory changes between two saves, and every refusal. The suspend file and the module's count the launcher goes by are FIFOs with a thread at
+  their other ends, so that what the launcher reads depends on how many suspends it has asked for, as
+  on the Mac.
 - `tests/recfg_peek_test.py` runs `e1-hook/recfg_peek` on a sparse file standing in for /dev/mem and its
   launcher with stubs.
 - `tests/recfg_bite_test.py` runs `e1-hook/recfg_poke` on the same kind of file (exactly one word changes, or

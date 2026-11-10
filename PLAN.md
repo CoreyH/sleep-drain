@@ -50,7 +50,9 @@ the PR with that session's work.
     are on file: a probe that stops a coprocessor's firmware doesn't resume on this kernel.
   - **Next: a look that only reads,** at the words the pair's remaining waits depend on, none of
     which has been read here: the clock generators' status words, six gate-status words and four AON
-    words. Not built: "The order after the probe", in Track A below, is the place to start.
+    words. Built, not run: `pkexec e1-hook/probe --look` in a safe boot (the charger may stay in). It
+    stops nothing, so the Mac should come back as from any failed suspend. "The order after the
+    probe", in Track A below, is the place to start.
 
 ## Picking this up
 
@@ -428,17 +430,25 @@ steps, and restarting the DCP and the PMP afterwards.
       inside the first handshake, eleven clock-generator status words (bit 31 clear after B2's write
       beside each), 0x2922c003c and 0x2922c0038; and the 255-try polls for bit 11 on the power words
       and bit 30 on six gate-status words.
-      Next, **not built: a look that only reads.** `e1_hook` with the probe's guards (no replay, every
-      suspend failed) and none of its stops and no write but its step marks: it reads, awake at the
-      load and again after noirq, every word those waits read or the engine's wake sequence leaves in a
-      known state (the fourteen clock-generator blocks' two words each, the six gate-status words, the
-      AON words 0x2922c0008, 0x24, 0x38, 0x3c, 0x40 and 0x44, DCS's, the fabric's and 0x28e20c400, and
-      the power words B2 polls), logs them in full and fails the suspend. Nothing is stopped, so it's
-      an ordinary failed suspend and the log should come back and be saved. What it gives: for every
-      word macOS's table doesn't write before the commit, the value the engine finds. Read against
-      what the wake sequence B1 leaves (the state B2 is written to start from), each word that differs
-      is a lead, and the next one-way run changes the likeliest and reads the marker. What it can't
-      give: anything the table changes after it, or what the engine's own writes then do.
+      Next, **built and not run: a look that only reads** (`pkexec e1-hook/probe --look` in a safe
+      boot; `e1_hook probe=1 look=1`; `e1-hook/look.h` has the list). The probe's guards (no replay,
+      every suspend failed), none of its stops, and no register written: it reads 98 words, awake at
+      the load and again after noirq: every word those waits read or the engine's wake sequence leaves
+      in a known state (fifteen clock-generator blocks' two words each, the six gate-status words, the
+      AON words 0x2922c0008, 0x24, 0x38, 0x3c, 0x40, 0x44, HS_B and PHASE, DCS's, the fabric's and
+      0x28e20c400, and the 51 power words B2 switches off or polls), logs them in full and fails the
+      suspend. Its only writes are its stage, 0x0f, and the group it's reading, to the PMU's scratch,
+      so that a read that faults says where. Nothing is stopped and `pmp_sleep_release` isn't loaded,
+      so it should be an ordinary failed suspend with the log coming back; that isn't tried, so the
+      launcher saves the load's look before it asks for the suspend. Afterwards: a normal restart,
+      `m1-crumbs --clear`, `sleep-drain-safe collect`, and the words read against the wake sequence's
+      (`~/.local/share/sleep-drain/look/compare.py` and the local decode; the listing stays out of the
+      repo). What it gives: what Linux's own suspend leaves in each word after noirq, which is what the
+      engine finds only for a word nothing in the recipe after that changes (the DCPs' shutdown, the
+      stopped firmware, the SMC's notice, the PMP's requests, the parked cores, macOS's table). Read
+      against what the wake sequence B1 leaves (the state B2 is written to start from), each word that
+      differs is a lead, and the next one-way run changes the likeliest and reads the marker. What it
+      can't give: what the engine's own writes then do.
       After it, still open either way: the gate, which no read from a running core can see open; A2's
       three steps tried from the AP; and the observer on a P core with the E complex down, which would
       say whether the gate follows every core or CPU0's complex.

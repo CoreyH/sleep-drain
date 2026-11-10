@@ -3700,6 +3700,48 @@ gate-status words (0x28e5a0064, 0x28e5a0050, 0x28e5a030c, 0x28e09c338, 0x28e09c3
 of the clock-generator words, the six gate words, or the AON words other than 0x2922c0040 and
 0x2922c0044 has ever been read on this Mac.
 
+### The look as built: 98 words read, nothing stopped, nothing written (2026-11-10)
+
+`pkexec e1-hook/probe --look` in a safe boot loads `e1_hook` with the probe's parameters and `look=1`
+(`e1-hook/look.h` has what it reads). Not run yet. Pullfrog and one adversarial review went over it on
+#78; what they changed is marked.
+- **What it reads,** awake at the module's load and again after the noirq pass of the suspend it fails:
+  the fabric's p-state word, 0x28e20c400 and DCS's; six words of the engine's page at 0x2922c0000 that
+  its sequences read (+ 0x38, + 0x3c, + 0x40, + 0x44, HS_B and PHASE); SIO's page of power words from
+  SIO's own to AES's, 43 of them, and ANS2's; AIC's, DWI's, GPIO's, `ps_pmp`'s and the three PCIe words
+  in the first page; the six gate-status words; the first two words of fifteen clock generators,
+  0x28e000000 to 0x28e01c000; and last, in a group of their own, the two words of the engine's page that
+  its sequences write and never read, + 8 and + 0x24 (the review: nothing shows a read of those is
+  harmless, so everything else is logged first). 98 words, each logged in full under its address.
+- **What it doesn't do.** No replay, and every suspend failed, by the probe's own guards, which it
+  shares. None of the probe's steps: no firmware idled or stopped, ANS2 not raised, SIO_CPU not written.
+  No register written at all; the test compiles `m1_look()` with no `writel()` to give it. The launcher
+  doesn't load `pmp_sleep_release` for it, and refuses if it's loaded.
+- **Its only writes** are to the PMU's scratch, by the path every run uses: stage 0x0f and, at 0x6010,
+  the group it's about to read (six groups), with 0x10 set by the load's look, so that a read that faults
+  says which group and which of the two looks. The load's look zeroes both again when it's through, and
+  the suspend's leaves the last mark.
+- **The first build would have stopped at insmod** (Pullfrog and the review, each by reading): the load's
+  look read the engine's page before `m1_wd2_init()` had mapped it, a NULL read in the kernel. The look's
+  start-up is now the last of the load's steps, maps that page itself if nothing has, and refuses unless
+  every page it reads through is there; the test runs it as it stands from the pointers a load can find.
+- **Why it should come back when the probe didn't.** The probe stopped two coprocessors' firmware and the
+  kernel didn't resume; why isn't explained. This stops nothing, so the suspend it fails should be like
+  any other that a driver refuses. That hasn't been tried. So the launcher prints and saves the load's
+  look before it asks for the suspend (the review), and whatever happens then, that look is on file. The
+  two saves are of two files, each written whole and never changed after: `collect` keeps the first
+  copy of a file it has, so one file saved at two lengths would have come back at its first (Pullfrog).
+- **What can go wrong.** A read that faults: the clock generators' and gate words have never been read
+  here from Linux, though the engine's own sequences read them, and the two words read last aren't read
+  by anything known. A fault at the load would freeze the screen there; the mark in the PMU names the
+  group.
+- **What it gives.** What Linux's own suspend leaves in each word after noirq. The recipe goes on from
+  there (the DCPs shut down, two firmwares stopped, the SMC idled, the PMP's requests withdrawn, the cores
+  parked, macOS's table), and a word may follow any of that, so this is the value the engine finds only
+  for a word none of those changes (the review). Read against what the wake sequence B1 leaves, a word
+  that differs is a lead (for the gate words, bit 31 clear would mean a gate B2 waits on is never
+  enabled). It says nothing about what the engine's own writes then do.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

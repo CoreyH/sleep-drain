@@ -473,7 +473,7 @@ WD2BITE=${FLOOR_WD2_BITE:-$here/wd2-bite}
 [[ $(modinfo -F vermagic "$ko" | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r): make -C $here"
 # A build older than its sources may be another version's, with the same parameters: what it leaves in the PMU would be
 # read by this version's m1-crumbs, and --m1-recfg-bite's first build had its byte's two bite codes the other way round.
-for src in e1_hook.c recfg_bite.h m1_position.h wd2_bite.h fabric_up.h wd1_mark.h; do
+for src in e1_hook.c recfg_bite.h m1_position.h wd2_bite.h fabric_up.h wd1_mark.h asc_probe.h look.h; do
   [[ ! -e $here/$src || $ko -nt $here/$src ]] || die "$ko is older than $src: make -C $here"
 done
 # Builds before this one have no cancel (E1a's has no oneway either), and
