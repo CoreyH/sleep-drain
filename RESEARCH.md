@@ -3565,10 +3565,17 @@ boot, once something needs them", PLAN.md). The local decode has had them as can
 - What a run can't see, this can: whether the bit is set while the firmware runs, after its idle pair,
   after RUN is cleared, and after SIO's power cycle.
 
-**What it would decide:** if one of the three never shows bit 1 in the recipe's state, that op is where B2
-stops, or would stop if it got that far, and the next run changes how that coprocessor is left (idled and
-not stopped, or not power-cycled). If all three show it, the coprocessor polls aren't the stall, and what's
-left before op 224 is the gate, A2's three steps and the bit-11 polls.
+**What it can and can't say** (Pullfrog on #75). The probe samples the state the recipe's preparation
+leaves, before any commit. B2 reads each word later, after its own write to the domain's power word and
+its wait for actual f, and after everything A2 and B2 do before that; and what bit 1 means, and whether it
+holds across those steps, isn't known. So a sample is a lead, not the location of the stall:
+- A word that never shows bit 1 in the recipe's state is the best lead there is for where B2 stops. The
+  next run then leaves that coprocessor differently (idled and not stopped, or not power-cycled) and
+  reads the marker: 120 s or later is what confirms it.
+- All three showing it makes the three polls less likely to be the stall, and doesn't exclude them.
+Either way everything else B2 waits on before op 224 stays a candidate: the gate, A2's three steps, the
+waits for actual f after B2's own raises (SIO_CPU, ANS2, ps_pmp), the bit-11 polls and the bit-30
+gate-status polls.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

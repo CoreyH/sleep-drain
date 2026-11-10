@@ -426,10 +426,13 @@ steps, and restarting the DCP and the PMP afterwards.
       cleared, SIO's parents raised: writes the runs already make) and reads the three words around each,
       into the kernel log and, as a fallback if the resume fails, a few bits in the breadcrumbs. It reads
       three addresses that are new to the hook, in mailbox blocks Linux's own driver has mapped.
-      After it, by its reading: a word that never shows bit 1 in the recipe's state names the op where
-      B2 stops, and the next run leaves that coprocessor differently (idled but not stopped, or not
-      power-cycled); all three showing it leaves the gate (the awake test below), A2's three steps tried
-      from the AP, and the bit-11 polls.
+      After it, by its reading, which is a lead and not the stall's location (the probe samples the
+      recipe's state before any commit, and B2 polls later, after its own raises): a word that never
+      shows bit 1 is the next run's change, that coprocessor left differently (idled but not stopped,
+      or not power-cycled), with the marker to say whether B2 then gets further; all three showing it
+      makes those polls less likely and excludes nothing. Still candidates either way: the gate (the
+      awake test below), A2's three steps tried from the AP, B2's waits for actual f after its own
+      raises, the bit-11 polls and the bit-30 gate-status polls.
       **Earlier, the order after run 16 (2026-11-10; judgment):** run 16 wrote
       the three cluster words 0x20, all four read 0, and the reset came at 120 s again (RESEARCH.md, "M1
       run 16"): the leftover flags aren't the stall, or not alone. `cluster_ack=1` stays in the recipe.
