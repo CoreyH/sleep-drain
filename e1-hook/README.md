@@ -172,7 +172,9 @@ reads it back, waits for the gate again, and writes all six words back as found,
 kernel never writes back. Each word goes out once and back once, through one function, and the load
 refuses if one of them is on the never-write list.
 
-**It may not come back.** If the gate closes, SIO's island loses power with SIO's firmware running, and
+**It doesn't come back.** Run once, it went dark and restarted by itself at about 30 s though the gate
+never read closed (RESEARCH.md, "The gate test's run"): treat it as one-way. The reason given when it
+was built, which still holds if the gate does close: if the gate closes, SIO's island loses power with SIO's firmware running, and
 the kernel can't restart that firmware: the screen may stay dark, as after the probe (the launcher says
 so, and what to do then, before it asks for the suspend). So the record is
 made to stand without the kernel log: the step at 0x6010 with 0x20 set, the result byte at 0x6005, and
