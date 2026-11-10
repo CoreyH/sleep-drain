@@ -442,6 +442,11 @@ steps, and restarting the DCP and the PMP afterwards.
         the seven, and with the room that leaves: what the fabric's word read before the write,
         whether it read 0x333 after it and at step 5's end, and whether WD1 stood as the marker.
         `m1-crumbs` reads the restart's time against the marker, and says what else each time fits.
+        It reads it only as far as the record bears it out (Pullfrog on #74): at the run's last
+        stage, with no exception pending on CPU0; 120 s only if the sample shows WD2 armed and
+        counting with the moved bite and `PHASE` at A2's 4 or 5; 150 s only if WD2 was seen armed;
+        and the byte itself only if the steps' outcomes landed after its command, since step 7
+        leaves 0xff in the same place.
       After it, by its reading: 90 s, the gate itself (which party holds 0x2922c0044's bit 2: an awake
       test that stops one coprocessor at a time and reads the word, each stop needing an OK); 120 s,
       B2's last ops (the PMU command over SPMI first); 150 s or dark, the wake.

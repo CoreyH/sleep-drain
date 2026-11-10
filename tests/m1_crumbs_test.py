@@ -2274,7 +2274,8 @@ def position_tests(g, src):
         FAB = "0x6007 = 0x{:02x}: fabric_up=1's byte, in place of the cores that held:\n"
         BACK = ("  so: the fabric was at 3 when the table went out and still there when step 5 ended, where macOS has it at its commit:"
                 " the kernel had lowered it, and the write brought it back\n")
-        STOOD = "  bits 7:6 (wd1_mark=1): WD1 stood as the marker just before the commit: armed, its bite 150 s, its count at 60 s and running."
+        STOOD = ("  bits 7:6 (wd1_mark=1): WD1 stood as the marker just before the commit: armed, its bite 150 s, its count at 60 s and running."
+                 " The restart's time is read against it below, as far as the stage and wd2_bite=1's sample bear a reading out\n")
         NOMARKER = ("  bits 7:6 (wd1_mark=1): clear: no marker in WD1 stands in this record (a run without wd1_mark=1, or one whose marker read back"
                     " wrong in both respects). The restart's time is read against WD2 alone\n")
         fab17 = dict(ack15, flags=0x90)
@@ -2325,7 +2326,8 @@ def position_tests(g, src):
         for x, text in ((90, "  wd1_mark=1's marker: about 90 s is what WD1 gives with its count never zeroed: B2 didn't reach its op 223"),
                         (88, "  wd1_mark=1's marker: about 90 s is what WD1 gives with its count never zeroed"),
                         (120, "  wd1_mark=1's marker: about 120 s is WD2: B2 zeroed WD1's count, so B2's first poll passed"),
-                        (150, "  wd1_mark=1's marker: about 150 s is WD1 after B2 zeroed its count, with WD2 stopped: the entry pair FINISHED"),
+                        (150, "  wd1_mark=1's marker: about 150 s is WD1 after B2 zeroed its count, with WD2, which the sample above saw armed, stopped"
+                              " before it could fire: the entry pair FINISHED"),
                         (30, "  wd1_mark=1's marker: 30 s is none of its three times (90, 120 and 150 s): not read."),
                         (105, "  wd1_mark=1's marker: 105 s is none of its three times (90, 120 and 150 s): not read.")):
             for byte in (0xf7, 0x37):
@@ -2336,14 +2338,75 @@ def position_tests(g, src):
                       f"fabric_up=1's 0xd3, a restart {x} s after the commit, 0x6007 = 0x{byte:02x}: read against the marker only if it stood",
                       r.stdout + r.stderr)
         # The 90 s and 120 s readings each carry the alternative that the time alone can't exclude.
+        mr = g["mark_reading"]
         check("a pair that finished, with a later A sequence starting about 60 s after the commit and arming WD2 with its own 30 s, gives the same time"
-              in g["mark_reading"](90) and "a WD1 that can't reset the SoC in this state" in g["mark_reading"](120)
-              and "Only if wd2_bite=1's sample, above, says CPU0's write took" in g["mark_reading"](120),
+              in mr(90, 0x53, 0x7d) and "a WD1 that can't reset the SoC in this state" in mr(120, 0x53, 0x7d),
               "the marker's 90 s and 120 s readings name what else gives that time")
-        wrong = [x for x in range(0, 201) if sum(k in g["mark_reading"](x) for k in ("about 90 s is", "about 120 s is", "about 150 s is", "is none of its three times")) != 1
-                 or ("about 90 s is" in g["mark_reading"](x)) != (abs(x - 90) <= 4) or ("about 120 s is" in g["mark_reading"](x)) != (abs(x - 120) <= 4)
-                 or ("about 150 s is" in g["mark_reading"](x)) != (abs(x - 150) <= 4)]
-        check(not wrong, "every restart time from 0 to 200 s reads as exactly one of the marker's three times, within 4 s, or as none", str(wrong[:5]))
+        # The time is read only as far as the stage and wd2_bite=1's sample bear it out (Pullfrog on #74): the four records it gave, through
+        # the decoder, and then every sample at every stage.
+        for stage, sample, x, want, never in (
+                (0xd3, 0xfd, 120, "about 120 s is WD2's moved bite, but PHASE didn't read 4 or 5, A2's before its last, in the sample above: a later A sequence"
+                 " may have armed WD2, after a pair that finished. Not read as B2 stopping in its last ops", "B2 zeroed WD1's count, so"),
+                (0xd2, 0xfe, 150, "not read. Stage 0x52 is the last before the commit: nothing here records the commit, the release or WD2 after it, so"
+                 " 150 s can't be read as B2's progress", "FINISHED"),
+                (0xd3, 0x02, 150, "about 150 s is WD1's bite from a count zeroed at about the commit, but WD2 was never seen armed in the sample above:"
+                 " nothing here shows the entry pair started. Not read as a pair that finished", "FINISHED"),
+                (0xd1, 0x75, 120, "not read. CPU0 had an exception pending after its reads (the stage) and likely never went down, and a core left up holds"
+                 " the engine by itself: 120 s says nothing about a pair with every core down", "B2 zeroed WD1's count, so"),
+                (0xd3, wsmp(post=False), 120, "about 120 s, but wd2_bite=1's sample, above, doesn't show WD2 armed and counting with CPU0's 120 s bite, so this"
+                 " record doesn't make the time WD2's. Not read as B2's progress", "B2 zeroed WD1's count, so"),
+                (0xd3, wsmp(post=False), 150, "stopped before it could fire: the entry pair FINISHED", "Not read")):
+            fake(path, scratch(stage, **dict(fab17, parked=sample, down=0xf7)), rtc_secs=121544 + x + 40, alarm=alarm)
+            r = run(path, cnt="960000000 24000000")
+            line = [l for l in r.stdout.splitlines() if l.startswith("  wd1_mark=1's marker: ")]
+            check(r.returncode == 0 and len(line) == 1 and want in line[0] and never not in line[0],
+                  f"stage 0x{stage:02x}, sample 0x{sample:02x}, a restart at {x} s: the marker's reading goes no further than the stage and the sample do",
+                  r.stdout + r.stderr)
+        wrong = []
+        for stage in (0x52, 0x51, 0x53):
+            for v in range(256):
+                for x in (60, 88, 90, 120, 123, 150, 200):
+                    t = mr(x, stage, v)
+                    seen, moved, code = bool(v & 4), bool(v & 4 and v & 8 and v & 0x10 and v & 0x20 and v != 0xfe), v >> 6
+                    last = stage == 0x53
+                    ok = (t.startswith("  wd1_mark=1's marker: ")
+                          and ("B2 didn't reach its op 223" in t) == (last and x in (88, 90))
+                          and ("B2 zeroed WD1's count, so B2's first poll passed" in t) == (last and x in (120, 123) and moved and code in (1, 2))
+                          and ("the entry pair FINISHED" in t) == (last and x == 150 and seen)
+                          and ("ot read" in t) == (not last or x in (60, 200) or (x in (120, 123) and not (moved and code in (1, 2))) or (x == 150 and not seen)))
+                    if not ok:
+                        wrong.append((hex(stage), hex(v), x, t))
+        check(not wrong, "for every sample at each of the run's stages: B2's progress is read from 90 s only at the last stage, from 120 s only with WD2's"
+              " bite moved and PHASE at A2's 4 or 5, a finished pair from 150 s only with WD2 seen armed, and nothing at the other two stages",
+              str(wrong[:3]))
+        # Step 7 leaves the cores that held at 0x6007 (0xff as a rule). If stage 0x52's command lands without its last byte, that 0xff must not
+        # read as the run's byte, all outcomes good and a marker standing: the steps' outcomes, sent only after a command that didn't fail,
+        # are what says it landed whole (Pullfrog on #74).
+        STALE = ("0x6007 = 0xff: not read. The steps' outcomes go out right after stage 0x52's command, and only if it didn't fail, and their marker"
+                 " isn't at 0x6013: that command isn't shown to have landed whole, and this byte, its last, may still be the one step 7 leaves here, the"
+                 " cores that held (0xff as a rule). It isn't read as fabric_up=1's byte, and no marker in WD1 is taken to stand\n")
+        step7 = dict(parked=0xfe, left=0, down=0xff, secs=121544, flags=0x90, isrs=0x8d, drained=0)
+        rc, out, err = dec(0xb9, step7)
+        check(rc == 0 and "wrote their stop bit and held (0x6007 = 0xff): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out
+              and "fabric_up=1's byte, in place of the cores that held" not in out,
+              "step 7's record, stage 0xb9: 0x6007 is the cores that held", out + err)
+        for stage in (0xd2, 0xd3, 0xd1):
+            for x in (90, 120, 150):
+                fake(path, scratch(stage, **dict(step7, parked=0xfe if stage == 0xd2 else wsmp())), rtc_secs=121544 + x + 40, alarm=alarm)
+                r = run(path, cnt="960000000 24000000")
+                check(r.returncode == 0 and STALE in r.stdout and "fabric_up=1's byte, in place of the cores that held" not in r.stdout
+                      and "the fabric's p-state word" not in r.stdout and "WD1 stood" not in r.stdout
+                      and "wd1_mark=1's marker" not in r.stdout and "the steps' outcomes didn't land" in r.stdout
+                      and f"the SoC restarted about {x} s after the commit" in r.stdout,
+                      f"stage 0x{stage:02x} over step 7's 0xff with no outcomes after it, a restart at {x} s: the byte isn't read, and no marker stands",
+                      r.stdout + r.stderr)
+        rc, out, err = dec(0xd3, dict(fab17, down=0xff))
+        check(rc == 0 and FAB.format(0xff) in out and "0x333, as awake: this suspend hadn't lowered it" in out and STOOD in out and STALE not in out,
+              "the same 0xff with the outcomes' marker behind it is the run's byte: the command landed whole", out + err)
+        check("\tif (m1_raw && m1_spmi_raw(true, addr, (u8 *)b, n))\n\t\tm1_raw = false;\n" in src
+              and g["fab_landed"](bytes(0x13) + b"\xdf") and g["fab_landed"](bytes(0x13) + b"\xa5") and g["fab_landed"](bytes(0x13) + b"\xc0")
+              and not any(g["fab_landed"](bytes(0x13) + bytes([m])) for m in (0x00, 0x01, 0x80, 0xa4, 0xbf)),
+              "a breadcrumb command that fails stops every one after it, so the outcomes' marker at 0x6013 says stage 0x52's command didn't fail")
         # Every byte: what the fabric's sentence and the marker's line claim, against the bits, read independently.
         wrong = []
         for v in range(256):

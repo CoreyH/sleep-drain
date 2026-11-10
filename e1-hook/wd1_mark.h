@@ -26,8 +26,10 @@
  *   about 150 s, or no restart    the pair finished (A2 stopped WD2), and WD1,
  *                                 zeroed at about the commit, ended it as a
  *                                 dead-man; no restart if WD1 doesn't count there
- * and only if the marker stood. The two bits, 7:6 of fabric_up.h's byte, from a
- * read of WD1 just before the commit:
+ * and only if the marker stood, and only as far as the run's last stage and
+ * wd2_bite=1's sample bear a reading out: the time names no watchdog by itself
+ * (m1-crumbs' mark_reading() has the conditions). The two bits, 7:6 of
+ * fabric_up.h's byte, from a read of WD1 just before the commit:
  *   bit 0     its control showed RESET_EN and its bite read 150 s
  *   bit 1     its count read 60 s or up to 5 s more: the count write took, and
  *             the count ran on from it

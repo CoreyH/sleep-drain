@@ -1386,7 +1386,10 @@ static void e1_after_slpa(void)
  * wd2_bite=1's 0x57 and 0x56, and under them 0x6007 is m1_fab_byte(): the sio bit as
  * before, one bit for "all seven held" in place of the seven, the word's class
  * before the write, and whether it read 0x333 after the write and at step 5's end.
- * Step 7's command, stage 0x39, still has the seven bits.
+ * Step 7's command, stage 0x39, still has the seven bits, so a stage 0x52 command
+ * that landed without its last byte would leave them under the new stage: m1-crumbs
+ * reads the byte only if the steps' outcomes are at 0x6012 with their marker, since
+ * they go out after that command and only if it didn't fail (m1_crumb()).
  *
  * wd1_mark=1 (run-floor --m1-mark; with fabric_up=1) makes WD1 a marker of how
  * far B2 gets with every core down, which no sample can see (RESEARCH.md, "After

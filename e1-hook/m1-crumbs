@@ -571,9 +571,8 @@ def fab_lines(v):
     w = v & WD1_STANDS
     if w == WD1_STANDS:
         out.append(f"  bits 7:6 (wd1_mark=1): WD1 stood as the marker just before the commit: armed, its bite {WD1_BITE_S} s, its count at"
-                   f" {WD1_COUNT_S} s and running. So the restart's time reads how far B2 got: about {WD1_BITE_S - WD1_COUNT_S} s after the"
-                   f" commit, WD1 with its count never zeroed (B2 didn't reach op 223); about {WD2_BITE_S} s, WD2 (B2 zeroed WD1's"
-                   f" count, and the pair stopped in its last ops); about {WD1_BITE_S} s, or no restart, the pair finished")
+                   f" {WD1_COUNT_S} s and running. The restart's time is read against it below, as far as the stage and wd2_bite=1's"
+                   " sample bear a reading out")
     elif w:
         out.append("  bits 7:6 (wd1_mark=1): the marker did NOT stand just before the commit: "
                    + (f"WD1 was armed with its {WD1_BITE_S} s bite, but its count didn't read {WD1_COUNT_S} s (to 5 s more): the count"
@@ -587,21 +586,51 @@ def fab_lines(v):
     return out
 
 
-def mark_reading(x):
-    """wd1_mark=1, the marker standing: what a restart x s after the commit (to a second either way) says."""
-    for t, what in ((WD1_BITE_S - WD1_COUNT_S, "what WD1 gives with its count never zeroed: B2 didn't reach its op 223, and the stall is at"
-                     " B2's first poll, in the first handshake (A2's three steps of its own) or in B2's power-down. That's the"
-                     " reading that fits with nothing else assumed, not a proof of which watchdog fired: a pair that finished, with"
-                     " a later A sequence starting about 60 s after the commit and arming WD2 with its own 30 s, gives the same time"),
-                    (WD2_BITE_S, "WD2: B2 zeroed WD1's count, so B2's first poll passed, A2's three steps settled and B2's power-down ran;"
-                     " the pair then stopped in its last twenty-odd ops (the second handshake, the PMU command, the third handshake)."
-                     " Only if wd2_bite=1's sample, above, says CPU0's write took. One other reading isn't excluded by this run alone:"
-                     " a WD1 that can't reset the SoC in this state, which a run with WD1's bite below WD2's would show"),
-                    (WD1_BITE_S, "WD1 after B2 zeroed its count, with WD2 stopped: the entry pair FINISHED, and WD1 ended it as a dead-man")):
-        if abs(x - t) <= 4:
-            return f"  wd1_mark=1's marker: about {t} s is {what}"
-    return (f"  wd1_mark=1's marker: {x:.0f} s is none of its three times ({WD1_BITE_S - WD1_COUNT_S}, {WD2_BITE_S} and {WD1_BITE_S} s):"
-            " not read. Right only in the first boot after the run, like the time itself")
+def fab_landed(b):
+    """fabric_up=1: is 0x6007 the run's byte? Step 7 leaves the cores that held there (0xff as a rule), and stage 0x52's command
+    puts the byte in its place, last of four. The steps' outcomes at 0x6012 go out right after that command and only if it
+    didn't fail, so their marker at 0x6013 says the command landed whole. Without it the byte may still be step 7's."""
+    return b[0x13] == K_MARK or b[0x13] & W_MARK == W_MARK
+
+
+def mark_reading(x, s, v):
+    """wd1_mark=1, the marker standing: what a restart x s after the commit (to a second either way) says, at stage s with
+    wd2_bite=1's sample v (0x6005). The time names no watchdog by itself: each reading is the one that fits, and it's given
+    only where the stage and the sample bear it out."""
+    head = "  wd1_mark=1's marker: "
+    if s == FAB_PRE:
+        return (f"{head}not read. Stage 0x52 is the last before the commit: nothing here records the commit, the release or WD2 after"
+                f" it, so {x:.0f} s can't be read as B2's progress")
+    if s in WD2_PEND:
+        return (f"{head}not read. CPU0 had an exception pending after its reads (the stage) and likely never went down, and a core"
+                f" left up holds the engine by itself: {x:.0f} s says nothing about a pair with every core down")
+    seen, code = bool(v & 4), v >> 6
+    moved = bool(seen and v & 8 and v & 0x10 and v & 0x20 and v != 0xfe)
+    t = next((t for t in (WD1_BITE_S - WD1_COUNT_S, WD2_BITE_S, WD1_BITE_S) if abs(x - t) <= 4), None)
+    if t is None:
+        return (f"{head}{x:.0f} s is none of its three times ({WD1_BITE_S - WD1_COUNT_S}, {WD2_BITE_S} and {WD1_BITE_S} s):"
+                " not read. Right only in the first boot after the run, like the time itself")
+    if t == WD1_BITE_S - WD1_COUNT_S:
+        return (f"{head}about {t} s is what WD1 gives with its count never zeroed: B2 didn't reach its op 223, and the stall is at"
+                " B2's first poll, in the first handshake (A2's three steps of its own) or in B2's power-down. That's the"
+                " reading that fits with nothing else assumed, not a proof of which watchdog fired: a pair that finished, with"
+                " a later A sequence starting about 60 s after the commit and arming WD2 with its own 30 s, gives the same time")
+    if t == WD2_BITE_S:
+        if not moved:
+            return (f"{head}about {t} s, but wd2_bite=1's sample, above, doesn't show WD2 armed and counting with CPU0's {WD2_BITE_S} s"
+                    " bite, so this record doesn't make the time WD2's. Not read as B2's progress")
+        if code not in (1, 2):
+            return (f"{head}about {t} s is WD2's moved bite, but PHASE didn't read 4 or 5, A2's before its last, in the sample above:"
+                    " a later A sequence may have armed WD2, after a pair that finished. Not read as B2 stopping in its last ops")
+        return (f"{head}about {t} s is WD2: B2 zeroed WD1's count, so B2's first poll passed, A2's three steps settled and B2's"
+                " power-down ran; the pair then stopped in its last twenty-odd ops (the second handshake, the PMU command, the third"
+                " handshake). One other reading isn't excluded by this run alone: a WD1 that can't reset the SoC in this state,"
+                " which a run with WD1's bite below WD2's would show")
+    if not seen:
+        return (f"{head}about {t} s is WD1's bite from a count zeroed at about the commit, but WD2 was never seen armed in the sample"
+                " above: nothing here shows the entry pair started. Not read as a pair that finished")
+    return (f"{head}about {t} s is WD1 after B2 zeroed its count, with WD2, which the sample above saw armed, stopped before it"
+            " could fire: the entry pair FINISHED, and WD1 ended it as a dead-man")
 
 
 def ack_lines(f, q, held):
@@ -789,8 +818,13 @@ def decode(b, rtc, cnt=None, alarm=None):
                 out.append(f"left their spin to stop (0x6006 = 0x{b[6]:02x}): {cpus(b[6])}")
             if not pmp and (s in POS_S2 or s == 0x43):
                 pass  # sample 2's, or not decoded: position_lines()
-            elif s in FAB_STAGES:
+            elif s in FAB_STAGES and fab_landed(b):
                 out += fab_lines(b[7])
+            elif s in FAB_STAGES:
+                out.append(f"0x6007 = 0x{b[7]:02x}: not read. The steps' outcomes go out right after stage 0x52's command, and only if"
+                           " it didn't fail, and their marker isn't at 0x6013: that command isn't shown to have landed whole, and this"
+                           " byte, its last, may still be the one step 7 leaves here, the cores that held (0xff as a rule). It isn't"
+                           " read as fabric_up=1's byte, and no marker in WD1 is taken to stand")
             elif hold:
                 out.append(f"wrote their stop bit and held (0x6007 = 0x{b[7]:02x}): {cpus(b[7] & 0xfe)}")
                 # sio_on=1's bit, which only its own stages can read when clear: a plain pmp_out=1 run leaves it clear too.
@@ -945,8 +979,8 @@ def decode(b, rtc, cnt=None, alarm=None):
         out.append(f"the SoC restarted about {x:.0f} s after the commit ({x - 1:.1f} to {x + 1:.1f} s: the PMU's RTC"
                    f" counts whole seconds); its counter (CNTVCT) is {age:.1f} s old. Right only in the first boot"
                    " after the run")
-        if s in FAB_STAGES and b[7] & WD1_STANDS == WD1_STANDS:
-            out.append(mark_reading(x))
+        if s in FAB_STAGES and fab_landed(b) and b[7] & WD1_STANDS == WD1_STANDS:
+            out.append(mark_reading(x, s, b[5]))
     if alarm:
         out += alarm_lines(s, commit, alarm, now, b[0x16])
     return out

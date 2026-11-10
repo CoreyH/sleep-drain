@@ -32,6 +32,11 @@
  *             and PLL-off
  *   bits 7:6  wd1_mark=1's two bits (wd1_mark.h): 3 if WD1 stood as a marker
  *             just before the commit, 0 in a run without one
+ * Step 7's command leaves the cores that held in the same place, 0xff as a rule,
+ * and the byte is the last of stage 0x52's command: if that command landed
+ * without it, the old 0xff would read as every bit set. The steps' outcomes at
+ * 0x6012 go out right after that command and only if it didn't fail, so
+ * m1-crumbs reads the byte only when their marker is at 0x6013.
  */
 #ifndef FABRIC_UP_H
 #define FABRIC_UP_H
