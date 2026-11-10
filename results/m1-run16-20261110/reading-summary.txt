@@ -1,0 +1,1 @@
+time=2026-11-10T13:17:13+01:00 ts=1794313033 label=floor-m1-cluster-ack boot=safe then=suspend boot_id=ef876f42-1ab7-4744-a5fe-550762295ae8 minutes=1 samples=7 window=1794312973-1794313033 charge_now_uah=2883000 voltage_uv=11486000 current_ua=-565000 charge_counter=-105189 capacity=57 uptime_s=135.51 ac=0
