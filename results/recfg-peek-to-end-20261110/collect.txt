@@ -1,0 +1,9 @@
+pkexec /usr/local/bin/sleep-drain-safe collect (10:59, the regular boot after it; uptime -s 10:55:07)
+collected 20261110T105423-2
+collected 20261110T105423
+collected 20261110T105424-2
+collected 20261110T105424-3
+collected 20261110T105424
+collected 20261110T105425
+
+Six saves, after pieces 3, 7, 11, 15, 19 and 23: every piece was read, with no fault and no stop.
