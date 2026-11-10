@@ -331,7 +331,7 @@ MODULE_PARM_DESC(wd2_bite, "With ps_words=1, and not with recfg_bite=1: after th
 /* The "up done" flag of the three clusters macOS's table writes a plain 0 (PLAN.md, "The order after the sweep of 2026-11-10"). */
 static bool cluster_ack;
 module_param(cluster_ack, bool, 0444);
-MODULE_PARM_DESC(cluster_ack, "With wd2_bite=1: step 5 writes the table's entries 55, 57 and 60, the soc-cluster words of ANE0, AFR and AVEMSR (0x28e09800c, 0x28e098014, 0x28e098020), as 0x20, not the table's 0: target 0 and a 1 to bit 5, the cluster's up-done flag (Corey's OK of 2026-11-10 for those three words and that value). The four cluster waits (after 55, 57, 58, 60) then ask for the whole word to read 0, not only bit 4; 0x6014's bit 4 marks the run and its bit 5 says a word that didn't read 0 was still busy");
+MODULE_PARM_DESC(cluster_ack, "With wd2_bite=1 and no pmp_stop=0: step 5 writes the table's entries 55, 57 and 60, the soc-cluster words of ANE0, AFR and AVEMSR (0x28e09800c, 0x28e098014, 0x28e098020), as 0x20, not the table's 0: target 0 and a 1 to bit 5, the cluster's up-done flag (Corey's OK of 2026-11-10 for those three words and that value). The four cluster waits (after 55, 57, 58, 60) then ask for the whole word to read 0, not only bit 4 clear; for one that isn't met, its qto bit says the flag was still set, and 0x6014's bit 5 that something else was left in a word; 0x6014's bit 4 marks the run");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -983,8 +983,8 @@ static void e1_after_slpa(void)
  *   1       AFR's power state (51): actual 0 (genpd has it off already)
  *   2-5     ANE0's, AFR's, DISPLAY's and AVEMSR's power-downs (55, 57, 58,
  *           60): bit 4 clear. macOS polls only the clusters above 3, so not
- *           EACC's, PACC0's or PACC1's. With cluster_ack=1 (below), stricter
- *           than macOS: the whole word 0
+ *           EACC's, PACC0's or PACC1's. With cluster_ack=1 (below) the waits
+ *           are for the whole word 0, and these bits say whose flag stayed
  *   6       SIO_CPU (61): actual == target. genpd has its parent, SIO, off by
  *           prepare_late, so it may never settle
  *   7       a ClkGen-SOC mux (62-66): bit 30 clear; or PLL-off (69, 72): bit
@@ -1327,28 +1327,32 @@ static void e1_after_slpa(void)
  * comes 120 s after the commit. The write is made whether or not raw SPMI still
  * works: the reset's time is the result, and the byte only says how to read it.
  *
- * cluster_ack=1 (run-floor --m1-cluster-ack; with wd2_bite=1) clears a flag the
- * replay has left set (RESEARCH.md, "Related work, swept 2026-11-10"). Bit 5 of a
- * soc-cluster word is the cluster's "up done" flag, cleared by writing 1 to it: DJ's
- * T8140 driver names it, and before its commit writes 0x20 to a complex macOS has
- * off and polls its word for 0; this SoC's own wake sequence, A1, waits for the bit
- * on EACC and then writes it back. macOS's table,
- * replayed value for value, writes 0x20 to PACC0, PACC1 and DISPLAY, target 0 with
- * the ack, and a plain 0 to EACC, ANE0, AFR and AVEMSR. EACC reads 0x0f awake here,
- * its flag clear; ANE0, AFR and AVEMSR read 0x2f, up with the flag set, where under
- * macOS they were off and acked long before the sleep. So after the table's 0 they
- * would read 0x20, which no run has measured (the waits read bit 4 alone). With
+ * cluster_ack=1 (run-floor --m1-cluster-ack; with wd2_bite=1) acks a flag the
+ * replay is thought to leave set (RESEARCH.md, "Related work, swept 2026-11-10").
+ * Bit 5 of a soc-cluster word is the cluster's "up done" flag, cleared by writing 1
+ * to it: DJ's T8140 driver names it, and before its commit writes 0x20 to a complex
+ * macOS has off and polls its word for 0; this SoC's own wake sequence, A1, waits
+ * for the bit on EACC and then writes it back. macOS's table, replayed value for
+ * value, writes 0x20 to PACC0, PACC1 and DISPLAY, target 0 with the ack, and a plain
+ * 0 to EACC, ANE0, AFR and AVEMSR. EACC reads 0x0f awake here, its flag clear; ANE0,
+ * AFR and AVEMSR read 0x2f, up with the flag set, where under macOS they were off
+ * and acked long before the sleep. So after the table's 0 they would read 0x20
+ * (inferred: no run has measured it, the waits read bit 4 alone). With
  * cluster_ack=1, step 5 writes those three entries (M1_ACK_*: 55, 57, 60) as 0x20,
  * in their places in the table, Corey's OK of 2026-11-10 for these three words and
  * this value; nothing else is written that wd2_bite=1's run doesn't write. The four
  * cluster waits (55, 57, 58 and 60: DISPLAY's too, which the table already acks, as
- * the control) then ask for the whole word to read 0 within their 10 ms, so qto's
- * bits 2-5 say which word didn't. 0x6014's bits 4 and 5, PCPM0's and PCPM1's, which
- * a hold_nowatch=1 run never sets, become: 4, the run's mark (the three words went
- * out as 0x20, and qto's bits 2-5 are whole-word); 5, a word that didn't read 0 had
- * bit 4, busy, set at its wait's last read (clear with a qto bit set: the flag or
- * the target stayed, with nothing busy). The run goes on whatever the words read:
- * after slpa there's nothing to come back to, and the reset's time is the result.
+ * the control) then ask for the whole word to read 0 within their 10 ms, so a word
+ * that never does costs the 10 ms run 15 didn't spend there, 40 ms at most before
+ * the commit. What a wait that isn't met leaves (m1_wait_unmet()): its qto bit, 2-5,
+ * only if bit 5, the flag, was still set at the wait's last read; and 0x6014's bit
+ * 5, for the four words together, if anything else was (bit 4, busy; the target;
+ * another bit). So qto's bits 2-5 say whose flag stayed, and all four words read 0
+ * only if those are clear and 0x6014's bit 5 is too. 0x6014's bit 4 is the run's
+ * mark: with it, those five bits mean this. Bits 4 and 5 are PCPM0's and PCPM1's
+ * where CPU0 watches the cores down, which a hold_nowatch=1 run never does, and
+ * cluster_ack=1 loads on no other. The run goes on whatever the words read: after
+ * slpa there's nothing to come back to, and the reset's time is the result.
  *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
@@ -1454,9 +1458,11 @@ static void e1_after_slpa(void)
 #define M1_ACK_AVEMSR		60
 #define M1_ACK_VAL		0x20U
 #define M1_ACK_BUSY		BIT(4)	/* a soc-cluster word's busy bit, the one macOS polls */
-/* 0x6014 in a cluster_ack=1 run, in the bits hold_nowatch=1 leaves unused (the m1 comment). */
+#define M1_ACK_FLAG		BIT(5)	/* its up-done flag, cleared by writing 1 */
+/* 0x6014 in a cluster_ack=1 run, in the bits hold_nowatch=1 leaves unused (the m1 comment): the mark, and "more than the flag was left". */
 #define M1_F_ACK		BIT(4)
-#define M1_F_ACK_BUSY		BIT(5)
+#define M1_F_ACK_REST		BIT(5)
+static_assert(M1_ACK_VAL == M1_ACK_FLAG);
 /* PMGR reg[2] + 0x180 and + 0x188: SIO's and SIO_CPU's power states, [7:4] the actual one. */
 #define M1_PS_SIO_PAGE		0x28e580000ULL
 #define M1_PS_SIO		0x180
@@ -1981,6 +1987,23 @@ static bool m1_wait_done(const struct m1_wait *w, u32 *last)
 	}
 	*last = v;
 	return met;
+}
+
+/*
+ * Step 5, a wait that wasn't met, v its last read: its qto bit. With cluster_ack=1 a cluster wait leaves that bit only
+ * if the word's flag was still set, and 0x6014's M1_F_ACK_REST, for the four together, if anything else was (the m1
+ * comment).
+ */
+static void m1_wait_unmet(const struct m1_wait *w, u32 v, u8 *qto, u8 *flags)
+{
+	if (!cluster_ack || w->kind != M1_W_CLUSTER) {
+		*qto |= w->qto;
+		return;
+	}
+	if (v & M1_ACK_FLAG)
+		*qto |= w->qto;
+	if (v & ~M1_ACK_FLAG)
+		*flags |= M1_F_ACK_REST;
 }
 
 static void m1_aic_mask_all(void)
@@ -2841,12 +2864,8 @@ static void __noreturn m1_after_slpa(void)
 			writel_relaxed(m1_post_val(i), post_map[i]);
 		for (; pmgr_late && k < ARRAY_SIZE(m1_waits) && m1_waits[k].idx == i; k++) {
 			dsb(sy);
-			if (!m1_wait_done(&m1_waits[k], &v)) {
-				qto |= m1_waits[k].qto;
-				/* cluster_ack=1: the word didn't read 0. Busy still, or only the flag or the target left? */
-				if (cluster_ack && m1_waits[k].kind == M1_W_CLUSTER && (v & M1_ACK_BUSY))
-					flags |= M1_F_ACK_BUSY;
-			}
+			if (!m1_wait_done(&m1_waits[k], &v))
+				m1_wait_unmet(&m1_waits[k], v, &qto, &flags);
 			if (m1_waits[k].kind == M1_W_PSTATE)
 				dcs = v;
 			if (m1_waits[k].kind == M1_W_SETTLED)	/* SIO_CPU's, entry 61's: the only one */
@@ -3978,8 +3997,8 @@ static int __init e1_check_params(void)
 		pr_err("wd2_bite=1 needs ps_words=1 and no recfg_bite=1 (stages 0x56 and 0x57 and their byte at 0x6005 are in that run's layout, and the two samples share the byte)\n");
 		return -EINVAL;
 	}
-	if (cluster_ack && !wd2_bite) {
-		pr_err("cluster_ack=1 needs wd2_bite=1 (it's that run with three of the table's values changed, and 0x6014's bits 4 and 5 are free in its layout)\n");
+	if (cluster_ack && (!wd2_bite || !pmp_stop)) {
+		pr_err("cluster_ack=1 needs wd2_bite=1 and no pmp_stop=0 (it's run 15's recipe with three of the table's values changed, and 0x6014's bits 4 and 5 are free in its layout)\n");
 		return -EINVAL;
 	}
 	if (cluster_ack) {

@@ -99,13 +99,16 @@
 # --m1-cluster-ack (PLAN.md, "The order after the sweep of 2026-11-10"; RESEARCH.md, "Related work, swept
 # 2026-11-10") is --m1-wd2-bite's, all of it, wd2-bite's store and the 120 s included, with three of the
 # table's values changed: cluster_ack=1 writes the soc-cluster words of ANE0, AFR and AVEMSR (0x28e09800c,
-# 0x28e098014, 0x28e098020) as 0x20, not macOS's 0, which takes the cluster to target 0 and clears its
-# "up done" flag in one write (Corey's OK of 2026-11-10 for those three words and that value). Under macOS
+# 0x28e098014, 0x28e098020) as 0x20, not macOS's 0: target 0, and a 1 to the cluster's "up done" flag, which
+# is how such a flag is cleared (Corey's OK of 2026-11-10 for those three words and that value). Under macOS
 # those clusters are off and acked long before the sleep; here they're up with the flag set, and the plain 0
-# would leave it. CPU0 then waits up to 10 ms for each of the four cluster words, DISPLAY's too, to read 0,
-# and records which didn't (m1-crumbs: 0x6006 and 0x6014's bits 4 and 5). The run goes on either way, and its
-# endings read as --m1-wd2-bite's: a reset about 120 s after the screen goes dark means the flags weren't
-# what stalls the entry, or not alone; "dark for good" starts at 3 minutes. Its label is floor-m1-cluster-ack.
+# is thought to leave it (inferred: no run has read the words after it). CPU0 then waits up to 10 ms for each
+# of the four cluster words, DISPLAY's too, to read 0, and records whose flag stayed and whether anything
+# else was left in a word (m1-crumbs: 0x6006's bits 2-5 and 0x6014's bits 4 and 5). The run goes on either
+# way, and it ends as --m1-wd2-bite's does: a reset about 120 s after the screen goes dark, or "dark for
+# good" from 3 minutes. What a reset says about the flags depends on that record: only if every word read 0
+# does it say the flags weren't what stalls the entry, or not alone (PLAN.md). Its label is
+# floor-m1-cluster-ack.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by

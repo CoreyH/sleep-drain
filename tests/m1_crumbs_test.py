@@ -1138,9 +1138,22 @@ typedef uint64_t u64;
 #define BIT(n) (1U << (n))
 #define GENMASK(h, l) ((~0U << (l)) & (~0U >> (31 - (h))))
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define __iomem
+#define cpu_relax() do { } while (0)
 static bool cluster_ack;
+/* m1_wait_done()'s world: a word that reads a scripted sequence (its last value from then on), and a clock that ticks once a look. */
+static void *post_map[128];
+static u64 m1_tps = 1000, fake_now;
+static const u32 *seq;
+static unsigned int nseq, reads;
+static u64 m1_now(void) { return fake_now++; }
+static u32 readl(void *p) { unsigned int i = reads++; (void)p; return seq[i < nseq ? i : nseq - 1]; }
 """
 ACK_MAIN = r"""
+static const u32 s0[] = { 0 }, s1[] = { 0x20 }, s2[] = { 0x10, 0x10, 0 }, s3[] = { 0x10, 0x30, 0x20 }, s4[] = { 0x40 },
+	s5[] = { 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x71 };
+static const struct { const u32 *s; unsigned int n; } seqs[] = { { s0, 1 }, { s1, 1 }, { s2, 3 }, { s3, 3 }, { s4, 1 }, { s5, 16 } };
+
 int main(void)
 {
 	static const u32 vals[] = { 0, 0x10, 0x20, 0x30, 0x0f, 0x2f, 0x1f, 0x3f, 1, 0x40, 0x100, 0x80000000, 0x40000000, 0x55, 0x57, 0x75, 0x77, 0xf0 };
@@ -1155,6 +1168,29 @@ int main(void)
 			for (i = 0; i < ARRAY_SIZE(vals); i++)
 				printf("met %u %u %u %u %llx %x %d\n", a, k, m1_waits[k].idx, m1_waits[k].kind,
 				       (unsigned long long)m1_waits[k].addr, vals[i], m1_wait_met(&m1_waits[k], vals[i]));
+		/* A wait that wasn't met, by its last read: what it leaves in qto and in 0x6014's byte. */
+		for (k = 0; k < ARRAY_SIZE(m1_waits); k++)
+			for (i = 0; i < ARRAY_SIZE(vals); i++) {
+				u8 qto = 0, flags = 0;
+
+				m1_wait_unmet(&m1_waits[k], vals[i], &qto, &flags);
+				printf("unmet %u %u %u %x %x %x %x\n", a, m1_waits[k].idx, m1_waits[k].kind, vals[i], m1_waits[k].qto, qto, flags);
+			}
+		/* m1_wait_done() itself, on ANE0's cluster wait and on the first wait of all, DCS's. */
+		for (k = 0; k < ARRAY_SIZE(m1_waits); k++) {
+			if (k && m1_waits[k].idx != M1_ACK_ANE0)
+				continue;
+			for (i = 0; i < ARRAY_SIZE(seqs); i++) {
+				u32 last = 0xdeadbeef;
+				bool ret;
+
+				seq = seqs[i].s;
+				nseq = seqs[i].n;
+				reads = 0;
+				ret = m1_wait_done(&m1_waits[k], &last);
+				printf("done %u %u %u %u %d %u %x\n", a, m1_waits[k].idx, m1_waits[k].kind, i, ret, reads, last);
+			}
+		}
 	}
 	return 0;
 }
@@ -1170,7 +1206,8 @@ def cluster_ack_tests(g, src):
 
     defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_ACK_\w+|M1_F_ACK\w*|M1_W_(CLEAR|SETTLED|PSTATE|CLUSTER))\s", line))
     code = (ACK_PRELUDE + cut("static const struct e1_mmio_write {", "\n};\n") + defs + cut("static const struct m1_wait {", "\n};\n")
-            + cut("static bool m1_wait_met(", "\n}\n") + cut("static u64 m1_post_val(", "\n}\n") + ACK_MAIN)
+            + cut("static bool m1_wait_met(", "\n}\n") + cut("static u64 m1_post_val(", "\n}\n")
+            + cut("static bool m1_wait_done(", "\n}\n") + cut("static void m1_wait_unmet(", "\n}\n") + ACK_MAIN)
     with tempfile.TemporaryDirectory() as tmp:
         c = os.path.join(tmp, "ack.c")
         with open(c, "w") as f:
@@ -1203,38 +1240,98 @@ def cluster_ack_tests(g, src):
     rest = [(k, m) for k, m in met.items() if k[2] != kind["CLUSTER"] and any(m[(0, v)] != m[(1, v)] for _, v in m)]
     check(len(met) == 15 and not rest, "the other eleven waits are the same with and without cluster_ack=1", str(rest[:2]))
 
+    # A wait that wasn't met: its qto bit, but for a cluster wait with cluster_ack=1, which leaves it only if the flag stayed,
+    # and 0x6014's bit 5 if anything else did. Read here from the layout, for every wait and value.
+    unmet = [(int(r[1]), int(r[2]), int(r[3]), int(r[4], 16), int(r[5], 16), int(r[6], 16), int(r[7], 16)) for r in rows if r[0] == "unmet"]
+    bad = [u for u in unmet
+           if (u[5], u[6]) != (((u[4] if u[3] & 0x20 else 0), (0x20 if u[3] & ~0x20 else 0)) if u[0] and u[2] == kind["CLUSTER"] else (u[4], 0))]
+    check(len(unmet) == 2 * 15 * 18 and not bad,
+          "an unmet wait leaves its qto bit; with cluster_ack=1 a cluster wait leaves it only if bit 5 was set, and 0x6014's bit 5 if any other bit was",
+          str(bad[:4]))
+    # m1_wait_done(): met at the first read that meets it, 10 ms and no more (11 looks at this clock), and *last the deciding read.
+    done = {(int(r[1]), int(r[3]), int(r[4])): (int(r[5]), int(r[6]), int(r[7], 16)) for r in rows if r[0] == "done"}
+    C = kind["CLUSTER"]
+    want = {}
+    for a in (0, 1):
+        want[(a, C, 0)] = (1, 1, 0)                                 # reads 0 at once
+        want[(a, C, 1)] = (1, 1, 0x20) if not a else (0, 11, 0x20)  # the flag alone: met on bit 4, never as a whole word
+        want[(a, C, 2)] = (1, 3, 0)                                 # busy twice, then 0
+        want[(a, C, 3)] = (1, 3, 0x20) if not a else (0, 11, 0x20)  # busy, then the flag left
+        want[(a, C, 4)] = (1, 1, 0x40) if not a else (0, 11, 0x40)  # another bit
+        want[(a, C, 5)] = (0, 11, 0x3b)                             # busy for good: the eleventh look's value
+    got = {key: v for key, v in done.items() if key[1] == C}
+    other = sorted((key, v) for key, v in done.items() if key[1] != C)
+    check(got == want and len(other) == 12 and all(other[i][1] == other[i + 6][1] for i in range(6)),
+          "m1_wait_done(): a cluster word is met on bit 4, or with cluster_ack=1 only when it reads 0; it gives up after 10 ms either way, with the"
+          " last value it read; another wait is the same with and without cluster_ack=1", f"{sorted(got.items())}\n{other}")
+
     # Step 5 writes through m1_post_val() and nothing else, and records the result where m1-crumbs reads it.
     step5 = cut("/* 5: the table's other entries", "\tdsb(sy);\n\tif (pmgr_late) {")
     check(step5.count("m1_post_val(i), post_map[i]);") == 2 and "w->val" not in step5 and len(re.findall(r"write\w*\(", step5)) == 2
           and "writeq_relaxed(m1_post_val(i), post_map[i]);" in step5 and "writel_relaxed(m1_post_val(i), post_map[i]);" in step5,
           "step 5's two writes, 8 and 4 bytes, both take m1_post_val()'s value, and it writes nothing else", step5)
-    check("\t\t\tif (!m1_wait_done(&m1_waits[k], &v)) {\n\t\t\t\tqto |= m1_waits[k].qto;\n" in step5
-          and "if (cluster_ack && m1_waits[k].kind == M1_W_CLUSTER && (v & M1_ACK_BUSY))\n\t\t\t\t\tflags |= M1_F_ACK_BUSY;" in step5
-          and "\tif (cluster_ack)\n\t\tflags |= M1_F_ACK;\n" in src and src.count("M1_F_ACK;") == 1 and src.count("M1_F_ACK_BUSY;") == 1,
-          "a cluster wait that timed out sets its qto bit, and 0x6014's bit 5 if the word was busy; bit 4 is set once, by cluster_ack=1 alone", step5)
-    d = dict(re.findall(r"#define (M1_F_ACK\w*|M1_ACK_BUSY|M1_ACK_VAL)\s+(\S+)", src))
+    check("\t\t\tif (!m1_wait_done(&m1_waits[k], &v))\n\t\t\t\tm1_wait_unmet(&m1_waits[k], v, &qto, &flags);\n" in step5
+          and step5.count("qto") == 1 and step5.count("flags") == 1,
+          "step 5 hands every unmet wait, with its last read, to m1_wait_unmet(), and touches qto and the flags nowhere else", step5)
+    # The three values go out in step 5 and nowhere else: M1_ACK_VAL is m1_post_val()'s alone, m1_post_val() is called by step 5, by the
+    # load's count of changed values and by its log, and the load's own function writes nothing.
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))  # no comments, no strings' text
+    init = cut("static void __init m1_ack_init(void)", "\n}\n")
+    check(len(re.findall(r"\bM1_ACK_VAL\b", code_only)) == 3 and "\t\treturn M1_ACK_VAL;\n" in cut("static u64 m1_post_val(", "\n}\n")
+          and "static_assert(M1_ACK_VAL == M1_ACK_FLAG);" in src
+          and len(re.findall(r"\bm1_post_val\(", code_only)) == 5 and init.count("m1_post_val(") == 1 and not re.search(r"write\w*\(", init),
+          "0x20 is m1_post_val()'s alone, and nothing but step 5 writes what it returns: the load only counts and logs", init)
+    # The mark is set before the table goes out and reaches 0x6014 with step 8's command; nothing else in the run sets the two bits.
+    after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
+    sets = re.findall(r"flags \|= ([^;]+);", after)
+    check(in_order_of(after, ["\tif (cluster_ack)\n\t\tflags |= M1_F_ACK;\n", "/* 5: the table's other entries", "/* 8 */", "b[4] = flags;",
+                              "m1_crumb(0x6010, b, 7);", "/* 9 */"])
+          and sets == ["BIT(3)", "BIT(6)", "M1_F_ACK", "BIT(4)", "BIT(5)", "(read_sysreg(isr_el1) >> 6) & 7"]
+          and "if (!hold && cpu == 4 && m1_wait_off(M1_PS_PCPM0))\n\t\t\tflags |= BIT(4);" in after
+          and "if (!hold && cpu == 7 && m1_wait_off(M1_PS_PCPM1))\n\t\t\tflags |= BIT(5);" in after
+          and src.count("M1_F_ACK;") == 1 and len(re.findall(r"\bM1_F_ACK_REST\b", code_only)) == 2,
+          "0x6014's bit 4 is set once, by cluster_ack=1, before the table, and goes out with step 8's command; in a hold=1 run nothing else there"
+          " sets bit 4 or 5", str(sets))
+    d = dict(re.findall(r"#define (M1_F_ACK\w*|M1_ACK_BUSY|M1_ACK_FLAG|M1_ACK_VAL)\s+(\S+)", src))
     bits = [int(b) for b in re.findall(r"\{\s*\d+,\s*M1_W_CLUSTER,\s*BIT\((\d)\),\s*M1_ACK_BUSY,", src)]
-    check(d == {"M1_F_ACK": "BIT(4)", "M1_F_ACK_BUSY": "BIT(5)", "M1_ACK_BUSY": "BIT(4)", "M1_ACK_VAL": "0x20U"}
-          and g["F_ACK"] == 0x10 and g["F_ACK_BUSY"] == 0x20 and g["CLUSTER_WAITS"] == sum(1 << b for b in bits) == 0x3c,
-          "m1-crumbs' mark, busy bit and cluster waits are e1_hook.c's", f"{d} {bits}")
+    check(d == {"M1_F_ACK": "BIT(4)", "M1_F_ACK_REST": "BIT(5)", "M1_ACK_BUSY": "BIT(4)", "M1_ACK_FLAG": "BIT(5)", "M1_ACK_VAL": "0x20U"}
+          and g["F_ACK"] == 0x10 and g["F_ACK_REST"] == 0x20 and g["CLUSTER_WAITS"] == sum(1 << b for b in bits) == 0x3c and g["ACK_WROTE"] == 0x2c,
+          "m1-crumbs' mark, its other bit and the cluster waits are e1_hook.c's", f"{d} {bits}")
     idx = {2: 55, 3: 57, 4: 58, 5: 60}
-    check(all(str(i) in re.findall(r"\((\d+)\)", g["WAITS_ACK"][b]) for b, i in idx.items()) and g["WAITS_ACK"][:2] == g["WAITS"][:2]
-          and g["WAITS_ACK"][6:] == g["WAITS"][6:] and len(g["WAITS_ACK"]) == 8
-          and all(("after its 0x20" in g["WAITS_ACK"][b]) == (b != 4) for b in idx) and "the table's own 0x20" in g["WAITS_ACK"][4],
-          "m1-crumbs names each cluster wait's entry, and says which words cluster_ack=1 wrote and which the table already acks", str(g["WAITS_ACK"]))
+    check(sorted(g["ACK_WORDS"]) == [2, 3, 4, 5] and all(f"({i}" in g["ACK_WORDS"][b] for b, i in idx.items())
+          and ["the table's own 0x20" in g["ACK_WORDS"][b] for b in idx] == [False, False, True, False]
+          and {b for b in idx if g["ACK_WROTE"] >> b & 1} == {2, 3, 5},
+          "m1-crumbs names each cluster word's entry, and which three cluster_ack=1 wrote and which the table already acks", str(g["ACK_WORDS"]))
+    # The stages m1-crumbs reads the mark at, and the ones it says can't tell, are the run's: bit 7 from K4 on, 0x28 after the table,
+    # 0x31-0x37 and 0x39 for hold=1's stop requests, 0x4e before the commit, wd2_bite=1's two after it.
+    check(g["ACK_EARLY"] == (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39) and g["ACK_MARKED"] == (0x4e, 0x56, 0x57)
+          and "b[0] = 0x28;" in after and "m1_stage((hold ? 0x31 : pmgr_late ? 0x29 : 0x21) + i);" in after
+          and "b[0] = hold ? 0x39 : pmgr_late ? 0x38 : 0x30;" in after and "b[0] = sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;" in after
+          and "else if (!recfg_bite && !wd2_bite)\n\t\t\tm1_stage(sio_stop ? 0x4f : 0x5b);" in after
+          and "#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src,
+          "the stages m1-crumbs takes for a cluster_ack=1 run's are the ones e1_hook.c sends on that recipe")
     # The two bits are PCPM0's and PCPM1's wherever CPU0 watches the cores down: cluster_ack=1 only loads where it never does.
     release = cut("static void m1_hold_release(", "\n}\n")
-    check("cluster_ack && !wd2_bite" in src and "wd2_bite && (!ps_words || recfg_bite)" in src and "ps_words && !sio_stop" in src
-          and "sio_stop && (!hold_nowatch || !disp_off || !one_commit || !smc_idle || position)" in src and "hold_nowatch && !hold" in src
-          and release.index("if (hold_nowatch)\n\t\treturn;") < release.index("flags |= BIT(4);")
-          and "if (!hold && cpu == 4 && m1_wait_off(M1_PS_PCPM0))\n\t\t\tflags |= BIT(4);" in src
-          and "if (!hold && cpu == 7 && m1_wait_off(M1_PS_PCPM1))\n\t\t\tflags |= BIT(5);" in src,
-          "cluster_ack=1 loads only on wd2_bite=1's recipe, hold_nowatch=1 always, where nothing else sets 0x6014's bits 4 and 5")
     params = cut("static int __init e1_check_params(void)", "\n}\n")
-    check(in_order_of(params, ["{ M1_ACK_ANE0, 0x28e09800cULL }, { M1_ACK_AFR, 0x28e098014ULL }, { M1_ACK_AVEMSR, 0x28e098020ULL },",
+    check("static bool cluster_ack;\nmodule_param(cluster_ack, bool, 0444);\n" in src and not re.search(r"\bcluster_ack\s*=[^=]", code_only)
+          and "wd2_bite && (!ps_words || recfg_bite)" in src and "ps_words && !sio_stop" in src
+          and "sio_stop && (!hold_nowatch || !disp_off || !one_commit || !smc_idle || position)" in src and "hold_nowatch && !hold" in src
+          and release.index("if (hold_nowatch)\n\t\treturn;") < release.index("flags |= BIT(4);"),
+          "cluster_ack is off unless asked for, read-only once loaded, and on wd2_bite=1's recipe, hold_nowatch=1 always, nothing else sets 0x6014's"
+          " bits 4 and 5")
+    check(in_order_of(params, ["\tif (wd2_bite && (!ps_words || recfg_bite)) {\n",
+                               "\tif (cluster_ack && (!wd2_bite || !pmp_stop)) {\n\t\tpr_err(", "\t\treturn -EINVAL;\n\t}\n\tif (cluster_ack) {\n",
+                               "{ M1_ACK_ANE0, 0x28e09800cULL }, { M1_ACK_AFR, 0x28e098014ULL }, { M1_ACK_AVEMSR, 0x28e098020ULL },",
+                               "\t\tfor (i = 0; i < ARRAY_SIZE(ack); i++) {\n",
                                "if (w->addr != ack[i].addr || w->width != 4 || w->val || e1_post_early(w) || e1_never_write(w->addr))\n\t\t\t\tgoto bad_ack;",
-                               "n += m1_post_val(i) != e1_post_slpa[i].val;", "if (n != ARRAY_SIZE(ack))\n\t\t\tgoto bad_ack;", "bad_ack:", "return -EINVAL;"]),
-          "the load refuses unless the three entries are those words with the table's 0, and unless exactly three values change", params)
+                               "\t\t\tfor (k = 0; k < ARRAY_SIZE(m1_waits); k++)\n\t\t\t\tif (m1_waits[k].idx == ack[i].idx && m1_waits[k].kind == M1_W_CLUSTER &&\n"
+                               "\t\t\t\t    m1_waits[k].mask == M1_ACK_BUSY)\n\t\t\t\t\tbreak;\n\t\t\tif (k == ARRAY_SIZE(m1_waits))\n\t\t\t\tgoto bad_ack;\n",
+                               "\t\tfor (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++)\n\t\t\tn += m1_post_val(i) != e1_post_slpa[i].val;\n"
+                               "\t\tif (n != ARRAY_SIZE(ack))\n\t\t\tgoto bad_ack;\n\t}\n",
+                               "\treturn 0;\n\nbad_wait:", "bad_ack:\n\tpr_err(", "\treturn -EINVAL;\n}"])
+          and params.count("return 0;") == 1,
+          "the load refuses cluster_ack=1 off run 15's recipe, unless the three entries are those words with the table's 0 and a cluster wait each, and"
+          " unless exactly three values change: all of it before its one return 0", params)
 
 
 def in_order_of(text, parts):
@@ -1539,7 +1636,8 @@ def position_tests(g, src):
                   f"--clear after disp_off=1's 0x{stage:02x}: the run's alarm disarmed and the crumbs zeroed", r.stdout + r.stderr)
 
         # sio_stop=1's run: 0x6012 has the K steps' outcomes, 0x6013 their marker, no sample, and stages 0x4e and 0x4f.
-        # 0x6014 = 0x80, as runs 10 to 15 left it: hold_nowatch=1 never sets PCPM0's and PCPM1's bits, which are cluster_ack=1's there.
+        # 0x6014 = 0x80, as runs 11, 12 and 15 left it (the hold_nowatch=1 records there are): such a run never sets PCPM0's and
+        # PCPM1's bits, which are cluster_ack=1's there.
         run10 = dict(run7, prog=(0xff, 0xa5), flags=0x80)
         LINE = "  internal DCP: stopped; external DCP: stopped; the domains of the DCPs that stopped: all read off\n"
         rc, out, err = dec(0xcf, run10)
@@ -1840,74 +1938,123 @@ def position_tests(g, src):
         check(r.returncode == 0 and "the SoC restarted about 120 s after the commit (119.0 to 121.0 s:" in r.stdout,
               "wd2_bite=1: a restart 120 s after the commit is timed as that", r.stdout + r.stderr)
 
-        # cluster_ack=1's run: wd2_bite=1's, with 0x6014's bit 4 its mark and bit 5 "a word that didn't read 0 was busy", and qto's
-        # bits 2-5 the four cluster words' whole-word waits.
+        # cluster_ack=1's run: wd2_bite=1's, with 0x6014's bit 4 its mark and bit 5 "something other than the flag was left in a
+        # word", and qto's bits 2-5 the cluster words whose flag stayed.
         ACK = "0x6014 bit 4 (cluster_ack=1): step 5 wrote ANE0's, AFR's and AVEMSR's soc-cluster words (0x28e09800c, 0x28e098014, 0x28e098020) as 0x20,"
-        ALL0 = "  so: each of the four words read 0 within 10 ms of its write, before the commit: target 0, not busy, and the flag clear."
+        ALL0 = "  so: each of the four words read 0 within 10 ms of its write, before the commit: target 0, not busy, and the flag clear\n"
+        ENDING = "  (how the run ended is the stage's and wd2_bite=1's sample's to say; PLAN.md has how an ending reads with this)\n"
+        NONE = "0x6006 = 0x{:02x}: {}; bits 2-5 (cluster_ack=1), the soc-cluster words whose up-done flag was still set at their wait's last read: {}\n"
+        MET = "macOS's other waits were all met within 10 ms"
         ack15 = dict(run10, parked=wsmp(), prog=(0xff, 0xff), left=0)
         rc, out, err = dec(0xd7, dict(ack15, flags=0x90))
-        check(rc == 0 and "0x6006 = 0x00: every wait was met within 10 ms, the four cluster waits as cluster_ack=1 has them\n" in out
-              and ACK in out and ALL0 + " The ending is then the result: a reset as before says the flags weren't what stalls the entry, or not alone\n" in out
-              and "NOT every word" not in out and "macOS's waits" not in out and "nothing here says whether this was one" not in out
+        check(rc == 0 and NONE.format(0, MET, "none") in out and ACK in out and ALL0 + ENDING in out
+              and "STAYED" not in out and "every one of macOS's waits" not in out and "nothing here says whether" not in out
               and "0x6014 = 0x90: CPU0 had nothing pending before the commit; PCPM0 not read (hold_nowatch=1: CPU0 doesn't watch them)" in out
               and "0x6005 = 0x7d: wd2_bite=1, after the commit, the alarm and the release:\n" in out and TOOK + "\n" in out,
               "cluster_ack=1's 0xd7 with every wait met: the three words went out as 0x20 and all four read 0, with wd2_bite=1's sample as ever", out + err)
+        # What the cluster words read says nothing about the ending by itself: no sentence here credits a reset to the flags.
+        for stage in (0xce, 0xd6, 0xd7):
+            rc, out, err = dec(stage, dict(ack15, flags=0x90, parked=0xfe if stage == 0xce else wsmp()))
+            lines = [line for line in out.splitlines() if "cluster_ack" in line or line.startswith("  so: each of the four")]
+            check(rc == 0 and ALL0 in out and not any("reset" in line or "stalls" in line or "completed entry" in line for line in lines),
+                  f"cluster_ack=1's 0x{stage:02x}: the words read 0, and the cluster lines leave the ending to the stage and the sample", out + err)
         rc, out, err = dec(0xd7, dict(ack15, flags=0x80))
         check(rc == 0 and "cluster_ack" not in out and "0x6006 = 0x00: every one of macOS's waits was met within 10 ms\n" in out,
               "the same record without the mark is wd2_bite=1's run, and nothing is said of the cluster words", out + err)
         rc, out, err = dec(0xd7, dict(ack15, flags=0x90, left=0x04))
-        check(rc == 0 and "0x6006 = 0x04: the waits that timed out after 10 ms (cluster_ack=1's own for the clusters): ANE0's soc-cluster word to read 0 after its 0x20 (55)\n" in out
-              and ACK in out and ALL0 not in out
-              and ("  so: NOT every word read 0 (0x6006 says which), and none of those was busy at its wait's last read (0x6014 bit 5 clear): the flag or the target stayed,"
-                   " which this record doesn't tell apart. The ack didn't work as written there, and the ending says nothing about a cleared flag\n") in out,
-              "cluster_ack=1: ANE0's word didn't read 0 and wasn't busy: the flag or the target stayed, said as that", out + err)
-        rc, out, err = dec(0xd7, dict(ack15, flags=0xb0, left=0x38))
-        check(rc == 0 and "AFR's soc-cluster word to read 0 after its 0x20 (57); DISPLAY's soc-cluster word to read 0 after the table's own 0x20 (58); AVEMSR's soc-cluster word to read 0 after its 0x20 (60)\n" in out
-              and ALL0 not in out and "ANE0's soc-cluster word" not in out
-              and ("  so: NOT every word read 0 (0x6006 says which), and at least one of those still had bit 4, busy, set at its wait's last read (0x6014 bit 5):"
-                   " its power-down hadn't finished 10 ms after the write. With more than one word in 0x6006, which of them was busy isn't recorded\n") in out,
-              "cluster_ack=1: three words didn't read 0 and one was busy: said, and that the record doesn't say which", out + err)
+        check(rc == 0 and NONE.format(4, MET, "ANE0's (55)") in out and ACK in out and ALL0 not in out
+              and ("  so: the up-done flag STAYED SET, 10 ms after the write, in ANE0's (55): the 0x20 didn't clear it there."
+                   " With a flag left in a word this run wrote, the ending says nothing about cleared flags\n") in out
+              and "something else left" not in out and "ANE0's power-down" not in out,
+              "cluster_ack=1: ANE0's flag stayed, and nothing else was left anywhere: said as that, and not as a wait on bit 4", out + err)
+        rc, out, err = dec(0xd7, dict(ack15, flags=0xb0, left=0x28))
+        check(rc == 0 and NONE.format(0x28, MET, "AFR's (57), AVEMSR's (60)") in out and ALL0 not in out
+              and ("  so: the up-done flag STAYED SET, 10 ms after the write, in AFR's (57), AVEMSR's (60): the 0x20 didn't clear it there;"
+                   " and at least one of the four words had something else left too (0x6014 bit 5: bit 4, busy, the target or another bit),"
+                   " which word and which bit isn't recorded. With a flag left in a word this run wrote, the ending says nothing about cleared flags\n") in out,
+              "cluster_ack=1: two flags stayed and something else was left in a word: both said, and that the record doesn't say where", out + err)
+        # Only the control: DISPLAY's flag, after the table's own 0x20. The three words the run changed took their ack.
+        rc, out, err = dec(0xd7, dict(ack15, flags=0x90, left=0x10))
+        check(rc == 0 and NONE.format(0x10, MET, "DISPLAY's (58: the table's own 0x20, the control)") in out and ALL0 not in out
+              and ("  so: ANE0's, AFR's and AVEMSR's flags read clear after their 0x20, and the flag STAYED SET in DISPLAY's, 10 ms after the table's own 0x20,"
+                   " which the earlier runs wrote there too. The three words this run changed took the ack; DISPLAY's flag is new: no earlier run looked at it\n") in out
+              and "says nothing about cleared flags" not in out,
+              "cluster_ack=1: DISPLAY's flag alone stayed: the three words the run wrote aren't blamed for it", out + err)
+        # No flag stayed, but a word wasn't 0: another bit (bit 6, say), busy or the target. The acks took.
         rc, out, err = dec(0xd7, dict(ack15, flags=0xb0, left=0x41))
-        check(rc == 0 and ACK in out and ALL0 not in out and "NOT every word" not in out
-              and "  0x6014 bit 5 is set with no cluster wait timed out, which e1_hook never writes: don't read the cluster words from this record\n" in out
-              and "DCS's p-state" in out and "SIO_CPU's power state (61)" in out,
-              "cluster_ack=1: bit 5 with no cluster wait in 0x6006 is called a record e1_hook doesn't write; the other waits read as ever", out + err)
+        check(rc == 0 and ACK in out and ALL0 not in out and "STAYED" not in out
+              and NONE.format(0x41, "macOS's waits that timed out after 10 ms: DCS's p-state after entry 49 (to 7), after 50 (to 5), or both (its busy bit 31 clear,"
+                              " macOS's poll, and actual = target, e1_hook's own); SIO_CPU's power state (61)", "none") in out
+              and ("  so: no flag stayed: bit 5 read clear in all four words. But at least one of them didn't read 0 within 10 ms of its write (0x6014 bit 5):"
+                   " bit 4, busy, the target or another bit was left, and which word and which bit isn't recorded. The acks took; what was left is new\n") in out,
+              "cluster_ack=1: no flag stayed but a word didn't read 0: the acks took, and what was left isn't claimed to be known; the other waits read as ever", out + err)
+        # 0x6006 = 0 with 0x6007 = 0 too: the command's last bytes may not have landed, so "no flag stayed" isn't claimed.
+        for flags, rest in ((0x90, "nothing other than a flag was left in any of the four words"), (0xb0, "something other than a flag was left in at least one of the four words")):
+            rc, out, err = dec(0xd7, dict(ack15, flags=flags, down=0))
+            check(rc == 0 and ALL0 not in out and "no flag stayed" not in out
+                  and ("  so: 0x6006 and 0x6007 both read 0. That's also what bytes that didn't land read, and 0x6007 would otherwise say no core held:"
+                       f" whose flag stayed isn't known from this record. 0x6014, another command's, says {rest}\n") in out,
+                  f"cluster_ack=1 with 0x6006 and 0x6007 both 0 (0x6014 = 0x{flags:02x}): no word is said to have read 0", out + err)
         rc, out, err = dec(0xd7, dict(ack15, flags=0xa0))
-        check(rc == 0 and "cluster_ack" not in out and "  0x6014 bit 5 is set without bit 4, which no sio_stop=1 run writes: don't read it\n" in out,
+        UNREAD = ("  0x6014's bits 4 and 5 are cluster_ack=1's alone in a sio_stop=1 run: bit 5 only with bit 4, and only at that run's stages (0x4e, 0x56, 0x57,"
+                  " with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
+        check(rc == 0 and "0x6014 bit 4 (cluster_ack=1)" not in out and UNREAD in out,
               "bit 5 without the mark in a sio_stop=1 record: called out, and not read as cluster_ack=1's", out + err)
-        # The mark's byte lost (bit 7 clear), or a stage before it was sent: a cluster bit in 0x6006 can't be read either way, and it says so.
-        NOMARK = "  (a cluster_ack=1 run asks more of the four cluster waits, the whole word 0, and nothing here says whether this was one: its mark is 0x6014's bit 4, sent just before stage 0x4e)\n"
-        rc, out, err = dec(0xd7, dict(ack15, flags=0x10, left=0x04))
-        check(rc == 0 and NOMARK in out and "0x6014 bit 4 (cluster_ack=1)" not in out and "macOS's waits that timed out after 10 ms: ANE0's power-down (55)" in out
-              and "0x6014 = 0x10: bit 7 is clear" in out,
-              "a 0x6014 that didn't land: its bit 4 isn't read as the mark, and the cluster bit in 0x6006 is said to be unreadable as either run's", out + err)
-        for stage in (0xa8, 0xb9):
+        # Stages no cluster_ack=1 run sends (0x4f, and recfg_bite=1's), and a stage without pmp_out=1's bit: the mark isn't read there.
+        for stage in (0xcf, 0xc6, 0xc7, 0x57, 0x4e):
+            rc, out, err = dec(stage, dict(ack15, flags=0x90, left=0x04))
+            check(rc == 0 and "0x6014 bit 4 (cluster_ack=1)" not in out and UNREAD in out and "nothing here says whether" not in out
+                  and ("ANE0's power-down (55)" in out or stage in (0x57, 0x4e)),
+                  f"stage 0x{stage:02x} with 0x6014 = 0x90: not a cluster_ack=1 run's stage, so the mark isn't read and the bits are called unreadable", out + err)
+        # The mark's byte lost (bit 7 clear), or a stage before it was sent: 0x6006's cluster bits can't be read either way, and it says so,
+        # whether or not one is set.
+        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e{}."
+                  " In one, bits 2-5 are the cluster words whose flag stayed, not the waits on bit 4 that timed out)\n")
+        for stage in (0xce, 0xd6, 0xd7):
+            for left in (0x04, 0x00):
+                rc, out, err = dec(stage, dict(ack15, flags=0x10, left=left, parked=0xfe if stage == 0xce else wsmp()))
+                check(rc == 0 and NOMARK.format(", and that byte didn't survive") in out and "0x6014 bit 4 (cluster_ack=1)" not in out
+                      and ("macOS's waits that timed out after 10 ms: ANE0's power-down (55)" in out) == bool(left) and "0x6014 = 0x10: bit 7 is clear" in out,
+                      f"stage 0x{stage:02x} with a 0x6014 that didn't land and 0x6006 = 0x{left:02x}: its bit 4 isn't read as the mark, and 0x6006's cluster bits"
+                      " are said to be unreadable as either run's", out + err)
+        for stage in (0xa8, 0xb1, 0xb7, 0xb9):
+            for left in (0x08, 0x00):
+                rc, out, err = dec(stage, dict(ack15, parked=0xfe, flags=0x90, left=left))
+                check(rc == 0 and NOMARK.format("") in out and "0x6014 bit 4 (cluster_ack=1)" not in out and ("AFR's power-down (57)" in out) == bool(left),
+                      f"stage 0x{stage:02x}, before the mark's byte is sent, 0x6006 = 0x{left:02x}: the note, and no mark is read", out + err)
+        # Without pmp_out=1's bit, or at a stage only other runs send (0x38, 0x5c), a record can't be cluster_ack=1's: no note.
+        for stage in (0x28, 0x31, 0x39, 0xb8, 0xdc):
             rc, out, err = dec(stage, dict(ack15, parked=0xfe, flags=0x90, left=0x08))
-            check(rc == 0 and NOMARK in out and "0x6014 bit 4 (cluster_ack=1)" not in out and "AFR's power-down (57)" in out,
-                  f"stage 0x{stage:02x}, before the mark's byte is sent: a cluster bit in 0x6006 comes with the note, and no mark is read", out + err)
-        rc, out, err = dec(0xa8, dict(ack15, parked=0xfe, flags=0x90, left=0x41))
-        check(rc == 0 and NOMARK not in out, "and no note when no cluster wait is in 0x6006", out + err)
+            check(rc == 0 and "nothing here says whether" not in out and "cluster_ack" not in out and "AFR's power-down (57)" in out,
+                  f"stage 0x{stage:02x} can't be a cluster_ack=1 run's: its 0x6006 reads as macOS's waits, with no note", out + err)
         # Outside sio_stop=1's stages the two bits are PCPM0's and PCPM1's, as ever: position=1's 0xc5 with both set.
         rc, out, err = dec(0xc5, dict(run7, left=0x04))
         check(rc == 0 and "cluster_ack" not in out and "PCPM0 off after the release, PCPM1 off after the release" in out and "ANE0's power-down (55)" in out,
               "position=1's 0xc5 with 0x6014 = 0xb0: PCPM0's and PCPM1's bits, never cluster_ack=1's", out + err)
-        # Every flags byte with the mark, against every cluster part of qto: what the sentence claims, read independently.
+        # Every flags byte with the mark, every 0x6006, 0x6007 zero or not: what the sentence claims, read independently.
         wrong = []
         for f in range(0x80, 0x100):
             if not f & 0x10:
                 continue
             for q in range(256):
-                so = [line for line in g["ack_lines"](f, q) if line.startswith("  ")]
-                unmet, busy = bool(q & 0x3c), bool(f & 0x20)
-                ok = (len(so) == 1
-                      and ("each of the four words read 0" in so[0]) == (not unmet and not busy)
-                      and ("NOT every word read 0" in so[0]) == unmet
-                      and ("still had bit 4, busy, set" in so[0]) == (unmet and busy)
-                      and ("the flag or the target stayed" in so[0]) == (unmet and not busy)
-                      and ("don't read the cluster words" in so[0]) == (not unmet and busy))
-                if not ok:
-                    wrong.append((hex(f), hex(q), so))
-        check(not wrong, "cluster_ack=1: for every flags byte and every 0x6006, the words are said to have read 0 only when no cluster wait timed out and bit 5 is clear",
+                for held in (0, 0xff):
+                    lines = g["ack_lines"](f, q, held)
+                    so = [line for line in lines if line.startswith("  so: ")]
+                    stuck, wrote, rest, lost = bool(q & 0x3c), bool(q & 0x2c), bool(f & 0x20), not held and not q
+                    ok = (len(so) == 1 and len(lines) == 3 and "reset" not in "".join(lines) and "stalls" not in "".join(lines)
+                          and ("each of the four words read 0" in so[0]) == (not stuck and not rest and not lost)
+                          and ("STAYED SET" in so[0]) == stuck
+                          and ("the 0x20 didn't clear it there" in so[0]) == wrote
+                          and ("The three words this run changed took the ack" in so[0]) == (stuck and not wrote)
+                          and ("no flag stayed" in so[0]) == (not stuck and rest and not lost)
+                          and ("isn't known from this record" in so[0]) == lost
+                          and ("had something else left too" in so[0] or "didn't read 0 within 10 ms" in so[0]
+                               or "something other than a flag was left in at least one" in so[0]) == rest
+                          and all((n in so[0]) == bool(q >> i & 1) for i, n in ((2, "ANE0's (55)"), (3, "AFR's (57)"), (5, "AVEMSR's (60)"))))
+                    if not ok:
+                        wrong.append((hex(f), hex(q), held, so))
+        check(not wrong, "cluster_ack=1: for every flags byte, every 0x6006 and 0x6007 zero or not, the words are said to have read 0 only when no flag bit is"
+              " set, bit 5 is clear and the bytes landed; a flag is said to have stayed only in the words 0x6006 names; and nothing is said of the ending",
               str(wrong[:3]))
         for stage in (0xd6, 0xd7):
             before = fake(path, scratch(stage, **dict(ack15, flags=0x90)), rtc_secs=121761, alarm=alarm)

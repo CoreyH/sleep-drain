@@ -157,10 +157,11 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   value, twice). `e1-hook/wd2-bite` writes it first, once, from user space, awake, the control runs 13 and 14 lacked; after
   the commit, once it has let the others go and has seen WD2 armed, CPU0 writes it once more, the module's one write to WD2,
   and records what WD2 read around that (stage 0x57, or 0x56 with an exception pending, with its byte at 0x6005). `cluster_ack=1`
-  (`run-floor --m1-cluster-ack`, on `wd2_bite=1`, `wd2-bite`'s store first as there) clears the "up done" flag the replay leaves set in
-  three soc-cluster words: step 5 writes ANE0's, AFR's and AVEMSR's (0x28e09800c, 0x28e098014, 0x28e098020) as 0x20, not the table's 0
-  (Corey's OK of 2026-11-10 for those three words and that value), and the four cluster waits, DISPLAY's too, ask for the whole word to
-  read 0: 0x6006's bits 2-5 say which didn't, 0x6014's bit 4 marks the run and its bit 5 says a word that didn't was still busy. `run-floor --quick` ahead of any
+  (`run-floor --m1-cluster-ack`, on `wd2_bite=1`, `wd2-bite`'s store first as there) acks the "up done" flag that the replay is thought to
+  leave set in three soc-cluster words (inferred, never read): step 5 writes ANE0's, AFR's and AVEMSR's (0x28e09800c, 0x28e098014,
+  0x28e098020) as 0x20, not the table's 0 (Corey's OK of 2026-11-10 for those three words and that value), and the four cluster waits,
+  DISPLAY's too, ask for the whole word to read 0: for one that doesn't, 0x6006's bits 2-5 say whose flag was still set and 0x6014's bit 5
+  that something else was left in a word; 0x6014's bit 4 marks the run. `run-floor --quick` ahead of any
   recipe makes the reading 1 minute. `13` is the floor with the CPUs left up. `13`
   and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe`
   on the command line). Only the first suspend after their load can replay
@@ -230,8 +231,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe
   boot and `collect` in a fake next boot; `tests/m1_crumbs_test.py` runs
   `e1-hook/m1-crumbs` on a fake PMU nvmem file, position=1's samples made by
-  compiling `e1-hook/m1_position.h` itself, and cluster_ack=1's three values by
-  compiling `e1_hook.c`'s own table and waits; `tests/recfg_peek_test.py` runs
+  compiling `e1-hook/m1_position.h` itself, and cluster_ack=1's three values and
+  its waits by compiling `e1_hook.c`'s own table and wait functions; `tests/recfg_peek_test.py` runs
   `e1-hook/recfg_peek` on a sparse file standing in for /dev/mem and its
   launcher with stubs; `tests/recfg_bite_test.py` runs `e1-hook/recfg_poke` on the same kind
   of file (exactly one word changes, or none; the store is 64 bits) and `e1-hook/recfg-bite` with stubs;
