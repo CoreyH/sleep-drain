@@ -3490,6 +3490,93 @@ With the fabric at 3, 90 s says the early stall isn't the fabric's, 120 s says t
 its last ops, and 150 s or dark is the entry. What the pairing gives up is knowing whether the fabric
 write was needed for a run that gets further, which a later run without it would settle.
 
+### M1 run 17: the fabric back at 3 and WD1 as a marker: the restart comes at 90 s, so B2 doesn't get through its power-down (2026-11-10)
+
+`e1-hook/run-floor --quick --m1-mark` (run 16's parameters, `fabric_up=1` and `wd1_mark=1`, #74; the module
+built at 4386efb; kernel 7.2.11-15; flag `radios-off`; `pmp_sleep_release` with 0xc and 0xd), in a safe boot,
+on battery at about 17%, with a 1-minute reading. Against run 16 it has two changes: one write that puts the
+fabric's p-state back to 3 before the table (Corey's OK of 2026-11-10), and three that set WD1 as a marker in
+step 4 (its bite 150 s, its count 60 s, RESET_EN; shown to Corey that day, built on their standing go-ahead).
+Raw data: `results/m1-run17-20261110/`.
+
+**The facts:**
+- **The load:** the fabric's word read 0x333 awake. WD1 read control 4, a count of 7.9 s and a bite of 30 s:
+  the kernel's, as expected. `wd2-bite`'s store took, as in runs 15 and 16.
+- **Stage 0xd3**, the run's last by design, with the steps' outcomes behind stage 0xd2's command (0x6012 =
+  0xff, 0x6013 = 0xdf), so the run's byte landed whole.
+- **The fabric, 0x6007 = 0xf5:** the word read 0x111 at the start of step 5, asked down to 1 by the kernel's
+  suspend and there. After CPU0's write it read 0x333 within 10 ms, and it still read 0x333 at the end of
+  step 5, after the ClkGen park and PLL-off. That read, the first of that page after the clocks are parked,
+  returned.
+- **The marker stood:** just before the commit WD1 read armed, its bite 150 s, its count past 60 s and
+  running. So the count takes a non-zero write.
+- **WD2's sample, 0x7d,** as in runs 15 and 16: armed with A2's 30 s, CPU0's 120 s read back, counting,
+  `PHASE` 4.
+- **The rest as in run 16:** all seven other cores held; `qto` 0x00 and 0x6014 = 0x90, so the four cluster
+  words read 0 again; the PMP's CPU stopped (0x6015 = 0x8e); every alarm command acked.
+- **The restart: 90.0-91.5 s after the commit** (89.5-91.5, 90.0-92.0 and 89.7-91.7 from three reads in the
+  first boot). Corey: "rebooted at just about 90 seconds". The armed alarm survived it, and `--clear`
+  disarmed it.
+
+**What that shows:**
+- **The restart moved again, to where WD1's unzeroed count puts it.** 150 s less 60 s, to the second. WD2,
+  armed and counting at 120 s, was 30 s from firing. So WD1 does reset the SoC in that state, and B2 hadn't
+  zeroed its count 90 s after the commit: B2 doesn't reach its op 224. The stall is in B2's first 223 ops
+  or in what they wait on: its first poll (the gate), the first handshake with A2's three steps, or its
+  power-down of SIO, PCIe, ANS, the PMP and the clocks.
+- **The one other reading** is a pair that finished and a later A sequence starting about 60 s after the
+  commit. Runs 15 and 16, the same recipe but for the fabric and the marker, saw no sequence start then
+  (their restarts came at 120 s). It isn't excluded, and nothing supports it.
+- **The fabric premise was right, and it isn't the stall, or not alone.** Every run before this one reached
+  the commit with the fabric at 1, where macOS has 3 (inferred). This one had it at 3, where it stayed, and
+  B2 still didn't get through. `fabric_up=1` stays in the recipe, as `cluster_ack=1` does: both make the
+  state at the commit macOS's.
+- **A treatment can now show progress short of a finished entry.** Before the marker every failure looked
+  the same. From here a change that gets B2 past its power-down moves the restart from 90 s to 120 s or
+  later, whether or not the pair then finishes.
+
+### After run 17: the three coprocessor words B2 polls, and a probe that isn't one-way (2026-11-10)
+
+Desk work, from the sequences on file. The listing stays off the repository.
+
+**What B2 waits on before op 224, in order** (the table in "The engine's reconfig SRAM"): the gate
+(0x2922c0044: bit 2 set, then bit 3 clear); the handshake, inside which A2 settles DCS, the fabric and
+0x28e20c400; then its power-down, whose waits are of three kinds. Power words it has just written, polled
+for bit 11 clear. Gate-status words, polled for bit 30. And, three times, a coprocessor's word:
+- op 49-51: SIO_CPU := 0x0f00024f, wait for actual f, then **wait for bit 1 of 0x39bc08000**, SIO's ASC
+  + 0x8000, the first word of its mailbox block;
+- op 149-151: ANS2 := 0x0f00030f, wait for actual f, then **bit 1 of 0x38f408000**, ANS's;
+- op 157-159: ps_pmp := 0x0f00024f, wait for actual f, then **bit 1 of 0x28ec08000**, the PMP's.
+Each is tried 255 times and then, as far as the encoding shows, not passed. So for each of the three the
+engine powers the coprocessor's domain up and expects a status bit that nothing here has ever read: nothing
+documents offset 0 of that block, and the three words were left out of every read so far ("awake, one per
+boot, once something needs them", PLAN.md). The local decode has had them as candidates since 2026-11-08.
+
+**Why they're the next thing to look at** (judgment):
+- They're where Linux's state most plainly isn't macOS's. Under macOS the three firmwares are asleep by
+  the commit. Here SIO's is idled and its CPU's RUN cleared at prepare, then genpd cuts SIO's power at
+  noirq and step 5 raises it again: the engine finds an ASC that has been through a power cycle with its
+  CPU never started. The PMP's is idled and stopped after `slpa`. ANS is whatever Linux's NVMe suspend
+  leaves. If bit 1 says "this processor is in its sleep state", a CPU held in reset may never show it.
+- They can be read without a one-way run. A suspend under `pm_test=platform` runs the noirq pass and E1's
+  `prepare_late` and then comes back. The steps the recipe takes on SIO and the PMP before the commit can
+  be taken there, with the three words read before and after each, in full, into the kernel log, which is
+  then saved. No commit, no reset, and a result in one short safe boot.
+- What a run can't see, this can: whether the bit is set while the firmware runs, after its idle pair,
+  after RUN is cleared, and after SIO's power cycle.
+
+**What it can and can't say** (Pullfrog on #75). The probe samples the state the recipe's preparation
+leaves, before any commit. B2 reads each word later, after its own write to the domain's power word and
+its wait for actual f, and after everything A2 and B2 do before that; and what bit 1 means, and whether it
+holds across those steps, isn't known. So a sample is a lead, not the location of the stall:
+- A word that never shows bit 1 in the recipe's state is the best lead there is for where B2 stops. The
+  next run then leaves that coprocessor differently (idled and not stopped, or not power-cycled) and
+  reads the marker: 120 s or later is what confirms it.
+- All three showing it makes the three polls less likely to be the stall, and doesn't exclude them.
+Either way everything else B2 waits on before op 224 stays a candidate: the gate, A2's three steps, the
+waits for actual f after B2's own raises (SIO_CPU, ANS2, ps_pmp), the bit-11 polls and the bit-30
+gate-status polls.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
