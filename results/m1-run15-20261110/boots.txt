@@ -1,0 +1,9 @@
+# Boots around M1 run 15
+The run's safe boot (kernel 7.2.11-15) started 09:49:26. Corey ran run-floor --quick --m1-wd2-bite at 09:59:13.
+wd2-bite's check and write were each saved to the boot partition (tars 20261110T095913 and 20261110T095913-2): the store from user space took (wd2-bite-write.txt).
+e1_hook loaded at 09:59:13 with wd2_bite=1 (e1_hook-load.txt: WD2's bite read 120 s awake, the control's). The 1-minute reading ended at 10:00:13 and was saved (tar 20261110T100014).
+The commit: RTC second 344930. The Mac went dark for about 2 minutes and restarted by itself (Corey's report); the regular boot after it began 10:02:41 (uptime -s).
+m1-crumbs read 47 s into that boot (CNTVCT 70.7 s old): restart 119.3-121.3 s after the commit; again 14 s later (crumbs.txt here, CNTVCT 84.2 s old): 119.8-121.8 s; again by --clear (CNTVCT 127.0 s old): 120.0-122.0 s. The three together: 120.0-121.3 s.
+--clear: 0x1401 read 0x41 (armed, 0x140c = 348530 = the commit's second 344930 + 3600), then disarmed: 0x1401 = 0x01; breadcrumbs zeroed. collect: the three tars (clear-collect.txt).
+journal, this boot: PMU logged 1 boot error(s) and 0 panic(s)
+The gauge's charge_now: 3831000 uAh at the reading's end (10:00:13), 3744000 uAh at 10:05:13, 152 s into the next boot. That's 87 mAh over 300 s holding about 10 s before the commit, the 120 s dark, the boot and 152 s awake (the reading drew 0.54 A; 0.80 A at 10:05:13). Not a measurement of the dark stretch.
