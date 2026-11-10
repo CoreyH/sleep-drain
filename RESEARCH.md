@@ -3703,8 +3703,8 @@ of the clock-generator words, the six gate words, or the AON words other than 0x
 ### The look as built: 98 words read, nothing stopped, nothing written (2026-11-10)
 
 `pkexec e1-hook/probe --look` in a safe boot loads `e1_hook` with the probe's parameters and `look=1`
-(`e1-hook/look.h` has what it reads). Not run yet. Pullfrog and one adversarial review went over it on
-#78; what they changed is marked.
+(`e1-hook/look.h` has what it reads). Run once: "The look's run", below. Pullfrog and one adversarial
+review went over it on #78; what they changed is marked.
 - **What it reads,** awake at the module's load and again after the noirq pass of the suspend it fails:
   the fabric's p-state word, 0x28e20c400 and DCS's; six words of the engine's page at 0x2922c0000 that
   its sequences read (+ 0x38, + 0x3c, + 0x40, + 0x44, HS_B and PHASE); SIO's page of power words from
@@ -3741,6 +3741,73 @@ of the clock-generator words, the six gate words, or the AON words other than 0x
   for a word none of those changes (the review). Read against what the wake sequence B1 leaves, a word
   that differs is a lead (for the gate words, bit 31 clear would mean a gate B2 waits on is never
   enabled). It says nothing about what the engine's own writes then do.
+
+### The look's run: it came back, and the engine's own words are as its wake sequence leaves them (2026-11-10)
+
+`pkexec e1-hook/probe --look` in a safe boot, PR #78's build (24f4b0c), 19:51. The screen went black for a
+second or two and came back. Both looks read all 98 words, both were saved and collected
+(`results/look-20261110/`), and the PMU's mark says the same (stage 0x0f, 0x6010 = 7). The suspend took
+1.1 s from entry to exit and returned an error to the launcher, as meant.
+
+**It came back.** A suspend that `prepare_late` fails resumes like any other here. So what kept the probe
+from coming back was what it did (two firmwares stopped, or the report requests asserted to a stopped
+PMP), not how it ended.
+
+**What was read** (awake at the load; after noirq where it differs):
+
+| | awake | after noirq |
+|---|---|---|
+| fabric p-state, 0x28e20c000 | 0x333 | 0x111 |
+| 0x28e20c400 | 0x222 | the same |
+| DCS p-state, 0x28e20c800 | 0x666 | 0x555 |
+| engine's page: + 0x38, + 0x3c, + 0x40, + 0x44 | 0, 0x100, 3, 8 | the same |
+| HS_B, PHASE | 0x80000000, 0 | the same |
+| engine's page: + 8, + 0x24 (only ever written by it) | 1, 0 | the same |
+| clock generators, + 0 (15) | all 1: bit 31 clear | the same |
+| clock generators, + 4 | 4; 0x28e002004 2, 0x28e016004 5, 0x28e018004 1 | the same |
+| gates 0x28e5a0050, 0x28e09c310, 0x28e09c34c | bit 31 set, bit 30 clear | the same |
+| gates 0x28e5a0064, 0x28e09c338 | bit 31 set, bit 30 set | the same |
+| gate 0x28e5a030c | bit 31 set, bit 30 clear | bit 30 **set** |
+| SIO's page, 43 power words | a mix | all off but UART2, 3, 4, 6, 7 at 0x244 |
+| ANS2 | on | off |
+| AIC, DWI, `ps_pmp`, APCIE_GP_SYS | on | on |
+| GPIO; APCIE_ST_SYS, ST1_SYS | on | off |
+
+**Read against the engine's wake sequence, B1** (the local decode; `~/.local/share/sleep-drain/look/compare.py`):
+- **The engine's own page is as B1 leaves it.** + 8 reads 1 and + 0x24 reads 0, B1's last writes; + 0x38
+  reads 0; + 0x3c reads 0x100, the bit B1 waits for after writing 1; + 0x40 reads 3 and + 0x44 reads 8, as
+  before. The two words nothing had read, and that the engine never reads, read without trouble.
+- **The clock generators are as B1 leaves them:** none busy, every + 4 word B1's own value. Nothing asks
+  them to change across Linux's suspend.
+- **All six gates are enabled** (bit 31), as B1 writes them. Had one read disabled, B2's poll of it could
+  never have been met; none does.
+- So for these words, "Linux never ran the engine's wake, so the engine isn't in the state its entry
+  starts from" has nothing in its favour.
+
+**What bit 30 of a gate word is.** 0x28e5a030c read clear awake and set after noirq, with ANS2 gone off in
+between: bit 30 follows what's behind the gate, and reads set when it's all off (inferred from that one
+change and B2's polls). After Linux's own suspend three of B2's six read set already. The other three are
+each behind power words B2 itself switches off just before it polls: 0x28e5a0050 behind SIO's subtree,
+where five UARTs are still at 4; 0x28e09c34c, polled after PCIe, with APCIE_GP_SYS still on; 0x28e09c310,
+polled after the PMP and DWI, both on. Nothing here says one of them can't close; nothing shows it does,
+since what else sits behind each isn't known.
+
+**DCS is at 6 awake and 5 after noirq**, with the PMP running and owning it, and the fabric at 3 and 1.
+A2 lowers DCS to 2, the fabric to 2 and 0x28e20c400 from 0x222 to 0, and waits for each with no timeout.
+None of those three moves has been seen on this Mac.
+
+**ANS's and the PMP's words in full,** from the module's load, which the probe's run had lost
+(`load-mailbox-words.txt`): ANS 0x2e, the PMP 0x2d, each with its firmware running. They differ in the
+low two bits, 10 and 01. With the probe's run (the PMP's bit 1 clear running, set idled) that fits bits
+1:0 as a state, 01 running and 10 idle, which is also what macOS's idle test on an ASC's CPU status looks
+at (inferred).
+
+**Where that leaves the stall.** Run 17: B2 doesn't reach op 224. The probe: its coprocessor waits would
+pass. The look: its page, its clock generators and its gates' enables are in order. Left, in B2's order:
+the gate, 0x2922c0044 bit 2, which has only ever been read with a core up; A2's three moves inside the
+first handshake; and B2's polls after its own writes (bit 11, the gates' bit 30, the clock generators'
+bit 31). Of those, only A2's three can be tried from a running core without changing what the engine then
+finds: if the AP makes them first, A2 finds them made.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

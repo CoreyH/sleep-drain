@@ -1,0 +1,8 @@
+# Boots around the look's run (e1-hook/probe --look, PR #78, 24f4b0c)
+The safe boot (kernel 7.2.11-15) started about 19:47. Corey ran pkexec e1-hook/probe --look at 19:51:38, hands off.
+e1_hook loaded with --m1-mark's parameters and probe=1 look=1. The load's look read all 98 words (look-load.txt, saved before the suspend as tar 20261110T195138).
+The suspend: entry 19:51:39.15, the module's prepare at 230.275 s, its prepare_late and the second look at 230.303 s, suspend exit 19:51:40.26 (the safe boot's journal). The write to /sys/power/state returned 1; prepare_calls 1, prepare_late_calls 1, replay_done 0.
+The screen went black for a second or two and came back (Corey's report). The launcher printed the look after noirq and saved the whole record (look.txt, tar 20261110T195140). Corey has a photo of the screen; it isn't needed and isn't in the repo.
+The kernel's own complaint at that resume: "PS gfx: Failed to reach power state 0xf", which this notebook has seen at other resumes.
+The regular boot after it began 19:52:37 (uptime -s). m1-crumbs there: stage 0x0f, 0x6010 = 0x07, every group read (crumbs.txt). One pkexec then cleared the breadcrumbs and collected both tars (clear-collect.txt).
+load-mailbox-words.txt: the probe's own three lines at the load, from the safe boot's journal, with ANS's and the PMP's words in full, which the probe's run lost.

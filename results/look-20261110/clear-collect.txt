@@ -1,0 +1,10 @@
+0x6000: 00 30 00 50 0f 00 00 00  00 00 00 00 00 00 00 00
+0x6010: 07 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00
+stage 0x6004 = 0x0f: probe=1 look=1 (e1-hook/probe --look), not a run: nothing replayed, nothing was committed, nothing was stopped and no register was written. What it read is in the kernel log it saved, if the Mac was up to save it
+0x6010 = 0x07: every group read: the look after noirq read all of them. What became of the suspend after it, this record doesn't say
+cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros
+--- collect
+saved paths from 20261110T195138 are in /var/log/sleep-drain/safe-saved-20261110T195138/
+collected 20261110T195138
+saved paths from 20261110T195140 are in /var/log/sleep-drain/safe-saved-20261110T195140/
+collected 20261110T195140

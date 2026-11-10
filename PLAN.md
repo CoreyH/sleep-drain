@@ -48,11 +48,12 @@ the PR with that session's work.
     it was idled. So those three waits would pass, and they're less likely to be the stall. The Mac
     didn't come back from it (a black screen, the power key), so its log is lost and only its bytes
     are on file: a probe that stops a coprocessor's firmware doesn't resume on this kernel.
-  - **Next: a look that only reads,** at the words the pair's remaining waits depend on, none of
-    which has been read here: the clock generators' status words, six gate-status words and four AON
-    words. Built, not run: `pkexec e1-hook/probe --look` in a safe boot (the charger may stay in). It
-    stops nothing, so the Mac should come back as from any failed suspend. "The order after the
-    probe", in Track A below, is the place to start.
+  - A look that only reads (2026-11-10) came back, as the probe hadn't, with 98 words read twice: the
+    engine's own page, its clock generators and its six gates' enables are all as its wake sequence
+    leaves them. Nothing out of place there.
+  - **Next: A2's three moves made by the AP before the commit** (DCS to 2, the fabric to 2, 0x28e20c400
+    to 0), in a one-way run with the marker: the one group of the pair's remaining waits that a running
+    core can try. Not built: "The order after the look", in Track A below, is the place to start.
 
 ## Picking this up
 
@@ -421,7 +422,30 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after the probe (2026-11-10; judgment; this is the only place it's kept):** the
+      **The order after the look (2026-11-10; judgment; this is the only place it's kept):** the look
+      ran once and came back (RESEARCH.md, "The look's run"). The engine's page, the clock generators
+      and the gates' enables are as the wake sequence B1 leaves them; three of B2's six gates read
+      closed after Linux's own suspend, and the other three are behind power words B2 switches off
+      itself. So the state the entry starts from isn't visibly wrong, and what's left before op 224
+      is: the gate (0x2922c0044 bit 2), never read with every core down; A2's three moves, each an
+      untimed wait; and B2's polls after its own writes.
+      Next, **not built: `a2_pre=1`, A2's three moves made by the AP.** On `--m1-mark`'s recipe, after
+      macOS's table and before the commit, CPU0 does what A2 does inside the first handshake, in A2's
+      order: DCS := 2 (0x28e20c800, from the 5 the table leaves) and up to 10 ms for it to settle; the
+      fabric := 2 (0x28e20c000, from 3); 0x28e20c400 := 0 (from 0x222). A mark before each and the
+      outcome of each in the record; then the commit as ever, and the marker. What it can show: a move
+      that doesn't settle is where A2 would wait for ever, and the next run's change; all three
+      settling, with the restart still at 90 s, takes A2's steps off the list (the engine then finds
+      them made); CPU0 not surviving one of them (the mark says which; WD1 restarts the Mac at 90 s)
+      would say that move can't be made with a core running, and no more. New writes: those three
+      words, with values no run has written (the fabric's 2 where `fabric_up=1` writes 3). The same
+      run reads B2's six gate words once more at CPU0's last look, where the recipe has done all it
+      does, for six bits in the record.
+      If that's clean too, what's left can't be seen from a running core, and the choice is between
+      heavier instruments (the AP doing B2's own power-downs with read-backs; an observer on a P core
+      with the E complex down), asking the people who have done this on other chips (Corey's OK to
+      post), and writing up what's known.
+      **Earlier, the order after the probe (2026-11-10; judgment):** the
       probe ran once (RESEARCH.md, "The probe's run"). Bit 1 of all three coprocessor words read set in
       the state the recipe leaves, the PMP's only after its idle pair: B2's ops 51, 151 and 159 would
       pass, ANS2 comes up when raised, and the bit looks like "this coprocessor is idle". The Mac
@@ -430,7 +454,7 @@ steps, and restarting the DCP and the PMP afterwards.
       inside the first handshake, eleven clock-generator status words (bit 31 clear after B2's write
       beside each), 0x2922c003c and 0x2922c0038; and the 255-try polls for bit 11 on the power words
       and bit 30 on six gate-status words.
-      Next, **built and not run: a look that only reads** (`pkexec e1-hook/probe --look` in a safe
+      Next, **built and run: a look that only reads** (`pkexec e1-hook/probe --look` in a safe
       boot; `e1_hook probe=1 look=1`; `e1-hook/look.h` has the list). The probe's guards (no replay,
       every suspend failed), none of its stops, and no register written: it reads 98 words, awake at
       the load and again after noirq: every word those waits read or the engine's wake sequence leaves

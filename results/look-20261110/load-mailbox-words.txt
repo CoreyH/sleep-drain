@@ -1,0 +1,3 @@
+e1_hook: probe: SIO, awake, at load: its power word reads 1400024f, actual not f, so its word isn't read
+e1_hook: probe: ANS, awake, at load, its firmware running: power word 1f0003ff; ASC+0x8000 read 0000002e at first and 0000002e after 1 reads in 0 ms: bit 1 SET
+e1_hook: probe: PMP, awake, at load, its firmware running: power word 1f0f03ff; ASC+0x8000 read 0000002d at first and 0000002d after 1 reads in 0 ms: bit 1 clear
