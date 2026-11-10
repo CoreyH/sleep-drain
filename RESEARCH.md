@@ -3254,6 +3254,58 @@ said it did, and a 2 fits a B2 that never got there as well as a boot that put t
 one more read at a known point, in the next safe boot before any run, to see whether 2 is what every
 boot shows.
 
+### The rest of the SRAM, read: the clusters' own sequences, and DCS's (2026-11-10)
+
+Read-only, with Corey's OK of 2026-11-10: `e1-hook/recfg-peek --to-end` (#68, `recfg_peek` built at
+ee7b1c0), in a safe boot at 10:54. All 24 pieces, 0x10000-0x6ffff, read without a fault or a stop, in six
+saves; `results/recfg-peek-to-end-20261110/` has each piece's log lines. The dump and the listings stay off
+this repository, with the first 64 KiB's.
+
+**What's there (the bytes):** the SRAM's content ends in the ninth piece, where the last sequence the
+pointer blocks name does (0x33160 and its length). From 0x34000 to the end no two words of a piece are
+alike: memory nothing has written.
+
+**The decode so far** (the two walkers of 2026-11-08 and a third written today, which agree wherever the
+PongoOS format reaches; not finished):
+- All 37 targets past the first 64 KiB open with words that format doesn't have: metas 13, 7, 5 and 15,
+  where it has only End and Delay. B0 and B1 open with the same meta 13, the word a strict walk rejected
+  at their start. Taken as one-word markers, metas 13, 7 and 5 leave 28 of the 37 walking cleanly to an
+  End that fits the next sequence's start.
+- Nine don't walk yet: they open with meta 15 and use another form of op. Each is shared by the four blocks
+  at 0x1200-0x1500 and writes the 0x2004..., 0x2008... pages. Four small ones use meta 2 with a payload,
+  as the word inside B1 does.
+
+**What the 28 are** (by the pages they write and the cluster words they poll; the naming is inferred):
+- **The CPU complexes' sequences**, a pair each, up and down: the E complex (its own block at
+  0x210e00000, soc-cluster word 0x28e098000), and the two P complexes (0x211e00000 and 0x212e00000, words
+  + 4 and + 8).
+- **Four more clusters' pairs:** ANE0's (cluster word index 3), one at index 5 that writes 0x264...,
+  DISPLAY's (it polls the four display domains `disp_off=1` turns off), and one at index 8 that writes
+  0x40d... (AVEMSR by its index).
+- **DCS's:** two sequences for each of four instances (0x200..., 0x201..., 0x202..., 0x203...), beside the
+  nine shared ones.
+So the eight descriptor blocks aren't a soc cluster each, as "Before the feasibility run" guessed: the
+blocks are the tables of two kinds of sequencer, the clusters' and DCS's.
+
+**The untimed waits** (a read with no retry and a count of 0, the form the handshakes have):
+- Every cluster's down sequence opens by raising 0x2922800b0, and then waits, with no timeout. A CPU
+  complex's waits for bit 6 of its soc-cluster word, writes 0x51 to its word at 0x28e09a000 + 4n, and
+  waits for bit 5 of that to clear. ANE0's, the index-5 cluster's and the index-8 cluster's have only the
+  second wait. DISPLAY's has none in what's decoded.
+- That's where T8140's "a complex has a sequence with its untimed wait" is on this chip.
+
+**What it shows, and doesn't:**
+- Nothing here places the stall. macOS's table already waits on each soc cluster's busy bit, and since
+  run 9 every one of those waits is met within 10 ms (`qto` 0): by that measure the clusters' sequences
+  finish in this recipe. It isn't the same test as the sequences' own waits, and nothing has read
+  0x28e09a000 + 4n.
+- A2's three settle waits (DCS, fabric and 0x28e20c400, each with no timeout) run sequences that are now
+  on file. Whether DCS reaches p-state 2 from the state this recipe leaves is something the AP can try
+  before the commit, where a breadcrumb can say how it went.
+
+**The PMU's register 0x0201, once more** (`pmu-0201.txt`): 0x02 again, in a boot with no run before it.
+So 2 is what a boot shows, and the read after run 15 said nothing about B2. Only a 1 would ever be news.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

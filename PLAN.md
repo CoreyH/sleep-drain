@@ -420,22 +420,31 @@ steps, and restarting the DCP and the PMP afterwards.
       another bite would rule out). The store from user space took, so runs 13 and 14 stand: the SRAM
       can't be written from Linux. What isn't known is how far B2 gets with every core down, and what
       holds its first poll. Proposed, in this order, each needing Corey's OK (the first two have it, of
-      2026-11-10: the first is done, the second is being built; the third isn't asked for yet):
+      2026-11-10, and are done: RESEARCH.md, "M1 run 15" and "The rest of the SRAM, read"; the third
+      isn't asked for yet). After those two, 2026-11-10 (judgment): the SRAM's rest holds the clusters'
+      and DCS's sequences, and the decode isn't finished (nine shared sequences in another op form, four
+      small ones: the notes are with the dump, off the repository). Next at the desk: finish it, then go
+      through A2 and B2 again against it for the waits the AP can check or make itself before the
+      commit, where a breadcrumb can say how each went: A2's three settle steps first (DCS := 2, fabric
+      := 2, 0x28e20c400 := 0). That would be new PMGR writes, each needing Corey's OK, and isn't
+      proposed to Corey in detail yet. The WD1 marker run below stays as it is.
       - **A read of the PMU's register 0x0201**, through the nvmem interface `m1-crumbs` reads the
         breadcrumbs with, read-only, in a regular boot: once now, and in the first boot after each run
         from here on. B2's second-to-last step writes 1 there, B0 does at the wake's start, and B1, the
         last of the wake, writes 0. A 1 after a run would say B2 reached its end. A 0 says little until
         it's known whether a restart clears it, and nothing here can show that.
         Read once on 2026-11-10 (Corey's OK of that day), after run 15's reset: 0x02, neither value
-        (RESEARCH.md, "M1 run 15"). So it decides nothing yet. `m1-crumbs` could print it after each
-        run from here on (not built): a 1 would still be news.
+        (RESEARCH.md, "M1 run 15"), and 0x02 again in the next boot, with no run before it: 2 is what
+        a boot shows. `m1-crumbs` could print it after each run from here on (not built): only a 1
+        would be news.
       - **The rest of the SRAM, read-only, in a safe boot.** 37 of the 45 sequences the SRAM's pointer
         blocks name are past the 64 KiB that's been read, at 0x102e0-0x33160: the eight other
         descriptor blocks', the soc clusters' by the look of them (RESEARCH.md, "Before the feasibility
         run"). What they poll is the best lead on B2's first poll that needs no write. `recfg-peek
         --rest` stops at table A's last sequence + 0x10000, so it needs a stage that reads on to the
         SRAM's end, 0x70000, the same way: 16 KiB pieces, each saved. Then the decode, at the desk.
-        Built in #68 as `recfg-peek --to-end` (not run yet): `recfg_peek`'s stage 8, a piece by its
+        Built in #68 as `recfg-peek --to-end`, and run 2026-11-10: all 24 pieces read, no fault
+        (RESEARCH.md, "The rest of the SRAM, read"). `recfg_peek`'s stage 8, a piece by its
         index, 24 times, each in a directory of its own, saved after every fourth piece and at any
         stop, with `kernel.panic` set to 10 first. A piece that reads all ones stops the pass, as a
         result. A read whose fault panics the kernel restarts the Mac 10 s later with the pieces up to

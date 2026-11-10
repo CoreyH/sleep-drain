@@ -1,0 +1,74 @@
+# recfg-peek --to-end, 2026-11-10 10:54, in a safe boot (kernel 7.2.11-15; recfg_peek built at ee7b1c0): each piece's log lines.
+# The dumps themselves stay off the repository (/var/log/sleep-drain/recfg-peek-20261110T105423-r00..r23/).
+piece 0 of 24: 0x292f10000-0x292f13fff
+0x292f10000-0x292f13fff read, recfg-peek-20261110T105423-r00/sram-10000.bin
+514 of its 4096 words read 0, 28 read all ones
+piece 1 of 24: 0x292f14000-0x292f17fff
+0x292f14000-0x292f17fff read, recfg-peek-20261110T105423-r01/sram-14000.bin
+174 of its 4096 words read 0, 1 read all ones
+piece 2 of 24: 0x292f18000-0x292f1bfff
+0x292f18000-0x292f1bfff read, recfg-peek-20261110T105423-r02/sram-18000.bin
+148 of its 4096 words read 0, 0 read all ones
+piece 3 of 24: 0x292f1c000-0x292f1ffff
+0x292f1c000-0x292f1ffff read, recfg-peek-20261110T105423-r03/sram-1c000.bin
+231 of its 4096 words read 0, 0 read all ones
+piece 4 of 24: 0x292f20000-0x292f23fff
+0x292f20000-0x292f23fff read, recfg-peek-20261110T105423-r04/sram-20000.bin
+212 of its 4096 words read 0, 1 read all ones
+piece 5 of 24: 0x292f24000-0x292f27fff
+0x292f24000-0x292f27fff read, recfg-peek-20261110T105423-r05/sram-24000.bin
+183 of its 4096 words read 0, 0 read all ones
+piece 6 of 24: 0x292f28000-0x292f2bfff
+0x292f28000-0x292f2bfff read, recfg-peek-20261110T105423-r06/sram-28000.bin
+260 of its 4096 words read 0, 0 read all ones
+piece 7 of 24: 0x292f2c000-0x292f2ffff
+0x292f2c000-0x292f2ffff read, recfg-peek-20261110T105423-r07/sram-2c000.bin
+259 of its 4096 words read 0, 0 read all ones
+piece 8 of 24: 0x292f30000-0x292f33fff
+0x292f30000-0x292f33fff read, recfg-peek-20261110T105423-r08/sram-30000.bin
+184 of its 4096 words read 0, 0 read all ones
+piece 9 of 24: 0x292f34000-0x292f37fff
+0x292f34000-0x292f37fff read, recfg-peek-20261110T105423-r09/sram-34000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 10 of 24: 0x292f38000-0x292f3bfff
+0x292f38000-0x292f3bfff read, recfg-peek-20261110T105423-r10/sram-38000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 11 of 24: 0x292f3c000-0x292f3ffff
+0x292f3c000-0x292f3ffff read, recfg-peek-20261110T105423-r11/sram-3c000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 12 of 24: 0x292f40000-0x292f43fff
+0x292f40000-0x292f43fff read, recfg-peek-20261110T105423-r12/sram-40000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 13 of 24: 0x292f44000-0x292f47fff
+0x292f44000-0x292f47fff read, recfg-peek-20261110T105423-r13/sram-44000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 14 of 24: 0x292f48000-0x292f4bfff
+0x292f48000-0x292f4bfff read, recfg-peek-20261110T105423-r14/sram-48000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 15 of 24: 0x292f4c000-0x292f4ffff
+0x292f4c000-0x292f4ffff read, recfg-peek-20261110T105423-r15/sram-4c000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 16 of 24: 0x292f50000-0x292f53fff
+0x292f50000-0x292f53fff read, recfg-peek-20261110T105423-r16/sram-50000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 17 of 24: 0x292f54000-0x292f57fff
+0x292f54000-0x292f57fff read, recfg-peek-20261110T105423-r17/sram-54000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 18 of 24: 0x292f58000-0x292f5bfff
+0x292f58000-0x292f5bfff read, recfg-peek-20261110T105423-r18/sram-58000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 19 of 24: 0x292f5c000-0x292f5ffff
+0x292f5c000-0x292f5ffff read, recfg-peek-20261110T105423-r19/sram-5c000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 20 of 24: 0x292f60000-0x292f63fff
+0x292f60000-0x292f63fff read, recfg-peek-20261110T105423-r20/sram-60000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 21 of 24: 0x292f64000-0x292f67fff
+0x292f64000-0x292f67fff read, recfg-peek-20261110T105423-r21/sram-64000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 22 of 24: 0x292f68000-0x292f6bfff
+0x292f68000-0x292f6bfff read, recfg-peek-20261110T105423-r22/sram-68000.bin
+0 of its 4096 words read 0, 0 read all ones
+piece 23 of 24: 0x292f6c000-0x292f6ffff
+0x292f6c000-0x292f6ffff read, recfg-peek-20261110T105423-r23/sram-6c000.bin
+0 of its 4096 words read 0, 0 read all ones

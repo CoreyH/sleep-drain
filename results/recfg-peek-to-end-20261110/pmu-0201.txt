@@ -1,0 +1,4 @@
+# The PMU's register 0x0201 again, read once through the nvmem interface (read-only)
+# 10:59:53, 4.8 minutes into the regular boot after recfg-peek --to-end's safe boot (uptime -s 10:55:07): a boot with no
+# one-way run before it. nvmem: the spmi_nvmem device whose of_node is /soc/spmi@2920a1300/pmic@f (spmi_nvmem0 in this boot).
+0x0201 = 02
