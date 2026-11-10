@@ -73,7 +73,8 @@
 # OK of 2026-11-09). A hang in them is dark at stage 0xa8. Its label is floor-m1-power-words.
 # --m1-recfg-bite (the feasibility run for instrumenting the engine: PLAN.md; RESEARCH.md, "A different
 # approach") is that with one word of the engine's reconfig SRAM changed first: A2's WD2 bite, 30 s to 45 s
-# (e1-hook/recfg-bite: a read-only check, saved, then the one write, saved; Corey's OK of 2026-11-09), and
+# (e1-hook/recfg-bite: a read-only check, saved, then the one write, saved; Corey's OK of 2026-11-09, and of
+# 2026-11-10 for making it as one 64-bit store, run 13's 32-bit one having been dropped), and
 # recfg_bite=1, which has CPU0, once it has let the others go after the commit, read WD2 and PHASE and record
 # them (stage 0xc7, or 0xc6 with an exception pending). If the word can't be changed, that's the result:
 # nothing is loaded and nothing replays. A write that faults restarts the Mac about 10 s later (kernel.panic,

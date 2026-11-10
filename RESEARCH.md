@@ -3107,6 +3107,12 @@ So step 1 of "A different approach" failed in the way PLAN.md's reading guide ga
 locked against a write from here. Not a run"), and the markers of step 2 need a writable SRAM. Twelve
 resets are still the only data past the commit.
 
+**The width gets one test (Corey's OK of 2026-11-10; #64; not run yet):** `recfg_poke` now makes the same
+change as one aligned 64-bit `str` at 0x292f02010: 0x405f7e00 in its low half and, in its high half, the 4
+that 0x292f02014 reads (the value A2 gives WD2's control), so the bite is still the only word meant to
+change. The reads stay 32 bits, as they were when they worked. If that store is dropped too, the width is
+out and a lock is near certain.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

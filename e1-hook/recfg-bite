@@ -8,14 +8,19 @@
 #
 # Corey's OK of 2026-11-09: one word, 0x292f02010, from 30 s to 45 s, and a read of it
 # in the boot after the run. run-floor --m1-recfg-bite runs the first form itself.
+# Run 13's write, a 32-bit store, was dropped without a fault (RESEARCH.md, "M1 run 13"),
+# so the writer now makes the same change as one 64-bit store, which also covers the
+# next word, 0x292f02014, stored as the 4 it already reads (Corey's OK of 2026-11-10).
+# The writer's put-back, if the ten words read wrong after the write, is that store with
+# the old bite: both words as they were found, whatever they read by then.
 #
 # The check is recfg_peek's stage 6, read-only: the ten words that say where the bite
 # is (the table offset register's analogue and its lock, table A's entry 2, A2's first
 # six words), all read before, on 2026-11-08. Its output, and a line that says the write
 # comes next, are saved to the boot partition (sleep-drain-safe save) before anything is
 # written, so a crash at the write keeps them. The write is recfg_poke patch: it reads
-# the ten words again, writes only if they're as expected with the bite at 30 s, and
-# reads all ten back. Its output is saved too.
+# the ten words again, makes its one store only if they're as expected with the bite at
+# 30 s, and reads all ten back. Its output is saved too.
 #
 # Nothing here puts the old value back by itself: the OK is for one write, and whether
 # a restart brings 30 s back is what --after is there to find out. So after the write
@@ -203,7 +208,7 @@ if ((rc != 0)); then
   keep_or_say "$log"
   die "the check failed (exit $rc); nothing written"
 fi
-echo "next: recfg_poke patch, one write, 0x292f02010 := 0x405f7e00 (45 s), if the check above still holds" | tee -a "$log"
+echo "next: recfg_poke patch, one 64-bit store, 0x292f02010 := 0x405f7e00 (45 s) and 0x292f02014 := 0x00000004 (as it reads), if the check above still holds" | tee -a "$log"
 keep "$log" || die "couldn't save the check; nothing written"
 panic10
 
