@@ -439,9 +439,12 @@ steps, and restarting the DCP and the PMP afterwards.
         index, 24 times, each in a directory of its own, saved after every fourth piece and at any
         stop, with `kernel.panic` set to 10 first. A piece that reads all ones stops the pass, as a
         result. A read whose fault panics the kernel restarts the Mac 10 s later with the pieces up to
-        the last save kept; a reader that's only killed ends the pass, saved. Either way the piece it
-        stopped at is the first one missing from what `collect` brings in (the screen may end a piece
-        early). The run: in a safe boot, `pkexec
+        the last save kept; a reader that's only killed ends the pass, saved. What `collect` brings in
+        reads differently in the two cases. After a panic the saves end at a group's boundary (r03,
+        r07, ...): the read that faulted is one of the four pieces after it, and the others of those
+        four were lost with it, read or not (the screen's last "reading" line may be a piece early
+        too). After a reader that was killed, the last directory saved is the piece it died in, with
+        the failure in its log and a dump that may be short. The run: in a safe boot, `pkexec
         e1-hook/recfg-peek --to-end`; before it, in the merged checkout, `cc -O2 -Wall -o
         e1-hook/recfg_peek e1-hook/recfg_peek.c`; after it a normal restart and `collect`. The dumps
         go beside the first one, off the repository.
