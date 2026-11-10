@@ -31,6 +31,15 @@
 # record in the PMU, the step it reached and three bytes: e1-hook/m1-crumbs
 # reads it after the restart.
 #
+# With --look (PLAN.md, "The order after the probe"; e1-hook/look.h) it loads the
+# module with look=1 as well, and the module then takes none of those steps: it
+# stops nothing and writes no register. It reads the words the pair's remaining
+# waits depend on, awake at its load and again after the noirq pass of the
+# suspend it fails, and logs them. This script then doesn't load
+# pmp_sleep_release either. Nothing is stopped, so that suspend is an ordinary
+# failed one: the Mac comes back as it was, and is restarted only because the
+# safe boot is over.
+#
 # It asks for the suspend through /sys/power/state, so systemd's sleep hook
 # doesn't run: no line in the sleep log, and the radios stay as they are.
 #
@@ -59,13 +68,19 @@ CRUMBS=${PROBE_CRUMBS:-$here/m1-crumbs}
 PARAMS=(replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1
         smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 probe=1)
 
-(($# == 0)) || die "usage: probe (no arguments)"
+look=0
+if [[ ${1:-} == --look ]]; then
+  look=1
+  shift
+  PARAMS+=(look=1)
+fi
+(($# == 0)) || die "usage: probe [--look]"
 [[ $EUID -eq 0 ]] || die "run with pkexec"
 [[ -f $SAFE_FLAG ]] || die "safe boot only: pkexec sleep-drain-safe boot, then restart"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already: restart into a fresh safe boot"
 [[ -f $ko ]] || die "no $ko: make -C $here"
 [[ $(modinfo -F vermagic "$ko" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r): make -C $here"
-for src in e1_hook.c asc_probe.h fabric_up.h wd1_mark.h wd2_bite.h recfg_bite.h m1_position.h; do
+for src in e1_hook.c asc_probe.h look.h fabric_up.h wd1_mark.h wd2_bite.h recfg_bite.h m1_position.h; do
   [[ $ko -nt $here/$src ]] || die "e1_hook.ko is older than $src: make -C $here"
 done
 [[ $(modinfo -p "$ko" 2> /dev/null) == *$'\n'probe:* || $(modinfo -p "$ko" 2> /dev/null) == probe:* ]] ||
@@ -100,7 +115,10 @@ klog() {
   fi
 }
 
-"$PMP" release 0xc 0xd > /dev/null 2>&1 || die "couldn't load the PMP report-release module (pkexec bash install.sh?): nothing loaded, nothing probed"
+# Not for the look: it idles nothing, and the suspend it fails is to be an ordinary one.
+if ((!look)); then
+  "$PMP" release 0xc 0xd > /dev/null 2>&1 || die "couldn't load the PMP report-release module (pkexec bash install.sh?): nothing loaded, nothing probed"
+fi
 log "$(now) loading e1_hook with ${PARAMS[*]}"
 if ! insmod "$ko" "${PARAMS[@]}"; then
   log "e1_hook didn't load; nothing was probed. The kernel's last lines from it:"
@@ -114,6 +132,11 @@ if [[ $(get "$MODDIR/parameters/probe") != Y ]]; then
   if printf 1 > "$MODDIR/parameters/cancel" 2> /dev/null; then off="its replay is called off"; else off="ITS REPLAY COULD NOT BE CALLED OFF"; fi
   rmmod e1_hook 2> /dev/null && die "e1_hook didn't take probe=1, and was unloaded: nothing was probed. make -C $here"
   die "e1_hook didn't take probe=1 and DID NOT UNLOAD ($off): restart the Mac now, and don't let it suspend first. Nothing was probed"
+fi
+# The same for look=1: without it the module would stop SIO's firmware and the PMP's, and the Mac wouldn't come back.
+if ((look)) && [[ $(get "$MODDIR/parameters/look") != Y ]]; then
+  rmmod e1_hook 2> /dev/null && die "e1_hook didn't take look=1, and was unloaded: nothing was read. make -C $here"
+  die "e1_hook didn't take look=1 and DID NOT UNLOAD: restart the Mac now, and don't let it suspend first. Nothing was read"
 fi
 # Into memory now, for after the probe: the pipeline klog runs, on the kernel log as it is, and sleep.
 dmesg 2>&1 | grep -F -- "e1_hook: probe:" > /dev/null; sleep 0
@@ -148,10 +171,19 @@ log "==================== TAKE A PHOTO OF THIS SCREEN ===================="
 log "$(now) back; this script's last suspend returned $rc (non-zero is right: the module fails it; none: another suspend got there first)"
 log "replay_done=$(get "$MODDIR/parameters/replay_done") (0 is right: nothing replayed) prepare_calls=$pc prepare_late_calls=$plc"
 [[ $pc == 1 && $plc == 1 ]] || log "ONLY PART OF THE PROBE RAN (1 and 1 is a whole one): the lines below are what there is."
-log "kernel log, the probe's lines (the SUMMARY line is the result):"
-klog "e1_hook: probe:"
+if ((look)); then
+  log "kernel log, the look after noirq (the look at the load is in the saved file):"
+  klog "e1_hook: look: after noirq"
+else
+  log "kernel log, the probe's lines (the SUMMARY line is the result):"
+  klog "e1_hook: probe:"
+fi
 log "====================================================================="
 log ""
+if ((look)); then
+  log "kernel log, the look awake, at the load:"
+  klog "e1_hook: look: awake, at load"
+fi
 log "Saving to the boot partition. If nothing more appears within a minute, the photo is the result: restart the Mac."
 if "$SAVE" save "$out" > /dev/null 2>&1; then
   log "Saved. Now restart the Mac (hold the power key if the keyboard doesn't answer), log in, and tell Claude."

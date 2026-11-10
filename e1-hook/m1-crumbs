@@ -544,6 +544,30 @@ FAB_WAS = ("another value: neither 0x333 nor asked down to 1", "0x111: asked dow
            "asked down to 1 by the kernel's suspend, and not there yet", "0x333, as awake: this suspend hadn't lowered it")
 
 
+# probe=1 look=1 (e1-hook/probe --look): its stage, and the groups of words it reads, by the number it leaves at
+# 0x6010 before reading each (look.h's enum look_at).
+LOOK_STAGE = 0x0f
+LOOK_AT = ("nothing marked",
+           "the fabric's, 0x28e20c400 and DCS's p-state words",
+           "eight words of the engine's page, 0x2922c0000",
+           "the power words B2 switches off and polls",
+           "six gate-status words",
+           "fifteen clock generators' two words each",
+           "every group read")
+LOOK_DONE = len(LOOK_AT) - 1
+
+
+def look_lines(at):
+    """look=1's record: the group it was about to read when it last wrote 0x6010. Its words are in the kernel log
+    e1-hook/probe saves; the PMU has only how far it got."""
+    group = LOOK_AT[at] if at <= LOOK_DONE else "not a group's number"
+    if at == LOOK_DONE:
+        return [f"0x6010 = 0x{at:02x}: {group}: the look after noirq read all of them, and the suspend was then failed"]
+    return [f"0x6010 = 0x{at:02x}: THE LOOK BEGAN AND DIDN'T FINISH. The last group it marked: {group}. A read in that group"
+            " faulted, or the Mac went down in it or before the next mark (the load's look zeroes its marks when it's through,"
+            " so these are the load's only if the load itself stopped there)"]
+
+
 # probe=1's steps, by the number it leaves at 0x6010 before taking each (asc_probe.h's enum asc_at).
 PROBE_AT = ("nothing marked",
             "prepare begun: SIO_CPU's table word written",
@@ -877,6 +901,13 @@ def decode(b, rtc, cnt=None, alarm=None):
     """b: 0x6000-0x601f; rtc: 6 bytes at 0x1406; cnt: (CNTVCT, CNTFRQ) or
     None; alarm: the RTC alarm's registers (alarm_lines()), or None. One line
     per fact."""
+    if b[4] == LOOK_STAGE:
+        # Not a run, and nothing was stopped or written but these marks.
+        return [f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
+                f"0x6010: {b[0x10:0x18].hex(' ')}  {b[0x18:0x20].hex(' ')}",
+                f"stage 0x6004 = 0x{b[4]:02x}: probe=1 look=1 (e1-hook/probe --look), not a run: nothing replayed, nothing was"
+                " committed, nothing was stopped and no register was written. What it read is in the kernel log it saved"
+                ] + look_lines(b[0x10])
     if b[4] == PROBE_STAGE:
         # Not a run: no commit, no alarm, no restart to time.
         return [f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",

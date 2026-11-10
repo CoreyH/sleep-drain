@@ -145,6 +145,17 @@ unloads the module if none got there; then prints the module's lines for a photo
 do nothing about either at resume), so the Mac is restarted, and the breadcrumbs cleared as after a
 run. The charger may stay in (`tests/e1_hook_probe_test.py`).
 
+`probe=1 look=1` (`pkexec e1-hook/probe --look`; `look.h` has the list) is the probe with none of its
+steps: nothing is idled or stopped, ANS2 isn't raised, and no register is written. Awake at the load and
+again after noirq it reads 98 words the pair's remaining waits depend on (the three p-state words, eight
+words of the engine's page, the power words B2 switches off or polls, six gate-status words, fifteen
+clock generators' first two words) and logs each in full; the suspend is then failed as the probe fails
+it. In the PMU it leaves stage 0x0f and, at 0x6010, the group it's reading; the load's look zeroes both
+again once it's through. The launcher doesn't load `pmp_sleep_release` for it, refuses to go on unless
+the loaded module reads `look=Y` (without it the module would stop the firmware), prints the look after
+noirq for a photo and saves both looks. Nothing is stopped, so the Mac should come back as from any
+failed suspend (RESEARCH.md, "The probe's run", has why the probe itself didn't).
+
 ## What holds for every one-way run
 
 `13` and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe` on the command line). Only the

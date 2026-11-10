@@ -1135,6 +1135,7 @@ def main():
             return r.returncode, r.stdout, r.stderr
 
         probe_tests(g, src, pdec)
+        look_tests(g, src, pdec)
         before = fake(ppath, scratch(0x0e, parked=0xf7, left=0xf7, down=0x8d, secs=21), rtc_secs=121761, alarm=(0x41, 999999, 0, 0))
         r = run(ppath, "--clear")
         after = open(ppath, "rb").read()
@@ -2074,9 +2075,10 @@ def probe_tests(g, src, dec):
     check(in_order_of(replay, ["\tif (probe) {\n\t\tpr_info(", "\t\treturn false;\n\t}\n\treplay_done = 1;\n", "device_trylock(dev)", "apple_smc_write_u32("])
           and replay.index("if (probe)") < replay.index("replay_done = 1;") < replay.index("m1_pmu_start()"),
           "e1_replay() returns at once with probe=1, before it marks the replay run and before anything is written", replay[:900])
-    check(in_order_of(prep, ["\tif (probe) {\n\t\tif (n == 1)\n\t\t\tm1_probe_prepare();\n\t\treturn 0;\n\t}\n", "m1_dcp_shutdown();", "m1_sio_fw_stop();"]),
+    check(in_order_of(prep, ["\tif (probe) {\n\t\tif (n == 1 && !look)\n\t\t\tm1_probe_prepare();\n\t\treturn 0;\n\t}\n", "m1_dcp_shutdown();", "m1_sio_fw_stop();"]),
           "prepare with probe=1 takes the probe's steps at the first suspend and never the replay's (the DCPs' shutdown, SIO's stop)", prep)
-    check(in_order_of(late, ["\tif (probe) {\n\t\tbool same = n == 1 && READ_ONCE(prepare_calls) == 1;\n\n\t\tif (same)\n\t\t\tm1_probe_late();\n\t\tpr_info(",
+    check(in_order_of(late, ["\tif (probe) {\n\t\tbool same = n == 1 && READ_ONCE(prepare_calls) == 1;\n\n\t\tif (same && look)\n\t\t\tm1_look(\"after noirq\");\n"
+                             "\t\telse if (same)\n\t\t\tm1_probe_late();\n\t\tpr_info(",
                              "\t\treturn -EIO;\n\t}\n\tif (!(replay & 8)) {", "e1_replay()"])
           and late.count("m1_probe_late()") == 1,
           "prepare_late with probe=1 runs the probe's second half only in the suspend whose prepare ran the first, and fails every suspend with -EIO, "
@@ -2084,7 +2086,7 @@ def probe_tests(g, src, dec):
     trace = cut("static void e1_suspend_resume(void *data", "\n}\n")
     check("\tif (n > 1 && !probe && !READ_ONCE(replay_done)) {\n\t\tWRITE_ONCE(replay_done, 2);" in trace and trace.count("WRITE_ONCE(replay_done, 2)") == 1,
           "a second suspend with probe=1 calls nothing off: replay_done stays 0, which is what e1-hook/probe shows", trace)
-    pfn = src[src.index("static bool m1_probe_word(const char *who"):src.index("/* wd1_mark=1 at load: WD1's three words off the never-write list")]
+    pfn = src[src.index("static bool m1_probe_word(const char *who"):src.index("/* look=1: the clock generators' blocks and the two pages")]
     check("pr_emerg(" not in pfn and pfn.count("pr_info(") == 11 and "pr_emerg(" not in late[late.index("if (probe)"):late.index("if (!(replay & 8))")],
           "the probe's lines are pr_info: journald doesn't broadcast them over the screen the launcher prints them on", "")
     code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
@@ -2189,6 +2191,217 @@ def probe_tests(g, src, dec):
                     wrong.append((hex(sio), hex(pmp), hex(ans), so))
     check(not wrong, "the probe's verdict, for every SIO byte against a spread of the other two: clear is named only for a last read that was made and"
           " read clear, and all three set only when all three were read", str(wrong[:2]))
+
+
+LOOK_HDR = r"""
+#include <stdint.h>
+#include <stdio.h>
+typedef uint16_t u16;
+#include "look.h"
+#define N(a) (sizeof(a) / sizeof((a)[0]))
+int main(void)
+{
+	static const u16 aon[] = LOOK_AON_OFFS, ps[] = LOOK_PS_OFFS, ga[] = LOOK_GATE_A_OFFS, gb[] = LOOK_GATE_B_OFFS;
+	unsigned int i;
+
+	printf("consts %x %x %llx %llx %x %x %x %llx %llx %llx %llx %x %d\n", LOOK_STAGE, LOOK_AT, LOOK_AON_PAGE, LOOK_SIO_PAGE, LOOK_SIO_FIRST,
+	       LOOK_SIO_LAST, LOOK_SIO_ANS2, LOOK_PS_PAGE, LOOK_GATE_A, LOOK_GATE_B, LOOK_CLKGEN, LOOK_CLKGEN_STEP, LOOK_CLKGEN_N);
+	printf("at %d %d %d %d %d %d %d\n", LOOK_AT_NONE, LOOK_AT_PSTATE, LOOK_AT_AON, LOOK_AT_POWER, LOOK_AT_GATES, LOOK_AT_CLKGEN, LOOK_AT_DONE);
+	printf("aon");
+	for (i = 0; i < N(aon); i++)
+		printf(" %x", aon[i]);
+	printf("\nps");
+	for (i = 0; i < N(ps); i++)
+		printf(" %x", ps[i]);
+	printf("\nga");
+	for (i = 0; i < N(ga); i++)
+		printf(" %x", ga[i]);
+	printf("\ngb");
+	for (i = 0; i < N(gb); i++)
+		printf(" %x", gb[i]);
+	printf("\n");
+	return 0;
+}
+"""
+LOOK_RUN_PRELUDE = r"""
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+#include "look.h"
+#define __iomem
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define scnprintf snprintf
+"""
+LOOK_RUN_MODEL = r"""
+/*
+ * The pages m1_look() reads, each a quarter of its real size, so that a read far out of place is a STRAY. A read
+ * prints its physical address and returns a value made from it. There is no writel() here at all: a register
+ * write in m1_look() doesn't compile. PMU writes go through the module's own gate.
+ */
+static unsigned char fab_page[0x1000], pos_page[0x1000], sio_page[0x1000], ps_page[0x1000], ga_page[0x1000], gb_page[0x1000],
+	clk_pages[LOOK_CLKGEN_N * LOOK_CLKGEN_STEP];
+static void *m1_pos = pos_page, *m1_sio = sio_page, *m1_ps = ps_page, *m1_look_ga = ga_page, *m1_look_gb = gb_page, *m1_look_clk = clk_pages;
+static void *m1_fab(void) { return fab_page; }
+static u32 readl(const void *p)
+{
+	static const struct { const unsigned char *base; unsigned long size; unsigned long long phys; } pg[] = {
+		{ fab_page, sizeof(fab_page), 0x28e20c000ULL }, { pos_page, sizeof(pos_page), LOOK_AON_PAGE },
+		{ sio_page, sizeof(sio_page), LOOK_SIO_PAGE }, { ps_page, sizeof(ps_page), LOOK_PS_PAGE }, { ga_page, sizeof(ga_page), LOOK_GATE_A },
+		{ gb_page, sizeof(gb_page), LOOK_GATE_B }, { clk_pages, sizeof(clk_pages), LOOK_CLKGEN },
+	};
+	const unsigned char *q = p;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(pg); i++) {
+		if (q >= pg[i].base && q < pg[i].base + pg[i].size) {
+			unsigned long long a = pg[i].phys + (unsigned long)(q - pg[i].base);
+
+			printf("r %llx\n", a);
+			return (u32)((a ^ (a >> 7)) * 0x9e3779b1ULL);
+		}
+	}
+	printf("STRAY read\n");
+	return 0;
+}
+static int m1_kwrite(unsigned int addr, const u8 *b, unsigned int n)
+{
+	unsigned int i;
+
+	if (!m1_pmu_ok(true, addr, b, n))
+		printf("STRAY write to the PMU's %x, which m1_pmu_ok() refuses\n", addr);
+	printf("k %x", addr);
+	for (i = 0; i < n; i++)
+		printf(" %02x", b[i]);
+	printf("\n");
+	return 0;
+}
+static void pr_info(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("log "); vprintf(fmt, ap); va_end(ap); }
+"""
+LOOK_RUN_MAIN = r"""
+int main(void)
+{
+	m1_look("WHEN");
+	return 0;
+}
+"""
+
+
+def look_tests(g, src, dec):
+    """probe=1 look=1 (e1-hook/probe --look): look.h against an independent list of what's to be read; m1_look() as it stands
+    against pages that say what was read, with no way to write a register; the places that call it; and its stage through
+    m1-crumbs. dec(stage, parked, left, down, at) runs m1-crumbs on a record."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        def build(name, code):
+            c = os.path.join(tmp, name + ".c")
+            with open(c, "w") as f:
+                f.write(code)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(tmp, name), c], check=True)
+            return subprocess.run([os.path.join(tmp, name)], capture_output=True, text=True, check=True).stdout.splitlines()
+
+        hdr = [line.split() for line in build("lhdr", LOOK_HDR)]
+        defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_PMU_RTC|M1_ALARM_ON)\s", line))
+        ran = build("lrun", LOOK_RUN_PRELUDE + defs + "static bool alarm = true;\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+                    + LOOK_RUN_MODEL + cut("static void m1_look_at(u8 group)", "\n}\n") + cut("static void m1_look(const char *when)", "\n}\n")
+                    + LOOK_RUN_MAIN)
+
+    # What's to be read, written out here from PLAN.md's list and not from the header: the three p-state words; eight words of the
+    # engine's page; SIO's page from SIO's own power word to AES's, 8 apart, and ANS2's; seven in the first page; six gate words;
+    # fifteen clock generators' first two words.
+    pstate = [0x28e20c000, 0x28e20c400, 0x28e20c800]
+    aon = [0x2922c0000 + o for o in (0x008, 0x024, 0x038, 0x03c, 0x040, 0x044, 0x10c, 0x110)]
+    sio = [0x28e580000 + o for o in range(0x180, 0x2d8, 8)]
+    ps = [0x28e080000 + o for o in (0x108, 0x110, 0x120, 0x2d8, 0x2e8, 0x2f0, 0x320)]
+    gates = [0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338, 0x28e09c34c]
+    clk = [0x28e000000 + 0x2000 * i + o for i in range(15) for o in (0, 4)]
+    check(hdr[0] == ["consts", "f", "6010", "2922c0000", "28e580000", "180", "2d0", "3b8", "28e080000", "28e5a0000", "28e09c000", "28e000000", "2000", "15"]
+          and hdr[1] == ["at"] + [str(i) for i in range(7)] and [int(x, 16) for x in hdr[2][1:]] == [a - 0x2922c0000 for a in aon]
+          and [int(x, 16) for x in hdr[3][1:]] == [a - 0x28e080000 for a in ps]
+          and [int(x, 16) for x in hdr[4][1:] + hdr[5][1:]] == [a & 0xfff for a in gates] and len(sio) == 43
+          and g["LOOK_STAGE"] == 0x0f and len(g["LOOK_AT"]) == 7 and g["LOOK_DONE"] == 6,
+          "look.h: stage 0x0f, the group at 0x6010, seven groups as m1-crumbs has them, and the pages and offsets PLAN.md lists", str(hdr))
+    used = set(g["STAGES"]) | set(g["OBSERVE_STAGES"]) | set(g["LATE"]) | set(g["HOLD"]) | set(g["HOLD_TEXT"]) | set(g["LATE_TEXT"]) | set(range(0x21, 0x28)) \
+        | set(g["POSITION"]) | set(g["DISP_STAGES"]) | set(g["SIO_STOP_STAGES"]) | set(g["ALARM_STAGES"]) | set(g["OBSERVED"]) | set(g["FAB_STAGES"]) \
+        | {0x70, 0x71, 0x72, 0x7e, 0x7f, g["PROBE_STAGE"]}
+    check(0x0f not in used and 0x8f not in used and not re.search(r"m1_stage\(0x0f\)|= 0x0f;", src),
+          "the look's stage is no run's and not the probe's", str(sorted(hex(x) for x in used)))
+
+    # m1_look() as it stands: what it reads, in which order, under which mark, and what it logs.
+    def fake(a):
+        return ((a ^ (a >> 7)) * 0x9e3779b1) & 0xffffffff
+
+    def reads(addrs):
+        return [f"r {a:x}" for a in addrs]
+
+    want = (["k 6004 0f", "k 6010 01"] + reads(pstate) + ["k 6010 02"] + reads(aon) + ["k 6010 03"] + reads(sio) + reads([0x28e5803b8]) + reads(ps)
+            + ["k 6010 04"] + reads(gates) + ["k 6010 05"] + reads(clk) + ["k 6010 06"])
+    events = [line for line in ran if line.split()[0] in ("r", "k")]
+    stray = [line for line in ran if line.startswith("STRAY")]
+    check(events == want and not stray and len(events) == 7 + 3 + 8 + 43 + 1 + 7 + 6 + 30,
+          "m1_look() reads the 98 words of PLAN.md's list and no other, each group after its own mark, the stage first; it can't write a"
+          " register (the test has no writel() to give it), and its PMU writes pass the module's own gate",
+          "\n".join([f"{a}   |   {b}" for a, b in zip(events, want) if a != b][:8] + stray[:4] + [f"{len(events)} events, {len(want)} wanted"]))
+    v = {a: f"{fake(a):08x}" for a in pstate + aon + sio + ps + gates + clk + [0x28e5803b8]}
+    logs = ["log look: WHEN: p-states 0x28e20c000: fabric " + v[pstate[0]] + " +400 " + v[pstate[1]] + " DCS " + v[pstate[2]],
+            "log look: WHEN: AON 0x2922c0000: " + " ".join(f"+{a & 0xfff:03x} {v[a]}" for a in aon)]
+    logs += [f"log look: WHEN: power 0x{row:x}, 8 apart:" + "".join(" " + v[a] for a in sio if row <= a < row + 0x20) for row in range(0x28e580180, 0x28e5802d8, 0x20)]
+    logs += ["log look: WHEN: power 0x28e5803b8 (ANS2) " + v[0x28e5803b8] + "; 0x28e080000: " + " ".join(f"+{a & 0xfff:03x} {v[a]}" for a in ps),
+             "log look: WHEN: gates 0x28e5a0000: " + " ".join(f"+{a & 0xfff:03x} {v[a]}" for a in gates[:3]) + "; 0x28e09c000: "
+             + " ".join(f"+{a & 0xfff:03x} {v[a]}" for a in gates[3:])]
+    logs += [f"log look: WHEN: clkgen 0x{a:x}: +0 {v[a]} +4 {v[a + 4]}" for a in clk[::2]] + ["log look: WHEN: done"]
+    got = [line for line in ran if line.startswith("log ")]
+    check(got == logs and len(logs) == 2 + 11 + 2 + 15 + 1,
+          "m1_look() logs every word it read, in full, under the address it read it from: 31 lines",
+          "\n".join([f"{a}\n   wanted   {b}" for a, b in zip(got, logs) if a != b][:4] + [f"{len(got)} lines, {len(logs)} wanted"]))
+
+    # Where it's called from, and that it changes nothing else: prepare takes none of the probe's steps, prepare_late looks instead of
+    # probing, the load looks awake and then puts the breadcrumbs back as it found them.
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    prep = cut("static int e1_prepare(void)", "\n}\n")
+    late = cut("static int e1_prepare_late(void)", "\n}\n")
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    linit = cut("static int __init m1_look_init(void)", "\n}\n")
+    wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
+    check("static bool look;\nmodule_param(look, bool, 0444);\n" in src and not re.search(r"\blook\s*=[^=]", code_only)
+          and in_order_of(params, ["\tif (look && !probe) {\n\t\tpr_err(", "\t\treturn -EINVAL;\n\t}\n\tif (probe && (!wd1_mark || !pmp_stop)) {"])
+          and "\tif (probe) {\n\t\tif (n == 1 && !look)\n\t\t\tm1_probe_prepare();\n\t\treturn 0;\n\t}\n" in prep
+          and "\t\tif (same && look)\n\t\t\tm1_look(\"after noirq\");\n\t\telse if (same)\n\t\t\tm1_probe_late();\n\t\tpr_info(" in late
+          and src.count("m1_look(\"") == 2 and src.count("m1_probe_late();") == 1 and src.count("m1_probe_prepare();") == 1,
+          "look is off unless asked for, read-only once loaded, and only with probe=1; with it prepare takes none of the probe's steps and"
+          " prepare_late looks where the probe would have run; the replay's guards are probe=1's, untouched", prep + late[-900:])
+    check(in_order_of(linit, ["\tm1_look_clk = ioremap_np(LOOK_CLKGEN, LOOK_CLKGEN_N * LOOK_CLKGEN_STEP);\n\tm1_look_ga = ioremap_np(LOOK_GATE_A, PAGE_SIZE);\n"
+                              "\tm1_look_gb = ioremap_np(LOOK_GATE_B, PAGE_SIZE);\n\tif (!m1_look_clk || !m1_look_ga || !m1_look_gb) {\n",
+                              "\t\treturn -ENOMEM;\n\t}\n\tm1_look(\"awake, at load\");\n\tm1_look_at(LOOK_AT_NONE);\n\tm1_kwrite(0x6004, &zero, 1);\n\treturn 0;\n"])
+          and not re.search(wr, linit) and not re.search(wr, cut("static void m1_look(const char *when)", "\n}\n"))
+          and not re.search(wr, cut("static void m1_look_at(u8 group)", "\n}\n"))
+          and in_order_of(src, ["\tif (probe) {\n\t\tint ret = m1_probe_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
+                                "\tif (look) {\n\t\tint ret = m1_look_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"])
+          and "static_assert(LOOK_AON_PAGE == M1_POS_PAGE && LOOK_SIO_PAGE == M1_PS_SIO_PAGE && LOOK_PS_PAGE == M1_PMGR_PS);\n" in src
+          and "\tif (m1_look_clk)\n\t\tiounmap(m1_look_clk);\n\tif (m1_look_ga)\n\t\tiounmap(m1_look_ga);\n\tif (m1_look_gb)\n\t\tiounmap(m1_look_gb);\n" in src,
+          "the load maps the look's three ranges, each at its own address, looks once awake, and zeroes its mark and its stage again; no"
+          " function of the look's writes a register; its pages are the recipe's where the recipe has them; all three are unmapped", linit)
+
+    # Its stage through m1-crumbs.
+    rc, out, err = dec(0x0f, 0, 0, 0, 6)
+    check(rc == 0 and "stage 0x6004 = 0x0f: probe=1 look=1 (e1-hook/probe --look), not a run: nothing replayed, nothing was committed, nothing was"
+          " stopped and no register was written." in out
+          and "0x6010 = 0x06: every group read: the look after noirq read all of them, and the suspend was then failed\n" in out
+          and "DIDN'T FINISH" not in out and "the SoC restarted" not in out and "PMU alarm" not in out and "0x6005 = " not in out,
+          "the look's stage with its last mark: decoded as a finished look, with no run's lines and no probe's", out + err)
+    rc, out, err = dec(0x0f, 0, 0, 0, 4)
+    check(rc == 0 and "0x6010 = 0x04: THE LOOK BEGAN AND DIDN'T FINISH. The last group it marked: six gate-status words." in out,
+          "the look's stage with an earlier mark: the group it stopped in is named", out + err)
+    check(g["look_lines"](9)[0].startswith("0x6010 = 0x09: THE LOOK BEGAN AND DIDN'T FINISH. The last group it marked: not a group's number.")
+          and g["look_lines"](0)[0].startswith("0x6010 = 0x00: THE LOOK BEGAN AND DIDN'T FINISH. The last group it marked: nothing marked."),
+          "a mark past the last group, and no mark at all: both said")
 
 
 def in_order_of(text, parts):

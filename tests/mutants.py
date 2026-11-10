@@ -22,7 +22,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 E1 = os.path.realpath(os.path.join(HERE, "..", "e1-hook"))
-C, CRUMBS, FAB, WD1, ASC, PROBE = "e1_hook.c", "m1-crumbs", "fabric_up.h", "wd1_mark.h", "asc_probe.h", "probe"
+C, CRUMBS, FAB, WD1, ASC, PROBE, LOOK = "e1_hook.c", "m1-crumbs", "fabric_up.h", "wd1_mark.h", "asc_probe.h", "probe", "look.h"
 # The test that has to notice a mutant of each file: the launcher e1-hook/probe has its own.
 TESTS = {PROBE: "e1_hook_probe_test.py"}
 
@@ -158,7 +158,7 @@ MUTANTS = [
     ("probe: a second suspend calls the replay off, and replay_done reads 2", C, "\tif (n > 1 && !probe && !READ_ONCE(replay_done)) {", "\tif (n > 1 && !READ_ONCE(replay_done)) {"),
     ("probe: a line at pr_emerg, broadcast over the photo", C, "\tpr_info(\"probe: SUMMARY: bit 1 in the state B2 finds", "\tpr_emerg(\"probe: SUMMARY: bit 1 in the state B2 finds"),
     ("probe: prepare takes the replay's steps too", C, "\t\t\tm1_probe_prepare();\n\t\treturn 0;\n\t}", "\t\t\tm1_probe_prepare();\n\t}"),
-    ("probe: it runs at every suspend", C, "\t\tif (same)\n\t\t\tm1_probe_late();", "\t\tm1_probe_late();"),
+    ("probe: it runs at every suspend", C, "\t\telse if (same)\n\t\t\tm1_probe_late();", "\t\telse\n\t\t\tm1_probe_late();"),
     ("probe: ANS2 isn't put back", C, "\t\twritel(ps & ~ASC_PS_NOT_WRITTEN, m1_sio + M1_PS_ANS2);\n", ""),
     ("probe: ANS2 raised though it read on", C, "\toff = !asc_ps_on(ps);", "\toff = true;"),
     ("probe: ps_pmp written", C, "\tps = readl(m1_ps + M1_PS_PMP_RO);\n\tm1_pr.pmp_on = asc_ps_on(ps);", "\twritel(0x0f00024f, m1_ps + M1_PS_PMP_RO);\n\tps = readl(m1_ps + M1_PS_PMP_RO);\n\tm1_pr.pmp_on = asc_ps_on(ps);"),
@@ -226,6 +226,34 @@ MUTANTS = [
     ("probe launcher: the replay not called off before the unload", PROBE, "  if printf 1 > \"$MODDIR/parameters/cancel\" 2> /dev/null; then", "  if true; then"),
     ("probe launcher: a suspend asked for though another has run the probe", PROBE, "for try in 1 2 3; do\n  [[ $(get \"$MODDIR/parameters/prepare_calls\") == 0 ]] || break\n", "for try in 1 2 3; do\n"),
     ("probe launcher: klog's programs not in memory before the suspend", PROBE, "dmesg 2>&1 | grep -F -- \"e1_hook: probe:\" > /dev/null; sleep 0\n", ""),
+    # look=1 (e1-hook/probe --look): it must stop nothing and write no register, and read what PLAN.md lists and no more
+    ("look: on by default", C, "static bool look;", "static bool look = true;"),
+    ("look: the probe's stops taken all the same", C, "\t\tif (n == 1 && !look)\n", "\t\tif (n == 1)\n"),
+    ("look: the probe's second half run in its place", C, "\t\tif (same && look)\n", "\t\tif (same && !look)\n"),
+    ("look: loads without probe=1, where nothing keeps the replay away", C, "\tif (look && !probe) {", "\tif (0) {"),
+    ("look: a register written", C, "\tm1_look_at(LOOK_AT_DONE);\n", "\twritel(0, m1_look_clk + 4);\n\tm1_look_at(LOOK_AT_DONE);\n"),
+    ("look: a group read before its mark", C, "\tm1_look_at(LOOK_AT_GATES);\n\tfor (i = 0; i < ARRAY_SIZE(ga); i++)\n\t\tv[i] = readl(m1_look_ga + ga[i]);\n",
+     "\tfor (i = 0; i < ARRAY_SIZE(ga); i++)\n\t\tv[i] = readl(m1_look_ga + ga[i]);\n\tm1_look_at(LOOK_AT_GATES);\n"),
+    ("look: no stage, so a faulting read says nothing", C, "\tm1_kwrite(0x6004, &stage, 1);\n\t/* Each read into a variable first", "\t/* Each read into a variable first"),
+    ("look: the second gate page read through the first", C, "\t\tv[3 + i] = readl(m1_look_gb + gb[i]);", "\t\tv[3 + i] = readl(m1_look_ga + gb[i]);"),
+    ("look: a clock generator's second word read as its first", C, "\t\tv[1] = readl(m1_look_clk + i * LOOK_CLKGEN_STEP + 4);", "\t\tv[1] = readl(m1_look_clk + i * LOOK_CLKGEN_STEP);"),
+    ("look: ANS2's word logged where a first-page word goes", C, "when, v[7], v[0], v[1], v[2], v[3], v[4], v[5], v[6]);", "when, v[0], v[7], v[1], v[2], v[3], v[4], v[5], v[6]);"),
+    ("look: the load's marks left in the PMU", C, "\tm1_look(\"awake, at load\");\n\tm1_look_at(LOOK_AT_NONE);\n\tm1_kwrite(0x6004, &zero, 1);\n", "\tm1_look(\"awake, at load\");\n"),
+    ("look: the gate page mapped at the clock generators'", C, "\tm1_look_ga = ioremap_np(LOOK_GATE_A, PAGE_SIZE);", "\tm1_look_ga = ioremap_np(LOOK_CLKGEN, PAGE_SIZE);"),
+    ("look: the load ignores a failed mapping", C, "\tif (look) {\n\t\tint ret = m1_look_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n", "\tif (look)\n\t\tm1_look_init();\n"),
+    ("look: one clock generator too many", LOOK, "#define LOOK_CLKGEN_N\t\t15", "#define LOOK_CLKGEN_N\t\t16"),
+    ("look: a power word past AES's", LOOK, "#define LOOK_SIO_LAST\t\t0x2d0", "#define LOOK_SIO_LAST\t\t0x2d8"),
+    ("look: a gate word's offset", LOOK, "#define LOOK_GATE_B_OFFS\t{ 0x310, 0x338, 0x34c }", "#define LOOK_GATE_B_OFFS\t{ 0x310, 0x338, 0x348 }"),
+    ("look: an AON word that isn't on the list", LOOK, "#define LOOK_AON_OFFS\t\t{ 0x008, 0x024,", "#define LOOK_AON_OFFS\t\t{ 0x000, 0x024,"),
+    ("look: the probe's stage", LOOK, "#define LOOK_STAGE\t\t0x0f", "#define LOOK_STAGE\t\t0x0e"),
+    ("look decoder: an unfinished look passed as finished", CRUMBS, "    if at == LOOK_DONE:\n", "    if True:\n"),
+    ("look decoder: a group off by one", CRUMBS, "    group = LOOK_AT[at] if at <= LOOK_DONE else", "    group = LOOK_AT[at - 1] if at <= LOOK_DONE else"),
+    ("look decoder: its stage read as the probe's", CRUMBS, "LOOK_STAGE = 0x0f", "LOOK_STAGE = 0x1f"),
+    ("look launcher: no look=1 in the load", PROBE, "  PARAMS+=(look=1)\n", ""),
+    ("look launcher: the PMP's requests withdrawn for a look", PROBE, "if ((!look)); then\n  \"$PMP\" release", "if true; then\n  \"$PMP\" release"),
+    ("look launcher: goes on with a module that would stop the firmware", PROBE, "if ((look)) && [[ $(get \"$MODDIR/parameters/look\") != Y ]]; then", "if false; then"),
+    ("look launcher: says unloaded of a module that didn't unload", PROBE, "  rmmod e1_hook 2> /dev/null && die \"e1_hook didn't take look=1, and was unloaded", "  rmmod e1_hook 2> /dev/null; die \"e1_hook didn't take look=1, and was unloaded"),
+    ("look launcher: the probe's lines printed for a look", PROBE, "if ((look)); then\n  log \"kernel log, the look after noirq", "if false; then\n  log \"kernel log, the look after noirq"),
     ("probe launcher: the PMP idled with its display report requests asserted, as no run has", PROBE, "\"$PMP\" release 0xc 0xd > /dev/null 2>&1 || die ", ": || die "),
     ("probe launcher: goes on without the release module", PROBE, "\"$PMP\" release 0xc 0xd > /dev/null 2>&1 || die ", "\"$PMP\" release 0xc 0xd > /dev/null 2>&1 || : "),
     ("probe launcher: no probe=1 in the parameters", PROBE, " fabric_up=1 wd1_mark=1 probe=1)", " fabric_up=1 wd1_mark=1)"),

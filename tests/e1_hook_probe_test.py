@@ -25,13 +25,16 @@ RELEASE = os.uname().release
 # run-floor --m1-mark's parameters (tests/e1a_launcher_test.py has them for the launcher itself), and probe=1.
 PARAMS = ("replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1"
           " smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 probe=1")
-SOURCES = ("e1_hook.c", "asc_probe.h", "fabric_up.h", "wd1_mark.h", "wd2_bite.h", "recfg_bite.h", "m1_position.h")
+SOURCES = ("e1_hook.c", "asc_probe.h", "look.h", "fabric_up.h", "wd1_mark.h", "wd2_bite.h", "recfg_bite.h", "m1_position.h")
 KLOG = ("[  100.1] e1_hook: m1: probe: no replay with this load; awake: SIO_CPU 1400024f ANS2 0f0000ff ps_pmp 1f0f03ff\n"
         "[  100.2] e1_hook: probe: ANS, awake, at load, its firmware running: power word 0f0000ff; ASC+0x8000 read 00000002 at first and 00000002 after 1 reads in 0 ms: bit 1 SET\n"
         "[  130.1] e1_hook: probe: SIO, at prepare, its firmware running: power word 0400024f; ASC+0x8000 read 00000000 at first and 00000000 after 250 reads in 100 ms: bit 1 clear\n"
         "[  131.4] e1_hook: probe: SUMMARY: bit 1 in the state B2 finds: SIO clear, ANS SET, PMP SET; bytes f0 ff fd, written to the PMU: 0\n"
         "[  131.5] e1_hook: probe: done; this suspend fails with -EIO: with probe=1 loaded nothing sleeps and nothing replays\n"
-        "[  131.6] some other driver: unrelated\n")
+        "[  131.6] some other driver: unrelated\n"
+        "[  100.3] e1_hook: look: awake, at load: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c 80040308; 0x28e09c000: +310 8004031d +338 8004030f +34c 8004030e\n"
+        "[  131.2] e1_hook: look: after noirq: AON 0x2922c0000: +008 00000001 +024 00000000 +038 00000000 +03c 00000101 +040 00000003 +044 00000008 +10c 80000000 +110 00000000\n"
+        "[  131.3] e1_hook: look: after noirq: done\n")
 
 failed = 0
 
@@ -54,7 +57,7 @@ def write(path, text, mode=0o644):
 
 def setup(tmp, safe=True, loaded=False, ko=True, vermagic=RELEASE, newer=None, parms=True, takes="Y", insmod_rc=0, pm_test="[none] freezer",
           mem_sleep="[s2idle]", crumbs="stage 0x6004 = 0x00: none: no M1 run since the last clear", save_rc=0, klog=KLOG, plc=1, rmmod_rc=0,
-          pmp_rc=0):
+          pmp_rc=0, look_takes="Y"):
     """plc is the module's prepare_late_calls once loaded; its prepare_calls comes from run()'s pc."""
     d = os.path.join(tmp, "e1-hook")
     stubs = os.path.join(tmp, "stubs")
@@ -82,6 +85,9 @@ def setup(tmp, safe=True, loaded=False, ko=True, vermagic=RELEASE, newer=None, p
             f' && echo {plc} > {moddir}/parameters/prepare_late_calls')
     if takes is not None:
         made += f' && echo {takes} > {moddir}/parameters/probe'
+    if look_takes is not None:
+        # The look parameter says Y only if look=1 was among the load's.
+        made += f' && case " $* " in *" look=1 "*) echo {look_takes} ;; *) echo N ;; esac > {moddir}/parameters/look'
     write(os.path.join(stubs, "insmod"), f'#!/bin/sh\necho "insmod $*" >> {calls}\n[ {insmod_rc} = 0 ] || exit {insmod_rc}\n{made}\n', 0o755)
     # rmmod says what the module's cancel read when it was called: the replay has to be called off before the unload is tried.
     write(os.path.join(stubs, "rmmod"), f'#!/bin/sh\necho "rmmod $* cancel=$(cat {moddir}/parameters/cancel 2> /dev/null)" >> {calls}\n'
@@ -252,11 +258,47 @@ def main():
             r, state = run(tmp, d)
             check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [] and not state,
                   f"refused {what}: nothing loaded, no suspend", r.stdout + r.stderr + "\n".join(calls(tmp)))
+    for argv in (["--now"], ["--look", "again"], ["x", "--look"]):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp)
+            r, state = run(tmp, d, argv)
+            check(r.returncode == 1 and "usage: probe [--look]" in r.stderr and calls(tmp) == [] and not state,
+                  f"refused with {' '.join(argv)}: nothing loaded, no suspend", r.stdout + r.stderr)
+
+    # --look: look=1 on top of the probe's parameters, no PMP release, one suspend, the look's lines printed and saved.
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp)
-        r, state = run(tmp, d, ["--now"])
-        check(r.returncode == 1 and "usage: probe (no arguments)" in r.stderr and calls(tmp) == [] and not state,
-              "refused with an argument: nothing loaded, no suspend", r.stdout + r.stderr)
+        r, state = run(tmp, d, ["--look"])
+        c = calls(tmp)
+        check(r.returncode == 0 and c[:3] == ["insmod " + os.path.join(d, "e1_hook.ko") + " " + PARAMS + " look=1", "dmesg", "sleep 0"] and state == "mem"
+              and c[3:5] == ["dmesg", "dmesg"] and len(c) == 6 and c[5].startswith("sleep-drain-safe save ") and not any(x.startswith("sleep-drain-pmp") for x in c)
+              and r.stdout.count("asking for the suspend") == 1,
+              "--look: the probe's parameters and look=1, the PMP's report requests left alone, one suspend asked for, the record saved",
+              r.stdout + r.stderr + "\n".join(c))
+        check(r.stdout.count("e1_hook: look: after noirq: AON 0x2922c0000: +008 00000001") == 1 and "e1_hook: look: after noirq: done" in r.stdout
+              and r.stdout.count("e1_hook: look: awake, at load: gates 0x28e5a0000") == 1 and "e1_hook: probe: SUMMARY" not in r.stdout
+              and r.stdout.index("TAKE A PHOTO") < r.stdout.index("look: after noirq: AON") < r.stdout.index("=====\n\n")
+              < r.stdout.index("look: awake, at load: gates") < r.stdout.index("Saved."),
+              "--look prints the look after noirq between the photo's two rules, the load's look after them, and none of the probe's lines",
+              r.stdout + r.stderr)
+    # A module that loads with look=1 and doesn't say so would be the probe that stops the firmware: unloaded, no suspend.
+    for look_takes, rmmod_rc, said in (("N", 0, "didn't take look=1, and was unloaded"), (None, 0, "didn't take look=1, and was unloaded"),
+                                       ("N", 1, "didn't take look=1 and DID NOT UNLOAD: restart the Mac now")):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, look_takes=look_takes, rmmod_rc=rmmod_rc)
+            r, state = run(tmp, d, ["--look"])
+            c = calls(tmp)
+            check(r.returncode == 1 and not state and c[1:] == ["rmmod e1_hook cancel="] and said in r.stderr and "TAKE A PHOTO" not in r.stdout
+                  and ("was unloaded" in r.stderr) == (rmmod_rc == 0),
+                  f"--look with a module whose look reads {look_takes} (rmmod returns {rmmod_rc}): no suspend, and it says what became of the module",
+                  r.stdout + r.stderr + "\n".join(c))
+    # Without --look nothing of the look's: no look=1, and the module's look reads N.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp)
+        r, state = run(tmp, d)
+        check(r.returncode == 0 and "look=1" not in calls(tmp)[1] and "e1_hook: look:" not in r.stdout
+              and open(os.path.join(tmp, "module", "parameters", "look")).read().strip() == "N",
+              "without --look: no look=1 in the load, and none of the look's lines printed", r.stdout + "\n".join(calls(tmp)))
 
     # A suspend that ends before the module's prepare has probed and stopped nothing: asked for again, twice at most, and only
     # while prepare hasn't run. Here the second try gets there.
