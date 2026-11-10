@@ -90,10 +90,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   (`--m1-cluster-ack` is the latest); `m1-crumbs` reads the record a run leaves in the PMU after the
   restart, and `--clear` zeroes it. The rest are one-purpose tools for single reads and writes
   (`recfg-peek`, `recfg-bite`, `wd2-bite`). **`e1-hook/README.md` says what every parameter, option
-  and tool does: read it before working here.** What always holds: safe boot only; `oneway=1`; the
-  module won't build or load if a write would touch the never-write list (0x28e0802d8, `ps_pmp`;
-  0x28e700000); the reconfig SRAM's dumps stay out of the repo; nothing here is installed by
-  `install.sh`.
+  and tool does: read it before working here.** What always holds: a one-way run loads only in a
+  safe boot and with `oneway=1`; the module won't build or load if a write would touch the
+  never-write list (0x28e0802d8, `ps_pmp`; 0x28e700000); the reconfig SRAM's dumps stay out of the
+  repo; nothing here is installed by `install.sh`.
 - `tests/`: hardware-free checks, one file per tool, each run as `python3 -I -B tests/<name>.py`.
   `tests/README.md` lists what each covers. The two that guard the one-way runs are
   `tests/m1_crumbs_test.py` (the decoder, and `e1_hook.c`'s own table and wait functions compiled in
