@@ -36,9 +36,10 @@
 # stops nothing and writes no register. It reads the words the pair's remaining
 # waits depend on, awake at its load and again after the noirq pass of the
 # suspend it fails, and logs them. This script then doesn't load
-# pmp_sleep_release either. Nothing is stopped, so that suspend is an ordinary
-# failed one: the Mac comes back as it was, and is restarted only because the
-# safe boot is over.
+# pmp_sleep_release either, and refuses if it's loaded. Nothing is stopped, so
+# that suspend should be an ordinary failed one, with the Mac back as it was;
+# that hasn't been tried, and the probe's own suspend didn't come back. So the
+# look at the load is printed and saved before the suspend is asked for.
 #
 # It asks for the suspend through /sys/power/state, so systemd's sleep hook
 # doesn't run: no line in the sleep log, and the radios stay as they are.
@@ -63,6 +64,7 @@ MEM_SLEEP=${PROBE_MEM_SLEEP:-/sys/power/mem_sleep}
 LOGDIR=${PROBE_LOGDIR:-/var/log/sleep-drain}
 SAVE=${PROBE_SAVE:-/usr/local/bin/sleep-drain-safe}
 PMP=${PROBE_PMP:-/usr/local/bin/sleep-drain-pmp}
+PMPMOD=${PROBE_PMPMOD:-/sys/module/pmp_sleep_release}
 CRUMBS=${PROBE_CRUMBS:-$here/m1-crumbs}
 # --m1-mark's parameters, the latest recipe's, and probe=1 on top: the module refuses probe=1 without them.
 PARAMS=(replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1
@@ -75,6 +77,10 @@ if [[ ${1:-} == --look ]]; then
   PARAMS+=(look=1)
 fi
 (($# == 0)) || die "usage: probe [--look]"
+# The module's count that says its part of a suspend has begun: the probe's first half runs at prepare; the look
+# does nothing there, and runs at the first prepare_late.
+count=prepare_calls
+((look)) && count=prepare_late_calls
 [[ $EUID -eq 0 ]] || die "run with pkexec"
 [[ -f $SAFE_FLAG ]] || die "safe boot only: pkexec sleep-drain-safe boot, then restart"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already: restart into a fresh safe boot"
@@ -85,6 +91,12 @@ for src in e1_hook.c asc_probe.h look.h fabric_up.h wd1_mark.h wd2_bite.h recfg_
 done
 [[ $(modinfo -p "$ko" 2> /dev/null) == *$'\n'probe:* || $(modinfo -p "$ko" 2> /dev/null) == probe:* ]] ||
   die "$ko is an older build, without probe: make -C $here"
+if ((look)); then
+  [[ $(modinfo -p "$ko" 2> /dev/null) == *$'\n'look:* || $(modinfo -p "$ko" 2> /dev/null) == look:* ]] ||
+    die "$ko is an older build, without look: make -C $here"
+  # Left loaded by a probe earlier in this boot, it would withdraw the PMP's requests at this suspend too.
+  [[ ! -d $PMPMOD ]] || die "pmp_sleep_release is loaded, so the look's suspend wouldn't be an ordinary one: restart into a fresh safe boot"
+fi
 [[ $(< "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none"
 [[ $(< "$MEM_SLEEP") == *"[s2idle]"* ]] || die "s2idle isn't the sleep mode"
 # The breadcrumbs have to be clear: the module refuses otherwise, and says so less plainly.
@@ -140,22 +152,29 @@ if ((look)) && [[ $(get "$MODDIR/parameters/look") != Y ]]; then
 fi
 # Into memory now, for after the probe: the pipeline klog runs, on the kernel log as it is, and sleep.
 dmesg 2>&1 | grep -F -- "e1_hook: probe:" > /dev/null; sleep 0
-# A suspend that ends before the module's prepare (a key still going up, a device that says no) has probed nothing
-# and stopped nothing: it's asked for again, twice at most. Once prepare has run, in this script's suspend or in one
-# something else asked for meanwhile (the lid, logind), there is no other.
+# The look at the load is in the kernel log already: printed and saved now, in case the suspend doesn't come back.
+if ((look)); then
+  log "kernel log, the look awake, at the load:"
+  klog "e1_hook: look: awake, at load"
+  if "$SAVE" save "$out" > /dev/null 2>&1; then log "(saved: the look at the load is on the boot partition)"; else log "(NOT SAVED: the lines above are the record of the look at the load)"; fi
+fi
+# A suspend that ends before the module's part of it (a key still going up, a device that says no) has probed nothing
+# and stopped nothing: it's asked for again, twice at most. Once that part has begun, in this script's suspend or in
+# one something else asked for meanwhile (the lid, logind), there is no other.
 rc=none
 for try in 1 2 3; do
-  [[ $(get "$MODDIR/parameters/prepare_calls") == 0 ]] || break
+  [[ $(get "$MODDIR/parameters/$count") == 0 ]] || break
   log "$(now) asking for the suspend ($try of 3 at most). HANDS OFF the keyboard and trackpad until the photo block. The screen may flicker; the Mac does not sleep: the module fails the suspend when it's done"
   printf mem > "$STATE" 2> /dev/null
   rc=$?
-  [[ $(get "$MODDIR/parameters/prepare_calls") == 0 ]] || break
-  log "$(now) that suspend ended before the module's prepare (it returned $rc): nothing was probed or stopped"
+  [[ $(get "$MODDIR/parameters/$count") == 0 ]] || break
+  log "$(now) that suspend ended before the module's part of it (it returned $rc): nothing was probed or stopped"
   ((try < 3)) && sleep 3
 done
+began=$(get "$MODDIR/parameters/$count")
 pc=$(get "$MODDIR/parameters/prepare_calls")
 plc=$(get "$MODDIR/parameters/prepare_late_calls")
-if [[ $pc == 0 ]]; then
+if [[ $began == 0 ]]; then
   log "NOTHING WAS PROBED: three suspends ended before the module ran, and nothing was stopped. The kernel's PM lines:"
   klog "PM: "
   if rmmod e1_hook; then
@@ -170,20 +189,17 @@ log ""
 log "==================== TAKE A PHOTO OF THIS SCREEN ===================="
 log "$(now) back; this script's last suspend returned $rc (non-zero is right: the module fails it; none: another suspend got there first)"
 log "replay_done=$(get "$MODDIR/parameters/replay_done") (0 is right: nothing replayed) prepare_calls=$pc prepare_late_calls=$plc"
-[[ $pc == 1 && $plc == 1 ]] || log "ONLY PART OF THE PROBE RAN (1 and 1 is a whole one): the lines below are what there is."
 if ((look)); then
-  log "kernel log, the look after noirq (the look at the load is in the saved file):"
+  [[ $plc == 1 ]] || log "THE LOOK AFTER NOIRQ RAN AT ANOTHER SUSPEND THAN THIS SCRIPT'S LAST (prepare_late_calls 1 is the plain case): the lines below are what there is."
+  log "kernel log, the look after noirq (the look at the load is above, and in the saved file):"
   klog "e1_hook: look: after noirq"
 else
+  [[ $pc == 1 && $plc == 1 ]] || log "ONLY PART OF THE PROBE RAN (1 and 1 is a whole one): the lines below are what there is."
   log "kernel log, the probe's lines (the SUMMARY line is the result):"
   klog "e1_hook: probe:"
 fi
 log "====================================================================="
 log ""
-if ((look)); then
-  log "kernel log, the look awake, at the load:"
-  klog "e1_hook: look: awake, at load"
-fi
 log "Saving to the boot partition. If nothing more appears within a minute, the photo is the result: restart the Mac."
 if "$SAVE" save "$out" > /dev/null 2>&1; then
   log "Saved. Now restart the Mac (hold the power key if the keyboard doesn't answer), log in, and tell Claude."

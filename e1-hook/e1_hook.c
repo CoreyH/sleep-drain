@@ -91,7 +91,7 @@
  *   pkexec e1-hook/run-floor --m1-cluster-ack     (--m1-wd2-bite's and cluster_ack=1: PLAN.md, "The order after the sweep of 2026-11-10")
  *   pkexec e1-hook/run-floor --m1-fabric-up       (--m1-cluster-ack's and fabric_up=1: PLAN.md, "The order after run 16")
  *   pkexec e1-hook/run-floor --m1-mark            (--m1-fabric-up's and wd1_mark=1: the same)
- *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay, the Mac comes back)
+ *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -355,7 +355,7 @@ MODULE_PARM_DESC(probe, "With wd1_mark=1: no replay, ever. At the prepare and pr
 /* probe=1's other form: nothing stopped and no register written, only read (PLAN.md, "The order after the probe"). */
 static bool look;
 module_param(look, bool, 0444);
-MODULE_PARM_DESC(look, "With probe=1: none of the probe's steps. It stops no firmware and writes no register: awake at the load and again after the noirq pass of the first suspend to get that far, it reads the words the entry pair's remaining waits depend on (the clock generators', six gate-status words, eight words of the engine's page, the three p-state words and the power words B2 polls), logs each in full, and fails every suspend with -EIO as probe=1 does. Stage 0x0f and the group being read at 0x6010 in the PMU while it reads (look.h)");
+MODULE_PARM_DESC(look, "With probe=1: none of the probe's steps. It stops no firmware and writes no register: awake at the load and again after the noirq pass of the first suspend to get that far, it reads the words the entry pair's remaining waits depend on (the clock generators', six gate-status words, eight words of the engine's page, the three p-state words and the power words B2 polls), logs each in full, and fails every suspend with -EIO as probe=1 does. Stage 0x0f and the group being read at 0x6010 in the PMU while it reads, with 0x10 set at the load (look.h)");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -3793,30 +3793,32 @@ static void m1_look_at(u8 group)
 }
 
 /*
- * look=1: every word look.h lists, read once and logged in full, group by group, each group's mark first. Not one
- * register is written: the only writes are the stage and the marks, to the PMU's scratch.
+ * look=1: every word look.h lists, read once and logged in full, group by group, each group's mark first, with pass
+ * (LOOK_LOAD or 0) set in it. Not one register is written: the only writes are the stage and the marks, to the
+ * PMU's scratch.
  */
-static void m1_look(const char *when)
+static void m1_look(const char *when, u8 pass)
 {
-	static const u16 aon[] = LOOK_AON_OFFS, ps[] = LOOK_PS_OFFS, ga[] = LOOK_GATE_A_OFFS, gb[] = LOOK_GATE_B_OFFS;
+	static const u16 aon[] = LOOK_AON_OFFS, aonw[] = LOOK_AON_W_OFFS, ps[] = LOOK_PS_OFFS, ga[] = LOOK_GATE_A_OFFS,
+		gb[] = LOOK_GATE_B_OFFS;
 	static const u8 stage = LOOK_STAGE;
 	unsigned int i, off;
 	u32 v[8];
 
 	m1_kwrite(0x6004, &stage, 1);
 	/* Each read into a variable first: the order of a call's arguments isn't the compiler's to keep. */
-	m1_look_at(LOOK_AT_PSTATE);
+	m1_look_at(pass | LOOK_AT_PSTATE);
 	for (i = 0; i < 3; i++)
 		v[i] = readl(m1_fab() + 0x400 * i);
 	pr_info("look: %s: p-states 0x28e20c000: fabric %08x +400 %08x DCS %08x\n", when, v[0], v[1], v[2]);
 
-	m1_look_at(LOOK_AT_AON);
+	m1_look_at(pass | LOOK_AT_AON);
 	for (i = 0; i < ARRAY_SIZE(aon); i++)
 		v[i] = readl(m1_pos + aon[i]);
-	pr_info("look: %s: AON 0x2922c0000: +008 %08x +024 %08x +038 %08x +03c %08x +040 %08x +044 %08x +10c %08x +110 %08x\n", when,
-		v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+	pr_info("look: %s: AON 0x2922c0000: +038 %08x +03c %08x +040 %08x +044 %08x +10c %08x +110 %08x\n", when, v[0], v[1], v[2], v[3],
+		v[4], v[5]);
 
-	m1_look_at(LOOK_AT_POWER);
+	m1_look_at(pass | LOOK_AT_POWER);
 	for (off = LOOK_SIO_FIRST; off <= LOOK_SIO_LAST; off += 0x20) {
 		char row[48];
 		unsigned int n = 0, o;
@@ -3831,7 +3833,7 @@ static void m1_look(const char *when)
 	pr_info("look: %s: power 0x28e5803b8 (ANS2) %08x; 0x28e080000: +108 %08x +110 %08x +120 %08x +2d8 %08x +2e8 %08x +2f0 %08x +320 %08x\n",
 		when, v[7], v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
 
-	m1_look_at(LOOK_AT_GATES);
+	m1_look_at(pass | LOOK_AT_GATES);
 	for (i = 0; i < ARRAY_SIZE(ga); i++)
 		v[i] = readl(m1_look_ga + ga[i]);
 	for (i = 0; i < ARRAY_SIZE(gb); i++)
@@ -3839,22 +3841,31 @@ static void m1_look(const char *when)
 	pr_info("look: %s: gates 0x28e5a0000: +050 %08x +064 %08x +30c %08x; 0x28e09c000: +310 %08x +338 %08x +34c %08x\n", when, v[0],
 		v[1], v[2], v[3], v[4], v[5]);
 
-	m1_look_at(LOOK_AT_CLKGEN);
+	m1_look_at(pass | LOOK_AT_CLKGEN);
 	for (i = 0; i < LOOK_CLKGEN_N; i++) {
 		v[0] = readl(m1_look_clk + i * LOOK_CLKGEN_STEP);
 		v[1] = readl(m1_look_clk + i * LOOK_CLKGEN_STEP + 4);
 		pr_info("look: %s: clkgen 0x%llx: +0 %08x +4 %08x\n", when, LOOK_CLKGEN + i * LOOK_CLKGEN_STEP, v[0], v[1]);
 	}
-	m1_look_at(LOOK_AT_DONE);
+
+	/* Last, with everything else logged: the two words of the engine's page that its sequences write and never read. */
+	m1_look_at(pass | LOOK_AT_AON_W);
+	for (i = 0; i < ARRAY_SIZE(aonw); i++)
+		v[i] = readl(m1_pos + aonw[i]);
+	pr_info("look: %s: AON 0x2922c0000, written by the engine and never read by it: +008 %08x +024 %08x\n", when, v[0], v[1]);
+	m1_look_at(pass | LOOK_AT_DONE);
 	pr_info("look: %s: done\n", when);
 }
-static_assert(ARRAY_SIZE(((u16[])LOOK_AON_OFFS)) == 8 && ARRAY_SIZE(((u16[])LOOK_PS_OFFS)) == 7);
+static_assert(ARRAY_SIZE(((u16[])LOOK_AON_OFFS)) == 6 && ARRAY_SIZE(((u16[])LOOK_AON_W_OFFS)) == 2 && ARRAY_SIZE(((u16[])LOOK_PS_OFFS)) == 7);
+static_assert((LOOK_LOAD & LOOK_AT_DONE) == 0 && LOOK_AT_DONE < LOOK_LOAD);
 static_assert(ARRAY_SIZE(((u16[])LOOK_GATE_A_OFFS)) == 3 && ARRAY_SIZE(((u16[])LOOK_GATE_B_OFFS)) == 3);
 
 /*
- * look=1 at load: its three mappings, and the look awake. A read that faults there leaves its group's mark in the
- * PMU; once the look is through, the stage and the mark are zeroed again, so that the breadcrumbs are clear for the
- * suspend's own look, as the load found them.
+ * look=1 at load, the last of m1_init()'s steps: its three mappings, the engine's page if nothing has mapped it yet,
+ * and the look awake. It refuses unless every page m1_look() reads through is there: the first build looked before
+ * m1_wd2_init() had mapped the engine's page, which would have been a NULL read at insmod (Pullfrog on #78). A read
+ * that faults leaves its group's mark in the PMU; once the look is through, the stage and the mark are zeroed
+ * again, so that the breadcrumbs are clear for the suspend's own look, as the load found them.
  */
 static int __init m1_look_init(void)
 {
@@ -3863,11 +3874,17 @@ static int __init m1_look_init(void)
 	m1_look_clk = ioremap_np(LOOK_CLKGEN, LOOK_CLKGEN_N * LOOK_CLKGEN_STEP);
 	m1_look_ga = ioremap_np(LOOK_GATE_A, PAGE_SIZE);
 	m1_look_gb = ioremap_np(LOOK_GATE_B, PAGE_SIZE);
-	if (!m1_look_clk || !m1_look_ga || !m1_look_gb) {
+	if (!m1_pos)
+		m1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);
+	if (!m1_look_clk || !m1_look_ga || !m1_look_gb || !m1_pos) {
 		pr_err("m1: look: a mapping failed; refusing\n");
 		return -ENOMEM;
 	}
-	m1_look("awake, at load");
+	if (!m1_sio || !m1_ps || !post_map[m1_waits[0].idx]) {
+		pr_err("m1: look: SIO's page, the first power page or the p-state page isn't mapped; refusing\n");
+		return -ENODEV;
+	}
+	m1_look("awake, at load", LOOK_LOAD);
 	m1_look_at(LOOK_AT_NONE);
 	m1_kwrite(0x6004, &zero, 1);
 	return 0;
@@ -4206,12 +4223,6 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
-	if (look) {
-		int ret = m1_look_init();
-
-		if (ret)
-			return ret;
-	}
 	if (position) {
 		int ret = m1_position_init();
 
@@ -4226,6 +4237,13 @@ static int __init m1_init(void)
 	}
 	if (wd2_bite) {
 		int ret = m1_wd2_init();
+
+		if (ret)
+			return ret;
+	}
+	/* Last: it reads through pages the initializers above map, the engine's among them (m1_wd2_init()'s here). */
+	if (look) {
+		int ret = m1_look_init();
 
 		if (ret)
 			return ret;
@@ -4399,11 +4417,13 @@ static int e1_prepare_late(void)
 	if (probe) {
 		bool same = n == 1 && READ_ONCE(prepare_calls) == 1;
 
-		if (same && look)
-			m1_look("after noirq");
-		else if (same)
+		/* The look takes no step at prepare, so it has no first half to belong to: the first prepare_late has it. */
+		if (look && n == 1)
+			m1_look("after noirq", 0);
+		else if (!look && same)
 			m1_probe_late();
 		pr_info("probe: %s; this suspend fails with -EIO: with probe=1 loaded nothing sleeps and nothing replays\n",
+			look ? (n == 1 ? "the look is done" : "the look ran at an earlier suspend") :
 			same ? "done" : n == 1 ? "its first half ran in an earlier suspend, so its second half doesn't run" :
 			"it ran at an earlier suspend");
 		return -EIO;

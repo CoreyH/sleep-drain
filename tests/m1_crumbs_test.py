@@ -2077,8 +2077,8 @@ def probe_tests(g, src, dec):
           "e1_replay() returns at once with probe=1, before it marks the replay run and before anything is written", replay[:900])
     check(in_order_of(prep, ["\tif (probe) {\n\t\tif (n == 1 && !look)\n\t\t\tm1_probe_prepare();\n\t\treturn 0;\n\t}\n", "m1_dcp_shutdown();", "m1_sio_fw_stop();"]),
           "prepare with probe=1 takes the probe's steps at the first suspend and never the replay's (the DCPs' shutdown, SIO's stop)", prep)
-    check(in_order_of(late, ["\tif (probe) {\n\t\tbool same = n == 1 && READ_ONCE(prepare_calls) == 1;\n\n\t\tif (same && look)\n\t\t\tm1_look(\"after noirq\");\n"
-                             "\t\telse if (same)\n\t\t\tm1_probe_late();\n\t\tpr_info(",
+    check(in_order_of(late, ["\tif (probe) {\n\t\tbool same = n == 1 && READ_ONCE(prepare_calls) == 1;\n\n", "\t\tif (look && n == 1)\n\t\t\tm1_look(\"after noirq\", 0);\n"
+                             "\t\telse if (!look && same)\n\t\t\tm1_probe_late();\n\t\tpr_info(",
                              "\t\treturn -EIO;\n\t}\n\tif (!(replay & 8)) {", "e1_replay()"])
           and late.count("m1_probe_late()") == 1,
           "prepare_late with probe=1 runs the probe's second half only in the suspend whose prepare ran the first, and fails every suspend with -EIO, "
@@ -2201,15 +2201,18 @@ typedef uint16_t u16;
 #define N(a) (sizeof(a) / sizeof((a)[0]))
 int main(void)
 {
-	static const u16 aon[] = LOOK_AON_OFFS, ps[] = LOOK_PS_OFFS, ga[] = LOOK_GATE_A_OFFS, gb[] = LOOK_GATE_B_OFFS;
+	static const u16 aon[] = LOOK_AON_OFFS, aonw[] = LOOK_AON_W_OFFS, ps[] = LOOK_PS_OFFS, ga[] = LOOK_GATE_A_OFFS, gb[] = LOOK_GATE_B_OFFS;
 	unsigned int i;
 
-	printf("consts %x %x %llx %llx %x %x %x %llx %llx %llx %llx %x %d\n", LOOK_STAGE, LOOK_AT, LOOK_AON_PAGE, LOOK_SIO_PAGE, LOOK_SIO_FIRST,
-	       LOOK_SIO_LAST, LOOK_SIO_ANS2, LOOK_PS_PAGE, LOOK_GATE_A, LOOK_GATE_B, LOOK_CLKGEN, LOOK_CLKGEN_STEP, LOOK_CLKGEN_N);
-	printf("at %d %d %d %d %d %d %d\n", LOOK_AT_NONE, LOOK_AT_PSTATE, LOOK_AT_AON, LOOK_AT_POWER, LOOK_AT_GATES, LOOK_AT_CLKGEN, LOOK_AT_DONE);
+	printf("consts %x %x %llx %llx %x %x %x %llx %llx %llx %llx %x %d %x\n", LOOK_STAGE, LOOK_AT, LOOK_AON_PAGE, LOOK_SIO_PAGE, LOOK_SIO_FIRST,
+	       LOOK_SIO_LAST, LOOK_SIO_ANS2, LOOK_PS_PAGE, LOOK_GATE_A, LOOK_GATE_B, LOOK_CLKGEN, LOOK_CLKGEN_STEP, LOOK_CLKGEN_N, LOOK_LOAD);
+	printf("at %d %d %d %d %d %d %d %d\n", LOOK_AT_NONE, LOOK_AT_PSTATE, LOOK_AT_AON, LOOK_AT_POWER, LOOK_AT_GATES, LOOK_AT_CLKGEN, LOOK_AT_AON_W,
+	       LOOK_AT_DONE);
 	printf("aon");
 	for (i = 0; i < N(aon); i++)
 		printf(" %x", aon[i]);
+	for (i = 0; i < N(aonw); i++)
+		printf(" %x", aonw[i]);
 	printf("\nps");
 	for (i = 0; i < N(ps); i++)
 		printf(" %x", ps[i]);
@@ -2234,8 +2237,12 @@ typedef uint32_t u32;
 typedef uint64_t u64;
 #include "look.h"
 #define __iomem
+#define __init
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define scnprintf snprintf
+#define PAGE_SIZE 0x4000UL
+#define ENOMEM 12
+#define ENODEV 19
 """
 LOOK_RUN_MODEL = r"""
 /*
@@ -2245,8 +2252,29 @@ LOOK_RUN_MODEL = r"""
  */
 static unsigned char fab_page[0x1000], pos_page[0x1000], sio_page[0x1000], ps_page[0x1000], ga_page[0x1000], gb_page[0x1000],
 	clk_pages[LOOK_CLKGEN_N * LOOK_CLKGEN_STEP];
-static void *m1_pos = pos_page, *m1_sio = sio_page, *m1_ps = ps_page, *m1_look_ga = ga_page, *m1_look_gb = gb_page, *m1_look_clk = clk_pages;
-static void *m1_fab(void) { return fab_page; }
+/* All as a load starts with them: nothing mapped. main() sets what m1_init()'s earlier steps would have. */
+static void *m1_pos, *m1_sio, *m1_ps, *m1_look_ga, *m1_look_gb, *m1_look_clk;
+static void *post_map[1];
+static const struct { unsigned int idx; } m1_waits[1] = { { 0 } };
+static void *m1_fab(void) { return post_map[m1_waits[0].idx]; }
+static unsigned int maps, map_fail;
+/* ioremap_np(): the page of each range the look may map, or NULL for the map_fail-th call. */
+static void *ioremap_np(unsigned long long phys, unsigned long size)
+{
+	printf("map %llx %lx\n", phys, size);
+	if (++maps == map_fail)
+		return NULL;
+	if (phys == LOOK_CLKGEN)
+		return clk_pages;
+	if (phys == LOOK_GATE_A)
+		return ga_page;
+	if (phys == LOOK_GATE_B)
+		return gb_page;
+	if (phys == LOOK_AON_PAGE)
+		return pos_page;
+	printf("STRAY map\n");
+	return NULL;
+}
 static u32 readl(const void *p)
 {
 	static const struct { const unsigned char *base; unsigned long size; unsigned long long phys; } pg[] = {
@@ -2281,11 +2309,34 @@ static int m1_kwrite(unsigned int addr, const u8 *b, unsigned int n)
 	return 0;
 }
 static void pr_info(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("log "); vprintf(fmt, ap); va_end(ap); }
+static void pr_err(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("err "); vprintf(fmt, ap); va_end(ap); }
 """
 LOOK_RUN_MAIN = r"""
+/* One load: the pointers as m1_init()'s earlier steps leave them in this scenario, then m1_look_init() as it stands. */
+static void load(unsigned int n, bool pos, bool sio, bool fab, unsigned int fail)
+{
+	m1_pos = pos ? pos_page : NULL;
+	m1_sio = sio ? sio_page : NULL;
+	m1_ps = ps_page;
+	post_map[0] = fab ? fab_page : NULL;
+	m1_look_clk = m1_look_ga = m1_look_gb = NULL;
+	maps = 0;
+	map_fail = fail;
+	printf("load %u\n", n);
+	printf("ret %d\n", m1_look_init());
+}
+
 int main(void)
 {
-	m1_look("WHEN");
+	load(0, false, true, true, 0);	/* the engine's page not mapped yet: the look maps it itself */
+	load(1, true, true, true, 0);	/* mapped already, as m1_wd2_init() leaves it with the launcher's parameters */
+	load(2, false, true, true, 2);	/* the second mapping fails */
+	load(3, false, true, true, 4);	/* the engine's page doesn't map */
+	load(4, true, false, true, 0);	/* SIO's page isn't there */
+	load(5, true, true, false, 0);	/* the p-state page isn't there */
+	load(6, true, true, true, 0);
+	printf("plain\n");
+	m1_look("WHEN", 0);
 	return 0;
 }
 """
@@ -2309,25 +2360,28 @@ def look_tests(g, src, dec):
 
         hdr = [line.split() for line in build("lhdr", LOOK_HDR)]
         defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_PMU_RTC|M1_ALARM_ON)\s", line))
-        ran = build("lrun", LOOK_RUN_PRELUDE + defs + "static bool alarm = true;\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
-                    + LOOK_RUN_MODEL + cut("static void m1_look_at(u8 group)", "\n}\n") + cut("static void m1_look(const char *when)", "\n}\n")
-                    + LOOK_RUN_MAIN)
+        defs_pos = [line for line in src.splitlines() if re.match(r"#define M1_POS_PAGE\s", line)]
+        ran = build("lrun", LOOK_RUN_PRELUDE + defs + defs_pos[0] + "\nstatic bool alarm = true;\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+                    + LOOK_RUN_MODEL + cut("static void m1_look_at(u8 group)", "\n}\n") + cut("static void m1_look(const char *when, u8 pass)", "\n}\n")
+                    + cut("static int __init m1_look_init(void)", "\n}\n") + LOOK_RUN_MAIN)
 
-    # What's to be read, written out here from PLAN.md's list and not from the header: the three p-state words; eight words of the
-    # engine's page; SIO's page from SIO's own power word to AES's, 8 apart, and ANS2's; seven in the first page; six gate words;
-    # fifteen clock generators' first two words.
+    # What's to be read, written out here from PLAN.md's list and not from the header: the three p-state words; six words of the
+    # engine's page that its sequences read, and, last of all, the two they only write; SIO's page from SIO's own power word to
+    # AES's, 8 apart, and ANS2's; seven in the first page; six gate words; fifteen clock generators' first two words.
     pstate = [0x28e20c000, 0x28e20c400, 0x28e20c800]
-    aon = [0x2922c0000 + o for o in (0x008, 0x024, 0x038, 0x03c, 0x040, 0x044, 0x10c, 0x110)]
+    aon = [0x2922c0000 + o for o in (0x038, 0x03c, 0x040, 0x044, 0x10c, 0x110)]
+    aonw = [0x2922c0008, 0x2922c0024]
     sio = [0x28e580000 + o for o in range(0x180, 0x2d8, 8)]
     ps = [0x28e080000 + o for o in (0x108, 0x110, 0x120, 0x2d8, 0x2e8, 0x2f0, 0x320)]
     gates = [0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338, 0x28e09c34c]
     clk = [0x28e000000 + 0x2000 * i + o for i in range(15) for o in (0, 4)]
-    check(hdr[0] == ["consts", "f", "6010", "2922c0000", "28e580000", "180", "2d0", "3b8", "28e080000", "28e5a0000", "28e09c000", "28e000000", "2000", "15"]
-          and hdr[1] == ["at"] + [str(i) for i in range(7)] and [int(x, 16) for x in hdr[2][1:]] == [a - 0x2922c0000 for a in aon]
+    check(hdr[0] == ["consts", "f", "6010", "2922c0000", "28e580000", "180", "2d0", "3b8", "28e080000", "28e5a0000", "28e09c000", "28e000000", "2000", "15", "10"]
+          and hdr[1] == ["at"] + [str(i) for i in range(8)] and [int(x, 16) for x in hdr[2][1:]] == [a - 0x2922c0000 for a in aon + aonw]
           and [int(x, 16) for x in hdr[3][1:]] == [a - 0x28e080000 for a in ps]
           and [int(x, 16) for x in hdr[4][1:] + hdr[5][1:]] == [a & 0xfff for a in gates] and len(sio) == 43
-          and g["LOOK_STAGE"] == 0x0f and len(g["LOOK_AT"]) == 7 and g["LOOK_DONE"] == 6,
-          "look.h: stage 0x0f, the group at 0x6010, seven groups as m1-crumbs has them, and the pages and offsets PLAN.md lists", str(hdr))
+          and g["LOOK_STAGE"] == 0x0f and len(g["LOOK_AT"]) == 8 and g["LOOK_DONE"] == 7 and g["LOOK_LOAD"] == 0x10,
+          "look.h: stage 0x0f, the group at 0x6010 with 0x10 for the load's look, eight marks as m1-crumbs has them, and the pages and"
+          " offsets PLAN.md lists", str(hdr))
     used = set(g["STAGES"]) | set(g["OBSERVE_STAGES"]) | set(g["LATE"]) | set(g["HOLD"]) | set(g["HOLD_TEXT"]) | set(g["LATE_TEXT"]) | set(range(0x21, 0x28)) \
         | set(g["POSITION"]) | set(g["DISP_STAGES"]) | set(g["SIO_STOP_STAGES"]) | set(g["ALARM_STAGES"]) | set(g["OBSERVED"]) | set(g["FAB_STAGES"]) \
         | {0x70, 0x71, 0x72, 0x7e, 0x7f, g["PROBE_STAGE"]}
@@ -2341,25 +2395,61 @@ def look_tests(g, src, dec):
     def reads(addrs):
         return [f"r {a:x}" for a in addrs]
 
-    want = (["k 6004 0f", "k 6010 01"] + reads(pstate) + ["k 6010 02"] + reads(aon) + ["k 6010 03"] + reads(sio) + reads([0x28e5803b8]) + reads(ps)
-            + ["k 6010 04"] + reads(gates) + ["k 6010 05"] + reads(clk) + ["k 6010 06"])
-    events = [line for line in ran if line.split()[0] in ("r", "k")]
+    def looked(p):
+        """One look's reads and marks, p being the pass's bit in each mark."""
+        return (["k 6004 0f", f"k 6010 {p | 1:02x}"] + reads(pstate) + [f"k 6010 {p | 2:02x}"] + reads(aon) + [f"k 6010 {p | 3:02x}"] + reads(sio)
+                + reads([0x28e5803b8]) + reads(ps) + [f"k 6010 {p | 4:02x}"] + reads(gates) + [f"k 6010 {p | 5:02x}"] + reads(clk)
+                + [f"k 6010 {p | 6:02x}"] + reads(aonw) + [f"k 6010 {p | 7:02x}"])
+
+    want = looked(0)
+    # The loads first (m1_look_init() from the pointers a load can find), then one look by itself.
+    loads, cur = [], None
+    for line in ran[:ran.index("plain")]:
+        if line.startswith("load "):
+            cur = []
+            loads.append(cur)
+        else:
+            cur.append(line)
     stray = [line for line in ran if line.startswith("STRAY")]
-    check(events == want and not stray and len(events) == 7 + 3 + 8 + 43 + 1 + 7 + 6 + 30,
-          "m1_look() reads the 98 words of PLAN.md's list and no other, each group after its own mark, the stage first; it can't write a"
-          " register (the test has no writel() to give it), and its PMU writes pass the module's own gate",
+
+    def ev(lines):
+        return [line for line in lines if line.split()[0] in ("r", "k")]
+
+    maps3 = ["map 28e000000 1e000", "map 28e5a0000 4000", "map 28e09c000 4000"]
+    whole = looked(0x10) + ["k 6010 00", "k 6004 00"]
+    check(len(loads) == 7 and not stray
+          and [line for line in loads[0] if line.startswith("map ")] == maps3 + ["map 2922c0000 4000"] and ev(loads[0]) == whole and loads[0][-1] == "ret 0"
+          and [line for line in loads[1] if line.startswith("map ")] == maps3 and ev(loads[1]) == whole and loads[1][-1] == "ret 0"
+          and sum(line.startswith("log look: awake, at load: ") for line in loads[0]) == 32,
+          "the load's look: the engine's page is mapped by the look itself if nothing has mapped it (Pullfrog on #78: the first build read"
+          " through it unmapped), every read goes through a mapped page, its marks say it's the load's, and the mark and the stage are"
+          " zeroed after it",
+          "\n".join(stray[:4] + loads[0][:8] + loads[1][-3:]))
+    check(all(loads[i][-1] == want_ret and not ev(loads[i]) and sum(line.startswith("err ") for line in loads[i]) == 1
+              for i, want_ret in ((2, "ret -12"), (3, "ret -12"), (4, "ret -19"), (5, "ret -19"))),
+          "a load where a mapping fails, or where SIO's page or the p-state page isn't there: refused, with nothing read and nothing marked",
+          "\n".join(" | ".join(loads[i][-3:]) for i in (2, 3, 4, 5)))
+    ran = ran[ran.index("plain") + 1:]
+    events = [line for line in ran if line.split()[0] in ("r", "k")]
+    check(events == want and not stray and len(events) == 8 + 3 + 6 + 43 + 1 + 7 + 6 + 30 + 2
+          and events[-4:] == ["k 6010 06", "r 2922c0008", "r 2922c0024", "k 6010 07"],
+          "m1_look() reads the 98 words of PLAN.md's list and no other, each group after its own mark, the stage first, and last of all the"
+          " two words the engine only writes; it can't write a register (the test has no writel() to give it), and its PMU writes pass the"
+          " module's own gate",
           "\n".join([f"{a}   |   {b}" for a, b in zip(events, want) if a != b][:8] + stray[:4] + [f"{len(events)} events, {len(want)} wanted"]))
-    v = {a: f"{fake(a):08x}" for a in pstate + aon + sio + ps + gates + clk + [0x28e5803b8]}
+    v = {a: f"{fake(a):08x}" for a in pstate + aon + aonw + sio + ps + gates + clk + [0x28e5803b8]}
     logs = ["log look: WHEN: p-states 0x28e20c000: fabric " + v[pstate[0]] + " +400 " + v[pstate[1]] + " DCS " + v[pstate[2]],
             "log look: WHEN: AON 0x2922c0000: " + " ".join(f"+{a & 0xfff:03x} {v[a]}" for a in aon)]
     logs += [f"log look: WHEN: power 0x{row:x}, 8 apart:" + "".join(" " + v[a] for a in sio if row <= a < row + 0x20) for row in range(0x28e580180, 0x28e5802d8, 0x20)]
     logs += ["log look: WHEN: power 0x28e5803b8 (ANS2) " + v[0x28e5803b8] + "; 0x28e080000: " + " ".join(f"+{a & 0xfff:03x} {v[a]}" for a in ps),
              "log look: WHEN: gates 0x28e5a0000: " + " ".join(f"+{a & 0xfff:03x} {v[a]}" for a in gates[:3]) + "; 0x28e09c000: "
              + " ".join(f"+{a & 0xfff:03x} {v[a]}" for a in gates[3:])]
-    logs += [f"log look: WHEN: clkgen 0x{a:x}: +0 {v[a]} +4 {v[a + 4]}" for a in clk[::2]] + ["log look: WHEN: done"]
+    logs += [f"log look: WHEN: clkgen 0x{a:x}: +0 {v[a]} +4 {v[a + 4]}" for a in clk[::2]]
+    logs += ["log look: WHEN: AON 0x2922c0000, written by the engine and never read by it: +008 " + v[aonw[0]] + " +024 " + v[aonw[1]],
+             "log look: WHEN: done"]
     got = [line for line in ran if line.startswith("log ")]
-    check(got == logs and len(logs) == 2 + 11 + 2 + 15 + 1,
-          "m1_look() logs every word it read, in full, under the address it read it from: 31 lines",
+    check(got == logs and len(logs) == 2 + 11 + 2 + 15 + 2,
+          "m1_look() logs every word it read, in full, under the address it read it from: 32 lines",
           "\n".join([f"{a}\n   wanted   {b}" for a, b in zip(got, logs) if a != b][:4] + [f"{len(got)} lines, {len(logs)} wanted"]))
 
     # Where it's called from, and that it changes nothing else: prepare takes none of the probe's steps, prepare_late looks instead of
@@ -2373,35 +2463,49 @@ def look_tests(g, src, dec):
     check("static bool look;\nmodule_param(look, bool, 0444);\n" in src and not re.search(r"\blook\s*=[^=]", code_only)
           and in_order_of(params, ["\tif (look && !probe) {\n\t\tpr_err(", "\t\treturn -EINVAL;\n\t}\n\tif (probe && (!wd1_mark || !pmp_stop)) {"])
           and "\tif (probe) {\n\t\tif (n == 1 && !look)\n\t\t\tm1_probe_prepare();\n\t\treturn 0;\n\t}\n" in prep
-          and "\t\tif (same && look)\n\t\t\tm1_look(\"after noirq\");\n\t\telse if (same)\n\t\t\tm1_probe_late();\n\t\tpr_info(" in late
+          and "\t\tif (look && n == 1)\n\t\t\tm1_look(\"after noirq\", 0);\n\t\telse if (!look && same)\n\t\t\tm1_probe_late();\n\t\tpr_info(" in late
           and src.count("m1_look(\"") == 2 and src.count("m1_probe_late();") == 1 and src.count("m1_probe_prepare();") == 1,
           "look is off unless asked for, read-only once loaded, and only with probe=1; with it prepare takes none of the probe's steps and"
           " prepare_late looks where the probe would have run; the replay's guards are probe=1's, untouched", prep + late[-900:])
+    minit = cut("static int __init m1_init(void)", "\n}\n")
     check(in_order_of(linit, ["\tm1_look_clk = ioremap_np(LOOK_CLKGEN, LOOK_CLKGEN_N * LOOK_CLKGEN_STEP);\n\tm1_look_ga = ioremap_np(LOOK_GATE_A, PAGE_SIZE);\n"
-                              "\tm1_look_gb = ioremap_np(LOOK_GATE_B, PAGE_SIZE);\n\tif (!m1_look_clk || !m1_look_ga || !m1_look_gb) {\n",
-                              "\t\treturn -ENOMEM;\n\t}\n\tm1_look(\"awake, at load\");\n\tm1_look_at(LOOK_AT_NONE);\n\tm1_kwrite(0x6004, &zero, 1);\n\treturn 0;\n"])
-          and not re.search(wr, linit) and not re.search(wr, cut("static void m1_look(const char *when)", "\n}\n"))
+                              "\tm1_look_gb = ioremap_np(LOOK_GATE_B, PAGE_SIZE);\n\tif (!m1_pos)\n\t\tm1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);\n"
+                              "\tif (!m1_look_clk || !m1_look_ga || !m1_look_gb || !m1_pos) {\n", "\t\treturn -ENOMEM;\n\t}\n"
+                              "\tif (!m1_sio || !m1_ps || !post_map[m1_waits[0].idx]) {\n", "\t\treturn -ENODEV;\n\t}\n"
+                              "\tm1_look(\"awake, at load\", LOOK_LOAD);\n\tm1_look_at(LOOK_AT_NONE);\n\tm1_kwrite(0x6004, &zero, 1);\n\treturn 0;\n"])
+          and not re.search(wr, linit) and not re.search(wr, cut("static void m1_look(const char *when, u8 pass)", "\n}\n"))
           and not re.search(wr, cut("static void m1_look_at(u8 group)", "\n}\n"))
-          and in_order_of(src, ["\tif (probe) {\n\t\tint ret = m1_probe_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
-                                "\tif (look) {\n\t\tint ret = m1_look_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"])
+          # Last in m1_init(), after every step that maps a page it reads through; the table's mappings are made before m1_init() runs.
+          and minit.endswith("\tif (look) {\n\t\tint ret = m1_look_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\treturn 0;\n}\n")
+          and minit.count("m1_look_init()") == 1 and src.count("m1_look_init()") == 1
+          and all(minit.index(x) < minit.index("m1_look_init()") for x in ("m1_ps = ioremap_np(M1_PMGR_PS", "m1_sio = ioremap_np(M1_PS_SIO_PAGE",
+                                                                             "m1_wd2_init()", "m1_probe_init()", "m1_fab_init()"))
+          and src.index("post_map[i] = p + (a & ~PAGE_MASK);") < src.index("ret = m1_init();")
           and "static_assert(LOOK_AON_PAGE == M1_POS_PAGE && LOOK_SIO_PAGE == M1_PS_SIO_PAGE && LOOK_PS_PAGE == M1_PMGR_PS);\n" in src
           and "\tif (m1_look_clk)\n\t\tiounmap(m1_look_clk);\n\tif (m1_look_ga)\n\t\tiounmap(m1_look_ga);\n\tif (m1_look_gb)\n\t\tiounmap(m1_look_gb);\n" in src,
           "the load maps the look's three ranges, each at its own address, looks once awake, and zeroes its mark and its stage again; no"
           " function of the look's writes a register; its pages are the recipe's where the recipe has them; all three are unmapped", linit)
 
     # Its stage through m1-crumbs.
-    rc, out, err = dec(0x0f, 0, 0, 0, 6)
+    rc, out, err = dec(0x0f, 0, 0, 0, 7)
     check(rc == 0 and "stage 0x6004 = 0x0f: probe=1 look=1 (e1-hook/probe --look), not a run: nothing replayed, nothing was committed, nothing was"
-          " stopped and no register was written." in out
-          and "0x6010 = 0x06: every group read: the look after noirq read all of them, and the suspend was then failed\n" in out
+          " stopped and no register was written. What it read is in the kernel log it saved, if the Mac was up to save it\n" in out
+          and "0x6010 = 0x07: every group read: the look after noirq read all of them. What became of the suspend after it, this record doesn't say\n" in out
           and "DIDN'T FINISH" not in out and "the SoC restarted" not in out and "PMU alarm" not in out and "0x6005 = " not in out,
-          "the look's stage with its last mark: decoded as a finished look, with no run's lines and no probe's", out + err)
+          "the look's stage with its last mark: a finished look after noirq, nothing claimed about the suspend, no run's lines and no probe's",
+          out + err)
     rc, out, err = dec(0x0f, 0, 0, 0, 4)
-    check(rc == 0 and "0x6010 = 0x04: THE LOOK BEGAN AND DIDN'T FINISH. The last group it marked: six gate-status words." in out,
-          "the look's stage with an earlier mark: the group it stopped in is named", out + err)
-    check(g["look_lines"](9)[0].startswith("0x6010 = 0x09: THE LOOK BEGAN AND DIDN'T FINISH. The last group it marked: not a group's number.")
-          and g["look_lines"](0)[0].startswith("0x6010 = 0x00: THE LOOK BEGAN AND DIDN'T FINISH. The last group it marked: nothing marked."),
-          "a mark past the last group, and no mark at all: both said")
+    check(rc == 0 and "0x6010 = 0x04: THE LOOK BEGAN AND DIDN'T FINISH: the look after noirq. The last group it marked: six gate-status words." in out,
+          "the look's stage with an earlier mark: which look, and the group it stopped in", out + err)
+    rc, out, err = dec(0x0f, 0, 0, 0, 0x16)
+    check(rc == 0 and ("0x6010 = 0x16: THE LOOK BEGAN AND DIDN'T FINISH: the look at the module's load. The last group it marked: two words of the"
+                       " engine's page that its sequences only write (+0x008, +0x024).") in out,
+          "a mark with the load's bit: the look at the load, and its group", out + err)
+    check(g["look_lines"](9)[0].startswith("0x6010 = 0x09: THE LOOK BEGAN AND DIDN'T FINISH: the look after noirq. The last group it marked: not a group's number.")
+          and g["look_lines"](0)[0].startswith("0x6010 = 0x00: THE LOOK BEGAN AND DIDN'T FINISH: the look after noirq. The last group it marked: nothing marked.")
+          and g["look_lines"](0x17)[0].startswith("0x6010 = 0x17: every group read, by the look at the module's load, whose marks weren't zeroed after it")
+          and "The look after noirq didn't begin" in g["look_lines"](0x17)[0],
+          "a mark past the last group, no mark at all, and the load's last mark left standing: each said for what it is")
 
 
 def in_order_of(text, parts):
@@ -3691,8 +3795,9 @@ def position_tests(g, src):
           "the module's two writes through the watchdog mapping are WD1's control and wd2_bite=1's one, WD2's bite; the only literal address"
           " among WD2's registers is the bite's")
     check(("\tif (recfg_bite) {\n\t\tint ret = m1_recfg_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
-           "\tif (wd2_bite) {\n\t\tint ret = m1_wd2_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\treturn 0;\n}") in src,
-          "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and m1_wd2_init() last, for wd2_bite=1 alone, and returns their refusals")
+           "\tif (wd2_bite) {\n\t\tint ret = m1_wd2_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\t/* Last: it reads through pages") in src,
+          "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and then m1_wd2_init(), for wd2_bite=1 alone, with only the look's start-up"
+          " after it, and returns their refusals")
 
     # wd2_bite=1: one write to WD2, its bite, by CPU0 after the release, and only if WD2 showed RESET_EN; the sample in one command with its stage.
     check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2\n" in tool

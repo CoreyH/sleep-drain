@@ -147,14 +147,18 @@ run. The charger may stay in (`tests/e1_hook_probe_test.py`).
 
 `probe=1 look=1` (`pkexec e1-hook/probe --look`; `look.h` has the list) is the probe with none of its
 steps: nothing is idled or stopped, ANS2 isn't raised, and no register is written. Awake at the load and
-again after noirq it reads 98 words the pair's remaining waits depend on (the three p-state words, eight
-words of the engine's page, the power words B2 switches off or polls, six gate-status words, fifteen
-clock generators' first two words) and logs each in full; the suspend is then failed as the probe fails
-it. In the PMU it leaves stage 0x0f and, at 0x6010, the group it's reading; the load's look zeroes both
-again once it's through. The launcher doesn't load `pmp_sleep_release` for it, refuses to go on unless
-the loaded module reads `look=Y` (without it the module would stop the firmware), prints the look after
-noirq for a photo and saves both looks. Nothing is stopped, so the Mac should come back as from any
-failed suspend (RESEARCH.md, "The probe's run", has why the probe itself didn't).
+again at the first `prepare_late`, after noirq, it reads 98 words the pair's remaining waits depend on
+(the three p-state words, six words of the engine's page, the power words B2 switches off or polls, six
+gate-status words, fifteen clock generators' first two words, and last the two words of the engine's
+page that its sequences only write) and logs each in full; the suspend is then failed as the probe fails
+it. In the PMU it leaves stage 0x0f and, at 0x6010, the group it's reading, with 0x10 set at the load;
+the load's look zeroes both again once it's through. Its start-up is the last of the load's steps and
+refuses unless every page it reads through is mapped. The launcher doesn't load `pmp_sleep_release` for
+it and refuses if it's loaded, refuses to go on unless the loaded module reads `look=Y` (without it the
+module would stop the firmware), prints and saves the load's look before it asks for the suspend, goes
+by `prepare_late_calls` for asking again, and prints and saves the look after noirq. Nothing is stopped,
+so the Mac should come back as from any failed suspend; that hasn't been tried, and why the probe itself
+didn't come back isn't explained (RESEARCH.md, "The probe's run").
 
 ## What holds for every one-way run
 

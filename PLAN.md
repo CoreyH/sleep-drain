@@ -439,13 +439,16 @@ steps, and restarting the DCP and the PMP afterwards.
       0x28e20c400, and the 51 power words B2 switches off or polls), logs them in full and fails the
       suspend. Its only writes are its stage, 0x0f, and the group it's reading, to the PMU's scratch,
       so that a read that faults says where. Nothing is stopped and `pmp_sleep_release` isn't loaded,
-      so it's an ordinary failed suspend and the log should come back and be saved. Afterwards: a
-      normal restart, `m1-crumbs --clear`, `sleep-drain-safe collect`, and the words read against the
-      wake sequence's (the local decode; the listing stays out of the repo). What it gives: for every
-      word macOS's table doesn't write before the commit, the value the engine finds. Read against
-      what the wake sequence B1 leaves (the state B2 is written to start from), each word that differs
-      is a lead, and the next one-way run changes the likeliest and reads the marker. What it can't
-      give: anything the table changes after it, or what the engine's own writes then do.
+      so it should be an ordinary failed suspend with the log coming back; that isn't tried, so the
+      launcher saves the load's look before it asks for the suspend. Afterwards: a normal restart,
+      `m1-crumbs --clear`, `sleep-drain-safe collect`, and the words read against the wake sequence's
+      (`~/.local/share/sleep-drain/look/compare.py` and the local decode; the listing stays out of the
+      repo). What it gives: what Linux's own suspend leaves in each word after noirq, which is what the
+      engine finds only for a word nothing in the recipe after that changes (the DCPs' shutdown, the
+      stopped firmware, the SMC's notice, the PMP's requests, the parked cores, macOS's table). Read
+      against what the wake sequence B1 leaves (the state B2 is written to start from), each word that
+      differs is a lead, and the next one-way run changes the likeliest and reads the marker. What it
+      can't give: what the engine's own writes then do.
       After it, still open either way: the gate, which no read from a running core can see open; A2's
       three steps tried from the AP; and the observer on a P core with the E complex down, which would
       say whether the gate follows every core or CPU0's complex.
