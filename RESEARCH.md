@@ -3728,7 +3728,9 @@ of the clock-generator words, the six gate words, or the AON words other than 0x
 - **Why it should come back when the probe didn't.** The probe stopped two coprocessors' firmware and the
   kernel didn't resume; why isn't explained. This stops nothing, so the suspend it fails should be like
   any other that a driver refuses. That hasn't been tried. So the launcher prints and saves the load's
-  look before it asks for the suspend (the review), and whatever happens then, that look is on file.
+  look before it asks for the suspend (the review), and whatever happens then, that look is on file. The
+  two saves are of two files, each written whole and never changed after: `collect` keeps the first
+  copy of a file it has, so one file saved at two lengths would have come back at its first (Pullfrog).
 - **What can go wrong.** A read that faults: the clock generators' and gate words have never been read
   here from Linux, though the engine's own sequences read them, and the two words read last aren't read
   by anything known. A fault at the load would freeze the screen there; the mark in the PMU names the

@@ -156,7 +156,9 @@ the load's look zeroes both again once it's through. Its start-up is the last of
 refuses unless every page it reads through is mapped. The launcher doesn't load `pmp_sleep_release` for
 it and refuses if it's loaded, refuses to go on unless the loaded module reads `look=Y` (without it the
 module would stop the firmware), prints and saves the load's look before it asks for the suspend, goes
-by `prepare_late_calls` for asking again, and prints and saves the look after noirq. Nothing is stopped,
+by `prepare_late_calls` for asking again, and prints and saves the look after noirq. Its log grows in
+`/run` and goes into `/var/log/sleep-drain` whole, once for each save (`-load.txt`, then the record):
+a file there never changes between two saves, since `collect` keeps the first copy it has. Nothing is stopped,
 so the Mac should come back as from any failed suspend; that hasn't been tried, and why the probe itself
 didn't come back isn't explained (RESEARCH.md, "The probe's run").
 

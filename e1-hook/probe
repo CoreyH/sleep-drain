@@ -62,6 +62,7 @@ STATE=${PROBE_STATE:-/sys/power/state}
 PM_TEST=${PROBE_PM_TEST:-/sys/power/pm_test}
 MEM_SLEEP=${PROBE_MEM_SLEEP:-/sys/power/mem_sleep}
 LOGDIR=${PROBE_LOGDIR:-/var/log/sleep-drain}
+RUNDIR=${PROBE_RUNDIR:-/run}
 SAVE=${PROBE_SAVE:-/usr/local/bin/sleep-drain-safe}
 PMP=${PROBE_PMP:-/usr/local/bin/sleep-drain-pmp}
 PMPMOD=${PROBE_PMPMOD:-/sys/module/pmp_sleep_release}
@@ -103,10 +104,22 @@ fi
 "$CRUMBS" 2> /dev/null | grep -q "^stage 0x6004 = 0x00:" || die "the PMU's breadcrumbs aren't clear: pkexec $here/m1-crumbs --clear"
 
 mkdir -p "$LOGDIR" || die "couldn't make $LOGDIR"
-out=$LOGDIR/asc-probe-$(date +%Y%m%dT%H%M%S).txt
-: > "$out" || die "couldn't write $out"
+# The log as it grows is kept out of $LOGDIR: sleep-drain-safe save archives every new file there as it finds it, and
+# collect never replaces a file with a different copy of itself, so a file saved twice at two lengths would be
+# collected at its first (Pullfrog on #78). A file goes into $LOGDIR whole, once, just before the save that takes it.
+stamp=$(date +%Y%m%dT%H%M%S)
+live=$RUNDIR/asc-probe-$stamp.txt
+out=$LOGDIR/asc-probe-$stamp.txt
+: > "$live" || die "couldn't write $live"
 # Builtins only from here on: printf, read, $(< file), [[ ]].
-log() { printf '%s\n' "$*"; printf '%s\n' "$*" >> "$out"; }
+log() { printf '%s\n' "$*"; printf '%s\n' "$*" >> "$live"; }
+# The log so far, copied to the new file $1 and saved; by builtins alone, for after the probe.
+keep() {
+  local line
+  [[ ! -e $1 ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do printf '%s\n' "$line"; done < "$live" > "$1" || return 1
+  "$SAVE" save "$1" > /dev/null 2>&1
+}
 now() { printf '%(%F %T)T' -1; }
 get() {
   local v=
@@ -135,7 +148,7 @@ log "$(now) loading e1_hook with ${PARAMS[*]}"
 if ! insmod "$ko" "${PARAMS[@]}"; then
   log "e1_hook didn't load; nothing was probed. The kernel's last lines from it:"
   klog e1_hook
-  "$SAVE" save "$out" > /dev/null 2>&1 || log "(that wasn't saved: the lines above are the record)"
+  keep "$out" || log "(that wasn't saved: the lines above are the record)"
   exit 1
 fi
 # A build that doesn't know probe would load with it ignored: then this would be a one-way run. Never go on without it:
@@ -156,7 +169,7 @@ dmesg 2>&1 | grep -F -- "e1_hook: probe:" > /dev/null; sleep 0
 if ((look)); then
   log "kernel log, the look awake, at the load:"
   klog "e1_hook: look: awake, at load"
-  if "$SAVE" save "$out" > /dev/null 2>&1; then log "(saved: the look at the load is on the boot partition)"; else log "(NOT SAVED: the lines above are the record of the look at the load)"; fi
+  if keep "${out%.txt}-load.txt"; then log "(saved: the look at the load is on the boot partition)"; else log "(NOT SAVED: the lines above are the record of the look at the load)"; fi
 fi
 # A suspend that ends before the module's part of it (a key still going up, a device that says no) has probed nothing
 # and stopped nothing: it's asked for again, twice at most. Once that part has begun, in this script's suspend or in
@@ -182,7 +195,7 @@ if [[ $began == 0 ]]; then
   else
     log "e1_hook didn't unload: restart into a fresh safe boot before trying again."
   fi
-  "$SAVE" save "$out" > /dev/null 2>&1 || log "(that wasn't saved: the lines above are the record)"
+  keep "$out" || log "(that wasn't saved: the lines above are the record)"
   exit 1
 fi
 log ""
@@ -201,7 +214,7 @@ fi
 log "====================================================================="
 log ""
 log "Saving to the boot partition. If nothing more appears within a minute, the photo is the result: restart the Mac."
-if "$SAVE" save "$out" > /dev/null 2>&1; then
+if keep "$out"; then
   log "Saved. Now restart the Mac (hold the power key if the keyboard doesn't answer), log in, and tell Claude."
 else
   log "NOT SAVED: the photo is the result. Then restart the Mac (hold the power key if the keyboard doesn't answer)."

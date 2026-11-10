@@ -34,8 +34,8 @@ used to sit in CLAUDE.md, entry for entry):
   `insmod`, `rmmod`, `modinfo`, `dmesg`, `sleep`, `m1-crumbs` and `sleep-drain-safe`: the parameters it
   loads, that a module which doesn't read `probe=Y` has its replay called off and is unloaded with no
   suspend ever asked for, when it asks again and when it doesn't, `--look` (no PMP release, and no
-  suspend unless the module reads `look=Y`; the load's look saved before the suspend), and every
-  refusal. The suspend file and the module's count the launcher goes by are FIFOs with a thread at
+  suspend unless the module reads `look=Y`; the load's look saved before the suspend), that no file of
+  the log directory changes between two saves, and every refusal. The suspend file and the module's count the launcher goes by are FIFOs with a thread at
   their other ends, so that what the launcher reads depends on how many suspends it has asked for, as
   on the Mac.
 - `tests/recfg_peek_test.py` runs `e1-hook/recfg_peek` on a sparse file standing in for /dev/mem and its

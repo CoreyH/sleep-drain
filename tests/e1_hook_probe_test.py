@@ -102,7 +102,12 @@ def setup(tmp, safe=True, loaded=False, ko=True, vermagic=RELEASE, newer=None, p
     write(os.path.join(stubs, "dmesg"), f'#!/bin/sh\necho "dmesg" >> {calls}\ncat {tmp}/klog\n', 0o755)
     write(os.path.join(tmp, "klog"), klog)
     write(os.path.join(stubs, "m1-crumbs"), f'#!/bin/sh\necho "0x6000: 00 30 00 50"\necho "{crumbs}"\n', 0o755)
-    write(os.path.join(stubs, "save"), f'#!/bin/sh\necho "sleep-drain-safe $*" >> {calls}\nexit {save_rc}\n', 0o755)
+    # The saver also notes every file in the log directory as it stands at that save: sleep-drain-safe save archives each new one
+    # as it finds it, and collect never replaces a file with a different copy of itself, so none may change between two saves.
+    write(os.path.join(stubs, "save"), f'#!/bin/sh\necho "sleep-drain-safe $*" >> {calls}\n'
+          f'for f in {tmp}/log/*; do [ -f "$f" ] && echo "$(basename "$f") $(md5sum < "$f")"; done >> {tmp}/saves\necho --- >> {tmp}/saves\n'
+          f'exit {save_rc}\n', 0o755)
+    os.makedirs(os.path.join(tmp, "rundir"))
     write(os.path.join(stubs, "pmp"), f'#!/bin/sh\necho "sleep-drain-pmp $*" >> {calls}\nexit {pmp_rc}\n', 0o755)
     return d
 
@@ -155,7 +160,8 @@ def run(tmp, d, argv=(), pc=(0, 1)):
                PROBE_STATE=os.path.join(tmp, "state"), PROBE_PM_TEST=os.path.join(tmp, "pm_test"),
                PROBE_MEM_SLEEP=os.path.join(tmp, "mem_sleep"), PROBE_LOGDIR=os.path.join(tmp, "log"),
                PROBE_SAVE=os.path.join(tmp, "stubs", "save"), PROBE_CRUMBS=os.path.join(tmp, "stubs", "m1-crumbs"),
-               PROBE_PMP=os.path.join(tmp, "stubs", "pmp"), PROBE_PMPMOD=os.path.join(tmp, "pmpmod"))
+               PROBE_PMP=os.path.join(tmp, "stubs", "pmp"), PROBE_PMPMOD=os.path.join(tmp, "pmpmod"),
+               PROBE_RUNDIR=os.path.join(tmp, "rundir"))
     stop, seen = threading.Event(), []
     t = threading.Thread(target=kernel, args=(tmp, pc, stop, seen, "prepare_late_calls" if "--look" in argv else "prepare_calls"))
     t.start()
@@ -175,6 +181,25 @@ def calls(tmp):
         return open(os.path.join(tmp, "calls")).read().split("\n")[:-1]
     except FileNotFoundError:
         return []
+
+
+def saves(tmp):
+    """The log directory at each save: a list of {file name: its hash then}."""
+    try:
+        text = open(os.path.join(tmp, "saves")).read()
+    except FileNotFoundError:
+        return []
+    return [dict(line.split(" ", 1) for line in part.splitlines()) for part in text.split("---\n")[:-1]]
+
+
+def changed(tmp):
+    """Files of the log directory that a later save found different from an earlier one: there must be none."""
+    seen, bad = {}, []
+    for snap in saves(tmp):
+        for name, h in snap.items():
+            if seen.setdefault(name, h) != h:
+                bad.append(name)
+    return bad
 
 
 def main():
@@ -205,8 +230,10 @@ def main():
               and r.stdout.index("asking for the suspend") < r.stdout.index("TAKE A PHOTO") < r.stdout.index("SUMMARY") < r.stdout.index("Saved."),
               "it prints the module's probe lines, the load's among them, once each, between the photo's two rules, and says it's saved",
               r.stdout + r.stderr)
-        check(saved and all(line in saved for line in r.stdout.splitlines() if "SUMMARY" in line or "TAKE A PHOTO" in line or "loading e1_hook" in line),
-              "the saved file has what the screen had", saved)
+        check(saved and all(line in saved for line in r.stdout.splitlines() if "SUMMARY" in line or "TAKE A PHOTO" in line or "loading e1_hook" in line)
+              and len(saves(tmp)) == 1 and list(saves(tmp)[0]) == logs and not changed(tmp)
+              and os.listdir(os.path.join(tmp, "rundir")) == logs,
+              "the saved file has what the screen had; the log grows outside the log directory and goes into it whole, once, for the save", saved)
 
     # The one that matters: a module that doesn't say probe=Y is a one-way run waiting for its suspend. Its replay is called off,
     # it's unloaded, and no suspend is asked for.
@@ -279,7 +306,8 @@ def main():
         r, state = run(tmp, d, ["--look"])
         c = calls(tmp)
         check(r.returncode == 0 and c[:3] == ["insmod " + os.path.join(d, "e1_hook.ko") + " " + PARAMS + " look=1", "dmesg", "sleep 0"] and state == "mem"
-              and c[3] == "dmesg" and c[4].startswith("sleep-drain-safe save ") and c[5] == "dmesg" and c[6] == c[4] and len(c) == 7
+              and c[3] == "dmesg" and c[4].startswith("sleep-drain-safe save ") and c[4].endswith("-load.txt") and c[5] == "dmesg"
+              and c[6] == c[4].replace("-load.txt", ".txt") and len(c) == 7
               and not any(x.startswith("sleep-drain-pmp") for x in c) and r.stdout.count("asking for the suspend") == 1,
               "--look: the probe's parameters and look=1, the PMP's report requests left alone, the load's look saved before the one suspend,"
               " and the record saved again after it", r.stdout + r.stderr + "\n".join(c))
@@ -290,6 +318,14 @@ def main():
               < r.stdout.index("=====\n\n") < r.stdout.index("Saved.") and "ANOTHER SUSPEND" not in r.stdout and "ONLY PART" not in r.stdout,
               "--look prints the load's look and says it's saved before it asks for the suspend, then the look after noirq between the photo's"
               " two rules, and none of the probe's lines", r.stdout + r.stderr)
+        files = sorted(os.listdir(os.path.join(tmp, "log")))
+        early = open(os.path.join(tmp, "log", files[0])).read() if len(files) == 2 else ""
+        final = open(os.path.join(tmp, "log", files[1])).read() if len(files) == 2 else ""
+        check(len(files) == 2 and files[0] == files[1].replace(".txt", "-load.txt") and "look: awake, at load: gates" in early
+              and "after noirq" not in early and "look: awake, at load: gates" in final and "look: after noirq: done" in final
+              and len(saves(tmp)) == 2 and list(saves(tmp)[0]) == [files[0]] and sorted(saves(tmp)[1]) == files and not changed(tmp),
+              "--look's two saves are of two files, each whole when it's saved and never changed after: the load's look, then the whole"
+              " record (Pullfrog on #78: one file saved at two lengths would be collected at its first)", str(saves(tmp)) + early[:300])
     # A module that loads with look=1 and doesn't say so would be the probe that stops the firmware: unloaded, no suspend.
     for look_takes, rmmod_rc, said in (("N", 0, "didn't take look=1, and was unloaded"), (None, 0, "didn't take look=1, and was unloaded"),
                                        ("N", 1, "didn't take look=1 and DID NOT UNLOAD: restart the Mac now")):
@@ -392,6 +428,18 @@ def main():
               and "prepare_calls=1 prepare_late_calls=1" in r.stdout and "TAKE A PHOTO" in r.stdout and "ONLY PART" not in r.stdout,
               "the probe already run by another suspend before this script's first: none is asked for, and the record is printed as a whole one",
               r.stdout + r.stderr)
+
+    # A record's name that's taken already (a launcher run in the same second, saved before): it isn't written over, since the
+    # copy on the boot partition would then differ from the file; said as not saved.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp)
+        write(os.path.join(tmp, "stubs", "date"), "#!/bin/sh\necho 20261110T200000\n", 0o755)
+        write(os.path.join(tmp, "log", "asc-probe-20261110T200000.txt"), "an earlier run's record\n")
+        r, state = run(tmp, d)
+        check(r.returncode == 0 and state == "mem" and "NOT SAVED: the photo is the result" in r.stdout and "Saved. Now" not in r.stdout
+              and open(os.path.join(tmp, "log", "asc-probe-20261110T200000.txt")).read() == "an earlier run's record\n"
+              and not any(x.startswith("sleep-drain-safe") for x in calls(tmp)),
+              "a record whose name exists already: left as it is, nothing saved over it, and it says so", r.stdout + r.stderr)
 
     # A save that fails, and a kernel log with nothing of the probe's in it: both said.
     with tempfile.TemporaryDirectory() as tmp:
