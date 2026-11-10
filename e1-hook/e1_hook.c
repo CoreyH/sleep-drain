@@ -88,6 +88,7 @@
  *   pkexec e1-hook/run-floor --m1-power-words     (--m1-sio-stop's and ps_words=1: PLAN.md)
  *   pkexec e1-hook/run-floor --m1-recfg-bite      (--m1-power-words' and recfg_bite=1, after recfg-bite's one SRAM write: PLAN.md)
  *   pkexec e1-hook/run-floor --m1-wd2-bite        (--m1-power-words' and wd2_bite=1, after wd2-bite's write from user space: PLAN.md)
+ *   pkexec e1-hook/run-floor --m1-cluster-ack     (--m1-wd2-bite's and cluster_ack=1: PLAN.md, "The order after the sweep of 2026-11-10")
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -327,6 +328,10 @@ MODULE_PARM_DESC(recfg_bite, "With ps_words=1: e1-hook/recfg-bite has changed A2
 static bool wd2_bite;
 module_param(wd2_bite, bool, 0444);
 MODULE_PARM_DESC(wd2_bite, "With ps_words=1, and not with recfg_bite=1: after the commit, the alarm and the release, CPU0 waits for WD2's RESET_EN (up to 0.3 s), reads WD2's bite, writes it once, 0x2922b0024 := 0xaba95000 (120 s; Corey's OK of 2026-11-10; only if RESET_EN showed), reads the bite and the control again, the count twice, then PHASE, and records them at 0x6005 with stage 0x57 (0x56 with an exception pending) in place of 0x4f (wd2_bite.h). It writes neither WD2's count nor its control. The load refuses if WD2 reads armed awake, or its bite A2's 30 s");
+/* The "up done" flag of the three clusters macOS's table writes a plain 0 (PLAN.md, "The order after the sweep of 2026-11-10"). */
+static bool cluster_ack;
+module_param(cluster_ack, bool, 0444);
+MODULE_PARM_DESC(cluster_ack, "With wd2_bite=1: step 5 writes the table's entries 55, 57 and 60, the soc-cluster words of ANE0, AFR and AVEMSR (0x28e09800c, 0x28e098014, 0x28e098020), as 0x20, not the table's 0: target 0 and a 1 to bit 5, the cluster's up-done flag (Corey's OK of 2026-11-10 for those three words and that value). The four cluster waits (after 55, 57, 58, 60) then ask for the whole word to read 0, not only bit 4; 0x6014's bit 4 marks the run and its bit 5 says a word that didn't read 0 was still busy");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -978,7 +983,8 @@ static void e1_after_slpa(void)
  *   1       AFR's power state (51): actual 0 (genpd has it off already)
  *   2-5     ANE0's, AFR's, DISPLAY's and AVEMSR's power-downs (55, 57, 58,
  *           60): bit 4 clear. macOS polls only the clusters above 3, so not
- *           EACC's, PACC0's or PACC1's
+ *           EACC's, PACC0's or PACC1's. With cluster_ack=1 (below), stricter
+ *           than macOS: the whole word 0
  *   6       SIO_CPU (61): actual == target. genpd has its parent, SIO, off by
  *           prepare_late, so it may never settle
  *   7       a ClkGen-SOC mux (62-66): bit 30 clear; or PLL-off (69, 72): bit
@@ -1321,6 +1327,29 @@ static void e1_after_slpa(void)
  * comes 120 s after the commit. The write is made whether or not raw SPMI still
  * works: the reset's time is the result, and the byte only says how to read it.
  *
+ * cluster_ack=1 (run-floor --m1-cluster-ack; with wd2_bite=1) clears a flag the
+ * replay has left set (RESEARCH.md, "Related work, swept 2026-11-10"). Bit 5 of a
+ * soc-cluster word is the cluster's "up done" flag, cleared by writing 1 to it: DJ's
+ * T8140 driver names it, and before its commit writes 0x20 to a complex macOS has
+ * off and polls its word for 0; this SoC's own wake sequence, A1, waits for the bit
+ * on EACC and then writes it back. macOS's table,
+ * replayed value for value, writes 0x20 to PACC0, PACC1 and DISPLAY, target 0 with
+ * the ack, and a plain 0 to EACC, ANE0, AFR and AVEMSR. EACC reads 0x0f awake here,
+ * its flag clear; ANE0, AFR and AVEMSR read 0x2f, up with the flag set, where under
+ * macOS they were off and acked long before the sleep. So after the table's 0 they
+ * would read 0x20, which no run has measured (the waits read bit 4 alone). With
+ * cluster_ack=1, step 5 writes those three entries (M1_ACK_*: 55, 57, 60) as 0x20,
+ * in their places in the table, Corey's OK of 2026-11-10 for these three words and
+ * this value; nothing else is written that wd2_bite=1's run doesn't write. The four
+ * cluster waits (55, 57, 58 and 60: DISPLAY's too, which the table already acks, as
+ * the control) then ask for the whole word to read 0 within their 10 ms, so qto's
+ * bits 2-5 say which word didn't. 0x6014's bits 4 and 5, PCPM0's and PCPM1's, which
+ * a hold_nowatch=1 run never sets, become: 4, the run's mark (the three words went
+ * out as 0x20, and qto's bits 2-5 are whole-word); 5, a word that didn't read 0 had
+ * bit 4, busy, set at its wait's last read (clear with a qto bit set: the flag or
+ * the target stayed, with nothing busy). The run goes on whatever the words read:
+ * after slpa there's nothing to come back to, and the reset's time is the result.
+ *
  * Left out: Naeem's WD1 dead-man, so that a completed entry stays dark for a
  * BQCC floor; his RTC alarm unless alarm=1 (above); his report of idle
  * clusters to the
@@ -1415,6 +1444,19 @@ static void e1_after_slpa(void)
 #define M1_SOC_CLUSTERS		0x28e098000ULL
 #define M1_SOC_EACC		0x0
 #define M1_SOC_PACC0		0x4
+/*
+ * cluster_ack=1: the table's entries for ANE0's, AFR's and AVEMSR's words (checked at load: these addresses, 4 bytes,
+ * the table's value 0, each with a cluster wait), and what step 5 writes there instead: target 0, and 1 to bit 5, the
+ * up-done flag. Corey's OK of 2026-11-10 is for these three words and this value, and nothing else of the clusters'.
+ */
+#define M1_ACK_ANE0		55
+#define M1_ACK_AFR		57
+#define M1_ACK_AVEMSR		60
+#define M1_ACK_VAL		0x20U
+#define M1_ACK_BUSY		BIT(4)	/* a soc-cluster word's busy bit, the one macOS polls */
+/* 0x6014 in a cluster_ack=1 run, in the bits hold_nowatch=1 leaves unused (the m1 comment). */
+#define M1_F_ACK		BIT(4)
+#define M1_F_ACK_BUSY		BIT(5)
 /* PMGR reg[2] + 0x180 and + 0x188: SIO's and SIO_CPU's power states, [7:4] the actual one. */
 #define M1_PS_SIO_PAGE		0x28e580000ULL
 #define M1_PS_SIO		0x180
@@ -1857,11 +1899,13 @@ static bool m1_wait_off(unsigned int off)
  * and the bits), each after the table entry idx, at the entry's own address
  * (checked at load). Kinds: CLEAR, every bit of mask clear; SETTLED, the
  * actual state [7:4] at the target [3:0]; PSTATE, both bit 31 clear and
- * SETTLED.
+ * SETTLED; CLUSTER, a soc-cluster word: CLEAR, or with cluster_ack=1 the
+ * whole word 0.
  */
 #define M1_W_CLEAR		0
 #define M1_W_SETTLED		1
 #define M1_W_PSTATE		2
+#define M1_W_CLUSTER		3
 static const struct m1_wait {
 	u8 idx;
 	u8 kind;
@@ -1872,10 +1916,10 @@ static const struct m1_wait {
 	{ 49, M1_W_PSTATE,  BIT(0), BIT(31),       0x28e20c800ULL },	/* dcs-ps 0x557: DCS 7 */
 	{ 50, M1_W_PSTATE,  BIT(0), BIT(31),       0x28e20c800ULL },	/* dcs-ps 0x775: DCS 5 */
 	{ 51, M1_W_CLEAR,   BIT(1), GENMASK(7, 4), 0x28e0801e8ULL },	/* AFR's power state 0: actual 0 */
-	{ 55, M1_W_CLEAR,   BIT(2), BIT(4),        0x28e09800cULL },	/* ANE0, logical cluster 6 */
-	{ 57, M1_W_CLEAR,   BIT(3), BIT(4),        0x28e098014ULL },	/* AFR, 7 */
-	{ 58, M1_W_CLEAR,   BIT(4), BIT(4),        0x28e098018ULL },	/* DISPLAY, 8 */
-	{ 60, M1_W_CLEAR,   BIT(5), BIT(4),        0x28e098020ULL },	/* AVEMSR, 9 */
+	{ 55, M1_W_CLUSTER, BIT(2), M1_ACK_BUSY,   0x28e09800cULL },	/* ANE0, logical cluster 6 */
+	{ 57, M1_W_CLUSTER, BIT(3), M1_ACK_BUSY,   0x28e098014ULL },	/* AFR, 7 */
+	{ 58, M1_W_CLUSTER, BIT(4), M1_ACK_BUSY,   0x28e098018ULL },	/* DISPLAY, 8 */
+	{ 60, M1_W_CLUSTER, BIT(5), M1_ACK_BUSY,   0x28e098020ULL },	/* AVEMSR, 9 */
 	{ 61, M1_W_SETTLED, BIT(6), 0,             0x28e580188ULL },	/* SIO_CPU, AUTO_ENABLE off */
 	{ 62, M1_W_CLEAR,   BIT(7), BIT(30),       0x28e038164ULL },	/* the ClkGen-SOC muxes */
 	{ 63, M1_W_CLEAR,   BIT(7), BIT(30),       0x28e03816cULL },
@@ -1904,8 +1948,20 @@ static bool m1_wait_met(const struct m1_wait *w, u32 v)
 		return settled;
 	case M1_W_PSTATE:
 		return settled && !(v & w->mask);
+	case M1_W_CLUSTER:
+		if (cluster_ack)
+			return !v;
+		break;
 	}
 	return !(v & w->mask);
+}
+
+/* What step 5 writes for the table's entry i: the table's value, but with cluster_ack=1 the ack for the three words it names. */
+static u64 m1_post_val(unsigned int i)
+{
+	if (cluster_ack && (i == M1_ACK_ANE0 || i == M1_ACK_AFR || i == M1_ACK_AVEMSR))
+		return M1_ACK_VAL;
+	return e1_post_slpa[i].val;
 }
 
 /* pmgr_late: up to 10 ms for one of macOS's waits; *last gets the last value read. Reads only. */
@@ -2762,6 +2818,9 @@ static void __noreturn m1_after_slpa(void)
 		flags |= BIT(6);
 	}
 	m1_raw = parked == M1_OTHERS && m1_raw_start();
+	/* cluster_ack=1: the run's mark, in a bit that hold_nowatch=1 leaves alone (the m1 comment). */
+	if (cluster_ack)
+		flags |= M1_F_ACK;
 	/* observe=1: CPU7, P1's last, stays up through the commit if it parked. */
 	obs = observe && (parked & BIT(7));
 	b[0] = 0x10;
@@ -2777,13 +2836,17 @@ static void __noreturn m1_after_slpa(void)
 		if (sio_on && i == M1_SIO_ENTRY && m1_sio_raise())
 			held |= BIT(0);	/* 0x6007's bit 0, unused by the cores: CPU0 never holds */
 		if (w->width == 8)
-			writeq_relaxed(w->val, post_map[i]);
+			writeq_relaxed(m1_post_val(i), post_map[i]);
 		else
-			writel_relaxed(w->val, post_map[i]);
+			writel_relaxed(m1_post_val(i), post_map[i]);
 		for (; pmgr_late && k < ARRAY_SIZE(m1_waits) && m1_waits[k].idx == i; k++) {
 			dsb(sy);
-			if (!m1_wait_done(&m1_waits[k], &v))
+			if (!m1_wait_done(&m1_waits[k], &v)) {
 				qto |= m1_waits[k].qto;
+				/* cluster_ack=1: the word didn't read 0. Busy still, or only the flag or the target left? */
+				if (cluster_ack && m1_waits[k].kind == M1_W_CLUSTER && (v & M1_ACK_BUSY))
+					flags |= M1_F_ACK_BUSY;
+			}
 			if (m1_waits[k].kind == M1_W_PSTATE)
 				dcs = v;
 			if (m1_waits[k].kind == M1_W_SETTLED)	/* SIO_CPU's, entry 61's: the only one */
@@ -3246,6 +3309,22 @@ static int __init m1_wd2_init(void)
 	return 0;
 }
 
+/* cluster_ack=1 at load: the nine soc-cluster words awake, and what step 5 will write to the three. Reads only. */
+static void __init m1_ack_init(void)
+{
+	static const u8 ack[] = { M1_ACK_ANE0, M1_ACK_AFR, M1_ACK_AVEMSR };
+	unsigned int i;
+
+	pr_info("m1: cluster_ack: awake, the soc-cluster words 0-8:");
+	for (i = 0; i < 9; i++)
+		pr_cont(" %08x", readl(m1_soc + 4 * i));
+	pr_cont("\n");
+	for (i = 0; i < ARRAY_SIZE(ack); i++)
+		pr_info("m1: cluster_ack: entry %u, 0x%llx: awake %08x; step 5 writes %08llx, not the table's %08llx, and waits for 0\n",
+			ack[i], e1_post_slpa[ack[i]].addr, readl(post_map[ack[i]]), m1_post_val(ack[i]),
+			e1_post_slpa[ack[i]].val);
+}
+
 /* sio_stop=1 at load: SIO's RTKit, through its mailbox's drvdata, running, and its ASC mapped. Refuses the module otherwise. */
 static int __init m1_sio_stop_init(void)
 {
@@ -3481,6 +3560,8 @@ static int __init m1_init(void)
 	}
 	if (pmgr_late)
 		m1_late_init();
+	if (cluster_ack)
+		m1_ack_init();
 	if (pmp_out) {
 		int ret = m1_pmp_init();
 
@@ -3815,7 +3896,7 @@ static int __init e1_check_params(void)
 			goto bad_wait;
 		w = &e1_post_slpa[m->idx];
 		if (w->addr != m->addr || w->width != 4 || (pmgr_late && e1_post_early(w)) ||
-		    m->kind > M1_W_PSTATE || !m->qto ||
+		    m->kind > M1_W_CLUSTER || !m->qto ||
 		    (!i && (m->kind != M1_W_PSTATE || (m->addr & PAGE_MASK) != (M1_FABRIC_PS & PAGE_MASK))))
 			goto bad_wait;
 	}
@@ -3897,6 +3978,38 @@ static int __init e1_check_params(void)
 		pr_err("wd2_bite=1 needs ps_words=1 and no recfg_bite=1 (stages 0x56 and 0x57 and their byte at 0x6005 are in that run's layout, and the two samples share the byte)\n");
 		return -EINVAL;
 	}
+	if (cluster_ack && !wd2_bite) {
+		pr_err("cluster_ack=1 needs wd2_bite=1 (it's that run with three of the table's values changed, and 0x6014's bits 4 and 5 are free in its layout)\n");
+		return -EINVAL;
+	}
+	if (cluster_ack) {
+		static const struct {
+			u8 idx;
+			u64 addr;
+		} ack[] = {
+			{ M1_ACK_ANE0, 0x28e09800cULL }, { M1_ACK_AFR, 0x28e098014ULL }, { M1_ACK_AVEMSR, 0x28e098020ULL },
+		};
+		unsigned int n = 0;
+
+		/* Only the three words of the OK, each the table's plain 0 at this address, each followed by a cluster wait. */
+		for (i = 0; i < ARRAY_SIZE(ack); i++) {
+			const struct e1_mmio_write *w = &e1_post_slpa[ack[i].idx];
+			unsigned int k;
+
+			if (w->addr != ack[i].addr || w->width != 4 || w->val || e1_post_early(w) || e1_never_write(w->addr))
+				goto bad_ack;
+			for (k = 0; k < ARRAY_SIZE(m1_waits); k++)
+				if (m1_waits[k].idx == ack[i].idx && m1_waits[k].kind == M1_W_CLUSTER &&
+				    m1_waits[k].mask == M1_ACK_BUSY)
+					break;
+			if (k == ARRAY_SIZE(m1_waits))
+				goto bad_ack;
+		}
+		for (i = 0; i < ARRAY_SIZE(e1_post_slpa); i++)
+			n += m1_post_val(i) != e1_post_slpa[i].val;
+		if (n != ARRAY_SIZE(ack))
+			goto bad_ack;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -3924,6 +4037,11 @@ static int __init e1_check_params(void)
 bad_wait:
 	pr_err("pmgr_late's wait %u (after entry %u, 0x%llx) doesn't match the post-slpa table; refusing\n",
 	       i, m1_waits[i].idx, m1_waits[i].addr);
+	return -EINVAL;
+
+bad_ack:
+	pr_err("cluster_ack=1's three entries (%u, %u, %u) aren't ANE0's, AFR's and AVEMSR's soc-cluster words with the table's 0 and a cluster wait each, or more than those three values would change; refusing\n",
+	       M1_ACK_ANE0, M1_ACK_AFR, M1_ACK_AVEMSR);
 	return -EINVAL;
 }
 
@@ -4065,14 +4183,14 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
 		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "",
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
-		wd2_bite ? " wd2_bite=1" : "");
+		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "");
 	return 0;
 
 unmap:

@@ -418,14 +418,28 @@ steps, and restarting the DCP and the PMP afterwards.
       of a soc-cluster word is an "up done" flag that's cleared by writing 1 (DJ's T8140 driver, and A1
       in this SRAM: RESEARCH.md, "Related work, swept 2026-11-10"). Under Linux ANE0's, AFR's and
       AVEMSR's words still carry it, and the table's literal 0 leaves it there, where macOS has 0.
-      Proposed next, needing Corey's OK for three PMGR words' new value: write 0x20, not 0, to
-      0x28e09800c (ANE0), 0x28e098014 (AFR) and 0x28e098020 (AVEMSR), in their places in the table, when
-      the word shows the flag; make those three waits and DISPLAY's ask for a word that reads 0, not
-      just bit 4 clear, with `qto` saying which didn't; everything else as run 15, WD2's bite at 120 s
-      included, so that the ending reads as it did there. Not built. Judgment: the likeliest single
-      difference found so far, perhaps 1 in 3 to change the ending. After it, in this order: A2's three
-      settle steps tried from the AP before the commit; the fabric's p-state at the commit; the WD1
-      marker run.
+      Next, with Corey's OK of 2026-11-10 for these three words and this value: write 0x20, not 0, to
+      0x28e09800c (ANE0), 0x28e098014 (AFR) and 0x28e098020 (AVEMSR), in their places in the table;
+      those three waits and DISPLAY's ask for a word that reads 0, not just bit 4 clear, with `qto`
+      saying which didn't; everything else as run 15, WD2's bite at 120 s included, so that the ending
+      reads as it did there. **Built, not run yet:** `pkexec e1-hook/run-floor --quick
+      --m1-cluster-ack` in a safe boot, on battery, with nothing attached (`cluster_ack=1` on run 15's
+      parameters; it runs `wd2-bite` first, as run 15 did). The 0x20 goes out whatever the word reads
+      just before, as the table's own 0x20 to PACC0, PACC1 and DISPLAY does; the load log has the nine
+      words awake. Reading it:
+      - `m1-crumbs` says whether the four words read 0 within 10 ms of their writes (0x6006's bits
+        2-5), and for one that didn't, whether it was still busy or only its flag or target was left
+        (0x6014's bit 5; bit 4 marks the run). The run goes on either way.
+      - All four read 0, and the reset comes at about 120 s as in run 15: the flags weren't what
+        stalls the entry, or not alone. That's a clean negative for this lead.
+      - All four read 0, and the Mac stays dark past 3 minutes: a candidate for a completed entry,
+        and the steps for a dark Mac in `run-floor`'s header apply (the alarm at 60 minutes).
+      - A word didn't read 0: the ack didn't work as written, and the ending says nothing about the
+        lead. What the word read then is the next thing to get (a run that records it, or A1's own
+        form: 0x2f while the cluster is up, then the 0).
+      Judgment: the likeliest single difference found so far, perhaps 1 in 3 to change the ending.
+      After it, in this order: A2's three settle steps tried from the AP before the commit; the
+      fabric's p-state at the commit; the WD1 marker run.
       **Earlier, the order after run 15 (2026-11-10; judgment):** the reset
       followed WD2's bite to 120 s (RESEARCH.md, "M1 run 15"): the entry is stuck, not slow, and it isn't
       a completed entry with a stalled wake (but for a later sequence starting 90.0-91.3 s in, which
