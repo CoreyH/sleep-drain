@@ -1,0 +1,7 @@
+pkexec /usr/local/bin/sleep-drain-safe collect
+collected 20261110T073739-2
+collected 20261110T073739
+
+No --clear: no stage was recorded (m1-crumbs: 0x6004 = 0x00) and no alarm was armed (0x1401 = 0x01).
+No recfg-bite --after: the write record says the word never read 45 s, so its gate refuses, and there's nothing to measure.
+recfg-bite-check.txt and recfg-bite-write.txt here are byte for byte the collected /var/log/sleep-drain/recfg-bite-20261110T073739-{check,write}/log.txt.
