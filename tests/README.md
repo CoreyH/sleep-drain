@@ -29,7 +29,9 @@ used to sit in CLAUDE.md, entry for entry):
   `m1_look_init()` as they stand against pages that say what was read, with no `writel()` for them to
   call: the 98 words of PLAN.md's list and no other, each group after its mark, each logged under its
   address, and the load's start-up from the pointers a load can find (one not yet mapped, a mapping
-  that fails).
+  that fails). For gate=1 it runs `m1_gate_test()` as it stands against a model of the six power words
+  and the gate in nine scenarios: twelve writes and no other, the write-back always made, each step
+  after its mark.
 - `tests/e1_hook_probe_test.py` runs `e1-hook/probe` as uid 0 in a bubblewrap user namespace against stub
   `insmod`, `rmmod`, `modinfo`, `dmesg`, `sleep`, `m1-crumbs` and `sleep-drain-safe`: the parameters it
   loads, that a module which doesn't read `probe=Y` has its replay called off and is unloaded with no

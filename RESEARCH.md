@@ -3822,6 +3822,38 @@ the lane above SIO gates itself, a lane that never takes macOS's floor would lea
 op 224. That's a chain of two inferences, each of which one read can test: PLAN.md, "The order after the
 look".
 
+### The gate test as built: six power words out and back, and the gate B2 waits on watched (2026-11-10)
+
+`pkexec e1-hook/probe --gate` in a safe boot loads `e1_hook` with the look's parameters and `gate=1`
+(`e1-hook/gate_test.h` has the steps and the byte). Not run yet.
+- **It's the look, and one test after it.** Both looks run as before and write no register. Then, in the
+  same failed suspend, after noirq:
+  1. UART2, 3, 4, 6 and 7 := 0x200, `ps_words=1`'s value for them, up to 10 ms each for actual 0. Linux's
+     suspend leaves those five at 4, the only words of SIO's subtree not off; with them off the subtree is
+     as B2 has it after its op 138.
+  2. Up to 100 ms for bit 30 of 0x28e5a0050, the gate word B2 polls there.
+  3. AFNC2_LW1 := 0x1000030f, macOS's value and `ps_words=1`'s, read back at once and for up to 10 ms.
+  4. The gate again, up to 100 ms, and AFNC2_LW1 once more, to see whether it gated itself.
+  5. AFNC2_LW1 written back as found, then the five UARTs, each less the bits the kernel's driver never
+     writes back, and up to 10 ms each to read as found.
+- **What it writes:** those six words, each once out and once back, with values the runs already write
+  and then the values found. Nothing else: no firmware is touched, and `ps_pmp` is neither read nor
+  written by it. The test compiles the function as it stands against a model in nine scenarios (a gate
+  that closes at step 2, only at step 4, or never; a lane that doesn't take the value; words that don't go
+  off or don't come back): twelve writes and no other in each, and always the write-back.
+- **The record:** every word in full in the kernel log, with the six gate words at four points; the step
+  about to be taken at 0x6010, with 0x20 set; a byte at 0x6005 at the end.
+- **What it can show, in Linux's suspended state:** the gate closes with the subtree off (then this poll
+  isn't the stall there, and the lane's floor isn't needed for it); it closes only once the lane has
+  macOS's value; the lane doesn't take the value, with what it reads instead, which would be the "not
+  read back as written" of runs 12 to 17 found; or the gate stays open either way.
+- **What it can't:** the recipe's state is further on (the PMP and SIO's firmware stopped, the cores
+  parked, macOS's table out), and B2 polls after its own writes. A result here is a lead for the next
+  one-way run.
+- **What can go wrong:** the lane is SIO's parent, and with macOS's value it may gate itself while this
+  runs; everything below it is off by then, and it's written back before the suspend is failed. If a
+  write-back doesn't take, the log and the byte say so, and the restart puts the word back.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

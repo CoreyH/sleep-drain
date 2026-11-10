@@ -41,6 +41,12 @@
 # that hasn't been tried, and the probe's own suspend didn't come back. So the
 # look at the load is printed and saved before the suspend is asked for.
 #
+# With --gate (e1-hook/gate_test.h) it's --look and one test more, the only part
+# of a look that writes registers: after the second look the module switches
+# off the five UARTs Linux's suspend leaves at 4, watches the gate the engine
+# waits on after SIO's subtree, gives the fabric lane above SIO macOS's value,
+# watches again, and writes all six words back as it found them.
+#
 # It asks for the suspend through /sys/power/state, so systemd's sleep hook
 # doesn't run: no line in the sleep log, and the radios stay as they are.
 #
@@ -72,12 +78,18 @@ PARAMS=(replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=
         smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 probe=1)
 
 look=0
+gate=0
 if [[ ${1:-} == --look ]]; then
   look=1
   shift
   PARAMS+=(look=1)
+elif [[ ${1:-} == --gate ]]; then
+  look=1
+  gate=1
+  shift
+  PARAMS+=(look=1 gate=1)
 fi
-(($# == 0)) || die "usage: probe [--look]"
+(($# == 0)) || die "usage: probe [--look | --gate]"
 # The module's count that says its part of a suspend has begun: the probe's first half runs at prepare; the look
 # does nothing there, and runs at the first prepare_late.
 count=prepare_calls
@@ -87,7 +99,7 @@ count=prepare_calls
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already: restart into a fresh safe boot"
 [[ -f $ko ]] || die "no $ko: make -C $here"
 [[ $(modinfo -F vermagic "$ko" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r): make -C $here"
-for src in e1_hook.c asc_probe.h look.h fabric_up.h wd1_mark.h wd2_bite.h recfg_bite.h m1_position.h; do
+for src in e1_hook.c asc_probe.h look.h gate_test.h fabric_up.h wd1_mark.h wd2_bite.h recfg_bite.h m1_position.h; do
   [[ $ko -nt $here/$src ]] || die "e1_hook.ko is older than $src: make -C $here"
 done
 [[ $(modinfo -p "$ko" 2> /dev/null) == *$'\n'probe:* || $(modinfo -p "$ko" 2> /dev/null) == probe:* ]] ||
@@ -95,6 +107,8 @@ done
 if ((look)); then
   [[ $(modinfo -p "$ko" 2> /dev/null) == *$'\n'look:* || $(modinfo -p "$ko" 2> /dev/null) == look:* ]] ||
     die "$ko is an older build, without look: make -C $here"
+  ((!gate)) || [[ $(modinfo -p "$ko" 2> /dev/null) == *$'\n'gate:* || $(modinfo -p "$ko" 2> /dev/null) == gate:* ]] ||
+    die "$ko is an older build, without gate: make -C $here"
   # Left loaded by a probe earlier in this boot, it would withdraw the PMP's requests at this suspend too.
   [[ ! -d $PMPMOD ]] || die "pmp_sleep_release is loaded, so the look's suspend wouldn't be an ordinary one: restart into a fresh safe boot"
 fi
@@ -163,6 +177,11 @@ if ((look)) && [[ $(get "$MODDIR/parameters/look") != Y ]]; then
   rmmod e1_hook 2> /dev/null && die "e1_hook didn't take look=1, and was unloaded: nothing was read. make -C $here"
   die "e1_hook didn't take look=1 and DID NOT UNLOAD: restart the Mac now, and don't let it suspend first. Nothing was read"
 fi
+# And for gate=1: without it this would be a plain look, and the test asked for wouldn't run.
+if ((gate)) && [[ $(get "$MODDIR/parameters/gate") != Y ]]; then
+  rmmod e1_hook 2> /dev/null && die "e1_hook didn't take gate=1, and was unloaded: nothing was read. make -C $here"
+  die "e1_hook didn't take gate=1 and DID NOT UNLOAD: restart the Mac now, and don't let it suspend first. Nothing was read"
+fi
 # Into memory now, for after the probe: the pipeline klog runs, on the kernel log as it is, and sleep.
 dmesg 2>&1 | grep -F -- "e1_hook: probe:" > /dev/null; sleep 0
 # The look at the load is in the kernel log already: printed and saved now, in case the suspend doesn't come back.
@@ -204,8 +223,13 @@ log "$(now) back; this script's last suspend returned $rc (non-zero is right: th
 log "replay_done=$(get "$MODDIR/parameters/replay_done") (0 is right: nothing replayed) prepare_calls=$pc prepare_late_calls=$plc"
 if ((look)); then
   [[ $plc == 1 ]] || log "THE LOOK AFTER NOIRQ RAN AT ANOTHER SUSPEND THAN THIS SCRIPT'S LAST (prepare_late_calls 1 is the plain case): the lines below are what there is."
-  log "kernel log, the look after noirq (the look at the load is above, and in the saved file):"
-  klog "e1_hook: look: after noirq"
+  if ((gate)); then
+    log "kernel log, the gate test (the SUMMARY line is the result; both looks are in the saved file):"
+    klog "e1_hook: look: gate:"
+  else
+    log "kernel log, the look after noirq (the look at the load is above, and in the saved file):"
+    klog "e1_hook: look: after noirq"
+  fi
 else
   [[ $pc == 1 && $plc == 1 ]] || log "ONLY PART OF THE PROBE RAN (1 and 1 is a whole one): the lines below are what there is."
   log "kernel log, the probe's lines (the SUMMARY line is the result):"
@@ -213,6 +237,10 @@ else
 fi
 log "====================================================================="
 log ""
+if ((gate)); then
+  log "kernel log, the look after noirq, which came before the gate test:"
+  klog "e1_hook: look: after noirq"
+fi
 log "Saving to the boot partition. If nothing more appears within a minute, the photo is the result: restart the Mac."
 if keep "$out"; then
   log "Saved. Now restart the Mac (hold the power key if the keyboard doesn't answer), log in, and tell Claude."

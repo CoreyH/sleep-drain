@@ -162,6 +162,16 @@ a file there never changes between two saves, since `collect` keeps the first co
 so the Mac should come back as from any failed suspend; that hasn't been tried, and why the probe itself
 didn't come back isn't explained (RESEARCH.md, "The probe's run").
 
+`probe=1 look=1 gate=1` (`pkexec e1-hook/probe --gate`; `gate_test.h`) is the look and one test after
+it, the only part of a look that writes registers. After the look that follows noirq it switches off
+the five UARTs Linux's suspend leaves at 4 (0x200, `ps_words=1`'s value), waits up to 100 ms for bit 30
+of 0x28e5a0050, the gate word B2 polls after SIO's subtree, gives the fabric lane above SIO, AFNC2_LW1,
+macOS's 0x1000030f and reads it back, waits for the gate again, and writes all six words back as found,
+less the bits the kernel never writes back. Each word goes out once and back once, through one function.
+Everything is logged in full; the step is at 0x6010 with 0x20 set, and a byte at 0x6005 says how each
+part went. The launcher asks the module for `gate=Y` as it does for `look=Y`, and prints the test's
+lines for the photo. RESEARCH.md, "The gate test as built", has why.
+
 ## What holds for every one-way run
 
 `13` and `15` load only with `oneway=1` and in a safe boot (`sleepdrain.safe` on the command line). Only the
