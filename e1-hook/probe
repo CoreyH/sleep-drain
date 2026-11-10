@@ -1,0 +1,142 @@
+#!/bin/bash
+# e1-hook/probe: the three coprocessor words the sleep engine polls, read in the
+# state the one-way recipe leaves them in, without a one-way run. In a safe boot
+# only, as root; the charger may stay in:
+#
+#   pkexec /home/corey/src/sleep-drain/e1-hook/probe
+#
+# What it's for (PLAN.md, "The order after run 17"; RESEARCH.md, "After run 17"):
+# B2, the second sequence of the engine's entry pair, powers SIO's, ANS's and the
+# PMP's domains up in turn and waits each time for bit 1 of the first word of the
+# coprocessor's mailbox block. Nothing had read those words, and run 17 says B2
+# doesn't get through that part.
+#
+# What it does: loads e1_hook with --m1-mark's parameters and probe=1, and asks
+# for one suspend. With probe=1 the module never replays: at that suspend's
+# prepare and prepare_late it stops SIO's firmware and the PMP's as the recipe
+# does, raises SIO's power again as the recipe does, raises ANS2 as the engine
+# does and puts it back, reads the three words around each step, and then fails
+# the suspend, so the Mac comes straight back awake. No key goes to the SMC and
+# nothing is committed (e1-hook/asc_probe.h has the steps and the bytes).
+#
+# Then it prints what the module logged, for a photo, and saves it with
+# sleep-drain-safe save. After the probe SIO's firmware and the PMP's are
+# stopped for the rest of the boot. Neither of the kernel's drivers for them
+# does anything at resume (apple-sio's resume is empty, apple_pmp has none), so
+# the Mac should come back with its screen and keyboard; sound, which goes
+# through SIO, won't work. In case more is gone than that, once the probe has
+# run this uses only bash builtins and files in RAM, as e1a-platform does, and
+# the one thing left to do is restart the Mac (hold the power key if nothing
+# else works). If the screen never comes back at all, the module has left three
+# bytes in the PMU: e1-hook/m1-crumbs reads them after the restart.
+set -u
+die() { echo "probe: $*" >&2; exit 1; }
+
+here=$(cd "$(dirname "$0")" && pwd)
+ko=${PROBE_KO:-$here/e1_hook.ko}
+SAFE_FLAG=${PROBE_SAFE_FLAG:-/run/sleep-drain-safe/active}
+MODDIR=${PROBE_MODDIR:-/sys/module/e1_hook}
+STATE=${PROBE_STATE:-/sys/power/state}
+PM_TEST=${PROBE_PM_TEST:-/sys/power/pm_test}
+MEM_SLEEP=${PROBE_MEM_SLEEP:-/sys/power/mem_sleep}
+LOGDIR=${PROBE_LOGDIR:-/var/log/sleep-drain}
+SAVE=${PROBE_SAVE:-/usr/local/bin/sleep-drain-safe}
+CRUMBS=${PROBE_CRUMBS:-$here/m1-crumbs}
+# --m1-mark's parameters, the latest recipe's, and probe=1 on top: the module refuses probe=1 without them.
+PARAMS=(replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1
+        smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 probe=1)
+
+(($# == 0)) || die "usage: probe (no arguments)"
+[[ $EUID -eq 0 ]] || die "run with pkexec"
+[[ -f $SAFE_FLAG ]] || die "safe boot only: pkexec sleep-drain-safe boot, then restart"
+[[ ! -d $MODDIR ]] || die "e1_hook is loaded already: restart into a fresh safe boot"
+[[ -f $ko ]] || die "no $ko: make -C $here"
+[[ $(modinfo -F vermagic "$ko" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r): make -C $here"
+for src in e1_hook.c asc_probe.h fabric_up.h wd1_mark.h wd2_bite.h recfg_bite.h m1_position.h; do
+  [[ $ko -nt $here/$src ]] || die "e1_hook.ko is older than $src: make -C $here"
+done
+[[ $(modinfo -p "$ko" 2> /dev/null) == *$'\n'probe:* || $(modinfo -p "$ko" 2> /dev/null) == probe:* ]] ||
+  die "$ko is an older build, without probe: make -C $here"
+[[ $(< "$PM_TEST") == *"[none]"* ]] || die "pm_test isn't none"
+[[ $(< "$MEM_SLEEP") == *"[s2idle]"* ]] || die "s2idle isn't the sleep mode"
+# The breadcrumbs have to be clear: the module refuses otherwise, and says so less plainly.
+"$CRUMBS" 2> /dev/null | grep -q "^stage 0x6004 = 0x00:" || die "the PMU's breadcrumbs aren't clear: pkexec $here/m1-crumbs --clear"
+
+mkdir -p "$LOGDIR" || die "couldn't make $LOGDIR"
+out=$LOGDIR/asc-probe-$(date +%Y%m%dT%H%M%S).txt
+: > "$out" || die "couldn't write $out"
+# Builtins only from here on: printf, read, $(< file), [[ ]].
+log() { printf '%s\n' "$*"; printf '%s\n' "$*" >> "$out"; }
+now() { printf '%(%F %T)T' -1; }
+get() {
+  local v=
+  if IFS= read -r v 2> /dev/null < "$1" || [[ -n $v ]]; then
+    printf '%s' "$v"
+  else
+    printf 'READ FAILED'
+  fi
+}
+# The kernel log's lines that contain $1. dmesg and grep are programs on the disk, and so is sleep (used only
+# while nothing has been stopped): each runs once before the suspend, so they're in memory after it.
+klog() {
+  local lines line
+  if lines=$(dmesg 2>&1 | grep -F -- "$1"); then
+    while IFS= read -r line; do log "  $line"; done <<< "$lines"
+  else
+    log "  (no line with \"$1\" in the kernel log, or dmesg failed: $lines)"
+  fi
+}
+
+# Into memory now, for after the suspend.
+dmesg > /dev/null; grep -F x /dev/null; sleep 0
+log "$(now) loading e1_hook with ${PARAMS[*]}"
+if ! insmod "$ko" "${PARAMS[@]}"; then
+  log "e1_hook didn't load; nothing was probed. The kernel's last lines from it:"
+  klog e1_hook
+  "$SAVE" save "$out" > /dev/null 2>&1 || log "(that wasn't saved: the lines above are the record)"
+  exit 1
+fi
+# A build that doesn't know probe would load with it ignored: then this would be a one-way run. Never go on without it.
+if [[ $(get "$MODDIR/parameters/probe") != Y ]]; then
+  rmmod e1_hook 2> /dev/null
+  die "e1_hook didn't take probe=1, and was unloaded: nothing was probed. make -C $here"
+fi
+# A suspend that ends before the module's prepare (a key still going up, a device that says no) has probed nothing
+# and stopped nothing: it's asked for again, twice at most. Once prepare has run there is no second try.
+rc=1
+for try in 1 2 3; do
+  log "$(now) asking for the suspend ($try of 3 at most). The screen may flicker; the Mac does not sleep: the module fails the suspend when it's done"
+  printf mem > "$STATE" 2> /dev/null
+  rc=$?
+  [[ $(get "$MODDIR/parameters/prepare_calls") == 0 ]] || break
+  log "$(now) that suspend ended before the module's prepare (it returned $rc): nothing was probed or stopped"
+  ((try < 3)) && sleep 3
+done
+pc=$(get "$MODDIR/parameters/prepare_calls")
+plc=$(get "$MODDIR/parameters/prepare_late_calls")
+if [[ $pc == 0 ]]; then
+  log "NOTHING WAS PROBED: three suspends ended before the module ran, and nothing was stopped. The kernel's PM lines:"
+  klog "PM: "
+  if rmmod e1_hook; then
+    log "e1_hook is unloaded again. Run the same command once more: no restart is needed."
+  else
+    log "e1_hook didn't unload: restart into a fresh safe boot before trying again."
+  fi
+  "$SAVE" save "$out" > /dev/null 2>&1 || log "(that wasn't saved: the lines above are the record)"
+  exit 1
+fi
+log ""
+log "==================== TAKE A PHOTO OF THIS SCREEN ===================="
+log "$(now) back; the last suspend returned $rc (non-zero is right: the module fails it)"
+log "replay_done=$(get "$MODDIR/parameters/replay_done") (0 is right: nothing replayed) prepare_calls=$pc prepare_late_calls=$plc"
+[[ $pc == 1 && $plc == 1 ]] || log "ONLY PART OF THE PROBE RAN (1 and 1 is a whole one): the lines below are what there is."
+log "kernel log, the probe's lines (the SUMMARY line is the result):"
+klog "e1_hook: probe:"
+log "====================================================================="
+log ""
+log "Saving to the boot partition. If nothing more appears within a minute, the photo is the result: restart the Mac."
+if "$SAVE" save "$out" > /dev/null 2>&1; then
+  log "Saved. Now restart the Mac (hold the power key if the keyboard doesn't answer), log in, and tell Claude."
+else
+  log "NOT SAVED: the photo is the result. Then restart the Mac (hold the power key if the keyboard doesn't answer)."
+fi

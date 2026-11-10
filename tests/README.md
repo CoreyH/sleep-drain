@@ -20,7 +20,13 @@ used to sit in CLAUDE.md, entry for entry):
 - `tests/m1_crumbs_test.py` runs `e1-hook/m1-crumbs` on a fake PMU nvmem file, position=1's samples made by
   compiling `e1-hook/m1_position.h` itself, cluster_ack=1's three values and its waits by compiling
   `e1_hook.c`'s own table and wait functions, and fabric_up=1's and wd1_mark=1's writes by compiling the
-  two functions that make them against a page that logs every write.
+  two functions that make them against a page that logs every write. For probe=1 it compiles
+  `asc_probe.h`'s bytes and `m1_probe_word()` against a scripted page, pins the guards that keep the
+  replay from running and the probe's six MMIO writes, and decodes stage 0x0e.
+- `tests/e1_hook_probe_test.py` runs `e1-hook/probe` as uid 0 in a bubblewrap user namespace against stub
+  `insmod`, `rmmod`, `modinfo`, `dmesg`, `sleep`, `m1-crumbs` and `sleep-drain-safe`: the parameters it
+  loads, that a module which doesn't read `probe=Y` is unloaded with no suspend ever asked for, when it
+  asks again and when it doesn't, and every refusal.
 - `tests/recfg_peek_test.py` runs `e1-hook/recfg_peek` on a sparse file standing in for /dev/mem and its
   launcher with stubs.
 - `tests/recfg_bite_test.py` runs `e1-hook/recfg_poke` on the same kind of file (exactly one word changes, or
@@ -29,7 +35,8 @@ used to sit in CLAUDE.md, entry for entry):
   bits) and `e1-hook/wd2-bite` with stubs.
 - `tests/sleep_drain_reading_test.py` runs `sleep-drain-reading` as uid 0 in a bubblewrap user namespace
   against a fake battery, with stub `sleep-drain-safe` and `systemctl`.
-- `tests/mutants.py` isn't a test of the code but of the tests: it breaks `e1_hook.c`, its headers and
-  `m1-crumbs` one way at a time in a copy (a wrong value, a write that isn't gated, a check dropped, a bit
-  read wrong) and says which of those `tests/m1_crumbs_test.py` didn't notice. Run it after changing either,
-  and give it the mutants a new rung calls for.
+- `tests/mutants.py` isn't a test of the code but of the tests: it breaks `e1_hook.c`, its headers,
+  `m1-crumbs` and `e1-hook/probe` one way at a time in a copy (a wrong value, a write that isn't gated, a
+  check dropped, a bit read wrong) and says which of those `tests/m1_crumbs_test.py` (for the launcher,
+  `tests/e1_hook_probe_test.py`) didn't notice. Run it after changing any of them, and give it the
+  mutants a new rung calls for. A word as its argument runs only the mutants whose names have it.

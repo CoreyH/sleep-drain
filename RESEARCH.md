@@ -3558,10 +3558,10 @@ boot, once something needs them", PLAN.md). The local decode has had them as can
   noirq and step 5 raises it again: the engine finds an ASC that has been through a power cycle with its
   CPU never started. The PMP's is idled and stopped after `slpa`. ANS is whatever Linux's NVMe suspend
   leaves. If bit 1 says "this processor is in its sleep state", a CPU held in reset may never show it.
-- They can be read without a one-way run. A suspend under `pm_test=platform` runs the noirq pass and E1's
-  `prepare_late` and then comes back. The steps the recipe takes on SIO and the PMP before the commit can
-  be taken there, with the three words read before and after each, in full, into the kernel log, which is
-  then saved. No commit, no reset, and a result in one short safe boot.
+- They can be read without a one-way run. A suspend that E1's `prepare_late` fails runs the noirq pass
+  and then comes back. The steps the recipe takes on SIO and the PMP before the commit can be taken
+  there, with the three words read before and after each, in full, into the kernel log, which is then
+  saved. No commit, no reset, and a result in one short safe boot.
 - What a run can't see, this can: whether the bit is set while the firmware runs, after its idle pair,
   after RUN is cleared, and after SIO's power cycle.
 
@@ -3576,6 +3576,42 @@ holds across those steps, isn't known. So a sample is a lead, not the location o
 Either way everything else B2 waits on before op 224 stays a candidate: the gate, A2's three steps, the
 waits for actual f after B2's own raises (SIO_CPU, ANS2, ps_pmp), the bit-11 polls and the bit-30
 gate-status polls.
+
+**The probe as built** (`e1_hook probe=1`, launched by `pkexec e1-hook/probe` in a safe boot;
+`e1-hook/asc_probe.h` has the ops and the bytes). Not run yet.
+- It loads with `--m1-mark`'s parameters, so that everything the recipe maps and checks at load is there,
+  and `probe=1`, with which the replay can't run: `e1_replay()` returns at once, `prepare` takes none of
+  the replay's steps, and `prepare_late` returns -EIO whatever else happens, so every suspend fails and
+  the Mac comes back awake. No key goes to the SMC and nothing is committed. Failing the suspend from the
+  module, and not `pm_test=platform` as first written here, needs nothing set outside the module, and a
+  forgotten setting can't leave the Mac asleep. The launcher goes on only if the loaded module reads
+  `probe=Y`; one that doesn't is unloaded before any suspend is asked for.
+- At `prepare` (after the drivers' late suspend, before noirq) it puts SIO_CPU fully on with the table's
+  own word (awake it reads actual 4, its clock gating itself, and B2 reads SIO's word at actual f), then
+  takes `sio_stop=1`'s steps on SIO: the idle pair, then RUN cleared. SIO's word is read before, between
+  and after, ANS's and the PMP's as they run.
+- At `prepare_late` (after noirq) it reads ANS's word, takes `pmp_out=1`'s steps on the PMP with its word
+  read before, between and after, and raises SIO's parents and SIO_CPU as step 5 does and reads SIO's
+  word in the state B2's op 51 finds.
+- A word is read only while its domain's power word reads actual f, and for up to 100 ms when bit 1 reads
+  clear (B2 tries 255 times). Every word is logged in full.
+- **What it writes that no run has: ANS2 (0x28e5803b8), twice.** Linux's NVMe suspend leaves ANS2 off, and
+  B2's op 149 raises it before its poll, so the probe writes B2's own value, 0x0f00030f, waits up to 10 ms
+  for actual f, reads ANS's word, and writes ANS2 back as it found it. ANS's CPU isn't started, the NVMe
+  has been shut down by its driver by then, and the driver brings it up again at resume as after any
+  suspend. `ps_pmp` is read, never written, as everywhere here.
+- **What it leaves out of the recipe's state:** the DCPs' shutdown (the screen has to come back), the SMC's
+  keys and its idle notice, the commit, the cores' power-down. So SIO's and the PMP's words are read in
+  the recipe's state for those two coprocessors, and not in the whole of it.
+- Afterwards SIO's firmware and the PMP's stay stopped for the rest of the boot. Neither kernel driver
+  does anything at resume (`apple-sio`'s resume is empty, `apple_pmp` has no PM ops: linux-aurora's
+  sources), so the Mac should come back with its screen and keyboard, and without sound. The launcher
+  prints the module's lines for a photo, saves them, and asks for a restart.
+- If the screen doesn't come back: three bytes in the PMU's scratch, 0x6005 to 0x6007, under stage 0x0e,
+  which no run uses, say what bit 1 read at each step. `m1-crumbs` decodes them after the restart.
+- The probe runs once, in the first suspend to reach the module's `prepare`, and its second half only in
+  that same suspend. A suspend that ends before `prepare` (a key still going up) has stopped nothing, and
+  the launcher asks again, three times at most.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

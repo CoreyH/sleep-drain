@@ -1,10 +1,11 @@
 #!/usr/bin/python3 -I
-"""tests/mutants.py: break the one-way runs' code one way at a time and see that tests/m1_crumbs_test.py notices.
+"""tests/mutants.py: break the one-way runs' code one way at a time and see that the tests notice (tests/m1_crumbs_test.py;
+tests/e1_hook_probe_test.py for the launcher e1-hook/probe).
 
   python3 -I -B tests/mutants.py            every mutant (a few minutes: six at a time)
   python3 -I -B tests/mutants.py wd1 fab    only those whose name has one of these words
 
-Each mutant is one change to e1-hook/e1_hook.c, one of its headers or e1-hook/m1-crumbs: a wrong value, a write
+Each mutant is one change to e1-hook/e1_hook.c, one of its headers, e1-hook/m1-crumbs or e1-hook/probe: a wrong value, a write
 that isn't gated, a check dropped, a bit read wrong. It's applied in a copy of e1-hook/ and tests/, never in the
 tree, and the tests run there. A mutant is caught if a check fails or the tests can't build what they compile; it
 survived if they still say "all ok", and then the tests have a hole. A mutant whose text isn't in the file any more
@@ -21,7 +22,9 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 E1 = os.path.realpath(os.path.join(HERE, "..", "e1-hook"))
-C, CRUMBS, FAB, WD1 = "e1_hook.c", "m1-crumbs", "fabric_up.h", "wd1_mark.h"
+C, CRUMBS, FAB, WD1, ASC, PROBE = "e1_hook.c", "m1-crumbs", "fabric_up.h", "wd1_mark.h", "asc_probe.h", "probe"
+# The test that has to notice a mutant of each file: the launcher e1-hook/probe has its own.
+TESTS = {PROBE: "e1_hook_probe_test.py"}
 
 # (name, file, the text to change, what it becomes); the text must occur exactly once.
 MUTANTS = [
@@ -145,6 +148,46 @@ MUTANTS = [
     ("wd1 decoder: a count of 30 s", CRUMBS, "WD1_BITE_S, WD1_COUNT_S, WD2_BITE_S = 150, 60, 120", "WD1_BITE_S, WD1_COUNT_S, WD2_BITE_S = 150, 30, 120"),
     ("wd1 decoder: 90 s without its other reading", CRUMBS, "                \" a later A sequence starting about 60 s after the commit and arming WD2 with its own 30 s, gives the same time\")",
      "                \"\")"),
+    # probe=1: it must never replay, never let the Mac sleep, and leave ANS2 as it found it
+    ("probe: on by default", C, "static bool probe;", "static bool probe = true;"),
+    ("probe: the replay can still run", C, "\tif (probe) {\n\t\tpr_info(\"replay: probe=1 is loaded: no replay\\n\");\n\t\treturn false;\n\t}\n", ""),
+    ("probe: the replay's guard after it marks itself run", C, "\t\treturn false;\n\t}\n\treplay_done = 1;\n", "\t}\n\treplay_done = 1;\n"),
+    ("probe: prepare_late goes on to the replay", C, "\t\t\t\"it ran at an earlier suspend\");\n\t\treturn -EIO;\n\t}", "\t\t\t\"it ran at an earlier suspend\");\n\t}"),
+    ("probe: the suspend isn't failed, so the Mac sleeps", C, "\t\t\t\"it ran at an earlier suspend\");\n\t\treturn -EIO;", "\t\t\t\"it ran at an earlier suspend\");\n\t\treturn 0;"),
+    ("probe: the second half in a later suspend than the first", C, "\t\tbool same = n == 1 && READ_ONCE(prepare_calls) == 1;", "\t\tbool same = n == 1;"),
+    ("probe: a second suspend calls the replay off, and replay_done reads 2", C, "\tif (n > 1 && !probe && !READ_ONCE(replay_done)) {", "\tif (n > 1 && !READ_ONCE(replay_done)) {"),
+    ("probe: a line at pr_emerg, broadcast over the photo", C, "\tpr_info(\"probe: SUMMARY: bit 1 in the state B2 finds", "\tpr_emerg(\"probe: SUMMARY: bit 1 in the state B2 finds"),
+    ("probe: prepare takes the replay's steps too", C, "\t\t\tm1_probe_prepare();\n\t\treturn 0;\n\t}", "\t\t\tm1_probe_prepare();\n\t}"),
+    ("probe: it runs at every suspend", C, "\t\tif (same)\n\t\t\tm1_probe_late();", "\t\tm1_probe_late();"),
+    ("probe: ANS2 isn't put back", C, "\t\twritel(ps, m1_sio + M1_PS_ANS2);\n", ""),
+    ("probe: ANS2 raised though it read on", C, "\tif (!m1_pr.ans_was_on) {\n\t\twritel(ASC_ANS2_UP, m1_sio + M1_PS_ANS2);", "\tif (1) {\n\t\twritel(ASC_ANS2_UP, m1_sio + M1_PS_ANS2);"),
+    ("probe: ps_pmp written", C, "\tps = readl(m1_ps + M1_PS_PMP_RO);\n\tm1_pr.pmp_on = asc_ps_on(ps);", "\twritel(0x0f00024f, m1_ps + M1_PS_PMP_RO);\n\tps = readl(m1_ps + M1_PS_PMP_RO);\n\tm1_pr.pmp_on = asc_ps_on(ps);"),
+    ("probe: a word read with its domain off", C, "\tif (!asc_ps_on(ps)) {\n\t\tpr_info(\"probe: %s, %s: its power word reads", "\tif (0) {\n\t\tpr_info(\"probe: %s, %s: its power word reads"),
+    ("probe: a word polled for a second", C, "\twhile (!(w & ASC_READY) && m1_now() - t0 < m1_tps / 10) {", "\twhile (!(w & ASC_READY) && m1_now() - t0 < m1_tps) {"),
+    ("probe: SIO's RUN cleared after a failed idle pair", C, "\tif (ret)\n\t\treturn;\n\tctrl = readl(m1_sio_asc + M1_ASC_CPU_CONTROL);", "\tctrl = readl(m1_sio_asc + M1_ASC_CPU_CONTROL);"),
+    ("probe: the stage before the bytes", C, "\tret = m1_kwrite(0x6005, b, 3);\n\tret = ret ?: m1_kwrite(0x6004, &stage, 1);", "\tret = m1_kwrite(0x6004, &stage, 1);\n\tret = ret ?: m1_kwrite(0x6005, b, 3);"),
+    ("probe: loads without the latest recipe", C, "\tif (probe && (!wd1_mark || !pmp_stop)) {", "\tif (0) {"),
+    ("probe: the load ignores its refusal", C, "\tif (probe) {\n\t\tint ret = m1_probe_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n", "\tif (probe)\n\t\tm1_probe_init();\n"),
+    ("probe: a domain is on by its target", ASC, "\treturn ((ps >> 4) & 0xf) == 0xf;", "\treturn (ps & 0xf) == 0xf;"),
+    ("probe: the stage is the observer's", ASC, "#define ASC_PROBE_STAGE\t\t0x0e", "#define ASC_PROBE_STAGE\t\t0x71"),
+    ("probe: SIO's byte with two bits swapped", ASC, "(late ? 1U << 3 : 0) |\n\t\t    (idle_ok ? 1U << 4 : 0) | (stop_ok ? 1U << 5 : 0) | (on ? 1U << 6 : 0));\n}\n\nstatic inline u8 asc_pmp_byte",
+     "(late ? 1U << 6 : 0) |\n\t\t    (idle_ok ? 1U << 4 : 0) | (stop_ok ? 1U << 5 : 0) | (on ? 1U << 3 : 0));\n}\n\nstatic inline u8 asc_pmp_byte"),
+    ("probe decoder: its stage is the observer's", CRUMBS, "PROBE_STAGE = 0x0e", "PROBE_STAGE = 0x71"),
+    ("probe decoder: SIO's last read counted with SIO_CPU off", CRUMBS, "        final[\"SIO\"] = bool(sio & 8) if on else None", "        final[\"SIO\"] = bool(sio & 8)"),
+    ("probe decoder: the PMP's last read counted without RUN cleared", CRUMBS, "        final[\"PMP\"] = bool(pmp & 8) if on and pmp & 0x20 else None", "        final[\"PMP\"] = bool(pmp & 8) if on else None"),
+    ("probe decoder: all three set with one unread", CRUMBS, "    elif unread:\n        out.append(\"  so: \" + (\"nothing was read", "    elif False:\n        out.append(\"  so: \" + (\"nothing was read"),
+    ("probe decoder: a byte read without its mark", CRUMBS, "    if sio & PROBE_MARK:", "    if True:"),
+    ("probe launcher: no probe=1 in the parameters", PROBE, " fabric_up=1 wd1_mark=1 probe=1)", " fabric_up=1 wd1_mark=1)"),
+    ("probe launcher: goes on with a module that didn't take probe=1", PROBE, "  rmmod e1_hook 2> /dev/null\n  die \"e1_hook didn't take probe=1", "  : \"e1_hook didn't take probe=1"),
+    ("probe launcher: the check for probe=Y reads another parameter", PROBE, "if [[ $(get \"$MODDIR/parameters/probe\") != Y ]]; then", "if [[ $(get \"$MODDIR/parameters/replay_done\") != 0 ]]; then"),
+    ("probe launcher: outside a safe boot", PROBE, "[[ -f $SAFE_FLAG ]] || die", "[[ -f $SAFE_FLAG ]] || echo"),
+    ("probe launcher: with breadcrumbs left", PROBE, "grep -q \"^stage 0x6004 = 0x00:\" || die", "grep -q \"^stage 0x6004 = 0x00:\" || echo"),
+    ("probe launcher: a stale module", PROBE, "  [[ $ko -nt $here/$src ]] || die", "  [[ $ko -nt $here/$src ]] || echo"),
+    ("probe launcher: a second suspend after the module's prepare ran", PROBE, "  [[ $(get \"$MODDIR/parameters/prepare_calls\") == 0 ]] || break\n", ""),
+    ("probe launcher: one try only", PROBE, "for try in 1 2 3; do", "for try in 1; do"),
+    ("probe launcher: a photo of nothing", PROBE, "if [[ $pc == 0 ]]; then", "if false; then"),
+    ("probe launcher: the module left loaded with nothing probed", PROBE, "  if rmmod e1_hook; then", "  if true; then"),
+    ("probe launcher: a part-run passed off as whole", PROBE, "[[ $pc == 1 && $plc == 1 ]] || log", "[[ $pc == 1 ]] || log"),
 ]
 
 
@@ -153,14 +196,15 @@ def one(mutant, base):
     with tempfile.TemporaryDirectory(dir=base) as copy:
         shutil.copytree(E1, os.path.join(copy, "e1-hook"), ignore=shutil.ignore_patterns("*.o", "*.ko", "*.mod*", ".*", "Module.symvers", "modules.order"))
         os.makedirs(os.path.join(copy, "tests"))
-        shutil.copy(os.path.join(HERE, "m1_crumbs_test.py"), os.path.join(copy, "tests"))
+        test = TESTS.get(rel, "m1_crumbs_test.py")
+        shutil.copy(os.path.join(HERE, test), os.path.join(copy, "tests"))
         path = os.path.join(copy, "e1-hook", rel)
         text = open(path).read()
         if text.count(old) != 1:
             return name, f"STALE (its text is in {rel} {text.count(old)} times): fix the list"
         with open(path, "w") as f:
             f.write(text.replace(old, new))
-        r = subprocess.run([sys.executable, "-I", "-B", os.path.join(copy, "tests", "m1_crumbs_test.py")], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, "-I", "-B", os.path.join(copy, "tests", test)], capture_output=True, text=True)
     fails = sum(line.startswith("FAIL ") for line in r.stdout.splitlines())
     if fails:
         return name, f"caught ({fails} failing)"

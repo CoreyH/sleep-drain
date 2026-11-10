@@ -88,8 +88,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `replay=15`, replays macOS's sleep entry for good: the Mac resets or stays dark, and never wakes.
   `run-floor` is its launcher, one option per rung, each rung adding to the one before
   (`--m1-mark` is the latest); `m1-crumbs` reads the record a run leaves in the PMU after the
-  restart, and `--clear` zeroes it. The rest are one-purpose tools for single reads and writes
-  (`recfg-peek`, `recfg-bite`, `wd2-bite`). **`e1-hook/README.md` says what every parameter, option
+  restart, and `--clear` zeroes it. `probe` is the one launcher that isn't one-way: it loads the module
+  with `probe=1`, which reads three coprocessor words in the recipe's state and fails the suspend, so
+  the Mac comes back (and is restarted afterwards). The rest are one-purpose tools for single reads and
+  writes (`recfg-peek`, `recfg-bite`, `wd2-bite`). **`e1-hook/README.md` says what every parameter, option
   and tool does: read it before working here.** What always holds: a one-way run loads only in a
   safe boot and with `oneway=1`; the module won't build or load if a write would touch the
   never-write list (0x28e0802d8, `ps_pmp`; 0x28e700000); the reconfig SRAM's dumps stay out of the
@@ -97,7 +99,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
 - `tests/`: hardware-free checks, one file per tool, each run as `python3 -I -B tests/<name>.py`.
   `tests/README.md` lists what each covers. The two that guard the one-way runs are
   `tests/m1_crumbs_test.py` (the decoder, and `e1_hook.c`'s own table, wait and write functions
-  compiled in user space) and `tests/e1a_launcher_test.py` (every `run-floor` option, about 6 minutes).
+  compiled in user space) and `tests/e1a_launcher_test.py` (every `run-floor` option, about 6 minutes);
+  `tests/e1_hook_probe_test.py` guards `e1-hook/probe`.
   `tests/mutants.py` breaks that code one way at a time and says what the first of them missed.
 - `patches/`: patch series for upstream, kept here for review before they're
   posted. `patches/pmu-alarm-t600x/` is the PMU RTC alarm for omacom/linux-aurora

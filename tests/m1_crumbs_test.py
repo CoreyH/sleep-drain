@@ -1125,6 +1125,23 @@ def main():
     position_tests(g, src)
     cluster_ack_tests(g, src)
     mark_tests(g, src)
+    with tempfile.TemporaryDirectory() as tmp:
+        ppath = os.path.join(tmp, "nvmem")
+
+        def pdec(stage, parked, left, down):
+            fake(ppath, scratch(stage, parked=parked, left=left, down=down), rtc_secs=121761)
+            r = run(ppath)
+            return r.returncode, r.stdout, r.stderr
+
+        probe_tests(g, src, pdec)
+        before = fake(ppath, scratch(0x0e, parked=0xf7, left=0xf7, down=0x8d), rtc_secs=121761, alarm=(0x41, 999999, 0, 0))
+        r = run(ppath, "--clear")
+        after = open(ppath, "rb").read()
+        want = bytearray(before)
+        want[0x6004:0x6008] = bytes(4)
+        want[0x6010:0x6017] = bytes(7)
+        check(r.returncode == 0 and after == bytes(want) and "disarmed" not in r.stdout,
+              "--clear after the probe's 0x0e: its bytes zeroed, and an alarm that isn't a run's left alone", r.stdout + r.stderr)
 
     print(f"{failed} failed" if failed else "all ok")
     return 1 if failed else 0
@@ -1558,8 +1575,9 @@ def mark_tests(g, src):
     # A tripwire, since a write through another name for the same register has no name to match: the module's MMIO write calls are
     # counted, in the whole file and in the replay's own function. A new one changes the count, and has to be accounted for here.
     after_code = re.sub(r"/\*.*?\*/", "", after, flags=re.S)
-    check(len(re.findall(wr, code_only)) == 42 and len(re.findall(wr, after_code)) == 11,
-          "e1_hook.c makes 42 MMIO write calls, 11 of them in m1_after_slpa() itself: none has been added without this count",
+    # 48 since the probe (probe_tests() has its six: SIO_CPU's table word twice, SIO's RUN, ANS2 up and back, the PMP's RUN).
+    check(len(re.findall(wr, code_only)) == 48 and len(re.findall(wr, after_code)) == 11,
+          "e1_hook.c makes 48 MMIO write calls, 11 of them in m1_after_slpa() itself: none has been added without this count",
           f"{len(re.findall(wr, code_only))} {len(re.findall(wr, after_code))}")
     check("\tif (!m1_fab_awake(v)) {\n\t\tpr_err(" in cut("static int __init m1_fab_init(void)", "\n}\n")
           and "if (e1_never_write(FAB_PS)) {" in src and "m1_never(WD1_WDT + WD1_COUNT, 1) || m1_never(WD1_WDT + WD1_BITE, 1) || m1_never(WD1_WDT + WD1_CTRL, 1)" in src,
@@ -1575,6 +1593,205 @@ def mark_tests(g, src):
     check("\tif ((read_sysreg(isr_el1) >> 6) & 7)\n\t\tb[0] = fabric_up ? M1_FAB_STAGE_PEND : M1_WD2_STAGE_PEND;\n\telse\n\t\tb[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;\n" in wout
           and len(re.findall(r"\bM1_FAB_STAGE\w*\b", code_only)) == 3 + 3,
           "the run's three stages go out where 0x4e, 0x57 and 0x56 did, and nowhere else", wout)
+
+
+PROBE_HDR = r"""
+#include <stdio.h>
+#include "asc_probe.h"
+int main(void)
+{
+	static const u32 ps[] = { 0x1400024f, 0x0f0000ff, 0x1f0f03ff, 0x0f00030f, 0x000000f0, 0, 0x0f00020f, 0x000000e0, 0x00000f00, 0xffffff0f };
+	unsigned int a, v;
+
+	printf("consts %llx %llx %llx %x %x %x %x\n", ASC_SIO_MBOX, ASC_ANS_MBOX, ASC_PMP_MBOX, ASC_READY, ASC_ANS2_UP, ASC_PROBE_STAGE, ASC_PROBE_MARK);
+	for (a = 0; a < sizeof(ps) / sizeof(ps[0]); a++)
+		printf("on %x %d\n", ps[a], asc_ps_on(ps[a]));
+	for (v = 0; v < 128; v++)
+		printf("sio %u %x\n", v, asc_sio_byte(v & 1, v >> 1 & 1, v >> 2 & 1, v >> 3 & 1, v >> 4 & 1, v >> 5 & 1, v >> 6 & 1));
+	for (v = 0; v < 128; v++)
+		printf("pmp %u %x\n", v, asc_pmp_byte(v & 1, v >> 1 & 1, v >> 2 & 1, v >> 3 & 1, v >> 4 & 1, v >> 5 & 1, v >> 6 & 1));
+	for (v = 0; v < 16; v++)
+		printf("ans %u %x\n", v, asc_ans_byte(v & 1, v >> 1 & 1, v >> 2 & 1, v >> 3 & 1));
+	return 0;
+}
+"""
+PROBE_FN_PRELUDE = r"""
+#include <stdarg.h>
+#include <stdio.h>
+#include "asc_probe.h"
+typedef uint64_t u64;
+#define __iomem
+#define cpu_relax() do { } while (0)
+#define div64_u64(a, b) ((a) / (b))
+/* A page whose reads follow a script (its last value from then on); the clock ticks once a look, 1000 to the second. */
+static unsigned char page[0x100];
+static u64 m1_tps = 1000, fake_now;
+static const u32 *seq;
+static unsigned int nseq, reads, said;
+static u64 m1_now(void) { return fake_now++; }
+static u32 readl(void *p) { unsigned int i = reads++; (void)p; return seq[i < nseq ? i : nseq - 1]; }
+static void pr_info(const char *fmt, ...) { va_list ap; said++; va_start(ap, fmt); printf("log "); vprintf(fmt, ap); va_end(ap); }
+"""
+PROBE_FN_MAIN = r"""
+int main(void)
+{
+	static const u32 r0[] = { 2 }, r1[] = { 0, 0, 0x80000002 }, r2[] = { 0x80000000 }, r3[] = { 0xfffffffd }, r4[] = { 0x00000003 };
+	static const struct { const u32 *s; unsigned int n; u32 ps; } c[] = {
+		{ r0, 1, 0x040002ff }, { r1, 3, 0x0f0000ff }, { r2, 1, 0x1f0f03ff }, { r3, 1, 0x000000f0 }, { r4, 1, 0x000000f0 },
+		{ r0, 1, 0x1400024f }, { r0, 1, 0 }, { r0, 1, 0x000000e0 },
+	};
+	unsigned int i;
+
+	for (i = 0; i < sizeof(c) / sizeof(c[0]); i++) {
+		int ret;
+
+		seq = c[i].s; nseq = c[i].n; reads = 0; said = 0;
+		ret = m1_probe_word("WHO", "WHEN", page + 0x10, c[i].ps);
+		printf("word %u ret %d reads %u said %u\n", i, ret, reads, said);
+	}
+	return 0;
+}
+"""
+
+
+def probe_tests(g, src, dec):
+    """probe=1 (e1-hook/probe): asc_probe.h against an independent reading of it; the function that reads a word, compiled as it
+    stands; the guards that keep a load with probe=1 from ever replaying; the probe's own writes; and its bytes through m1-crumbs.
+    dec(stage, parked, left, down) runs m1-crumbs on a record."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        def build(name, code):
+            c = os.path.join(tmp, name + ".c")
+            with open(c, "w") as f:
+                f.write(code)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(tmp, name), c], check=True)
+            return subprocess.run([os.path.join(tmp, name)], capture_output=True, text=True, check=True).stdout.splitlines()
+
+        hdr = [line.split() for line in build("phdr", PROBE_HDR)]
+        fn = build("pfn", PROBE_FN_PRELUDE + cut("static bool m1_probe_word(", "\n}\n") + PROBE_FN_MAIN)
+
+    consts = [int(x, 16) for x in hdr[0][1:]]
+    check(consts == [0x39bc08000, 0x38f408000, 0x28ec08000, 2, 0x0f00030f, 0x0e, 0x80] and g["PROBE_STAGE"] == 0x0e and g["PROBE_MARK"] == 0x80,
+          "asc_probe.h: the three words B2 polls, bit 1, B2's value for ANS2, stage 0x0e; m1-crumbs has the same stage and mark", str(hdr[0]))
+    used = set(g["STAGES"]) | set(g["OBSERVE_STAGES"]) | set(g["LATE"]) | set(g["HOLD"]) | set(g["HOLD_TEXT"]) | set(g["LATE_TEXT"]) | set(range(0x21, 0x28)) \
+        | set(g["POSITION"]) | set(g["DISP_STAGES"]) | set(g["SIO_STOP_STAGES"]) | set(g["ALARM_STAGES"]) | set(g["OBSERVED"]) | set(g["FAB_STAGES"]) | {0x70, 0x71, 0x72, 0x7e, 0x7f}
+    check(0x0e not in used and 0x8e not in used and not re.search(r"m1_stage\(0x0e\)|= 0x0e;", src),
+          "the probe's stage is no run's, with or without pmp_out=1's bit", str(sorted(hex(x) for x in used)))
+    on = {int(r[1], 16): int(r[2]) for r in hdr if r[0] == "on"}
+    check(len(on) == 10 and all(v == ((k >> 4 & 0xf) == 0xf) for k, v in on.items()), "asc_probe.h: a domain is on when its power word's bits 7:4 read f", str(on))
+    bad = [r for r in hdr if r[0] in ("sio", "pmp") and int(r[2], 16) != (0x80 | int(r[1]))] + \
+          [r for r in hdr if r[0] == "ans" and int(r[2], 16) != (0x80 | int(r[1]))]
+    check(len(hdr) == 1 + 10 + 128 + 128 + 16 and not bad,
+          "asc_probe.h's three bytes: bit 7 the mark, and each argument its own bit, in the order the header's comment gives", str(bad[:4]))
+
+    # m1_probe_word(): a word is read only if its domain reads on; then until bit 1 shows or 100 ms have gone; one line of log either way.
+    word = [line for line in fn if line.startswith("word ")]
+    # Case 5 is SIO_CPU as it reads awake, 0x1400024f: target f but actual 4, its clock gating itself. Not read.
+    check(word == ["word 0 ret 1 reads 1 said 1", "word 1 ret 1 reads 3 said 1", "word 2 ret 0 reads 100 said 1", "word 3 ret 0 reads 100 said 1",
+                   "word 4 ret 1 reads 1 said 1", "word 5 ret 0 reads 0 said 1", "word 6 ret 0 reads 0 said 1", "word 7 ret 0 reads 0 said 1"],
+          "m1_probe_word(): no read of a domain whose actual state isn't f; bit 1 set ends it; bit 1 clear is read for 100 ms and no longer; one log line each",
+          "\n".join(fn))
+    logs = [line for line in fn if line.startswith("log ")]
+    check("log probe: WHO, WHEN: power word 0f0000ff; ASC+0x8000 read 00000000 at first and 80000002 " in logs[1] and logs[1].endswith("bit 1 SET")
+          and logs[2].endswith("bit 1 clear") and "its power word reads 1400024f, actual not f, so its word isn't read" in logs[5],
+          "m1_probe_word() logs the power word, the first and the last value read in full, and what bit 1 was", "\n".join(logs))
+
+    # With probe=1 nothing replays: e1_replay() returns before it marks itself run, prepare takes neither of the replay's steps,
+    # and prepare_late fails the suspend whatever else happens.
+    replay = cut("static bool e1_replay(void)", "\n}\n")
+    prep = cut("static int e1_prepare(void)", "\n}\n")
+    late = cut("static int e1_prepare_late(void)", "\n}\n")
+    check(in_order_of(replay, ["\tif (probe) {\n\t\tpr_info(", "\t\treturn false;\n\t}\n\treplay_done = 1;\n", "device_trylock(dev)", "apple_smc_write_u32("])
+          and replay.index("if (probe)") < replay.index("replay_done = 1;") < replay.index("m1_pmu_start()"),
+          "e1_replay() returns at once with probe=1, before it marks the replay run and before anything is written", replay[:900])
+    check(in_order_of(prep, ["\tif (probe) {\n\t\tif (n == 1)\n\t\t\tm1_probe_prepare();\n\t\treturn 0;\n\t}\n", "m1_dcp_shutdown();", "m1_sio_fw_stop();"]),
+          "prepare with probe=1 takes the probe's steps at the first suspend and never the replay's (the DCPs' shutdown, SIO's stop)", prep)
+    check(in_order_of(late, ["\tif (probe) {\n\t\tbool same = n == 1 && READ_ONCE(prepare_calls) == 1;\n\n\t\tif (same)\n\t\t\tm1_probe_late();\n\t\tpr_info(",
+                             "\t\treturn -EIO;\n\t}\n\tif (!(replay & 8)) {", "e1_replay()"])
+          and late.count("m1_probe_late()") == 1,
+          "prepare_late with probe=1 runs the probe's second half only in the suspend whose prepare ran the first, and fails every suspend with -EIO, "
+          "before any way to the replay", late)
+    trace = cut("static void e1_suspend_resume(void *data", "\n}\n")
+    check("\tif (n > 1 && !probe && !READ_ONCE(replay_done)) {\n\t\tWRITE_ONCE(replay_done, 2);" in trace and trace.count("WRITE_ONCE(replay_done, 2)") == 1,
+          "a second suspend with probe=1 calls nothing off: replay_done stays 0, which is what e1-hook/probe shows", trace)
+    pfn = src[src.index("static bool m1_probe_word(const char *who"):src.index("/* wd1_mark=1 at load: WD1's three words off the never-write list")]
+    check("pr_emerg(" not in pfn and pfn.count("pr_info(") == 11 and "pr_emerg(" not in late[late.index("if (probe)"):late.index("if (!(replay & 8))")],
+          "the probe's lines are pr_info: journald doesn't broadcast them over the screen the launcher prints them on", "")
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    check("static bool probe;\nmodule_param(probe, bool, 0444);\n" in src and not re.search(r"\bprobe\s*=[^=]", code_only)
+          and in_order_of(params, ["\tif (probe && (!wd1_mark || !pmp_stop)) {\n\t\tpr_err(", "\t\treturn -EINVAL;\n\t}\n", "\treturn 0;\n\nbad_wait:"])
+          and "\tif (probe) {\n\t\tint ret = m1_probe_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n" in src,
+          "probe is off unless asked for, read-only once loaded, loads only on the latest recipe, and the load returns its refusal")
+
+    # What the probe writes: RUN on SIO and on the PMP, the recipe's own; ANS2 up, B2's value, and back as found; SIO_CPU's table word.
+    wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\([^;]*;"
+    pprep = cut("static void m1_probe_prepare(void)\n{", "\n}\n")
+    plate = cut("static void m1_probe_late(void)", "\n}\n")
+    check(re.findall(wr, pprep) == ["writel_relaxed(e1_post_slpa[M1_SIO_ENTRY].val, post_map[M1_SIO_ENTRY]);",
+                                    "writel(ctrl & ~M1_ASC_CPU_RUN, m1_sio_asc + M1_ASC_CPU_CONTROL);"]
+          and re.findall(wr, plate) == ["writel(ASC_ANS2_UP, m1_sio + M1_PS_ANS2);", "writel(ps, m1_sio + M1_PS_ANS2);",
+                                        "writel(ctrl & ~M1_ASC_CPU_RUN, m1_pmp_asc + M1_ASC_CPU_CONTROL);",
+                                        "writel_relaxed(e1_post_slpa[M1_SIO_ENTRY].val, post_map[M1_SIO_ENTRY]);"]
+          and not re.findall(wr, cut("static bool m1_probe_word(", "\n}\n")) and not re.findall(wr, cut("static int __init m1_probe_init(void)", "\n}\n"))
+          and plate.count("m1_sio_raise()") == 1 and "\traised = m1_sio_raise();\n\tpr_info(" in plate and plate.count("m1_kwrite(") == 2 and "apple_smc_write" not in pprep + plate
+          and "E1_S2R_COMMIT" not in pprep + plate and "m1_after_slpa" not in pprep + plate and "post_map[ARRAY_SIZE" not in pprep + plate,
+          "the probe's MMIO writes are six: SIO_CPU's table word at prepare and after noirq, SIO's RUN, ANS2 up and back, the PMP's RUN; no key, no commit",
+          "\n".join(re.findall(wr, pprep) + re.findall(wr, plate)))
+    check(in_order_of(plate, ["ps = readl(m1_sio + M1_PS_ANS2);\n\tm1_pr.ans_was_on = asc_ps_on(ps);\n\tif (!m1_pr.ans_was_on) {\n\t\twritel(ASC_ANS2_UP, m1_sio + M1_PS_ANS2);",
+                              "m1_pr.ans_late = m1_probe_word(", "\tif (!m1_pr.ans_was_on) {\n\t\twritel(ps, m1_sio + M1_PS_ANS2);",
+                              "m1_pr.pmp_late = m1_probe_word(", "apple_rtkit_idle(m1_pmp_rtk)", "m1_pr.pmp_idle = m1_probe_word(",
+                              "if (!ret && (st & M1_ASC_IDLE)) {", "m1_pr.pmp_stopped = m1_probe_word(", "m1_sio_raise()",
+                              "m1_pr.sio_late = m1_probe_word(", "ret = m1_kwrite(0x6005, b, 3);\n\tret = ret ?: m1_kwrite(0x6004, &stage, 1);"])
+          and in_order_of(pprep, ["writel_relaxed(e1_post_slpa[M1_SIO_ENTRY].val, post_map[M1_SIO_ENTRY]);", "m1_pr.sio_run = m1_probe_word(", "apple_rtkit_idle(m1_sio_rtk)", "m1_pr.sio_idle = m1_probe_word(", "\tif (ret)\n\t\treturn;\n",
+                                  "writel(ctrl & ~M1_ASC_CPU_RUN, m1_sio_asc + M1_ASC_CPU_CONTROL);", "m1_pr.sio_stopped = m1_probe_word("])
+          and "#define M1_PS_ANS2\t\t0x3b8" in src and "#define M1_PS_PMP_RO\t\t0x2d8" in src
+          and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\([^;]*M1_PS_PMP_RO", code_only),
+          "ANS2 is raised only if it read off and is written back as found; each of SIO's and the PMP's steps has a read before and after;"
+          " SIO's RUN is left alone if its idle pair failed; ps_pmp is only read; the bytes go out before the stage", plate)
+
+    # The bytes through m1-crumbs: stage 0x71 is the probe's, not a run's.
+    rc, out, err = dec(0x0e, 0xff, 0xff, 0x8f)
+    check(rc == 0 and "stage 0x6004 = 0x0e: probe=1 (e1-hook/probe), not a run: nothing replayed and nothing was committed." in out
+          and "0x6005 = 0xff: SIO, bit 1 of its ASC + 0x8000 (0x39bc08000), which B2's op 51 waits for:\n" in out
+          and "  after noirq, its parents and SIO_CPU raised again, the state B2's op 51 finds: SET\n" in out
+          and "  after RUN was cleared, the state B2's op 159 finds: SET\n" in out and "  after noirq, ANS2 still on, the state B2's op 151 finds: SET\n" in out
+          and ("  so: bit 1 read SET for all three in the state the recipe leaves: that makes B2's three coprocessor waits less likely to be where the pair"
+               " stops, and doesn't exclude them (B2 polls later, after its own raises)\n") in out
+          and "parked (0x6005" not in out and "the SoC restarted" not in out and "PMU alarm" not in out,
+          "the probe's bytes, all set: decoded as the probe's, with no run's lines", out + err)
+    # 0x71 is the observer's stage under pmgr_late, as it was: the probe took another number for that reason.
+    rc, out, err = dec(0x71, 0xff, 0x04, 0x1e)
+    check(rc == 0 and "probe=1" not in out, "stage 0x71 is still the observer's", out + err)
+    rc, out, err = dec(0x0e, 0xf7, 0xf7, 0x8d)
+    check(rc == 0 and "the state B2's op 51 finds: clear\n" in out and "the state B2's op 159 finds: clear\n" in out
+          and "ANS2 off, raised as B2's op 149 raises it, the state B2's op 151 finds: SET\n" in out
+          and "  so: in the state the recipe leaves, bit 1 read CLEAR for SIO, PMP, for 100 ms. That's a lead for where B2 stops, not its location:" in out,
+          "the probe's bytes with SIO's and the PMP's last reads clear: both named, as a lead", out + err)
+    wrong = []
+    for sio in range(256):
+        for pmp in (0x00, 0x7f, 0x80, 0x88, 0xa8, 0xe8, 0xe0, 0xc8, 0xff, 0xf7):
+            for ans in (0x00, 0x80, 0x82, 0x86, 0x88, 0x8c, 0x84, 0x8f):
+                lines = g["probe_lines"](sio, pmp, ans)
+                so = [line for line in lines if line.startswith("  so: ")]
+                # Read here from asc_probe.h's comment: the last read counts if the domain was on for it (and, for the PMP, RUN was cleared).
+                f = {"SIO": (bool(sio & 8) if sio & 0x40 else None) if sio & 0x80 else None,
+                     "PMP": (bool(pmp & 8) if pmp & 0x40 and pmp & 0x20 else None) if pmp & 0x80 else None,
+                     "ANS": (bool(ans & 4) if ans & 0x0a else None) if ans & 0x80 else None}
+                clear = [k for k in ("SIO", "PMP", "ANS") if f[k] is False]
+                unread = [k for k in ("SIO", "ANS", "PMP") if f[k] is None]
+                ok = (len(so) == 1 and ("bit 1 read CLEAR for" in so[0]) == bool(clear)
+                      and all((k in so[0].split("for 100 ms")[0]) == (k in clear) for k in f if clear)
+                      and ("bit 1 read SET for all three" in so[0]) == (not clear and not unread)
+                      and ("nothing decided" in so[0]) == (not clear and bool(unread))
+                      and ("didn't land" in "".join(lines)) == (not (sio & pmp & ans & 0x80)))
+                if not ok:
+                    wrong.append((hex(sio), hex(pmp), hex(ans), so))
+    check(not wrong, "the probe's verdict, for every SIO byte against a spread of the other two: clear is named only for a last read that was made and"
+          " read clear, and all three set only when all three were read", str(wrong[:2]))
 
 
 def in_order_of(text, parts):
@@ -2733,7 +2950,7 @@ def position_tests(g, src):
                           "writel(ctrl & ~M1_ASC_CPU_RUN, m1_dcp_asc[i] + M1_ASC_CPU_CONTROL);", "M1_DCP_STOPPED : M1_DCP_NOT_STOPPED;"])
           and shut.count("apple_rtkit_shutdown(") == 1 and shut.count("writel(") == 1 and "apple_rtkit_idle" not in shut,
           "m1_dcp_shutdown(): one RTKit shutdown each, RUN cleared after it", shut)
-    check("if (disp_off && n == 1 && !READ_ONCE(replay_done))\n\t\tm1_dcp_shutdown();" in src[src.index("static int e1_prepare(void)"):src.index("static int e1_prepare(void)") + 500],
+    check("if (disp_off && n == 1 && !READ_ONCE(replay_done))\n\t\tm1_dcp_shutdown();" in src[src.index("static int e1_prepare(void)"):src.index("static int e1_prepare(void)") + 900],
           "the DCPs are shut down at the first prepare of the suspend that will replay, before noirq and slpa")
     stop = src[src.index("static u8 m1_disp_stop(void)"):]
     stop = stop[:stop.index("\n}\n")]
@@ -2775,7 +2992,7 @@ def position_tests(g, src):
           "m1_sio_fw_stop(): the idle pair once, RUN cleared only after it returned 0", fw)
     check("if (ret) {\n\t\tm1_sio_code = ret == -ETIME || ret == -ETIMEDOUT ? M1_DCP_TIMEOUT : M1_DCP_FAILED;\n\t\treturn;\n\t}" in fw,
           "SIO's RUN is left alone if its idle pair failed (what Corey OK'd)", fw)
-    check("if (sio_stop && n == 1 && !READ_ONCE(replay_done))\n\t\tm1_sio_fw_stop();" in src[src.index("static int e1_prepare(void)"):src.index("static int e1_prepare(void)") + 700],
+    check("if (sio_stop && n == 1 && !READ_ONCE(replay_done))\n\t\tm1_sio_fw_stop();" in src[src.index("static int e1_prepare(void)"):src.index("static int e1_prepare(void)") + 1100],
           "SIO's firmware is stopped at the first prepare of the suspend that will replay, after the DCPs", "")
     check(in_order(src, ["b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;",
                          "m1_crumb(0x6004, b, 4);\n\t\tif (sio_stop) {",
