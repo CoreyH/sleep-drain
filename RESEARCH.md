@@ -3806,8 +3806,21 @@ at (inferred).
 pass. The look: its page, its clock generators and its gates' enables are in order. Left, in B2's order:
 the gate, 0x2922c0044 bit 2, which has only ever been read with a core up; A2's three moves inside the
 first handshake; and B2's polls after its own writes (bit 11, the gates' bit 30, the clock generators'
-bit 31). Of those, only A2's three can be tried from a running core without changing what the engine then
-finds: if the AP makes them first, A2 finds them made.
+bit 31). A2's three can be tried from a running core without changing what the engine then finds: if the
+AP makes them first, A2 finds them made (what a move that doesn't settle for the AP would mean for A2 is
+another matter: A2 makes them later, with every core down).
+
+**One of B2's gate polls has something on file against it.** Since run 12, `ps_words=1` writes macOS's
+values to twenty power words, and every run has recorded that the last four, the ones given macOS's auto
+floor, didn't all read back as written (0x6013 = 0xdf; "M1 run 12"). One bit for the group: which word,
+and what it read, isn't known, and it wasn't followed up. One of the four is AFNC2_LW1, 0x28e580160, the
+fabric lane the device tree gives as SIO's parent. macOS has it at 0x1000030f at sleep entry, on with
+auto power-gating and a floor of 0; Linux has 0x1f0000ff, a floor of f
+(`results/sleep-peek-20261104T120619/`). And 0x28e5a0050, the gate B2 polls after it has switched SIO's
+subtree off, read open in this look with the subtree off but five UARTs. If that gate closes only when
+the lane above SIO gates itself, a lane that never takes macOS's floor would leave B2's poll unmet, before
+op 224. That's a chain of two inferences, each of which one read can test: PLAN.md, "The order after the
+look".
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

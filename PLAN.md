@@ -51,9 +51,11 @@ the PR with that session's work.
   - A look that only reads (2026-11-10) came back, as the probe hadn't, with 98 words read twice: the
     engine's own page, its clock generators and its six gates' enables are all as its wake sequence
     leaves them. Nothing out of place there.
-  - **Next: A2's three moves made by the AP before the commit** (DCS to 2, the fabric to 2, 0x28e20c400
-    to 0), in a one-way run with the marker: the one group of the pair's remaining waits that a running
-    core can try. Not built: "The order after the look", in Track A below, is the place to start.
+  - **Next: the gate test,** a second look with six power words changed and put back: does the gate
+    B2 waits on after SIO's subtree close in Linux's state, and does the fabric lane above SIO take
+    macOS's value (the group that hasn't read back as written since run 12)? Then A2's three moves
+    made by the AP before the commit. Neither is built: "The order after the look", in Track A
+    below, is the place to start.
 
 ## Picking this up
 
@@ -429,18 +431,38 @@ steps, and restarting the DCP and the PMP afterwards.
       itself. So the state the entry starts from isn't visibly wrong, and what's left before op 224
       is: the gate (0x2922c0044 bit 2), never read with every core down; A2's three moves, each an
       untimed wait; and B2's polls after its own writes.
-      Next, **not built: `a2_pre=1`, A2's three moves made by the AP.** On `--m1-mark`'s recipe, after
-      macOS's table and before the commit, CPU0 does what A2 does inside the first handshake, in A2's
-      order: DCS := 2 (0x28e20c800, from the 5 the table leaves) and up to 10 ms for it to settle; the
-      fabric := 2 (0x28e20c000, from 3); 0x28e20c400 := 0 (from 0x222). A mark before each and the
-      outcome of each in the record; then the commit as ever, and the marker. What it can show: a move
-      that doesn't settle is where A2 would wait for ever, and the next run's change; all three
-      settling, with the restart still at 90 s, takes A2's steps off the list (the engine then finds
-      them made); CPU0 not surviving one of them (the mark says which; WD1 restarts the Mac at 90 s)
-      would say that move can't be made with a core running, and no more. New writes: those three
-      words, with values no run has written (the fabric's 2 where `fabric_up=1` writes 3). The same
-      run reads B2's six gate words once more at CPU0's last look, where the recipe has done all it
-      does, for six bits in the record.
+      Next, **not built: the gate test** (`probe=1 look=1 gate=1`; not a one-way run). Two things on
+      file point at one of B2's polls. Since run 12 every run has recorded that `ps_words=1`'s last
+      group, four power words given macOS's auto floor, "didn't all read back as written" (0x6013 =
+      0xdf); which word, and what it read, one bit doesn't say, and nobody followed it up. One of the
+      four is AFNC2_LW1 (0x28e580160), the fabric lane that is SIO's parent: macOS has it at
+      0x1000030f at sleep entry (auto power-gating with a floor of 0, so it may gate itself once
+      nothing below it is on), Linux at 0x1f0000ff (a floor of f). And the look showed that the gate
+      word B2 polls after switching SIO's subtree off, 0x28e5a0050, follows what's behind it and still
+      reads open after Linux's suspend, with the subtree off but five UARTs. If that gate needs the
+      lane to gate itself, and the lane never takes macOS's floor, B2's poll there isn't met.
+      The test, after the look's second pass, in the suspend it then fails: the five UARTs := 0x200
+      (`ps_words=1`'s value), up to 100 ms for the gate's bit 30; AFNC2_LW1 := 0x1000030f, read back
+      at once and for up to 10 ms; the gate again; then all six words written back as found. Every
+      word logged in full. What it can show: the gate closing with the subtree off (then this poll
+      isn't the stall in this state, and the lane's floor isn't needed for it); closing only once the
+      lane has macOS's value; the lane not taking the value, with what it reads; or the gate staying
+      open either way, with something else behind it. Each is read in Linux's suspended state, which
+      isn't the recipe's (the PMP and SIO's firmware run, the cores are up, macOS's table hasn't gone
+      out), so a result here is a lead for the next one-way run, not the stall's location.
+      After it, **not built: `a2_pre=1`, A2's three moves made by the AP.** On `--m1-mark`'s recipe,
+      after macOS's table and before the commit, CPU0 does what A2 does inside the first handshake, in
+      A2's order: DCS := 2 (0x28e20c800, from the 5 the table leaves) and a bounded wait for it to
+      settle; the fabric := 2 (0x28e20c000, from 3); 0x28e20c400 := 0 (from 0x222). A mark before each
+      and the outcome of each in the record; then the commit as ever, and the marker. What it can
+      show: all three settling, with the restart still at 90 s, makes A2's steps less likely (the
+      engine then finds them made); a move that doesn't settle within the AP's bound, with CPU0 and
+      the other cores still up, is an observation about that state and a candidate to look into, not
+      proof that A2 waits there for ever: A2 makes the moves later, with every core down, and waits
+      with no bound (Pullfrog on #79); CPU0 not surviving one of them (the mark says which; WD1
+      restarts the Mac at 90 s) would say that move can't be made with a core running, and no more.
+      New writes: those three words, with values no run has written (the fabric's 2 where
+      `fabric_up=1` writes 3).
       If that's clean too, what's left can't be seen from a running core, and the choice is between
       heavier instruments (the AP doing B2's own power-downs with read-backs; an observer on a P core
       with the E complex down), asking the people who have done this on other chips (Corey's OK to
