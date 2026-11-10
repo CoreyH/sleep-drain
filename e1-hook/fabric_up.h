@@ -23,7 +23,10 @@
  * (0x52 in place of 0x4e; 0x53 and 0x51 in place of 0x57 and 0x56), because
  * 0x6007 changes meaning there, from the cores that held to this byte:
  *   bit 0     ps_sio, UART_P and SPI_P read on (sio_on=1's bit, as before)
- *   bit 1     all seven other cores wrote their stop bit and held
+ *   bit 1     NOT all seven other cores wrote their stop bit and held. Set is
+ *             the bad case on purpose: step 7's byte has this bit set whenever
+ *             CPU1 held, so the byte it leaves here (0xff as a rule) can never
+ *             read as a run in which everything went well
  *   bits 3:2  the word before the write: 0 another value, 1 0x111 (asked down
  *             to 1 and there), 2 asked down to 1 and not there yet, 3 0x333
  *             (never lowered)
@@ -34,9 +37,11 @@
  *             just before the commit, 0 in a run without one
  * Step 7's command leaves the cores that held in the same place, 0xff as a rule,
  * and the byte is the last of stage 0x52's command: if that command landed
- * without it, the old 0xff would read as every bit set. The steps' outcomes at
- * 0x6012 go out right after that command and only if it didn't fail, so
- * m1-crumbs reads the byte only when their marker is at 0x6013.
+ * without it, the old byte would be read as this one. Two things guard that. The
+ * steps' outcomes at 0x6012 go out right after that command and only if it
+ * didn't fail, so m1-crumbs reads the byte only when their marker is at 0x6013.
+ * And bit 1 is set in the old byte and clear in a good new one, so m1-crumbs
+ * reads nothing more out of a byte that has it set.
  */
 #ifndef FABRIC_UP_H
 #define FABRIC_UP_H
@@ -97,7 +102,7 @@ static inline u8 m1_fab_pre(u32 v)
  */
 static inline u8 m1_fab_byte(u8 held, u32 pre, bool set, bool end, u8 wd1)
 {
-	return (u8)((held & 1U) | ((held & 0xfeU) == 0xfeU ? 1U << 1 : 0) | (u32)m1_fab_pre(pre) << 2 |
+	return (u8)((held & 1U) | ((held & 0xfeU) != 0xfeU ? 1U << 1 : 0) | (u32)m1_fab_pre(pre) << 2 |
 		    (set ? 1U << 4 : 0) | (end ? 1U << 5 : 0) | ((u32)wd1 & 3U) << 6);
 }
 

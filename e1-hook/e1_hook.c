@@ -1384,12 +1384,18 @@ static void e1_after_slpa(void)
  * breadcrumbs don't have free, so from step 8's command on this run has stages of
  * its own, M1_FAB_STAGE_PRE for 0x4e and M1_FAB_STAGE and M1_FAB_STAGE_PEND for
  * wd2_bite=1's 0x57 and 0x56, and under them 0x6007 is m1_fab_byte(): the sio bit as
- * before, one bit for "all seven held" in place of the seven, the word's class
+ * before, one bit for "not all seven held" in place of the seven, the word's class
  * before the write, and whether it read 0x333 after the write and at step 5's end.
  * Step 7's command, stage 0x39, still has the seven bits, so a stage 0x52 command
  * that landed without its last byte would leave them under the new stage: m1-crumbs
  * reads the byte only if the steps' outcomes are at 0x6012 with their marker, since
- * they go out after that command and only if it didn't fail (m1_crumb()).
+ * they go out after that command and only if it didn't fail (m1_crumb()), and only
+ * if its bit 1 is clear, which it never is in step 7's byte when CPU1 held.
+ * One thing is new in step 5's last read: it's the first access to that PMGR page
+ * after the ClkGen park and PLL-off (the power words read other pages there, and
+ * the engine's own A2 reads this word right after the commit). If it faulted, the
+ * SError would panic the kernel, and the Mac would restart about 10 s after the
+ * screen went dark, at stage 0x28.
  *
  * wd1_mark=1 (run-floor --m1-mark; with fabric_up=1) makes WD1 a marker of how
  * far B2 gets with every core down, which no sample can see (RESEARCH.md, "After
@@ -1403,14 +1409,19 @@ static void e1_after_slpa(void)
  * bit 6, as ever), then the bite := 150 s, the count := 60 s, and RESET_EN. The
  * count write is new in kind: the kernel and the engine only ever write 0 there.
  * With WD2's bite moved to 120 s after the commit, the restart reads: about 90 s
- * after the commit, WD1 with its count never zeroed, so B2 didn't reach op 223;
+ * after the commit, WD1 with its count never zeroed, so B2 didn't reach op 224;
  * about 120 s, WD2, so B2 zeroed WD1's count and the pair stopped in its last ops;
  * about 150 s, or none, the pair finished and WD1 ended it as a dead-man (none if
  * WD1 doesn't count there). All of that only if the marker stood: in step 8, just
  * before the commit's crumbs, CPU0 reads WD1's control, bite and count, and bits
  * 7:6 of 0x6007's byte say whether it was armed with 150 s and whether the count
- * read 60 s or up to 5 s more. If not, the restart's time says nothing about B2.
+ * read past 60 s by up to 5 s. If not, the restart's time says nothing about B2.
  * Nothing is armed while the Mac is awake, and there's no way back from step 4.
+ * One thing the marker changes for every stage from step 4 on: a hang before the
+ * commit, which the notes above call dark until the power key, now ends in WD1's
+ * reset about 90 s after step 4. The stage tells such a run from one that
+ * committed, and m1-crumbs reads the time against the marker only at the run's
+ * last stage.
  *
  * Left out: Naeem's WD1 dead-man unless wd1_mark=1 (above), so that a completed
  * entry stays dark for a

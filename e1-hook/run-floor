@@ -122,13 +122,17 @@
 # wd1_mark=1 sets it inside the replay, a moment before the commit, where the kernel has already stopped
 # WD1: its bite := 150 s, its count := 60 s, then armed (0x2922b0014, 0x2922b0010, 0x2922b001c; shown to
 # Corey on 2026-11-10, who answered with the standing go-ahead to build new steps). Nothing is armed while
-# the Mac is awake. B2 zeroes WD1's count near its end, so this run ends one of these ways, and m1-crumbs
-# reads the time for you:
-#   - a restart about 90 s after the screen goes dark: WD1, never zeroed. B2 didn't get that far.
-#   - a restart about 120 s after: WD2, as in runs 15 and 16. B2 got past its power-down.
-#   - a restart about 150 s after, or dark for good: the entry completed. For this run "dark for good"
-#     starts at 4 minutes, and the steps below for a dark Mac apply.
-# Only if m1-crumbs says the marker stood (0x6007's bits 7:6). Its label is floor-m1-mark.
+# the Mac is awake. B2 zeroes WD1's count near its end, so the time of this run's restart is a reading of
+# how far B2 got, which m1-crumbs makes, and only where the record bears it out (the marker stood, the
+# run's last stage landed, WD2 was as the reading needs it):
+#   - a restart about 90 s after the screen goes dark fits WD1 with its count never zeroed: B2 didn't
+#     get that far.
+#   - a restart about 120 s after fits WD2, as in runs 15 and 16: B2 got past its power-down.
+#   - a restart about 150 s after or later, or dark for good, fits a completed entry. For this run "dark
+#     for good" starts at 4 minutes, and the steps below for a dark Mac apply.
+# One thing changes for every stage of the replay from step 4 on: a hang before the commit, which the
+# notes above call dark until the power key, now ends in WD1's restart about 90 s later. m1-crumbs'
+# stage tells such a run from one that committed. Its label is floor-m1-mark.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by

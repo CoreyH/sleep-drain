@@ -426,7 +426,7 @@ steps, and restarting the DCP and the PMP afterwards.
         moment before the commit: 0x2922b0014 (bite) := 150 s (0xd693a400), 0x2922b0010 (count) := 60 s
         (0x55d4a800), 0x2922b001c (control) := 4. Nothing is armed awake. Just before the commit CPU0
         reads the three back and records whether the marker stands; if it doesn't, the restart's time
-        says nothing about B2. B2 zeroes WD1's count at op 223 of 246, so the restart reads: about
+        says nothing about B2. B2 zeroes WD1's count at op 224 of 246, so the restart reads: about
         90 s after the commit, B2 never got there; about 120 s (WD2), it did, and the pair stopped in
         its last ops; about 150 s or dark, the entry completed. Each is the reading that fits with
         nothing else assumed, not a proof of which watchdog fired: 90 s is also a pair that finished
@@ -438,15 +438,21 @@ steps, and restarting the DCP and the PMP afterwards.
         asks for 2; up to 10 ms for it to settle; the word read before the write, after it, and at the
         end of step 5.
       - The record takes no new PMU byte. From step 8's command on the run has stages of its own
-        (0xd2, then 0xd3 or 0xd1), under which 0x6007 holds one bit for "all seven held" in place of
-        the seven, and with the room that leaves: what the fabric's word read before the write,
+        (0xd2, then 0xd3 or 0xd1), under which 0x6007 holds one bit for "not all seven held" in place
+        of the seven, and with the room that leaves: what the fabric's word read before the write,
         whether it read 0x333 after it and at step 5's end, and whether WD1 stood as the marker.
-        `m1-crumbs` reads the restart's time against the marker, and says what else each time fits.
+        `m1-crumbs` reads the restart's time against the marker, and says what else 90 s and 120 s fit.
         It reads it only as far as the record bears it out (Pullfrog on #74): at the run's last
         stage, with no exception pending on CPU0; 120 s only if the sample shows WD2 armed and
         counting with the moved bite and `PHASE` at A2's 4 or 5; 150 s only if WD2 was seen armed;
-        and the byte itself only if the steps' outcomes landed after its command, since step 7
-        leaves 0xff in the same place.
+        and the byte itself only if the steps' outcomes landed after its command and its "not all
+        held" bit is clear, since step 7 leaves 0xff in the same place. A pair that finishes restarts
+        150 s after B2's zeroing, so later than 150 s after the commit by however long B2 took.
+      - Two things the marker changes about a run that goes wrong. A hang anywhere from step 4 to the
+        commit used to be dark until the power key; it now ends in WD1's restart about 90 s later,
+        and the stage says it wasn't the commit's. And step 5's last read of the fabric's word is
+        the first access to that PMGR page after the clocks are parked: if it faulted, the Mac would
+        restart about 10 s after going dark, at stage 0xa8.
       After it, by its reading: 90 s, the gate itself (which party holds 0x2922c0044's bit 2: an awake
       test that stops one coprocessor at a time and reads the word, each stop needing an OK); 120 s,
       B2's last ops (the PMU command over SPMI first); 150 s or dark, the wake.

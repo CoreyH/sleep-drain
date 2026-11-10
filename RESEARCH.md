@@ -3459,7 +3459,7 @@ Aura. The sequences' listing stays off the repository.
   B2's progress, and it's to be read that way, not as a result. With WD2 at 120 s as in runs 15 and 16,
   the reset's time then reads the pair's progress:
   - **about 90 s after the commit:** WD1, its count never zeroed, is what fits. B2 then didn't reach
-    op 223: the stall is at the gate, in the first handshake (A2's three steps) or in B2's power-down.
+    op 224, where WD1's count is zeroed: the stall is at the gate, in the first handshake (A2's three steps) or in B2's power-down.
     It supports that and doesn't prove it: the same time comes out if B2 zeroed WD1's count, the pair
     finished, and a later A sequence started about 60 s after the commit and armed WD2 with its own
     30 s, the delayed re-arm that run 15 left open (Pullfrog on #72). Runs 15 and 16 saw no sequence

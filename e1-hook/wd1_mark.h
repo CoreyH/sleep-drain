@@ -9,7 +9,7 @@
  * the kernel keeps it armed with a 30 s bite and pings it, and apple_wdt's
  * suspend callback stops it before e1_hook runs, so a marker can only be set
  * inside the replay. B2, the second sequence of the entry pair, zeroes WD1's
- * count at its op 223 of 246, after its whole power-down, and writes no
+ * count at its op 224 of 246, after its whole power-down, and writes no
  * watchdog's control; A2 stops WD2 only at the pair's very end.
  *
  * So in step 4, a moment before the commit, e1_hook wd1_mark=1 writes WD1's bite
@@ -18,7 +18,7 @@
  * writes on 2026-11-10 and answered with the standing go-ahead to build new steps
  * without waiting. With WD2's bite at 120 s (wd2_bite=1), the restart then reads:
  *   about 90 s after the commit   WD1, its count never zeroed: B2 didn't reach
- *                                 op 223
+ *                                 op 224
  *   about 120 s                   WD2: B2 zeroed WD1's count, and the pair
  *                                 stopped in its last twenty-odd ops (or WD1
  *                                 can't reset the SoC in this state, which this
@@ -31,8 +31,9 @@
  * (m1-crumbs' mark_reading() has the conditions). The two bits, 7:6 of
  * fabric_up.h's byte, from a read of WD1 just before the commit:
  *   bit 0     its control showed RESET_EN and its bite read 150 s
- *   bit 1     its count read 60 s or up to 5 s more: the count write took, and
- *             the count ran on from it
+ *   bit 1     its count read past 60 s, by up to 5 s: the count write took, and
+ *             the count ran on from it (a count that reads exactly the value
+ *             written isn't running, and doesn't count)
  * Anything but both set: the restart's time says nothing about B2.
  */
 #ifndef WD1_MARK_H
@@ -63,7 +64,7 @@ typedef uint32_t u32;
 static inline u8 m1_wd1_bits(u32 ctl, u32 bite, u32 count)
 {
 	return (u8)(((ctl & WD1_RESET_EN) && bite == WD1_MARK_BITE ? M1_WD1_ARMED : 0) |
-		    (count >= WD1_MARK_COUNT && count - WD1_MARK_COUNT <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0));
+		    (count > WD1_MARK_COUNT && count - WD1_MARK_COUNT <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0));
 }
 
 #endif /* WD1_MARK_H */

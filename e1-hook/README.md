@@ -88,17 +88,21 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   that word and value), then up to 10 ms for it to read 0x333, and one more read at step 5's end. The load
   refuses unless the word reads 0x333 awake. From step 8's command on the run has stages of its own (0x52
   for 0x4e, 0x53 and 0x51 for 0x57 and 0x56), because 0x6007 becomes `fabric_up.h`'s byte there: the sio
-  bit, "all seven held", what the word read before the write, whether it read 0x333 after it and at step
-  5's end, and `wd1_mark=1`'s two bits.
+  bit, "not all seven held", what the word read before the write, whether it read 0x333 after it and at
+  step 5's end, and `wd1_mark=1`'s two bits. Step 7 leaves the cores that held in the same place, so
+  `m1-crumbs` reads the byte only if the steps' outcomes landed after its command, and nothing past a set
+  "not all held" bit, which step 7's byte has set whenever CPU1 held.
 - `wd1_mark=1` (`run-floor --m1-mark`, on `fabric_up=1`) makes WD1, the kernel's own watchdog, a marker of
   how far B2 gets with every core down. The kernel keeps WD1 armed and pinged while awake and stops it at
   suspend, so it's set in step 4, a moment before the commit: its bite := 150 s, its count := 60 s (a
   non-zero count write, new in kind), then RESET_EN (`wd1_mark.h`; built on Corey's standing go-ahead of
-  2026-11-10). B2 zeroes WD1's count at its op 223 of 246, so with WD2 at 120 s the restart reads: about
-  90 s, never zeroed; about 120 s, zeroed, and the pair stopped in its last ops; about 150 s or none, the
-  pair finished. Only if the marker stood: step 8 reads WD1 back, and bits 7:6 of 0x6007's byte say whether
-  it was armed with 150 s and its count at 60 s. `m1-crumbs` reads the restart's time against it, and says
-  what else each time could be.
+  2026-11-10). B2 zeroes WD1's count at its op 224 of 246, so with WD2 at 120 s the restart reads: about
+  90 s, never zeroed; about 120 s, zeroed, and the pair stopped in its last ops; 150 s or later, or none,
+  the pair finished. Only if the marker stood: step 8 reads WD1 back, and bits 7:6 of 0x6007's byte say
+  whether it was armed with 150 s and its count had run on past 60 s. `m1-crumbs` reads the restart's time
+  against it only at the run's last stage and as far as `wd2_bite=1`'s sample bears a reading out, and says
+  what else 90 s and 120 s could be. With the marker set, a hang anywhere from step 4 to the commit ends in
+  WD1's restart about 90 s later, not in a dark Mac.
 - `run-floor --quick` ahead of any recipe makes the reading 1 minute. `13` is the floor with the CPUs left up.
 
 ## What holds for every one-way run
