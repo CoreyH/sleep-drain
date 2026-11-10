@@ -1,0 +1,8 @@
+# Boots around M1 run 17
+The run's safe boot (kernel 7.2.11-15) started 15:19:13. Corey ran run-floor --quick --m1-mark at 15:22:15, on battery at about 17%.
+wd2-bite's check and write were each saved to the boot partition (tars 20261110T152215 and 20261110T152216): the store from user space took, 90 s to 120 s (wd2-bite-write.txt).
+e1_hook loaded at 15:22:16 with wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 (e1_hook-load.txt: fabric-ps 0x333 awake; WD1 awake control 4, count 0x0b56bc81 (7.9 s), bite 0x2aea5400 (30 s), the kernel's; the nine soc-cluster words 0f 2f 2f 2f 00 2f 2f 0f 2f). The 1-minute reading ended at 15:23:16 and was saved (tar 20261110T152317).
+The commit: RTC second 364313. The Mac went dark and restarted by itself at just about 90 seconds (Corey's report); the regular boot after it began 15:25:14 (uptime -s).
+m1-crumbs read in that boot, three times: CNTVCT 152.5 s old, restart 89.5-91.5 s after the commit (its output is in the session's record, not here); 253.0 s old, 90.0-92.0 s (crumbs.txt); 259.3 s old, by --clear, 89.7-91.7 s (clear-collect.txt). All three hold for 90.0-91.5 s.
+--clear: 0x1401 read 0x41 (armed, 0x140c = 367913 = the commit's second 364313 + 3600), then disarmed: 0x1401 = 0x01; breadcrumbs zeroed. collect: the three tars (clear-collect.txt).
+journal, this boot: PMU logged 1 boot error(s) and 0 panic(s)

@@ -23,8 +23,8 @@ the PR with that session's work.
     the key macOS writes, wasn't read. `CLSP` reads 0 and `CLWK` doesn't
     move, so the SMC apparently never registers a sleep (inferred).
   - The likely S2R timer is 0x2925c4000, which already reads 1 under Linux.
-- **In progress: E2, making the S2R entry complete** (A5). Sixteen one-way runs (RESEARCH.md, "M1
-  run 1" to "M1 run 16"). maralcbr's replay with Naeem's M1 recipe takes every core down and commits
+- **In progress: E2, making the S2R entry complete** (A5). Seventeen one-way runs (RESEARCH.md, "M1
+  run 1" to "M1 run 17"). maralcbr's replay with Naeem's M1 recipe takes every core down and commits
   the entry, and the SoC resets instead of sleeping. What's established:
   - The reset is the engine's own watchdog, WD2, which the entry sequence arms at the commit and stops
     only at its end. Moved from 30 s to 120 s, the reset follows it (runs 15 and 16): the entry is
@@ -39,10 +39,12 @@ the PR with that session's work.
     both P complexes down before the commit (1, 5), macOS's PMGR quiesce in its place with its waits
     (3; all of them met from run 9 on), the PMP stopped (7), the display off (9), the commit written
     once and the SMC given its AP idle notice (10), SIO's firmware stopped (11), macOS's remaining
-    power words (12), the clusters' "up done" flags acked (16).
-  - **Next: one run that reads how far B2 gets with every core down** (WD1 as a marker), with the
-    fabric's p-state put back where macOS has it. The fabric write has Corey's OK; the marker's three
-    writes need a fresh one, and nothing is built: "The order after run 16", in Track A below, is the
+    power words (12), the clusters' "up done" flags acked (16), the fabric's p-state back at 3 (17).
+  - With WD1 set as a marker and the fabric's p-state back where macOS has it, the restart came at
+    90 s (run 17): B2, the second sequence of the entry pair, doesn't reach its op 224 with every core
+    down. The stall is at its gate, in the first handshake or in its power-down.
+  - **Next: a probe, not a one-way run,** of the three coprocessor status words B2 polls in that
+    power-down, which nothing has read. Not built: "The order after run 17", in Track A below, is the
     place to start.
 
 ## Picking this up
@@ -412,11 +414,27 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 16 (2026-11-10; judgment; this is the only place it's kept):** run 16 wrote
+      **The order after run 17 (2026-11-10; judgment; this is the only place it's kept):** run 17 put
+      the fabric back at 3 and set WD1 as a marker; the marker stood and the restart came at 90.0-91.5 s
+      (RESEARCH.md, "M1 run 17"). So B2 doesn't reach its op 224 with every core down: the stall is at
+      its gate, in the first handshake or in its power-down. `fabric_up=1` and `wd1_mark=1` stay in the
+      recipe, and from here a change that gets B2 further shows as a restart at 120 s or later.
+      Next, not built: **a probe of the three coprocessor words B2 polls** (RESEARCH.md, "After run 17"):
+      SIO's, ANS's and the PMP's ASC + 0x8000, bit 1, which the engine waits for after powering each
+      domain up, and which nothing has read. Not a one-way run: a suspend under `pm_test=platform` in a
+      safe boot, in which the module takes the recipe's own steps on SIO and the PMP (the idle pair, RUN
+      cleared, SIO's parents raised: writes the runs already make) and reads the three words around each,
+      into the kernel log and, as a fallback if the resume fails, a few bits in the breadcrumbs. It reads
+      three addresses that are new to the hook, in mailbox blocks Linux's own driver has mapped.
+      After it, by its reading: a word that never shows bit 1 in the recipe's state names the op where
+      B2 stops, and the next run leaves that coprocessor differently (idled but not stopped, or not
+      power-cycled); all three showing it leaves the gate (the awake test below), A2's three steps tried
+      from the AP, and the bit-11 polls.
+      **Earlier, the order after run 16 (2026-11-10; judgment):** run 16 wrote
       the three cluster words 0x20, all four read 0, and the reset came at 120 s again (RESEARCH.md, "M1
       run 16"): the leftover flags aren't the stall, or not alone. `cluster_ack=1` stays in the recipe.
-      Next, one run (RESEARCH.md, "After run 16", has the evidence). **Built, not run yet:** `pkexec
-      e1-hook/run-floor --quick --m1-mark` in a safe boot, on battery, with nothing attached
+      Next, one run (RESEARCH.md, "After run 16", has the evidence). **Built and run: run 17, above.**
+      It was `pkexec e1-hook/run-floor --quick --m1-mark` in a safe boot, on battery, with nothing attached
       (`fabric_up=1 wd1_mark=1` on run 16's parameters; `--m1-fabric-up` is the same without the
       marker). Corey OK'd four writes on 2026-11-10: the fabric's, below, which stands, and three to
       WD1 at the module's load, which can't work (the kernel's `apple_wdt` owns WD1 awake and stops it

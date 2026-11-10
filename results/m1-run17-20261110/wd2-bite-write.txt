@@ -1,0 +1,17 @@
+reading 0x2922b002c
+0x2922b002c = 0x00000000  WD2's control
+reading 0x2922b0020
+0x2922b0020 = 0xfd082455  WD2's count
+reading 0x2922b0024
+0x2922b0024 = 0x80befc00  WD2's bite
+WD2: as it is awake: not armed, its bite 90 s
+writing 0xaba95000 to 0x2922b0024, one 32-bit store
+the three words again, after the write:
+reading 0x2922b002c
+0x2922b002c = 0x00000000  WD2's control
+reading 0x2922b0020
+0x2922b0020 = 0xfd0829b6  WD2's count
+reading 0x2922b0024
+0x2922b0024 = 0xaba95000  WD2's bite
+WD2: not armed, its bite the new value, 120 s
+the register took the write: the bite reads the new value, 120 s, and WD2 still isn't armed
