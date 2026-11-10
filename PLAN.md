@@ -419,12 +419,16 @@ steps, and restarting the DCP and the PMP afterwards.
       a completed entry with a stalled wake (but for a later sequence starting 90.0-91.3 s in, which
       another bite would rule out). The store from user space took, so runs 13 and 14 stand: the SRAM
       can't be written from Linux. What isn't known is how far B2 gets with every core down, and what
-      holds its first poll. Proposed, in this order, each needing Corey's OK and none built:
+      holds its first poll. Proposed, in this order, each needing Corey's OK (the first two have it, of
+      2026-11-10: the first is done, the second is being built; the third isn't asked for yet):
       - **A read of the PMU's register 0x0201**, through the nvmem interface `m1-crumbs` reads the
         breadcrumbs with, read-only, in a regular boot: once now, and in the first boot after each run
         from here on. B2's second-to-last step writes 1 there, B0 does at the wake's start, and B1, the
         last of the wake, writes 0. A 1 after a run would say B2 reached its end. A 0 says little until
         it's known whether a restart clears it, and nothing here can show that.
+        Read once on 2026-11-10 (Corey's OK of that day), after run 15's reset: 0x02, neither value
+        (RESEARCH.md, "M1 run 15"). So it decides nothing yet. `m1-crumbs` could print it after each
+        run from here on (not built): a 1 would still be news.
       - **The rest of the SRAM, read-only, in a safe boot.** 37 of the 45 sequences the SRAM's pointer
         blocks name are past the 64 KiB that's been read, at 0x102e0-0x33160: the eight other
         descriptor blocks', the soc clusters' by the look of them (RESEARCH.md, "Before the feasibility

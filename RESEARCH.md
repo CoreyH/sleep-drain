@@ -3206,10 +3206,11 @@ read: the SRAM's refusal is the SRAM's.
   and `--clear` disarmed it.
 
 **What that shows:**
-- **The reset moved, for the first time in fifteen runs, and it went where the bite was put.** WD2's bite
+- **The reset moved, for the first time, and it went where the bite was put.** The twelve runs that
+  reached the commit before this one all reset at about 30 s (runs 13 and 14 never suspended). WD2's bite
   is writable from the AP, by the kernel after the commit and from user space awake, and it's compared
   live: the count ran on from A2's arming and the SoC reset when it reached the new bite. So it was WD2
-  that ended this run, as it was taken to end the fourteen before it.
+  that ended this run, as it was taken to end the twelve earlier suspend runs.
 - **A2 armed WD2 at the commit, and no A sequence started after it, unless one did 90.0-91.3 s in.**
   `PHASE` read 4 after CPU0's write, so none had by then. Every A sequence opens by writing its own
   30 s and zeroing the count, so one that started t after the commit would have reset the SoC at
@@ -3243,6 +3244,15 @@ says only that the pair never finished.
 - What holds B2's first poll is still the question. The best lead that needs no write is the part of
   the SRAM that hasn't been read: the eight other descriptor blocks' sequences, the soc clusters' by
   the look of them, where a complex's untimed wait would be ("Before the feasibility run").
+
+**The PMU's register 0x0201, read once (read-only, Corey's OK of 2026-11-10; `pmu-0201.txt`):** 0x02,
+11.5 minutes into the first boot after the reset. That's neither the 1 that B2 and B0 write there nor
+the 0 that B1 writes. So in a boot where no engine sequence has finished, the register holds a value of
+its own, and what the sequences write is either a command whose value doesn't read back or a state that
+a boot sets again. Either way this read can't say whether B2 reached that step in run 15: a 1 would have
+said it did, and a 2 fits a B2 that never got there as well as a boot that put the 2 back. It's worth
+one more read at a known point, in the next safe boot before any run, to see whether 2 is what every
+boot shows.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 
