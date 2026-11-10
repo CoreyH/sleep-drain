@@ -180,7 +180,11 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   reconfig SRAM, in stages, saving after each: the table offset register's
   analogue, the SRAM's first word, the table, then 0x10000 bytes (`--rest`:
   on to the table's last sequence + 0x10000, after that dump is decoded).
-  The dumps stay out of the repo. `--position` reads the position read's words
+  `--to-end` (Corey's OK of 2026-11-10) reads everything past those 0x10000
+  bytes, to the SRAM's end at 0x70000, in 24 pieces of 16 KiB, each a run of
+  the reader saved before the next, with `kernel.panic` set so that a read
+  that faults restarts the Mac: the other eight descriptor blocks' sequences
+  are out there. The dumps stay out of the repo. `--position` reads the position read's words
   awake, one at a time, in the safe boot of the run; `--position-after` repeats
   them once in the first regular boot after the run's reset (Corey's OK of
   2026-11-09), the one read of this kind outside a safe boot.

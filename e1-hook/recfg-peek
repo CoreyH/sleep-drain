@@ -4,6 +4,8 @@
 #
 #   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek          stages 1-4
 #   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek --rest   stage 5
+#   pkexec /home/corey/src/sleep-drain/e1-hook/recfg-peek --to-end stage 8, 24 times: the rest of the SRAM
+#                                                                  (Corey's OK, 2026-11-10)
 #
 # and the position read's words, one at a time (Corey's OK, 2026-11-09):
 #
@@ -21,6 +23,13 @@
 # the SRAM's first word; the table; the first 0x10000 bytes. --rest is the
 # most exposed read, on to the table's last sequence + 0x10000, and is for
 # after stage 4's dump has been decoded: it stands alone, in any later safe boot.
+# --to-end reads everything past stage 4's dump, to the SRAM's end at 0x70000, in 24
+# pieces of 16 KiB, each one a run of the reader with a directory of its own
+# (recfg-peek-<time>-r<NN>/), saved before the next is read: 37 of the 45 sequences
+# the SRAM's pointer blocks name are out there. None of it has been read before, so
+# it sets kernel.panic to 10 first: a read that faults then restarts the Mac 10 s
+# later, with every piece before it saved. It stops, as a result, at a piece that
+# reads all ones.
 #
 # Each stage gets a directory of its own, /var/log/sleep-drain/recfg-peek-<time>-s<N>/,
 # and its output is printed as it comes and saved to the boot partition
@@ -51,11 +60,16 @@ SAFE_FLAG=${RECFG_SAFE_FLAG:-/run/sleep-drain-safe/active}
 SAVE=${RECFG_SAVE:-/usr/local/bin/sleep-drain-safe}
 LOG_ROOT=${RECFG_LOG_ROOT:-/var/log/sleep-drain}
 RUNDIR=${RECFG_RUNDIR:-/run}
+SYSCTL=${RECFG_SYSCTL:-/proc/sys/kernel}
 
 mode=sram
 stages="1 2 3 4"
 if (($# == 1)) && [[ $1 == --rest ]]; then
   stages=5
+elif (($# == 1)) && [[ $1 == --to-end ]]; then
+  mode=rest
+  # Stage 8's pieces, 0 to 23: 0x10000 to 0x70000.
+  stages="0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23"
 elif (($# == 1)) && [[ $1 == --position ]]; then
   mode=position
   stages="a b c d e f g h"
@@ -63,7 +77,7 @@ elif (($# == 1)) && [[ $1 == --position-after ]]; then
   mode=after
   stages="a b c d e f g h"
 elif (($# != 0)); then
-  die "usage: recfg-peek [--rest | --position | --position-after]"
+  die "usage: recfg-peek [--rest | --to-end | --position | --position-after]"
 fi
 
 [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
@@ -84,6 +98,7 @@ fi
 now=$(date +%Y%m%dT%H%M%S)
 case $mode in
   sram) tag=s ;;
+  rest) tag=r ;;
   position) tag=p ;;
   after) tag=after ;;
 esac
@@ -104,16 +119,30 @@ keep() {
   fi
 }
 
+# --to-end reads what nothing has read: a fault there should restart the Mac, not leave it hung (run-floor's setting).
+if [[ $mode == rest ]]; then
+  echo 10 > "$SYSCTL/panic" || die "couldn't set kernel.panic; nothing read"
+fi
+
 for stage in $stages; do
   if [[ $mode == after ]]; then
     out=$LOG_ROOT/recfg-peek-$now-after
+  elif [[ $mode == rest ]]; then
+    out=$LOG_ROOT/recfg-peek-$now-$tag$(printf %02d "$stage")
   else
     out=$LOG_ROOT/recfg-peek-$now-$tag$stage
   fi
   mkdir -p "$out" || die "couldn't make $out"
   log=$out/log.txt
+  if [[ $mode == rest ]]; then
+    # One piece a run of the reader: the piece is an index, never an address.
+    reader=("$BIN" 8 "$out" "$stage")
+    stage="8, piece $stage"
+  else
+    reader=("$BIN" "$stage" "$out")
+  fi
   echo "== stage $stage" | tee -a "$log"
-  "$BIN" "$stage" "$out" 2>&1 | tee -a "$log"
+  "${reader[@]}" 2>&1 | tee -a "$log"
   st=("${PIPESTATUS[@]}")
   rc=${st[0]}
   if ((st[1] != 0)); then
@@ -139,5 +168,9 @@ if [[ $mode == position ]]; then
   sync -f "$done_dir/done.txt"
   "$SAVE" save > /dev/null || die "couldn't save the pass's record; run-floor --m1-position will refuse"
   : > "$RUNDIR/sleep-drain-position-awake" || die "couldn't leave the mark in $RUNDIR; run-floor --m1-position will refuse"
+fi
+if [[ $mode == rest ]]; then
+  echo "recfg-peek: done: the SRAM is read to its end, 24 pieces, each saved. Restart the Mac normally; the next boot's collect brings them in."
+  exit 0
 fi
 echo "recfg-peek: done (stages ${stages// /, }). Go on with the next step."

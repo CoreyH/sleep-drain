@@ -5,7 +5,7 @@
 // stages a-h, and the launcher repeats those a-h once in the regular boot after
 // a run, when the safe-boot pass read them all without a fault. Stages 6 and 7
 // are e1-hook/recfg-bite's: 6 in a safe boot, 7 once in the regular boot after
-// its run.
+// its run. Stage 8 is the rest of the SRAM, a 16 KiB piece a run, in a safe boot.
 //
 //   stage 1: the table-offset register's analogue (0x2925c0200) and its
 //            lock's (0x2925c0214), inside the ADT's window 0x2925c0000 + 0x14000
@@ -29,6 +29,13 @@
 //            and whether the bite is the old 30 s or the new 45 s
 //   stage 7: that one word alone, 0x292f02010, and which of the two values it
 //            reads: the read Corey OK'd for the regular boot after the run
+//   stage 8: one 16 KiB piece of the SRAM past stage 4's 0x10000 bytes, to a
+//            file of its own: piece N, 0 to 23, is the 0x4000 bytes at SRAM +
+//            0x10000 + N * 0x4000, so the 24 of them end where the SRAM does, at
+//            0x70000 (Corey's OK of 2026-11-10 for the rest of the SRAM, read-only:
+//            37 of the 45 sequences its pointer blocks name are out there, the
+//            eight other descriptor blocks'). It says how many of the piece's
+//            words read 0, and stops the pass if every one read all ones
 //   stages a-h: the words of the position read (PLAN.md), one stage a word,
 //            but for a: WD2's control and count and SIO_CPU, which runs 2 and
 //            3 read after the commit. b-h are the seven nothing had read: the
@@ -47,7 +54,8 @@
 // never-write list). No node's reg covers it, so the read is outside the ADT
 // windows Linux and its drivers know.
 //
-// It can read nothing else: there's no address argument. Each read is one
+// It can read nothing else: there's no address argument. Stage 8's piece is an
+// index, 0 to 23, and every piece is inside the SRAM. Each read is one
 // aligned 32-bit ldr from a /dev/mem mapping, which arm64 makes device memory
 // (nGnRnE), as pmgr-peek's are. Nothing is written. A line is printed and
 // flushed before each read or, in the table and the dumps, before each 16
@@ -96,6 +104,11 @@
 #define MIN_ENTRIES	4
 #define TAIL		UINT64_C(0x10000)
 #define PAGE_ROUND	UINT64_C(0x4000)
+/* Stage 8's pieces: what's left of the SRAM after the first dump, 16 KiB each. */
+#define REST_PIECES	((int)((SRAM_LEN - FIRST_DUMP) / PAGE_ROUND))
+
+_Static_assert(FIRST_DUMP % PAGE_ROUND == 0 && SRAM_LEN % PAGE_ROUND == 0 && FIRST_DUMP + 24 * PAGE_ROUND == SRAM_LEN,
+	       "24 pieces of 16 KiB take the first dump's end to the SRAM's");
 
 /* The position read's words, in the order they're read. */
 static const struct pos_word {
@@ -204,7 +217,8 @@ static int read_table(uint64_t base, uint32_t *words, uint64_t *highest)
 	return valid;
 }
 
-static void dump(const char *dir, uint64_t off, uint64_t end)
+/* The SRAM from off to end, to a file in dir. zeros and ones, if given: how many of its words read 0 and all ones. */
+static void dump(const char *dir, uint64_t off, uint64_t end, unsigned int *zeros, unsigned int *ones)
 {
 	char path[4096];
 	const volatile char *m = map_range(SRAM + off, end - off);
@@ -223,6 +237,10 @@ static void dump(const char *dir, uint64_t off, uint64_t end)
 		if (i % PAGE_ROUND == 0)
 			printf("reading 0x%" PRIx64 "\n", SRAM + i);
 		v = rd32(m + (i - off), SRAM + i);
+		if (zeros && !v)
+			++*zeros;
+		if (ones && v == 0xffffffff)
+			++*ones;
 
 		if (write(fd, &v, 4) != 4) {
 			fprintf(stderr, "recfg_peek: write %s: %s\n", path, strerror(errno));
@@ -234,6 +252,39 @@ static void dump(const char *dir, uint64_t off, uint64_t end)
 		exit(1);
 	}
 	printf("0x%" PRIx64 "-0x%" PRIx64 " read, %s\n", SRAM + off, SRAM + end - 1, path);
+}
+
+/* Stage 8: piece n of the rest of the SRAM. Nothing read here is followed. */
+static int rest_stage(const char *dir, int n)
+{
+	const uint64_t off = FIRST_DUMP + (uint64_t)n * PAGE_ROUND;
+	const unsigned int words = PAGE_ROUND / 4;
+	unsigned int zeros = 0, ones = 0;
+
+	printf("piece %d of %d: 0x%" PRIx64 "-0x%" PRIx64 "\n", n, REST_PIECES, SRAM + off, SRAM + off + PAGE_ROUND - 1);
+	dump(dir, off, off + PAGE_ROUND, &zeros, &ones);
+	printf("%u of its %u words read 0, %u read all ones\n", zeros, words, ones);
+	if (ones == words) {
+		printf("all ones: nothing is answering there, or the SRAM ends before it. Stopping.\n");
+		return 3;
+	}
+	return 0;
+}
+
+/* A piece's index: one or two digits, 0 to REST_PIECES - 1, and nothing else. -1 otherwise. */
+static int piece_index(const char *a)
+{
+	int n;
+
+	if (a[0] < '0' || a[0] > '9')
+		return -1;
+	n = a[0] - '0';
+	if (a[1]) {
+		if (!n || a[1] < '0' || a[1] > '9' || a[2])
+			return -1;
+		n = n * 10 + a[1] - '0';
+	}
+	return n < REST_PIECES ? n : -1;
 }
 
 /* Stage 6: where A2's WD2 bite is, and what it reads. The addresses are fixed; nothing read here is followed. */
@@ -272,17 +323,29 @@ int main(int argc, char **argv)
 	const char *why;
 	uint32_t cfg, words[TABLE_WORDS];
 	uint64_t base, highest, end;
-	int stage, i, valid, letter;
+	int stage, i, valid, letter, piece = -1;
 
-	if (argc != 3 || !argv[1][0] || argv[1][1]) {
-		fprintf(stderr, "usage: recfg_peek STAGE DIR (STAGE 1-7 or a-h; DIR for its dumps)\n");
+	if ((argc != 3 && argc != 4) || !argv[1][0] || argv[1][1]) {
+		fprintf(stderr, "usage: recfg_peek STAGE DIR (STAGE 1-7 or a-h; DIR for its dumps), or recfg_peek 8 DIR PIECE (0-%d)\n", REST_PIECES - 1);
 		return 2;
 	}
 	stage = argv[1][0] - '0';
 	letter = argv[1][0] >= 'a' && argv[1][0] <= 'h';
-	if (!letter && (stage < 1 || stage > 7)) {
+	if (!letter && (stage < 1 || stage > 8)) {
 		fprintf(stderr, "recfg_peek: no stage %s\n", argv[1]);
 		return 2;
+	}
+	/* Stage 8 alone takes a third argument, and must have it. */
+	if ((argc == 4) != (!letter && stage == 8)) {
+		fprintf(stderr, "recfg_peek: stage 8 takes a piece, 0-%d, and no other stage does\n", REST_PIECES - 1);
+		return 2;
+	}
+	if (argc == 4) {
+		piece = piece_index(argv[3]);
+		if (piece < 0) {
+			fprintf(stderr, "recfg_peek: no piece %s (0-%d)\n", argv[3], REST_PIECES - 1);
+			return 2;
+		}
 	}
 	setvbuf(stdout, NULL, _IONBF, 0);
 	mem_fd = open(RECFG_MEM, O_RDONLY | O_SYNC);
@@ -340,7 +403,7 @@ int main(int argc, char **argv)
 		}
 		return 0;
 	case 4:
-		dump(argv[2], 0, FIRST_DUMP);
+		dump(argv[2], 0, FIRST_DUMP, NULL, NULL);
 		return 0;
 	case 5:
 		cfg = read_word(CFG_REG);
@@ -360,12 +423,14 @@ int main(int argc, char **argv)
 			return 0;
 		}
 		printf("reading on to 0x%" PRIx64 " (the table's last sequence is at 0x%" PRIx64 ")\n", SRAM + end - 1, highest);
-		dump(argv[2], FIRST_DUMP, end);
+		dump(argv[2], FIRST_DUMP, end, NULL, NULL);
 		return 0;
 	case 6:
 		return bite_stage();
 	case 7:
 		return bite_word_stage();
+	case 8:
+		return rest_stage(argv[2], piece);
 	}
 	return 2;
 }
