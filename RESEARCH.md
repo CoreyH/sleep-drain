@@ -3401,8 +3401,10 @@ word to read 0. Raw data: `results/m1-run16-20261110/`.
 
 **What that shows:**
 - **The leftover "up done" flags aren't what stalls the entry, or not alone.** At the commit the four
-  words now read what macOS has there, and the pair still never finished: the same reset, at WD2's
-  moved bite.
+  words now read what macOS has there, and the ending is run 15's: the same reset, at WD2's moved bite.
+  It reads as it did there: the pair never finished, but for the one other reading that run left open
+  (A2 closing and a later A sequence starting about 90 s in), which a second run at the same bite
+  can't rule out.
 - **What it can't say: whether the flags were ever left.** No run has read those words after the
   table's plain 0, so the premise (that they read 0x20 in runs 3 to 15) is still inferred. Either way the
   words are at macOS's value now, and `cluster_ack=1` stays in the recipe for that.
@@ -3442,28 +3444,38 @@ Aura. The sequences' listing stays off the repository.
 **WD1 as a three-way marker, with nothing left up to watch.**
 - B2 zeroes WD0's and WD1's counts at its ops 223 and 224 of 246, after its whole power-down, and writes
   neither watchdog's control. A2 stops WD2 only at its very end.
-- So arm WD1 about 70 s before the commit and leave it armed: at the module's load, ahead of the
-  1-minute reading, the way the kernel's own driver starts it (three writes to WD1: count 0, a bite of
-  160 s, RESET_EN), with step 4 no longer stopping it and every way out before the suspend disarming it.
-  With WD2 at 120 s as in runs 15 and 16, the reset's time then reads the pair's progress:
-  - **about 90 s after the commit** (160 s less the lead, which the saved log gives to the second): WD1,
-    its count never zeroed. B2 didn't reach op 223: the stall is at the gate, in the first handshake
-    (A2's three steps) or in B2's power-down.
+- **WD1 has an owner while the Mac is awake, so the marker has to be set inside the replay.** The
+  kernel's `apple_wdt` keeps WD1 armed with a 30 s bite and pings it (control 4 at every load, run 16's
+  too), and its suspend callback stops it before E1's module runs: by step 4 WD1 has read off in every
+  run ("M1 run 2"). A WD1 armed at the module's load would be pinged through the reading and then
+  stopped by that callback, and a reset at 120 s would then read, wrongly, as B2 having zeroed it.
+  (Pullfrog on #72. Corey's OK of 2026-11-10 was for arming it at the load, about 70 s ahead: that
+  can't work, and what follows needs a fresh OK.)
+- So set it in step 4, after the kernel has let go of it and a moment before the commit, with the lead
+  written into the count: WD1's bite := 150 s, its count := 60 s, then RESET_EN (three writes; the count
+  one is new in kind, since the kernel and the engine only ever write 0 there). Just before the commit
+  CPU0 reads WD1's control, bite and count back and records whether the marker stands: armed, the bite
+  150 s, the count at 60 s and running. A marker that doesn't stand makes the run's time unreadable for
+  B2's progress, and it's to be read that way, not as a result. With WD2 at 120 s as in runs 15 and 16,
+  the reset's time then reads the pair's progress:
+  - **about 90 s after the commit:** WD1, its count never zeroed. B2 didn't reach op 223: the stall is
+    at the gate, in the first handshake (A2's three steps) or in B2's power-down.
   - **about 120 s:** WD2. B2 zeroed WD1's count, so the gate opened, A2's three steps settled and B2's
     power-down ran, and the pair then stopped in its last twenty-odd ops: the second handshake, the
     PMU command, the third handshake.
-  - **about 160 s, or dark:** the entry completed (A2 stopped WD2), and WD1, zeroed at about the
+  - **about 150 s, or dark:** the entry completed (A2 stopped WD2), and WD1, zeroed at about the
     commit, ended it as a dead-man, as on T8103; dark if WD1 doesn't count in that state.
-- The three times are 30 s or more apart and the restart is timed to about a second, so one run reads
-  it. It needs no core left up, which is what has kept every sample so far at the gate.
+- The three times are 30 s apart and the restart is timed to about a second, so one run reads it. It
+  needs no core left up, which is what has kept every sample so far at the gate.
 - It also ends a completed entry by itself: no power key, and no wait in the dark. A floor reading
   would be a later run, with WD1 left out.
-- What it costs: WD1 is armed for about a minute while the Mac is awake, in a safe boot. If the launcher
-  dies without disarming it, the Mac restarts 160 s after the load, which harms nothing there.
+- Nothing is armed while the Mac is awake: step 4 is past `slpa`, where the replay has no way back.
+- A reset at about 90 s would also settle what runs 15 and 16 left open with their one bite value: it
+  would be WD1's, with WD2 still armed behind it, so no later A sequence would be needed to explain it.
 
 **Why both in one run** (judgment): the marker reads the same whether the fabric is the cause or not.
 With the fabric at 3, 90 s says the early stall isn't the fabric's, 120 s says the pair got past it to
-its last ops, and 160 s or dark is the entry. What the pairing gives up is knowing whether the fabric
+its last ops, and 150 s or dark is the entry. What the pairing gives up is knowing whether the fabric
 write was needed for a run that gets further, which a later run without it would settle.
 
 ### Before the feasibility run: what the desk says (2026-11-09)

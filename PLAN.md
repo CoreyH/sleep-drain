@@ -28,7 +28,9 @@ the PR with that session's work.
   the entry, and the SoC resets instead of sleeping. What's established:
   - The reset is the engine's own watchdog, WD2, which the entry sequence arms at the commit and stops
     only at its end. Moved from 30 s to 120 s, the reset follows it (runs 15 and 16): the entry is
-    stuck, not slow, and it isn't a completed entry with a stalled wake.
+    stuck, not slow. That it isn't a completed entry with a stalled wake is strongly supported, not
+    shown: both runs used the one bite, and a later sequence starting about 90 s in would look the
+    same (RESEARCH.md, "M1 run 15").
   - The engine's sequences are read in full (the reconfig SRAM, 0x34000 bytes of content) and can't be
     written from Linux (runs 13 and 14). The entry is a pair, A2 and B2. With CPU0 left up to watch,
     A2 waits at its first handshake and B2 at its first poll, an AON status bit nothing here drives
@@ -39,8 +41,9 @@ the PR with that session's work.
     once and the SMC given its AP idle notice (10), SIO's firmware stopped (11), macOS's remaining
     power words (12), the clusters' "up done" flags acked (16).
   - **Next: one run that reads how far B2 gets with every core down** (WD1 as a marker), with the
-    fabric's p-state put back where macOS has it. It needs Corey's OK for four writes and isn't built:
-    "The order after run 16", in Track A below, is the place to start.
+    fabric's p-state put back where macOS has it. The fabric write has Corey's OK; the marker's three
+    writes need a fresh one, and nothing is built: "The order after run 16", in Track A below, is the
+    place to start.
 
 ## Picking this up
 
@@ -412,14 +415,17 @@ steps, and restarting the DCP and the PMP afterwards.
       **The order after run 16 (2026-11-10; judgment; this is the only place it's kept):** run 16 wrote
       the three cluster words 0x20, all four read 0, and the reset came at 120 s again (RESEARCH.md, "M1
       run 16"): the leftover flags aren't the stall, or not alone. `cluster_ack=1` stays in the recipe.
-      Proposed next, one run, needing Corey's OK for four writes (RESEARCH.md, "After run 16", has the
-      evidence; not built):
-      - **WD1 as a marker:** armed at the module's load, about 70 s before the commit, as the kernel's
-        own driver starts it: 0x2922b0010 (count) := 0, 0x2922b0014 (bite) := 160 s (0xe4e1c000),
-        0x2922b001c (control) := 4; left armed through step 4; disarmed (control := 0) on every way out
-        before the suspend. B2 zeroes WD1's count at op 223 of 246, so the restart reads: about 90 s
-        after the commit, B2 never got there; about 120 s (WD2), it did, and the pair stopped in its
-        last ops; about 160 s or dark, the entry completed.
+      Proposed next, one run (RESEARCH.md, "After run 16", has the evidence; not built). Corey OK'd
+      four writes on 2026-11-10: the fabric's, below, which stands, and three to WD1 at the module's
+      load, which can't work (the kernel's `apple_wdt` owns WD1 awake and stops it at suspend: Pullfrog
+      on #72). The marker as it has to be needs a fresh OK:
+      - **WD1 as a marker:** set in the replay's step 4, where the kernel has already stopped WD1, a
+        moment before the commit: 0x2922b0014 (bite) := 150 s (0xd693a400), 0x2922b0010 (count) := 60 s
+        (0x55d4a800), 0x2922b001c (control) := 4. Nothing is armed awake. Just before the commit CPU0
+        reads the three back and records whether the marker stands; if it doesn't, the restart's time
+        says nothing about B2. B2 zeroes WD1's count at op 223 of 246, so the restart reads: about
+        90 s after the commit, B2 never got there; about 120 s (WD2), it did, and the pair stopped in
+        its last ops; about 150 s or dark, the entry completed.
       - **The fabric back at 3 before the table's DCS entries:** 0x28e20c000, low nibble := 3, its awake
         value, which this kernel's `suspend_noirq` lowers to 1 where macOS has 3 (inferred) and A2 then
         asks for 2; up to 10 ms for it to settle; the word read before the write, after it, and at the
@@ -427,11 +433,9 @@ steps, and restarting the DCP and the PMP afterwards.
       - The record needs about a byte more than the breadcrumbs have free. Take it from what's
         redundant in this recipe (the second's high byte at 0x6011, which the alarm's compare value
         repeats), not from a new PMU byte.
-      - `run-floor`'s new option implies the 1-minute reading: with WD1 armed at the load, the
-        10-minute one can't be used.
       After it, by its reading: 90 s, the gate itself (which party holds 0x2922c0044's bit 2: an awake
       test that stops one coprocessor at a time and reads the word, each stop needing an OK); 120 s,
-      B2's last ops (the PMU command over SPMI first); 160 s or dark, the wake.
+      B2's last ops (the PMU command over SPMI first); 150 s or dark, the wake.
       **Earlier, the order after the sweep of 2026-11-10 (judgment):** bit 5
       of a soc-cluster word is an "up done" flag that's cleared by writing 1 (DJ's T8140 driver, and A1
       in this SRAM: RESEARCH.md, "Related work, swept 2026-11-10"). Under Linux ANE0's, AFR's and
