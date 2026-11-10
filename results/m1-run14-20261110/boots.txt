@@ -1,0 +1,6 @@
+# Boots around M1 run 14
+The run's safe boot (kernel 7.2.11-15) started 07:36:38. Corey ran run-floor --quick --m1-recfg-bite at 07:37:39.
+recfg-bite's check and write were each saved to the boot partition (tars 20261110T073739 and 20261110T073739-2).
+recfg_poke (built at 4b733d2: one 64-bit store) reported "THE WRITE DIDN'T TAKE" (exit 5); run-floor stopped before loading e1_hook: no reading, no suspend, no reset.
+The safe boot's saved journal has no kernel message about the access (no SError, no fault) at or after 07:37:39.
+Corey then restarted normally; the regular boot after it began 07:38:19.

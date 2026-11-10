@@ -1,0 +1,45 @@
+reading 0x2925c0200
+0x2925c0200 = 0x00001000  the table offset register's analogue
+reading 0x2925c0214
+0x2925c0214 = 0x00000000  its lock's analogue
+reading 0x292f01010
+0x292f01010 = 0x292f0200  table A's entry 2: A2's address >> 4
+reading 0x292f01014
+0x292f01014 = 0x00000000  its second word
+reading 0x292f02000
+0x292f02000 = 0x2922b00d  A2's first op: its head
+reading 0x292f02004
+0x292f02004 = 0x0b09080b  the four registers' offsets >> 2
+reading 0x292f02008
+0x292f02008 = 0x00000000  WD2's control
+reading 0x292f0200c
+0x292f0200c = 0x00000000  WD2's count
+reading 0x292f02010
+0x292f02010 = 0x2aea5400  WD2's bite
+reading 0x292f02014
+0x292f02014 = 0x00000004  WD2's control
+A2's WD2 bite word, 0x292f02010: the old value, 30 s
+writing 0x405f7e00 to 0x292f02010 and 0x00000004 to 0x292f02014, in one 64-bit store
+the ten words again, after the write:
+reading 0x2925c0200
+0x2925c0200 = 0x00001000  the table offset register's analogue
+reading 0x2925c0214
+0x2925c0214 = 0x00000000  its lock's analogue
+reading 0x292f01010
+0x292f01010 = 0x292f0200  table A's entry 2: A2's address >> 4
+reading 0x292f01014
+0x292f01014 = 0x00000000  its second word
+reading 0x292f02000
+0x292f02000 = 0x2922b00d  A2's first op: its head
+reading 0x292f02004
+0x292f02004 = 0x0b09080b  the four registers' offsets >> 2
+reading 0x292f02008
+0x292f02008 = 0x00000000  WD2's control
+reading 0x292f0200c
+0x292f0200c = 0x00000000  WD2's count
+reading 0x292f02010
+0x292f02010 = 0x2aea5400  WD2's bite
+reading 0x292f02014
+0x292f02014 = 0x00000004  WD2's control
+A2's WD2 bite word, 0x292f02010: the old value, 30 s
+THE WRITE DIDN'T TAKE: the word still reads the old value, 30 s. Nothing is changed

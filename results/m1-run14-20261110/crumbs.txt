@@ -1,0 +1,5 @@
+0x6000: 00 30 00 50 00 00 00 00  00 00 00 00 00 00 00 00
+0x6010: 00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00
+boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (the stage the last unclean end found; sticky, so it says nothing about this boot by itself; this boot's journal says, macsmc-reboot's "PMU logged N boot error(s)")
+stage 0x6004 = 0x00: none: no M1 run since the last clear, or the bytes didn't survive
+PMU alarm: 0x1401 = 0x01 (not armed), 0x140c = 299046, 0x14c0 event 0x00, 0x14c2 mask 0x00

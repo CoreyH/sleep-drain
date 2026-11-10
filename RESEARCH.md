@@ -3082,6 +3082,8 @@ that then stayed dark could be a completed entry.
 
 ### M1 run 13: the feasibility run: the SRAM didn't take the write (2026-11-09)
 
+(Run 14, below, repeated this with one 64-bit store, and that was dropped too.)
+
 `e1-hook/run-floor --quick --m1-recfg-bite` (#62, built at 7dc57fd; kernel 7.2.11-15; flag `radios-off`), in a
 safe boot, on battery at about 95%. Raw data: `results/m1-run13-20261109/`.
 
@@ -3112,6 +3114,64 @@ change as one aligned 64-bit `str` at 0x292f02010: 0x405f7e00 in its low half an
 that 0x292f02014 reads (the value A2 gives WD2's control), so the bite is still the only word meant to
 change. The reads stay 32 bits, as they were when they worked. If that store is dropped too, the width is
 out and a lock is near certain.
+
+### M1 run 14: the write as one 64-bit store: dropped too (2026-11-10)
+
+`e1-hook/run-floor --quick --m1-recfg-bite` (#64: `recfg_poke` built at 4b733d2, the module still 7dc57fd's;
+kernel 7.2.11-15; flag `radios-off`), in a safe boot, on battery at 98% or more. Raw data:
+`results/m1-run14-20261110/`.
+
+**The facts:** `recfg-bite`'s check read the ten words as in run 13 and on 2026-11-08, and was saved.
+`recfg_poke` then made its one store, 0x00000004405f7e00 at 0x292f02010 (an aligned 64-bit `str` through
+`/dev/mem`, then `dsb sy`: 0x405f7e00 for the bite and 0x00000004 for the word after it), and read all ten
+again: each read as before, the bite still 0x2aea5400 and the next word still 4. It said "THE WRITE DIDN'T
+TAKE" and exited 5, with no put-back. run-floor stopped there: e1_hook wasn't loaded, and there was no
+reading, no suspend and no reset. The safe boot's saved journal has no kernel message about the access.
+`recfg-bite --after` wasn't run: its gate refuses, as after run 13.
+
+**What that shows:** the width isn't why. A store to this SRAM from user space under Linux is dropped
+without a fault at 32 bits and at 64, so the sequences can't be edited the way these two runs tried, and
+the markers of "A different approach" are off. The likeliest reason by far is write protection set before
+Linux runs, a lock like PongoOS's range lock or a filter in front of the SRAM (which of the two can't be
+told from here, and nothing read so far shows a way to undo either from Linux).
+
+**What the two runs lack: a control.** Nothing in this repository has ever shown that a store made the way
+`recfg_poke` makes it, from user space through a `/dev/mem` mapping, changes any register on this Mac:
+every other tool here that maps `/dev/mem` only reads, and every write that has been seen to land (the
+PMGR words, the stop bits) was the module's, from the kernel. A bus that drops a store from EL0 and takes
+it from the kernel would look exactly like these two runs. That's unlikely (judgment), but it's cheap to
+rule out, with one store of the same kind to a register that's known to take the kernel's writes on the
+same block. Judgment: the SRAM is write-protected, about 9 in 10; the store's path, about 1 in 15;
+something else, the rest.
+
+**What's left of the plan without an SRAM write.** The reset's time is still the only thing that
+survives a run with every core down, and it can be moved without touching the sequences: WD2's bite is a
+register (0x2922b0024; upstream's `apple_wdt.c` names it, `APPLE_WDT_WD2_BITE_TIME`, and uses only WD1),
+and A2 writes it once, in its opening. A core that changes it after that opening changes when A2's WD2
+resets the SoC, and nothing else: every later A sequence writes its own 30 s and zeroes the count, and
+every A sequence clears RESET_EN at its close. So with the bite moved to 120 s by CPU0 right after the
+commit:
+- a reset about 120 s after the commit fits A2 arming last and never closing, an entry that's stuck and
+  not slow. It doesn't prove it: A2 closing and a later A sequence starting at about 90 s would reset
+  at the same time, the collision the 45 s proposal had at 15 s. Nothing gives a reason for a sequence
+  to start just then, so it's the far less likely reading (judgment), and a second run with another bite
+  settles it: the reset follows the bite, or it doesn't;
+- no reset is a candidate for A2 closing, an entry that completed, which no run has shown. It's no more
+  than a candidate, because the reset that's missing is the one this write changes: the write may itself
+  have kept WD2 from biting, and a read-back says the register took the value, not that it still counts
+  or bites. What would stand beside it: CPU0 reading, after its write, that RESET_EN is still set and
+  the count still moves; the battery's drain over the dark stretch; and a run that does reset at its
+  moved bite, which shows a moved WD2 still bites;
+- a reset at about 30 s says a later A sequence re-armed WD2 within a second or two of the commit, the
+  completed entry and stalled wake the SRAM section left open, or that WD2's bite isn't compared live.
+  WD1's is: `apple_wdt` sets its timeout by writing the bite with the watchdog running, and restarts the
+  machine by writing a bite of 0 with RESET_EN set. That WD2, the same block's third watchdog, behaves the
+  same is inferred;
+- a reset at another time T says a later sequence started T - 30 s after the commit.
+
+That's step 1's reading with the engine's own program left alone, with step 1's limits: one run's reset
+time narrows the cases and a second bite value decides between them. It's one new register write. WD2
+has been on e1_hook's never-written list so far, so it needs Corey's OK. PLAN.md has the order.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

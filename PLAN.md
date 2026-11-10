@@ -414,13 +414,48 @@ steps, and restarting the DCP and the PMP afterwards.
       "After M1 run 4"): one per run, and each one that moves the replay
       toward macOS's sequence stays in the runs after it, unless Corey picks
       a cumulative rung.
-      **The order after run 13 (2026-11-09; judgment; this is the only place it's kept):** the reconfig
+      **The order after run 14 (2026-11-10; judgment; this is the only place it's kept):** the SRAM
+      dropped the 64-bit store too (RESEARCH.md, "M1 run 14"), so the sequences can't be edited from
+      user space and the markers are off. Next, proposed and needing Corey's OK: move the reset's time
+      without the SRAM, by writing WD2's bite register itself. One register, 0x2922b0024, and one value,
+      0xaba95000 (2,880,000,000 ticks, 120 s; a 32-bit bite ends at about 179 s), at two moments:
+      - **The control, awake.** In the run's safe boot, before anything is loaded, one store to that
+        register made as `recfg_poke` makes its own, from user space through `/dev/mem`, and read back
+        (WD2 isn't armed awake, and its bite reads 90 s). If it takes, a store of that kind works on this
+        Mac and the SRAM's refusal is the SRAM's. If it doesn't, runs 13 and 14 say nothing about the SRAM,
+        and the same SRAM word stored from the kernel becomes the next test (its own OK).
+      - **The run.** Run 12's recipe, with CPU0, once it has let the others go after the commit and has
+        seen RESET_EN (so A2's opening has written its 30 s), writing the bite once, reading it back,
+        reading that RESET_EN is still set and the count still moves, recording those, and going down.
+        The sample is `recfg_bite=1`'s, which never ran on the Mac.
+      WD2 has been on e1_hook's never-written list until now. The write leaves it armed and changes only
+      its timeout, so a stuck entry should still end in a reset, at 120 s; that a moved WD2 still bites
+      is what a reset at the moved time would show, and isn't known before it. The dark-for-good rule
+      moves from 2 minutes to 3.
+      How the ending would read (RESEARCH.md, "M1 run 14", has why). One run narrows the cases, and none
+      of these is a verdict by itself:
+      - a reset about 120 s after the commit: fits A2 arming last and never closing, stuck and not slow.
+        A2 closing and a later A sequence starting at about 90 s would look the same (far less likely,
+        judgment), so a second run with another bite decides: the reset follows the bite or it doesn't;
+      - dark past 3 minutes: a candidate for a completed entry, and inconclusive alone, since the write
+        may itself have kept WD2 from biting. Read with CPU0's record (RESET_EN still set, the count
+        still moving after the write) and the battery's drain over the dark stretch, and to be repeated
+        before it's called one (the alarm is an hour out: the power key);
+      - a reset at about 30 s with the bite read back as 120 s: a later A sequence re-armed WD2 within
+        a second or two, a completed entry and a stalled wake; or WD2's bite isn't compared live (WD1's
+        is, by `apple_wdt`'s own use of it);
+      - a reset at another time T: a later sequence started T - 30 s after the commit.
+      Judgment: stuck, about 3 in 4. The longer dark stretch may also give the coulomb counter enough to
+      tell a SoC that's still powered from one that isn't (not checked). Then back to guessing: the
+      internal PCIe ports (maralcbr's `lab_pcie_ports_down`, about 13 writes per port), each with Corey's
+      OK.
+      **Earlier, the order after run 13 (2026-11-09; judgment):** the reconfig
       SRAM didn't take the write (RESEARCH.md, "M1 run 13"): a lock set before Linux runs, most likely,
       which Linux can't clear (inferred). Before giving the approach up, one cheap test of the next
       likeliest cause, the store's width: the same change as one aligned 64-bit store
       at 0x292f02010, the bite's new value in its low half and 0x292f02014's own value (4) in its high
       half, awake in a safe boot, with the ten words read before and after (Corey's OK of 2026-11-10 for
-      that store; built in #64, not run yet). `recfg_poke`'s put-back and `restore`, which the OK's one
+      that store; built in #64; ran 2026-11-10 as M1 run 14, and the store was dropped). `recfg_poke`'s put-back and `restore`, which the OK's one
       write doesn't cover and which don't run by themselves, are the same store with the old bite. It
       runs as run 13 did, `pkexec e1-hook/run-floor --quick --m1-recfg-bite` in a safe boot (this recipe
       has no position read, so no awake pass comes first). If the store takes, the feasibility
