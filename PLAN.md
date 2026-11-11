@@ -72,11 +72,13 @@ the PR with that session's work.
     switch-off (the desk reading held), and 0x28e5a0050 still open: the lead on op 140. One word
     didn't read as found 10 ms after its write-back (which isn't recorded), so the 90 s doesn't
     compare with the earlier runs'.
-  - **Next, built and not run: a look at 22 words B2 writes before its power-downs** and nothing here
-    has read: 0x28e03801c, 0x28e0a0004 to 0x28e0a001c, 0x28e5b0004 to 0x28e5b0038 (the pages after the
-    two gate pages). Read-only: `pkexec e1-hook/probe --look` in a safe boot, which now reads them
-    last, after the 98 (RESEARCH.md, "The look with the 22 words, as built"). Corey runs it; "The
-    order after the look", in Track A below, has the steps and how to read it.
+  - The 22 words B2 writes before its power-downs (0x28e03801c, 0x28e0a0004 to 0x28e0a001c,
+    0x28e5b0004 to 0x28e5b0038), read by the look (run once, 2026-11-11; RESEARCH.md, "The second
+    look's run"): all as the wake sequence B1 leaves them, awake and after noirq, none at B2's value
+    but two. The state B2 starts from is in order there too; the AP's switch-off never had them moved.
+  - **Next, not built: `sio_down=1` with B2's ops 8 to 29 made by the AP before the switch-off.** New
+    writes (22 words, B2's values), so an adversarial pass. "The order after the look", in Track A
+    below, is the place to start.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -496,8 +498,33 @@ steps, and restarting the DCP and the PMP afterwards.
       actual state 0, all polls met), the auto fields code 2, 0x28e5a0050 open 100 ms on; back in auto-enable
       and the gate open again, but not all 43 back in target and actual state within 10 ms; the restart at
       90 s. By the reading below that is the lead on op 140, and the time doesn't compare.
-      Next, **built and not run: the look with 22 more words** (read-only; `e1-hook/look.h`; RESEARCH.md,
-      "The look with the 22 words, as built"). The run, Corey's: restart into a safe boot (`pkexec
+      **Run once, 2026-11-11: the look with 22 more words** (RESEARCH.md, "The second look's run";
+      `results/look-2-20261111/`): it came back; no fault; 0x28e03801c = 0x80100100, the seven
+      2 2 2 2 3 2 2, the fourteen 2 2 2 2 2 2 2 2 0 0 2 2 1 1, the same awake and after noirq: B1's last
+      writes, word for word. That is the third reading below, settled against the listing: the words
+      are selects that B0 and B2 set to 1 and B1 sets back, and Linux leaves them at B1's. So nothing
+      is wrong before B2 starts, and the first reading's next step stands, widened from the fourteen
+      to all of ops 8 to 29.
+      Next, **not built: `pre=1` on the `sio_down=1` rung** (the name is the build's to choose). In
+      step 8, before the switch-off, CPU0 makes B2's ops 8 to 29 in B2's order: 0x28e03801c :=
+      0x80101100, 1 to the seven, 1 to the fourteen (B2's order there is 4, c, 10, 14, 8, 18 and on).
+      Each read back; then the switch-off and the gate's poll as now. The gate's reading says whether
+      those moves are what lets 0x28e5a0050 close.
+      - **Closed:** the AP's state can close the gate once the 22 are moved, so op 140 is cleared as
+        far as the AP can clear it, and the same writes may belong in the recipe before the commit.
+        Then `a2_pre=1`.
+      - **Still open:** the 22 aren't what holds it. Then B2's GPIO cycle on this rung, or `a2_pre=1`.
+      - **CPU0 doesn't get through a group** (some of the 21 may select a clock a running core needs;
+        the engine moves them with every core down): a mark before each of the three groups names
+        it, and WD1's marker restarts the Mac at 90 s. Then that group is left out, or made last.
+      To settle in the build: whether to write all 22 at once (my lean: yes, a group to a mark, since
+      a run of Corey's is the scarce thing) or the fourteen beside the gate's page first; what goes
+      back before the commit (B2 writes the same values itself, so the 22 could stay; the 43 power
+      words may not come back up with their selects at 1, which argues for putting the 22 back
+      first, or for not writing the 43 back at all); and the two points below about the write-back.
+      The record needs the read-backs of the 22 as well as the gate: 0x28e03801c has a pending bit
+      (30) that B1 polls, so the write isn't done until it clears.
+      The plan for the look as it stood, **built and run.** The run, Corey's: restart into a safe boot (`pkexec
       sleep-drain-safe boot`, then restart), `make -C e1-hook`, `pkexec e1-hook/probe --look`; the charger
       may stay in. It should come back as the first look did: photograph the block, restart normally,
       then `e1-hook/m1-crumbs`, `pkexec e1-hook/m1-crumbs --clear` and `pkexec sleep-drain-safe collect`.

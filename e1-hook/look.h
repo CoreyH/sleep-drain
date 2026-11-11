@@ -44,7 +44,8 @@
  * page is one the recipe already reads, for the ClkGen muxes), the seven words
  * 0x28e0a0004 to 0x28e0a001c (ops 9 to 15) and the fourteen 0x28e5b0004 to
  * 0x28e5b0038 (ops 16 to 29). The last two pages are outside Linux's PMGR
- * windows and have never been read here, so they come last of all, a group to
+ * windows and hadn't been read here before (they read without a fault,
+ * 2026-11-11), so they come last of all, a group to
  * a page (marks 8, 9 and 10: "every group read" stays 7, so that the first
  * look's record on file still reads as what it was; Pullfrog on #88): a read
  * that faults leaves that page's mark. At the load that mark is
