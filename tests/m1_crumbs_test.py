@@ -3457,14 +3457,14 @@ def look_tests(g, src, dec):
     pre_b = [0x28e5b0004, 0x28e5b0008, 0x28e5b000c, 0x28e5b0010, 0x28e5b0014, 0x28e5b0018, 0x28e5b001c, 0x28e5b0020, 0x28e5b0024, 0x28e5b0028,
              0x28e5b002c, 0x28e5b0030, 0x28e5b0034, 0x28e5b0038]
     check(hdr[0] == ["consts", "f", "6010", "2922c0000", "28e580000", "180", "2d0", "3b8", "28e080000", "28e5a0000", "28e09c000", "28e000000", "2000", "15", "10"]
-          and hdr[1] == ["at"] + [str(i) for i in range(11)] and hdr[2] == ["pre", "28e038000", "1c", "28e0a0000", "28e5b0000", "4", "1c", "38"]
+          and hdr[1] == ["at"] + [str(i) for i in (0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 7)] and hdr[2] == ["pre", "28e038000", "1c", "28e0a0000", "28e5b0000", "4", "1c", "38"]
           and [int(x, 16) for x in hdr[3][1:]] == [a - 0x2922c0000 for a in aon + aonw]
           and [int(x, 16) for x in hdr[4][1:]] == [a - 0x28e080000 for a in ps]
           and [int(x, 16) for x in hdr[5][1:] + hdr[6][1:]] == [a & 0xfff for a in gates] and len(sio) == 43
           and len(pre_c + pre_a + pre_b) == 22 and len(set(pre_c + pre_a + pre_b)) == 22
-          and g["LOOK_STAGE"] == 0x0f and len(g["LOOK_AT"]) == 11 and g["LOOK_DONE"] == 10 and g["LOOK_LOAD"] == 0x10,
-          "look.h: stage 0x0f, the group at 0x6010 with 0x10 for the load's look, eleven marks as m1-crumbs has them, and the pages and"
-          " offsets PLAN.md lists", str(hdr))
+          and g["LOOK_STAGE"] == 0x0f and len(g["LOOK_AT"]) == 11 and g["LOOK_DONE"] == 7 and g["LOOK_LOAD"] == 0x10,
+          "look.h: stage 0x0f, the group at 0x6010 with 0x10 for the load's look, eleven marks as m1-crumbs has them (7 still the last"
+          " one, the new pages' 8 to 10), and the pages and offsets PLAN.md lists", str(hdr))
     used = set(g["STAGES"]) | set(g["OBSERVE_STAGES"]) | set(g["LATE"]) | set(g["HOLD"]) | set(g["HOLD_TEXT"]) | set(g["LATE_TEXT"]) | set(range(0x21, 0x28)) \
         | set(g["POSITION"]) | set(g["DISP_STAGES"]) | set(g["SIO_STOP_STAGES"]) | set(g["ALARM_STAGES"]) | set(g["OBSERVED"]) | set(g["FAB_STAGES"]) \
         | {0x70, 0x71, 0x72, 0x7e, 0x7f, g["PROBE_STAGE"]}
@@ -3482,8 +3482,8 @@ def look_tests(g, src, dec):
         """One look's reads and marks, p being the pass's bit in each mark."""
         return (["k 6004 0f", f"k 6010 {p | 1:02x}"] + reads(pstate) + [f"k 6010 {p | 2:02x}"] + reads(aon) + [f"k 6010 {p | 3:02x}"] + reads(sio)
                 + reads([0x28e5803b8]) + reads(ps) + [f"k 6010 {p | 4:02x}"] + reads(gates) + [f"k 6010 {p | 5:02x}"] + reads(clk)
-                + [f"k 6010 {p | 6:02x}"] + reads(aonw) + [f"k 6010 {p | 7:02x}"] + reads(pre_c) + [f"k 6010 {p | 8:02x}"] + reads(pre_a)
-                + [f"k 6010 {p | 9:02x}"] + reads(pre_b) + [f"k 6010 {p | 10:02x}"])
+                + [f"k 6010 {p | 6:02x}"] + reads(aonw) + [f"k 6010 {p | 8:02x}"] + reads(pre_c) + [f"k 6010 {p | 9:02x}"] + reads(pre_a)
+                + [f"k 6010 {p | 10:02x}"] + reads(pre_b) + [f"k 6010 {p | 7:02x}"])
 
     want = looked(0)
     # The loads first (m1_look_init() from the pointers a load can find), then one look by itself.
@@ -3528,8 +3528,8 @@ def look_tests(g, src, dec):
     ran = ran[ran.index("plain") + 1:]
     events = [line for line in ran if line.split()[0] in ("r", "k")]
     check(events == want and not stray and len(events) == 11 + 3 + 6 + 43 + 1 + 7 + 6 + 30 + 2 + 22
-          and events[-29:-24] == ["k 6010 06", "r 2922c0008", "r 2922c0024", "k 6010 07", "r 28e03801c"]
-          and events[-24:-15] == ["k 6010 08"] + reads(pre_a) + ["k 6010 09"] and events[-15:] == reads(pre_b) + ["k 6010 0a"],
+          and events[-29:-24] == ["k 6010 06", "r 2922c0008", "r 2922c0024", "k 6010 08", "r 28e03801c"]
+          and events[-24:-15] == ["k 6010 09"] + reads(pre_a) + ["k 6010 0a"] and events[-15:] == reads(pre_b) + ["k 6010 07"],
           "m1_look() reads the 120 words of PLAN.md's list and no other, each group after its own mark, the stage first; after the 96 come"
           " the two words the engine only writes, and last of all the 22 B2 writes first, a mark to a page; it can't write a register (the"
           " test has no writel() to give it), and its PMU writes pass the module's own gate",
@@ -3592,12 +3592,14 @@ def look_tests(g, src, dec):
           " three new pages' pointers are used nowhere else", linit)
 
     # Its stage through m1-crumbs.
-    rc, out, err = dec(0x0f, 0, 0, 0, 10)
+    rc, out, err = dec(0x0f, 0, 0, 0, 7)
     check(rc == 0 and "stage 0x6004 = 0x0f: probe=1 look=1 (e1-hook/probe --look), not a run: nothing replayed, nothing was committed, nothing was"
           " stopped and no register was written. What it read is in the kernel log it saved, if the Mac was up to save it\n" in out
-          and "0x6010 = 0x0a: every group read: the look after noirq read all of them. What became of the suspend after it, this record doesn't say\n" in out
+          and "0x6010 = 0x07: every group read: the look after noirq read all of them. What became of the suspend after it, this record doesn't say\n" in out
           and "DIDN'T FINISH" not in out and "the SoC restarted" not in out and "PMU alarm" not in out and "0x6005 = " not in out,
-          "the look's stage with its last mark: a finished look after noirq, nothing claimed about the suspend, no run's lines and no probe's",
+          "the look's stage with its last mark: a finished look after noirq, nothing claimed about the suspend, no run's lines and no probe's;"
+          " the first look's record (results/look-20261110/crumbs.txt: stage 0x0f, 0x6010 = 0x07, written by the build that read 98 words)"
+          " reads as finished still (Pullfrog on #88)",
           out + err)
     rc, out, err = dec(0x0f, 0, 0, 0, 4)
     check(rc == 0 and "0x6010 = 0x04: THE LOOK BEGAN AND DIDN'T FINISH: the look after noirq. The last group it marked: six gate-status words." in out,
@@ -3606,16 +3608,17 @@ def look_tests(g, src, dec):
     check(rc == 0 and ("0x6010 = 0x16: THE LOOK BEGAN AND DIDN'T FINISH: the look at the module's load. The last group it marked: two words of the"
                        " engine's page that its sequences only write (+0x008, +0x024).") in out,
           "a mark with the load's bit: the look at the load, and its group", out + err)
-    check([g["look_lines"](n)[0].split(": ", 1)[1].split(". The last group it marked: ")[1].split(".")[0] for n in (7, 8, 9)]
+    check([g["look_lines"](n)[0].split(": ", 1)[1].split(". The last group it marked: ")[1].split(".")[0] for n in (8, 9, 10)]
           == ["0x28e03801c, which B2's op 8 writes", "0x28e0a0004 to 0x28e0a001c, which B2's ops 9 to 15 write: a page not read before this look",
               "0x28e5b0004 to 0x28e5b0038, which B2's ops 16 to 29 write: a page not read before this look"]
-          and all("THE LOOK BEGAN AND DIDN'T FINISH: the look after noirq" in g["look_lines"](n)[0] for n in (7, 8, 9))
-          and "THE LOOK BEGAN AND DIDN'T FINISH: the look at the module's load. The last group it marked: 0x28e0a0004" in g["look_lines"](0x18)[0],
+          and all("THE LOOK BEGAN AND DIDN'T FINISH: the look after noirq" in g["look_lines"](n)[0] for n in (8, 9, 10))
+          and "THE LOOK BEGAN AND DIDN'T FINISH: the look at the module's load. The last group it marked: 0x28e0a0004" in g["look_lines"](0x19)[0]
+          and "THE LOOK BEGAN AND DIDN'T FINISH: the look at the module's load. The last group it marked: 0x28e5b0004" in g["look_lines"](0x1a)[0],
           "a look that stopped in one of the three new groups: not finished, which look, and the page it was reading")
     check(g["look_lines"](11)[0].startswith("0x6010 = 0x0b: THE LOOK BEGAN AND DIDN'T FINISH: the look after noirq. The last group it marked: not a group's number.")
           and g["look_lines"](0)[0].startswith("0x6010 = 0x00: THE LOOK BEGAN AND DIDN'T FINISH: the look after noirq. The last group it marked: nothing marked.")
-          and g["look_lines"](0x1a)[0].startswith("0x6010 = 0x1a: every group read, by the look at the module's load, whose marks weren't zeroed after it")
-          and "The look after noirq didn't begin" in g["look_lines"](0x1a)[0],
+          and g["look_lines"](0x17)[0].startswith("0x6010 = 0x17: every group read, by the look at the module's load, whose marks weren't zeroed after it")
+          and "The look after noirq didn't begin" in g["look_lines"](0x17)[0],
           "a mark past the last group, no mark at all, and the load's last mark left standing: each said for what it is")
 
 

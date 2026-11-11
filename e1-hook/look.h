@@ -45,7 +45,9 @@
  * 0x28e0a0004 to 0x28e0a001c (ops 9 to 15) and the fourteen 0x28e5b0004 to
  * 0x28e5b0038 (ops 16 to 29). The last two pages are outside Linux's PMGR
  * windows and have never been read here, so they come last of all, a group to
- * a page: a read that faults leaves that page's mark. At the load that mark is
+ * a page (marks 8, 9 and 10: "every group read" stays 7, so that the first
+ * look's record on file still reads as what it was; Pullfrog on #88): a read
+ * that faults leaves that page's mark. At the load that mark is
  * all there is (the launcher saves the log only once the load returns); in the
  * suspend's look the load's whole look is already saved.
  */
@@ -63,10 +65,10 @@ enum look_at {
 	LOOK_AT_GATES,		/* six gate-status words */
 	LOOK_AT_CLKGEN,		/* fifteen clock generators' two words each */
 	LOOK_AT_AON_W,		/* two words of the engine's page that its sequences only write */
-	LOOK_AT_PRE_CLK,	/* 0x28e03801c, B2's op 8 */
+	LOOK_AT_DONE,		/* 7: every group read; the last mark, and 7 as in the first look's record (results/look-20261110/) */
+	LOOK_AT_PRE_CLK,	/* 8: 0x28e03801c, B2's op 8. These three are marked after LOOK_AT_AON_W and before LOOK_AT_DONE */
 	LOOK_AT_PRE_A,		/* 0x28e0a0004 to 0x28e0a001c, B2's ops 9 to 15 */
-	LOOK_AT_PRE_B,		/* 0x28e5b0004 to 0x28e5b0038, B2's ops 16 to 29 */
-	LOOK_AT_DONE,		/* every group read */
+	LOOK_AT_PRE_B,		/* 10: 0x28e5b0004 to 0x28e5b0038, B2's ops 16 to 29 */
 };
 #define LOOK_LOAD		0x10	/* set in the mark by the load's look */
 

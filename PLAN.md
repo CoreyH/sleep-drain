@@ -503,7 +503,7 @@ steps, and restarting the DCP and the PMP afterwards.
       then `e1-hook/m1-crumbs`, `pkexec e1-hook/m1-crumbs --clear` and `pkexec sleep-drain-safe collect`.
       New in this run: the 22 reads, the last two pages for the first time. If one faults, the Mac goes
       down at the load (a frozen or panic screen, since this launcher sets no `kernel.panic`: the power
-      key), nothing is saved, and `m1-crumbs` after the restart reads 0x18 or 0x19 at 0x6010: the page.
+      key), nothing is saved, and `m1-crumbs` after the restart reads 0x19 or 0x1a at 0x6010: the page.
       As planned: the local B2 listing shows what the AP's switch-off left out: before the first
       handshake B2 writes 0x28e03801c := 0x80101100 (op 8), 1 to 0x28e0a0004, 8, c, 10, 14, 18 and 1c (ops
       9 to 15) and 1 to the fourteen words 0x28e5b0004 to 0x28e5b0038 (ops 16 to 29). B0, a wake sequence,
