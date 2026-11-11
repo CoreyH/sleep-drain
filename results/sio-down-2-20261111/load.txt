@@ -1,0 +1,36 @@
+e1_hook: m1: cluster_ack: awake, the soc-cluster words 0-8: 0000000f 0000002f 0000002f 0000002f 00000000 0000002f 0000002f 0000000f 0000002f
+e1_hook: m1: cluster_ack: entry 55, 0x28e09800c: awake 0000002f; step 5 writes 00000020, not the table's 00000000, and waits for 0
+e1_hook: m1: cluster_ack: entry 57, 0x28e098014: awake 0000002f; step 5 writes 00000020, not the table's 00000000, and waits for 0
+e1_hook: m1: cluster_ack: entry 60, 0x28e098020: awake 0000002f; step 5 writes 00000020, not the table's 00000000, and waits for 0
+e1_hook: m1: fabric_up: 0x28e20c000 awake 00000333; step 5 first writes it back with its low nibble := 3 (00000113 for the 00000111 suspend_noirq leaves) and waits for 333
+e1_hook: m1: wd1_mark: awake: WD1 ctrl 4 count 0609a4e7 bite 2aea5400 (the kernel's, which its suspend stops); step 4 writes bite d693a400 (150 s), count 55d4a800 (60 s), then control 4
+e1_hook: m1: gates_mark: awake: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c 80040308; 0x28e09c000: +310 8004031d +338 c004030f +34c 8004030e; AFNC2_LW1 0x28e580160 1f0000ff; byte 92. Step 8 reads them again, right before the commit
+e1_hook: m1: sio_down: awake: from 0x28e580180: 1f0000ff 1400024f 000000ff 00000200 00000200 000000ff 000000ff 000000ff
+e1_hook: m1: sio_down: awake: from 0x28e5801c0: 000000ff 00000200 00000200 00000200 00000200 000000ff 00000200 00000200
+e1_hook: m1: sio_down: awake: from 0x28e580200: 00000200 00000200 00000200 0f000200 0f000200 0f000200 000000ff 00000200
+e1_hook: m1: sio_down: awake: from 0x28e580240: 00000200 00000200 00000244 00000244 00000244 00000244 00000244 000002ff
+e1_hook: m1: sio_down: awake: from 0x28e580280: 000002ff 00000200 000002ff 000002ff 00000200 00000200 00000200 00000200
+e1_hook: m1: sio_down: awake: from 0x28e5802c0: 00000200 00000200 00000300 00000000 00000000 00000000 00000000 00000000
+e1_hook: m1: pmp_out: the PMP's RTKit is running; ASC CPU_CONTROL 00000010 CPU_STATUS 0000002c; over 10 ms awake (18969 reads) AND 00000028 OR 0000002d
+e1_hook: m1: ps_words: 0x28e580250 awake 00000244, will write 00000200
+e1_hook: m1: ps_words: 0x28e580258 awake 00000244, will write 00000200
+e1_hook: m1: ps_words: 0x28e580260 awake 00000244, will write 00000200
+e1_hook: m1: ps_words: 0x28e580268 awake 00000244, will write 00000200
+e1_hook: m1: ps_words: 0x28e580270 awake 00000244, will write 00000200
+e1_hook: m1: ps_words: 0x292280078 awake 000002ff, will write 00000200
+e1_hook: m1: ps_words: 0x292280090 awake 000000ff, will write 00000300
+e1_hook: m1: ps_words: 0x292280098 awake 000000ff, will write 00000300
+e1_hook: m1: ps_words: 0x2922800a0 awake 000002ff, will write 00000300
+e1_hook: m1: ps_words: 0x28e080330 awake 000003ff, will write 00000300
+e1_hook: m1: ps_words: 0x28e080340 awake 000003ff, will write 00000300
+e1_hook: m1: ps_words: 0x28e080350 awake 000003ff, will write 00000300
+e1_hook: m1: ps_words: 0x28e080360 awake 000003ff, will write 00000300
+e1_hook: m1: ps_words: 0x28e080240 awake 000000ff, will write 00000300
+e1_hook: m1: ps_words: 0x28e0802f8 awake 000000ff, will write 00000300
+e1_hook: m1: ps_words: 0x28e080300 awake 000000ff, will write 00000300
+e1_hook: m1: ps_words: 0x28e080138 awake 1f0000ff, will write 1400024f
+e1_hook: m1: ps_words: 0x28e080320 awake 1f0000ff, will write 1000030f
+e1_hook: m1: ps_words: 0x28e080220 awake 1f0000ff, will write 1000030f
+e1_hook: m1: ps_words: 0x28e580160 awake 1f0000ff, will write 1000030f
+e1_hook: m1: wd2_bite: awake: WD2 ctrl 0 count 37e421b1 bite aba95000, PHASE 00000000; after the commit CPU0 writes bite aba95000 (120 s), once, if RESET_EN shows
+e1_hook: loaded: s2idle ops set through s2idle_set_ops+0x0/0x34; times are trace_clock_local(); replay=15 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 gates_mark=1 sio_down=1
