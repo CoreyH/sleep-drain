@@ -2005,7 +2005,9 @@ int main(void)
 # m1_sio_down() and the three functions it calls, as they stand, against a model of SIO's page and the gate pages that logs
 # every read, write and PMU byte. The scenario is argv[1], letters: c the gate 0x28e5a0050 closes once all 43 read off; l it
 # closes 60 ms after that; w it reads closed from the start; b I2C4 keeps bit 11; s UART_P, found on, keeps its actual
-# state; n MCA2 doesn't take its write-back; u UART_N keeps bit 11 (B2 doesn't poll it).
+# state; n MCA2 doesn't take its write-back; a SIO takes its
+# write-back but its actual state stays 0; g the gate, once closed, stays closed; f I2C0 keeps its auto
+# settings through the 0; u UART_N keeps bit 11 (B2 doesn't poll it).
 SIOD_FN_PRELUDE = r"""
 #include <stdio.h>
 #include <string.h>
@@ -2025,6 +2027,7 @@ static unsigned char ga_page[0x4000], gb_page[0x4000], sio_page[0x4000];
 static void *m1_look_ga = ga_page, *m1_look_gb = gb_page, *m1_sio = sio_page;
 static const char *sc;
 static u64 clk, m1_tps = 24000000, shut_at;
+static int latched;
 static u32 word[0x400 / 4];
 /* Every look at the clock is 1 ms on. */
 static u64 m1_now(void) { return clk += m1_tps / 1000; }
@@ -2058,8 +2061,9 @@ static u32 readl(const void *p)
 		if (o == 0x50) {
 			if (all_off() && !shut_at)
 				shut_at = clk + (has('l') ? 60 * m1_tps / 1000 : 0);
-			if (has('w') || ((has('c') || has('l')) && all_off() && clk >= shut_at))
+			if (has('w') || ((has('c') || has('l')) && all_off() && clk >= shut_at) || (has('g') && latched))
 				v |= GATE_CLOSED;
+			latched = !!(v & GATE_CLOSED);
 		}
 		printf("r A %lx %x\n", o, v);
 		return v;
@@ -2080,9 +2084,15 @@ static void writel(u32 v, void *p)
 	was = word[o / 4];
 	if (has('n') && o == 0x298 && v)
 		return;
+	if (has('a') && o == 0x180 && v) {
+		word[o / 4] = (v & 0x1f00000f) | (was & 0x300);
+		return;
+	}
 	/* The settings as written, the actual state following the target, bit 11 clear, the two flags kept. */
 	keep = was & 0x300;
 	word[o / 4] = (v & 0x1f00000f) | ((v & 0xf) << 4) | keep;
+	if (has('f') && o == 0x1a8 && !v)
+		word[o / 4] |= was & 0x1f000000;
 	if (has('b') && o == 0x1c8 && !v)
 		word[o / 4] |= 0x800;
 	if (has('u') && o == 0x238 && !v)
@@ -2177,7 +2187,7 @@ def sio_down_tests(g, src):
     fns = (cut("static void m1_gates_read(u32 *g, u32 *lane)", "\n}\n") + cut("static bool m1_siod_poll(", "\n}\n")
            + cut("static bool m1_siod_back(", "\n}\n") + cut("static u8 m1_sio_down(void)", "\n}\n"))
     init = cut("static int __init m1_siod_init(void)", "\n}\n")
-    scen = ("", "c", "l", "w", "b", "s", "n", "u", "cb", "cs", "cn", "cu", "cw", "bsn", "cbsnu")
+    scen = ("", "c", "l", "w", "b", "s", "n", "u", "a", "cb", "cs", "cn", "cu", "cw", "ca", "cg", "f", "cf", "bsn", "cbsnu")
     with tempfile.TemporaryDirectory() as tmp:
         def build(name, code):
             c = os.path.join(tmp, name + ".c")
@@ -2217,8 +2227,8 @@ def sio_down_tests(g, src):
           and not set(g["SIOD_STAGES"]) & (set(g["GATES_STAGES"]) | {0x52, 0x51, 0x53, 0x4e, 0x4f, 0x56, 0x57}),
           "siod_stage(): gates_mark=1's 0x4b, 0x55 and 0x54 become 0x3a, 0x3c and 0x3b, every other stage stays, and m1-crumbs has the same three")
     offs = {int(r[1], 16): r[2] for r in hdr if r[0] == "off"}
-    check(all((v == "1") == (not k & 0xff) for k, v in offs.items()) and len(offs) == 14,
-          "siod_off(): a word is off when its target and its actual state read 0, whatever else it carries", str(offs))
+    check(all((v == "1") == (not k & 0x1f0000ff) for k, v in offs.items()) and len(offs) == 14 and offs[0x0f000200] == "0" and offs[0x800] == "1",
+          "siod_off(): a word is off when its target, its actual state, its auto-enable and its auto floor read 0, whatever its flags", str(offs))
     rows = [[int(x, 16) for x in r[1:]] for r in hdr if r[0] == "byte"]
     bad = [r for r in rows if r[2] != (0x80 | (r[0] & 1) | (r[0] & 2) | (4 if r[1] & 1 else 0) | (8 if r[1] & 2 else 0)
                                        | (0x10 if r[0] >> 2 == 0b0101 else 0) | (0x20 if r[1] & 4 else 0) | (0x40 if r[1] & 8 else 0))]
@@ -2241,7 +2251,7 @@ def sio_down_tests(g, src):
         end = {int(e[1], 16): int(e[2], 16) for e in ev if e[0] == "end"}
         closes, late, was = "c" in a or "l" in a, "l" in a, "w" in a
         want = (0x80 | 2 | 0x10 | (1 if (closes and "s" not in a) or was else 0) | (0 if "b" in a else 4)
-                | (0 if "s" in a else 8) | (0x40 if was else 0))
+                | (0 if "s" in a or "f" in a else 8) | (0x40 if was else 0))
         # 1. As found, in B2's order, then the gate once, before any write.
         first = acc[:44]
         ok = [(e[1], e[2]) for e in first] == [("S", o) for o in SIOD_ORDER] + [("A", 0x50)] and all(e[0] == "r" for e in first)
@@ -2282,14 +2292,19 @@ def sio_down_tests(g, src):
         # each as found less bits 11, 9 and 8, whatever went before; 6. the byte again, last, and returned.
         backw = ws[43:]
         ok = ok and len(ws) == 86 and [(o, v) for _, o, v in backw] == [(o, found[o] & ~0xb00) for o in reversed(SIOD_ORDER)]
-        ok = ok and backw[0][0] == at and all(e[0] == "r" and e[1] == "S" for e in acc[at:] if e[0] != "w")
+        # ... and after the last of them, 0x28e5a0050 once more: one read if it's as before, 100 ms of them if it never is.
+        tail = len(acc)
+        while acc[tail - 1][:3] == ("r", "A", 0x50):
+            tail -= 1
+        ok = ok and backw[0][0] == at and all(e[0] == "r" and e[1] == "S" for e in acc[at:tail] if e[0] != "w") and backw[-1][0] < tail
+        ok = ok and (95 <= len(acc) - tail <= 105 if "g" in a else len(acc) - tail == 1)
         ok = ok and len(ks) == 2 and all(e[1:3] == ["6016", "1"] for _, e in ks)
         b1, b2 = (int(e[3], 16) for _, e in ks)
         wline = [i for i, e in enumerate(ev) if e[0] == "w"]
         ok = ok and wline[42] < ks[0][0] < wline[43] and ks[1][0] > wline[85] and ev[ks[1][0] + 1][0] == "ret"
-        ok = ok and b1 == want and b2 == (want | (0 if "n" in a else 0x20)) and ret == b2
+        ok = ok and b1 == want and b2 == (want | (0 if "n" in a or "a" in a or "g" in a else 0x20)) and ret == b2
         # And the words end as they were found (their two flags aside), but for the one that didn't take its write-back.
-        ok = ok and all((end[o] ^ found[o]) & 0x1f0000ff == 0 for o in SIOD_ORDER if not ("n" in a and o == 0x298))
+        ok = ok and all((end[o] ^ found[o]) & 0x1f0000ff == 0 for o in SIOD_ORDER if not ("n" in a and o == 0x298) and not ("a" in a and o == 0x180))
         check(ok, f"m1_sio_down(), scenario '{a}': the 43 as found and the gate; 43 writes of 0 in B2's order and groups, each polled for bit 11 but"
                   " UART_N; 0x28e5a0064 then 0x28e5a0050 polled for up to 100 ms; the 43 and the gates read; the byte; 43 write-backs in reverse, as"
                   f" found less bits 11, 9 and 8; the byte again (0x{want:02x}, then with bit 5 unless a word didn't come back); no other write",
@@ -2298,9 +2313,9 @@ def sio_down_tests(g, src):
     def byte(a):
         return int(runs[a][-44].split()[1], 16)
     check(byte("") == 0xbe and byte("c") == 0xbf and byte("l") == 0xbf and byte("w") == 0xff and byte("cs") == 0xb6 and byte("cb") == 0xbb
-          and byte("n") == 0x9e and byte("u") == 0xbe,
+          and byte("n") == 0x9e and byte("a") == 0x9e and byte("ca") == 0x9f and byte("cg") == 0x9f and byte("f") == 0xb6 and byte("cf") == 0xb7 and byte("u") == 0xbe,
           "m1_sio_down(): 0xbe with the gate open and everything as meant, 0xbf closed (at once or 60 ms on), 0xff closed before; a word that"
-          " stays on, a poll never met and a word that doesn't come back each clear their bit; UART_N's bit 11 isn't asked about",
+          " stays on, a poll never met and a word that doesn't come back, in its settings or only in its actual state, or a gate that stays closed after the write-back, each clear their bit; UART_N's bit 11 isn't asked about",
           " ".join(f"{a}={byte(a):#x}" for a in scen))
 
     # The source: what the function writes, and nothing else like it.
@@ -2357,12 +2372,13 @@ def sio_down_tests(g, src):
         rc, out_, err = dec(0xbc, 0xbe, x=90)
         check(rc == 0 and "stage 0x6004 = 0xbc (pmp_out=1: bit 7, so the stage is 0x3c) (pmgr_late=1): sio_down=1: gates_mark=1's 0x55:" in out_
               and "0x6016 = 0xbe: sio_down=1's byte, in place of the alarm's result:" in out_
-              and "  B2's 42 polls for bit 11 clear: all met\n" in out_ and "  the 43 words after the polls: all read off, target 0 and actual 0\n" in out_
+              and "  B2's 42 polls for bit 11 clear: all met\n" in out_
+              and "  the 43 words after the polls: all read off as written: target, actual state and auto settings 0\n" in out_
               and "  0x28e5a0050 before the first write: open, as in --m1-gates' run\n" in out_
               and "  0x28e5a0064 (B2's op 139), after up to 100 ms: bit 30 SET, closed\n" in out_
               and "  0x28e5a0050 (B2's op 140), after up to 100 ms more: bit 30 clear, OPEN\n" in out_
               and "as --m1-gates' run found them: closed, open, closed, open\n" in out_
-              and "  written back: all 43 read as found within 10 ms each\n" in out_
+              and "  written back: all 43 read as found within 10 ms each (target, auto settings and actual state;" in out_
               and "  so: 0x28e5a0050 stayed OPEN with SIO's subtree off" in out_ and "not B2's at op 140" in out_
               and "nothing records the commit" not in out_ and "alarm command" not in out_ and "gates_mark=1's byte" not in out_
               and "0x6007 = 0xf5: fabric_up=1's byte, in place of the cores that held:\n" in out_ and "WD1 stood as the marker" in out_
@@ -2409,7 +2425,7 @@ def sio_down_tests(g, src):
         for s in (0x3a, 0x3b, 0x3c):
             for v in range(256):
                 b = bytearray(0x20)
-                b[0x13], b[0x16] = 0xff, v
+                b[0x12], b[0x13], b[0x16] = 0xc0, 0xff, v
                 lines = g["siod_lines"](s, bytes(b), True)
                 text = "\n".join(lines)
                 if not v & 0x80:
@@ -2419,7 +2435,7 @@ def sio_down_tests(g, src):
                     made = v & 0xc == 0xc
                     ok = (len(so) == 1 and lines.index(so[0]) == 8
                           and ("all met" in lines[1] and "NOT" not in lines[1]) == bool(v & 4)
-                          and ("all read off" in lines[2] and "NOT" not in lines[2]) == bool(v & 8)
+                          and ("all read off as written" in lines[2] and "NOT" not in lines[2]) == bool(v & 8)
                           and ("ALREADY CLOSED" in lines[3]) == bool(v & 0x40) and ("open, as in" in lines[3]) == (not v & 0x40)
                           and "0x28e5a0064" in lines[4] and ("SET, closed" in lines[4]) == bool(v & 2) and ("OPEN" in lines[4]) == (not v & 2)
                           and "0x28e5a0050" in lines[5] and ("SET, closed" in lines[5]) == bool(v & 1) and ("OPEN" in lines[5]) == (not v & 1)
@@ -2435,12 +2451,20 @@ def sio_down_tests(g, src):
                           and ("nothing records the commit" in text) == (s == 0x3a))
                 if not ok:
                     wrong.append((hex(s), hex(v), lines))
+            # SIO's firmware not shown stopped: no verdict from the gate, whatever the byte.
+            for code in (0, 0x40, 0x80):
+                for v in (0xbe, 0xbf, 0xff, 0x9e):
+                    b = bytearray(0x20)
+                    b[0x12], b[0x13], b[0x16] = code, 0xff, v
+                    so = [l for l in g["siod_lines"](s, bytes(b), True) if l.startswith("  so: ")]
+                    if len(so) != 1 or "INCONCLUSIVE: SIO's firmware isn't shown stopped" not in so[0] or "a2_pre" in so[0] or "a lead" in so[0]:
+                        wrong.append((hex(s), hex(code), hex(v), so))
             b = bytearray(0x20)
-            b[0x13], b[0x16] = 0xff, 0xbe
+            b[0x12], b[0x13], b[0x16] = 0xc0, 0xff, 0xbe
             if "not read" not in g["siod_lines"](s, bytes(b), False)[0] or len(g["siod_lines"](s, bytes(b), False)) != 1:
                 wrong.append((hex(s), "no pmp_out=1 bit"))
-        check(not wrong, "sio_down=1: for every byte at each of its stages, each line follows its bit, the verdict is INCONCLUSIVE unless the"
-              " subtree was all off, 'closed before' ahead of the gate's reading, the gate's reading from bit 0 otherwise, and nothing is read"
+        check(not wrong, "sio_down=1: for every byte at each of its stages, each line follows its bit, the verdict is INCONCLUSIVE unless SIO's"
+              " firmware was stopped and the subtree was all off, 'closed before' ahead of the gate's reading, the gate's reading from bit 0 otherwise, and nothing is read"
               " from a byte without bit 7", str(wrong[:2]))
         mr = g["mark_reading"]
         wrong = [(hex(v), x) for v in range(256) for x in (60, 88, 90, 105, 120, 123, 135, 146, 150, 163, 300)

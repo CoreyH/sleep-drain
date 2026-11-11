@@ -25,15 +25,25 @@
  *      AUDIO_P and its poll; SIO and its poll. Each poll up to 100 ms (B2's
  *      255 tries); one that isn't met is recorded and the pass goes on
  *   2. 0x28e5a0064, then 0x28e5a0050, each polled for bit 30 for up to 100 ms
- *   3. the 43 words read again (target 0 and actual 0?), and the six gate words
+ *   3. the 43 words read again (target, actual state and auto settings all 0?),
+ *      and the six gate words
  *   4. the byte to 0x6016, without SIOD_BACK
  *   5. all 43 written back, in the reverse of the order they were written
  *      (SIO first, SIO_CPU last), each as found less the bits the kernel never
  *      writes back (asc_probe.h's ASC_PS_NOT_WRITTEN), up to 10 ms for each to
- *      read as found (gate_test.h's gate_back())
- *   6. the byte again, with SIOD_BACK if all 43 read as found; the alarm's
- *      last command, after the commit, sends it a third time, as gates_mark=1
- *      has it send its byte
+ *      read as found (gate_test.h's gate_back()); then 0x28e5a0050 polled
+ *      once more, up to 100 ms, to read as it did in step 0
+ *   6. the byte again, with SIOD_BACK if all 43 read as found and the gate as
+ *      before; the alarm's last command, after the commit, sends it a third
+ *      time, as gates_mark=1 has it send its byte
+ * "As found" is a word's target, auto-enable, auto floor and actual state.
+ * The two was-gated flags, bits 8 and 9, are neither written back nor
+ * compared: a word that gated in between keeps them set where the recipe had
+ * them clear (SIO_CPU's bit 9, which the table's entry 61 clears as macOS
+ * does; B2 writes it again itself at its op 49). The adversarial review of
+ * #84 found that, the gate's last poll, and that nothing here checks
+ * sio_stop=1's outcome: m1-crumbs gives a verdict only if 0x6012 says SIO's
+ * firmware was stopped.
  * The commit then finds the subtree as the recipe leaves it, so the restart's
  * time reads as --m1-gates' does. Left off, B2's own raise of SIO_CPU would
  * wait under an off parent, as in run 3.
@@ -47,11 +57,13 @@
  *   bit 0  0x28e5a0050 read closed (bit 30) after its poll: the answer
  *   bit 1  0x28e5a0064 read closed after its poll
  *   bit 2  every one of the 42 bit-11 polls was met
- *   bit 3  all 43 words read target 0 and actual 0 after the polls
+ *   bit 3  all 43 words read target 0, actual 0, auto-enable 0 and auto floor 0
+ *          after the polls: the 0 took whole
  *   bit 4  the other four gates read as --m1-gates' run found them:
  *          0x28e5a030c closed, 0x28e09c310 open, 0x28e09c338 closed,
  *          0x28e09c34c open
- *   bit 5  all 43 read back as found (never set in the first send)
+ *   bit 5  all 43 read back as found, and 0x28e5a0050 then read as it did
+ *          before the first write (never set in the first send)
  *   bit 6  0x28e5a0050 read closed before the first write
  *   bit 7  always set
  * What bit 0 says: with B2's switch-off made by the AP, in the recipe's state,
@@ -65,8 +77,8 @@
  *
  * What it adds to the time between step 4, where WD1's marker is set, and the
  * commit: a few ms if every poll is met at once, 100 ms more for a gate that
- * stays open, and at worst about 5 s (42 polls and two of 100 ms, 43 waits of
- * 10 ms). The RTC's second is read before it, so a restart is timed from
+ * stays open, and at worst about 5 s (42 polls and three of 100 ms, 43 waits
+ * of 10 ms). The RTC's second is read before it, so a restart is timed from
  * before it too.
  *
  * A run that stops inside it leaves stage 0x3a with 0x6016 at 0 (before the
@@ -118,15 +130,18 @@ typedef uint32_t u32;
 #define M1_SIOD_STAGE		0x3c	/* in place of 0x55 */
 #define M1_SIOD_STAGE_PEND	0x3b	/* in place of 0x54 */
 
-/* A power word is off: its target and its actual state both read 0. */
+/*
+ * A power word is off as B2's 0 leaves it: its target, its actual state, and its auto-enable and auto floor, which the
+ * 0 clears too and Linux's own switch-off leaves set, all read 0 (Pullfrog on #84). The flags, bits 8, 9 and 11, aside.
+ */
 static inline bool siod_off(u32 v)
 {
-	return !(v & (0xfU | GATE_PS_ACTUAL));
+	return !(v & (GATE_PS_SET | GATE_PS_ACTUAL));
 }
 
 /*
  * g: the six gate words in gates_mark.h's order, read after both polls. polls: every bit-11 poll was met. off: all 43
- * words read off then. back: all 43 read back as found. was_closed: 0x28e5a0050 read closed before the first write.
+ * words read off then. back: all 43 read back as found, and the gate as before. was_closed: 0x28e5a0050 read closed before the first write.
  */
 static inline u8 siod_byte(const u32 *g, bool polls, bool off, bool back, bool was_closed)
 {

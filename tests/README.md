@@ -29,8 +29,9 @@ used to sit in CLAUDE.md, entry for entry):
   it's there, the time against the marker as at fabric_up=1's stages; and `--clear` never takes it for the
   alarm's result. For sio_down=1 it compiles `sio_down.h`'s list, byte and stage map against a second writing-out
   of B2's order, and runs `m1_sio_down()` with its poll and write-back functions as they stand against a model of
-  SIO's page and the gate pages in fifteen scenarios (the gate closing at once, late, never, or closed before; a
-  poll never met; a word that stays on; a word that doesn't come back; UART_N busy): the 43 read as found, 43
+  SIO's page and the gate pages in twenty scenarios (the gate closing at once, late, never, closed before, or staying closed; a
+  poll never met; a word that stays on, or keeps its auto settings; a word that doesn't come back, in its settings or only in its actual
+  state; UART_N busy): the 43 read as found, 43
   writes of 0 in B2's order and groups with each group's polls after its writes and none of UART_N, the two gates
   polled in order, the byte before any write-back, 43 write-backs in reverse with the value found less bits 11, 9
   and 8, the byte again, and no other write. It runs `m1_siod_init()` against a list with a word twice, outside

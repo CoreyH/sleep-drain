@@ -1499,13 +1499,21 @@ static void e1_after_slpa(void)
  * to 100 ms; 0x28e5a0064 and then 0x28e5a0050 are polled for bit 30, up to
  * 100 ms each; the 43 and the six gate words are read; siod_byte() goes to
  * 0x6016; all 43 are written back in reverse order, each as found less the bits
- * the kernel never writes back, with up to 10 ms to read as found; and the byte
- * goes out again, with SIOD_BACK if they all did. The alarm's last command sends
+ * the kernel never writes back, with up to 10 ms to read as found; 0x28e5a0050
+ * is polled once more, up to 100 ms, to read as it did before the first write;
+ * and the byte goes out again, with SIOD_BACK if all of that held. "As found"
+ * is the target, the auto settings and the actual state: the two was-gated
+ * flags (bits 8 and 9) aren't written back or compared, so a word that gated
+ * in between keeps them set, SIO_CPU's bit 9 among them, which entry 61 had
+ * cleared as macOS does (the review of #84; B2 writes that bit itself at its
+ * op 49). The alarm's last command sends
  * it once more after the commit, as it sends gates_mark=1's. The new writes are
  * those 86, to 43 words: 0, and the value found (built on Corey's standing
  * go-ahead of 2026-11-10). B2's GPIO cycle and its raise of SIO_CPU aren't made
- * (sio_down.h says why). SIO's firmware is stopped by then (sio_stop=1), and
- * nothing between the switch-off and the write-back touches a device in SIO's
+ * (sio_down.h says why). SIO's firmware is stopped by then if sio_stop=1's
+ * steps went as meant, which the switch-off doesn't check: 0x6012 has their
+ * outcome, and m1-crumbs gives no verdict without it (the review of #84).
+ * Nothing between the switch-off and the write-back touches a device in SIO's
  * island: only PMGR words and nub-spmi0. At the load, m1_siod_init() refuses
  * unless the 43 offsets are exactly those words, none is on the never-write
  * list, and SIO's page and the first gate page are mapped, and logs the 43
@@ -3160,6 +3168,9 @@ static u8 m1_sio_down(void)
 		if (!m1_siod_back(m1_sio + off[i], was[i]))
 			back = false;
 	}
+	/* The gate once more, with everything back (the review of #84): "back" is also the gate reading as it did before the first write. */
+	if (!m1_siod_poll(m1_look_ga + GATE_SIO, GATE_CLOSED, was_closed ? GATE_CLOSED : 0))
+		back = false;
 	b = siod_byte(g, polls, down, back, was_closed);
 	m1_crumb(GATES_AT, &b, 1);
 	return b;

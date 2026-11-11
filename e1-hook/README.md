@@ -127,16 +127,20 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   power words from 0x28e580180 to 0x28e5802d0 as found, writes each 0 in B2's order and groups (SIO_CPU first, SIO
   last), polls each for bit 11 clear as B2 does (not UART_N), polls 0x28e5a0064 and then 0x28e5a0050, the gate B2
   waits for at its op 140, for bit 30, up to 100 ms each, reads the 43 and the six gate words, and sends one byte to
-  0x6016: bit 0 that gate closed, 1 0x28e5a0064 closed, 2 every poll met, 3 all 43 read off, 4 the other four gates
+  0x6016: bit 0 that gate closed, 1 0x28e5a0064 closed, 2 every poll met, 3 all 43 read off as written (target, actual state and auto
+  settings 0), 4 the other four gates
   as `--m1-gates` found them, 6 the gate already closed before the first write, 7 always. Then it writes all 43 back
   in reverse order, each as found less the bits the kernel never writes back, and sends the byte again with bit 5 if
-  they all read as found within 10 ms each; the alarm's last command sends it a third time. The new writes are those
+  they all read as found within 10 ms each (target, auto settings and actual state; the two was-gated flags, bits 8
+  and 9, aren't written back or compared) and the gate then read as before the first write; the alarm's last command
+  sends it a third time. The new writes are those
   86 (built on Corey's standing go-ahead of 2026-11-10); B2's GPIO cycle and its raise of SIO_CPU aren't made. So
   the commit finds the subtree as the recipe leaves it, and the ending reads as `--m1-gates`' as long as bit 5 is
   set. The run's stages are its own from step 8 on: 0x3a, 0x3c and 0x3b for 0x4b, 0x55 and 0x54 (0xba, 0xbc, 0xbb
   with K4's bit). The load refuses unless the list is exactly those 43 words, none on the never-write list, with
   SIO's page and the gate pages mapped, and logs the 43 awake. `m1-crumbs` reads the byte only at those stages and
-  gives the verdict in this order: inconclusive unless every poll was met and all 43 read off; the gate closed
+  gives the verdict in this order: inconclusive unless 0x6012 says SIO's firmware was stopped (the switch-off
+  doesn't check that itself), every poll was met and all 43 read off; the gate closed
   before anything was written; closed (op 140 less likely the stall, `a2_pre=1` next); open (a lead on op 140).
   Either is the AP's state before the commit, not B2's at op 140. It normally adds a few ms before the commit and
   100 ms while the gate stays open, about 5 s at the very worst. A run that stops inside it leaves stage 0xba with
