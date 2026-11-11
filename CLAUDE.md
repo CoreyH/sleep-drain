@@ -87,7 +87,7 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   out-of-tree module (`make -C e1-hook`) that runs at the end of a suspend's noirq pass and, with
   `replay=15`, replays macOS's sleep entry for good: the Mac resets or stays dark, and never wakes.
   `run-floor` is its launcher, one option per rung, each rung adding to the one before
-  (`--m1-gates` is the latest); `m1-crumbs` reads the record a run leaves in the PMU after the
+  (`--m1-sio-down` is the latest); `m1-crumbs` reads the record a run leaves in the PMU after the
   restart, and `--clear` zeroes it. `probe` is the one launcher that isn't one-way: it loads the module
   with `probe=1`, which reads three coprocessor words in the recipe's state and fails the suspend, so
   the Mac is meant to come back (it didn't: with two firmwares stopped the kernel doesn't resume);

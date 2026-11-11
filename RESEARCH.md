@@ -3997,6 +3997,78 @@ read can't show. The question it leaves is the one that matters: does that gate 
 subtree goes off in the recipe's state? The AP making B2's own switch-off there, and polling, is the
 nearest read there is, and it's the AP's state before the commit, not B2's at op 140 (PLAN.md).
 
+### `sio_down=1` as built: B2's switch-off of SIO's subtree, made by the AP and put back (2026-11-11)
+
+`e1_hook sio_down=1`, `pkexec e1-hook/run-floor --quick --m1-sio-down`: `--m1-gates`' recipe with one
+thing in place of its reads, and this one writes. Built, not run. `e1-hook/sio_down.h` has the words,
+their order, the byte and the stages.
+
+- **What it does.** In step 8, after the stage and the steps' outcomes and before the commit, CPU0
+  reads the 43 power words of SIO's subtree (0x28e580180 to 0x28e5802d0) as found; writes each 0, in
+  B2's order and groups (SIO_CPU and 37 leaves; SIO_ADMA, SPI_P and UART_P; AUDIO_P; SIO), polling each
+  group for bit 11 clear after its writes as B2 does, UART_N left out as B2 leaves it out; polls
+  0x28e5a0064 and then 0x28e5a0050 for bit 30, up to 100 ms each (B2's ops 139 and 140); reads the 43
+  and the six gate words; sends one byte; writes all 43 back in reverse order, each as found less bits
+  11, 9 and 8, with up to 10 ms each to read as found; polls 0x28e5a0050 once more, up to 100 ms, to
+  read as it did before the first write; and sends the byte again.
+- **Why B2's own words, when the gate test had the subtree off already.** There Linux's suspend had
+  switched it off, and its words read 0x0f000200 (SIO, SIO_CPU) or carried 0x200; B2 writes 0, which
+  also clears the auto floor and bit 28. And that was Linux's suspended state, not the recipe's.
+- **Settled while building:**
+  - **The words go back before the commit.** Left off, B2's own raise of SIO_CPU (its op 49) would
+    wait under an off parent, as run 3's did, and the restart's time would stop comparing with
+    `--m1-gates`'. Put back, the commit finds what that run's found, and the byte says whether all 43
+    read as found.
+  - **Not made:** B2's cycle of GPIO's power word around this (its ops 47 and 90). GPIO is on the
+    other power page, whose gates are in 0x28e09c000, so it isn't expected behind 0x28e5a0050; if the
+    gate stays open, it's the first thing a later run can add. And B2's raise of SIO_CPU to
+    0x0f00024f with its poll of SIO's ASC (ops 49-51): entry 61 has SIO_CPU on already, and the probe
+    read that word.
+- **The byte, at 0x6016,** under stages of its own (0xba, then 0xbc or 0xbb): bit 0, 0x28e5a0050
+  closed after its poll; 1, 0x28e5a0064 closed; 2, all 42 polls met; 3, all 43 read target, actual
+  state and auto settings 0; 4, the other four gates as `--m1-gates` found them; 5, all 43 read back
+  as found and the gate as before; 6,
+  0x28e5a0050 closed before the first write; 7, always.
+- **What's new about the run.** 86 writes to 43 power words, 0 and then the value found. SIO's
+  firmware has been stopped since before noirq (`sio_stop=1`) if that step went as meant, as it did
+  in the last run; the switch-off doesn't check, and `m1-crumbs` gives no verdict unless 0x6012 says it
+  did. Between the switch-off and the write-back CPU0 touches only PMGR words and nub-spmi0. If the gate does close, SIO's island loses
+  power and comes back with the write-back: the commit then finds a SIO that was power-cycled, which
+  no run has had. B2 polls SIO's ASC for bit 1 after its own raise (op 51); ANS's read set after
+  such a raise in the probe, SIO's hasn't been read that way. Normally the step adds a few ms before
+  the commit, 100 ms while the gate stays open, about 5 s if every poll and wait went unmet.
+- **Reading it.** Every poll met, all 43 off, the gate open before:
+  - **closed:** the gate can close in the recipe's state, so op 140 is less likely the stall. If the
+    restart still comes at 90 s, `a2_pre=1` is next. If it comes later, the power-cycle of SIO's
+    island did something, and that's the lead.
+  - **open:** a lead on op 140, stronger than the gate test's: B2's words and values, in the recipe's
+    state. What else is behind that gate is the question, GPIO first.
+  - Either is the AP's state before the commit, not B2's at op 140: the cores are up, A2's DCS and
+    fabric moves haven't been made, nor B2's own raises (Pullfrog on #83).
+  - A poll unmet or a word not off: inconclusive, and which word isn't recorded. Bit 5 clear: the
+    ending doesn't compare with `--m1-gates`'. Stage 0xba with no byte: it stopped in the switch-off.
+
+Checked: the module's build; `tests/m1_crumbs_test.py`, which runs `m1_sio_down()` as it stands
+against a model of the registers in twenty scenarios (43 writes of 0 in B2's order, 43 write-backs
+in reverse, no other write, in every one); `tests/e1a_launcher_test.py`; the new code's own mutants.
+An Opus subagent was to build it and stopped before writing anything (it reported a safety check
+cutting off one of its responses), so it was built in the session.
+
+What the reviews of #84 changed. The adversarial pass (one subagent, set on breaking it) found no
+wrong write, no loop without a bound, and nothing past the load's check, and three gaps in what the
+record claimed:
+- the gate wasn't read again after the write-back, so "back" could be said with 0x28e5a0050 still
+  closed at the commit: it's now polled once more, and bit 5 needs it to read as before;
+- "as found" overstated: the two was-gated flags (bits 8 and 9) are neither written back nor
+  compared, so a word that gated in between keeps them, SIO_CPU's bit 9 among them, which entry 61
+  had cleared as macOS does. Said now, in `sio_down.h` and in `m1-crumbs`' line; B2 writes that bit
+  itself at its op 49;
+- the switch-off runs whatever `sio_stop=1`'s outcome was: `m1-crumbs` now gives no verdict unless
+  0x6012 says SIO's firmware was stopped.
+Pullfrog's one: "all off" compared the target and the actual state only, so a word that kept its
+auto-enable or auto floor through the 0, the fields that set B2's 0 apart from Linux's own
+switch-off, still counted as off. Bit 3 now needs those to read 0 too.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
