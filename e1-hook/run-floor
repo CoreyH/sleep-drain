@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down]
 #
 # --quick, ahead of the recipe, makes the reading 1 minute instead of 10, with no need to wait
 # 20 minutes off the charger: for a run whose question is how it ends. If one ever goes dark for
@@ -142,6 +142,16 @@
 # readings of the restart's time included. One ending is new: a read that faults or never returns leaves stage 0xcb
 # with no gate byte, and a restart about 10 s (a panic) or 90 s (WD1's marker) after the screen goes dark. Its label
 # is floor-m1-gates.
+# --m1-sio-down (PLAN.md, "The order after the look"; e1-hook/sio_down.h) is --m1-gates', with one thing in place of
+# its reads, and this one writes: sio_down=1 has CPU0, right before the commit, write 0 to the 43 power words of SIO's
+# subtree (0x28e580180 to 0x28e5802d0) in the order the engine's B2 does, poll each as B2 polls it, poll the two gates B2
+# then waits for (0x28e5a0064, and 0x28e5a0050 at its op 140), leave the result in the PMU's 0x6016, write all 43 back as
+# found, and leave whether they read as found. New writes: those 43 words, each to 0 and back. SIO's firmware is
+# stopped by then, as in every run since --m1-sio-stop. m1-crumbs says whether the gate closed and what that makes the
+# next step. The run's stages are its own from step 8 on (0xba, then 0xbc or 0xbb), and it ends as --m1-gates' does,
+# the same three readings of the restart's time included, as long as the byte says the 43 were put back. A run that
+# stops inside the switch-off leaves stage 0xba with no byte, or a byte without "written back", and a restart about
+# 10 s (a panic) or 90 s (WD1's marker) after the screen goes dark. Its label is floor-m1-sio-down.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
@@ -156,7 +166,7 @@
 #     After --m1, also, before anything else touches the PMU:
 #       /home/corey/src/sleep-drain/e1-hook/m1-crumbs, for a photo or a copy,
 #       then pkexec /home/corey/src/sleep-drain/e1-hook/m1-crumbs --clear
-#       (after --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words, --m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark and --m1-gates, --clear also disarms the alarm the run armed, 0x1401
+#       (after --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words, --m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark, --m1-gates and --m1-sio-down, --clear also disarms the alarm the run armed, 0x1401
 #       back to 0x01, so that it can't power the Mac on an hour later; every
 #       m1 run refuses to load while it reads armed).
 #     After --m1-position, also, in that same boot, once m1-crumbs and collect
@@ -171,7 +181,7 @@
 #     the keyboard (dark since the reading began) stay dark past 2 minutes.
 #     Nothing wakes the Mac from it. If that's new (it's a candidate for a
 #     completed entry), leave it at least 30 minutes, then the steps below.
-#     After --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words, --m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark or --m1-gates, do them before about 55 minutes: the alarm fires 60
+#     After --m1-alarm, --m1-hold, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words, --m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark, --m1-gates or --m1-sio-down, do them before about 55 minutes: the alarm fires 60
 #     minutes after the commit, and if it wakes the SoC, the wake lands in
 #     m1n1 with no way back and the Mac hangs, at an unknown draw, until the
 #     power key. If it's dark past that, expect that and end it the same way.
@@ -217,9 +227,9 @@
 # a way out calls the replay off instead: an unload then would let the
 # suspend already asked for sleep as a plain s2idle, dark like the floor.
 # With --m1-recfg-bite, either way leaves A2's bite word at 45 s, and says so.
-# With --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark or --m1-gates, either way leaves WD2's bite at 120 s if
+# With --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark, --m1-gates or --m1-sio-down, either way leaves WD2's bite at 120 s if
 # wd2-bite's store took, and says so: WD2 isn't armed awake, and a restart undoes it. --m1-cluster-ack's
-# three words, --m1-fabric-up's one and --m1-mark's three to WD1 (--m1-gates' too) are only written in the replay itself,
+# three words, --m1-fabric-up's one and --m1-mark's three to WD1 (--m1-gates' and --m1-sio-down's too) and --m1-sio-down's 43 are only written in the replay itself,
 # after slpa: a way out before that leaves them as they were.
 set -euo pipefail
 
@@ -264,6 +274,7 @@ ack=0
 fab=0
 mark=0
 gates=0
+siodown=0
 quick=()
 label=floor
 # --quick, ahead of the rest: a 1-minute reading, for a run whose question is how it ends, not what it draws.
@@ -486,8 +497,28 @@ elif (($# == 1)) && [[ $1 == --m1-gates ]]; then
   mark=1
   gates=1
   label=floor-m1-gates
+elif (($# == 1)) && [[ $1 == --m1-sio-down ]]; then
+  quiet=1
+  m1=1
+  late=1
+  alarm=1
+  hold=1
+  nowatch=1
+  pmp=1
+  sio=1
+  disp=1
+  macend=1
+  siostop=1
+  pwords=1
+  wd2=1
+  ack=1
+  fab=1
+  mark=1
+  gates=1
+  siodown=1
+  label=floor-m1-sio-down
 elif (($# != 0)); then
-  die "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates]"
+  die "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -502,7 +533,7 @@ WD2BITE=${FLOOR_WD2_BITE:-$here/wd2-bite}
 [[ $(modinfo -F vermagic "$ko" | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r): make -C $here"
 # A build older than its sources may be another version's, with the same parameters: what it leaves in the PMU would be
 # read by this version's m1-crumbs, and --m1-recfg-bite's first build had its byte's two bite codes the other way round.
-for src in e1_hook.c recfg_bite.h m1_position.h wd2_bite.h fabric_up.h wd1_mark.h gates_mark.h asc_probe.h look.h gate_test.h; do
+for src in e1_hook.c recfg_bite.h m1_position.h wd2_bite.h fabric_up.h wd1_mark.h gates_mark.h sio_down.h asc_probe.h look.h gate_test.h; do
   [[ ! -e $here/$src || $ko -nt $here/$src ]] || die "$ko is older than $src: make -C $here"
 done
 # Builds before this one have no cancel (E1a's has no oneway either), and
@@ -531,6 +562,7 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!fab)) || [[ $parms == *$'\n'fabric_up:* ]] || die "$ko is an older build, without fabric_up: make -C $here"
 ((!mark)) || [[ $parms == *$'\n'wd1_mark:* ]] || die "$ko is an older build, without wd1_mark: make -C $here"
 ((!gates)) || [[ $parms == *$'\n'gates_mark:* ]] || die "$ko is an older build, without gates_mark: make -C $here"
+((!siodown)) || [[ $parms == *$'\n'sio_down:* ]] || die "$ko is an older build, without sio_down: make -C $here"
 # sleep-drain-pmp's module is built by install.sh for one kernel. After a kernel update it's the old kernel's until
 # install.sh runs again, which a safe boot can't do: better to say so now than after the load.
 ((!sio)) || [[ $(modinfo -F vermagic "$PMP_KO" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] ||
@@ -576,6 +608,7 @@ wd2opt=--m1-wd2-bite
 ((!fab)) || wd2opt=--m1-fabric-up
 ((!mark)) || wd2opt=--m1-mark
 ((!gates)) || wd2opt=--m1-gates
+((!siodown)) || wd2opt=--m1-sio-down
 reader=
 disarm() {
   local again
@@ -719,6 +752,7 @@ params=(replay=15 oneway=1)
 ((!fab)) || params+=(fabric_up=1)
 ((!mark)) || params+=(wd1_mark=1)
 ((!gates)) || params+=(gates_mark=1)
+((!siodown)) || params+=(sio_down=1)
 armed=1
 if ! insmod "$ko" "${params[@]}"; then
   # The module says why in the kernel log, which a safe boot loses at the restart: show it now, and keep it.
@@ -751,7 +785,8 @@ fi
   { ((!ack)) || [[ $(cat "$MODDIR/parameters/cluster_ack") == Y ]]; } &&
   { ((!fab)) || [[ $(cat "$MODDIR/parameters/fabric_up") == Y ]]; } &&
   { ((!mark)) || [[ $(cat "$MODDIR/parameters/wd1_mark") == Y ]]; } &&
-  { ((!gates)) || [[ $(cat "$MODDIR/parameters/gates_mark") == Y ]]; } ||
+  { ((!gates)) || [[ $(cat "$MODDIR/parameters/gates_mark") == Y ]]; } &&
+  { ((!siodown)) || [[ $(cat "$MODDIR/parameters/sio_down") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
 # --m1-sio-pmp: the PMP's display report requests withdrawn at this suspend's noirq (Corey's pick of 2026-11-09), as
 # T8140's driver does before it idles the PMP. A reboot undoes it; the module stays loaded on the ways out here.

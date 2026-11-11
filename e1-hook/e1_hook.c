@@ -92,6 +92,7 @@
  *   pkexec e1-hook/run-floor --m1-fabric-up       (--m1-cluster-ack's and fabric_up=1: PLAN.md, "The order after run 16")
  *   pkexec e1-hook/run-floor --m1-mark            (--m1-fabric-up's and wd1_mark=1: the same)
  *   pkexec e1-hook/run-floor --m1-gates           (--m1-mark's and gates_mark=1: PLAN.md, "The order after the look")
+ *   pkexec e1-hook/run-floor --m1-sio-down        (--m1-gates' and sio_down=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -139,6 +140,7 @@
 #include "fabric_up.h"
 #include "wd1_mark.h"
 #include "gates_mark.h"
+#include "sio_down.h"
 #include "wd2_bite.h"
 
 #if IS_ENABLED(CONFIG_ACPI)
@@ -356,6 +358,10 @@ MODULE_PARM_DESC(wd1_mark, "With fabric_up=1: in step 4, where the kernel has al
 static bool gates_mark;
 module_param(gates_mark, bool, 0444);
 MODULE_PARM_DESC(gates_mark, "With wd1_mark=1, never with probe=1: reads only. In step 8, after the stage and the steps' outcomes and right before the commit, CPU0 reads the six gate-status words B2 polls (0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338, 0x28e09c34c) and AFNC2_LW1 (0x28e580160), and sends one byte to 0x6016: their bit 30s, whether the lane read 0x1000030f, and bit 7 always; the alarm's last command writes it again in place of its result. From step 8's command on the stages are 0x4b, 0x55 and 0x54 (for 0x52, 0x53 and 0x51). The seven words are read and logged awake at the load, which refuses unless their pages are mapped (gates_mark.h)");
+/* B2's own switch-off of SIO's subtree, made by the AP before the commit, and put back (PLAN.md, "The order after the look"). */
+static bool sio_down;
+module_param(sio_down, bool, 0444);
+MODULE_PARM_DESC(sio_down, "With gates_mark=1, never with probe=1: in step 8, in place of gates_mark=1's reads and right before the commit, CPU0 writes 0 to the 43 power words of SIO's subtree (0x28e580180-0x28e5802d0) in the order the engine's B2 does, polls each for bit 11 clear and the gates 0x28e5a0064 and 0x28e5a0050 for bit 30 as B2 does (up to 100 ms each), sends one byte to 0x6016 (sio_down.h), writes all 43 back as found and sends the byte again with whether they read as found. The run's last stages are its own: 0x3a, 0x3c, 0x3b");
 /* Not a run: the three coprocessor words B2 polls, read in the recipe's state, and the suspend failed (PLAN.md, "The order after run 17"). */
 static bool probe;
 module_param(probe, bool, 0444);
@@ -1478,6 +1484,37 @@ static void e1_after_slpa(void)
  * returns leaves WD1's marker to restart the Mac about 90 s after step 4; both
  * leave stage 0x4b, 0x6013's marker and 0x6016 at 0. So does a byte whose own
  * command failed, after which the run went on unrecorded.
+ *
+ * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
+ * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
+ * gate polled as B2 polls it, and put back (PLAN.md, "The order after the look";
+ * sio_down.h has the words, their order, the byte and the stages). gates_mark=1
+ * read 0x28e5a0050, the gate B2 waits for at its op 140, open right before the
+ * commit, which says nothing: the recipe leaves ps_sio, UART_P, SPI_P and SIO_CPU
+ * on, and B2 switches them off itself. Here, in step 8, where gates_mark=1's
+ * reads would be (they aren't made: m1_sio_down() makes its own), after stage
+ * 0x3a's command and the outcomes and with SError unmasked: the 43 power words
+ * from 0x28e580180 to 0x28e5802d0 are read as found; each is written 0, in B2's
+ * order and groups, and polled for bit 11 clear as B2 polls it (not UART_N), up
+ * to 100 ms; 0x28e5a0064 and then 0x28e5a0050 are polled for bit 30, up to
+ * 100 ms each; the 43 and the six gate words are read; siod_byte() goes to
+ * 0x6016; all 43 are written back in reverse order, each as found less the bits
+ * the kernel never writes back, with up to 10 ms to read as found; and the byte
+ * goes out again, with SIOD_BACK if they all did. The alarm's last command sends
+ * it once more after the commit, as it sends gates_mark=1's. The new writes are
+ * those 86, to 43 words: 0, and the value found (built on Corey's standing
+ * go-ahead of 2026-11-10). B2's GPIO cycle and its raise of SIO_CPU aren't made
+ * (sio_down.h says why). SIO's firmware is stopped by then (sio_stop=1), and
+ * nothing between the switch-off and the write-back touches a device in SIO's
+ * island: only PMGR words and nub-spmi0. At the load, m1_siod_init() refuses
+ * unless the 43 offsets are exactly those words, none is on the never-write
+ * list, and SIO's page and the first gate page are mapped, and logs the 43
+ * awake. The stages are siod_stage()'s: 0x3a, then 0x3c or 0x3b after the
+ * release. It adds a few ms before the commit, 100 ms more while a gate stays
+ * open, and about 5 s at the very worst, every poll and wait unmet; WD1's
+ * marker has been counting since step 4, so the restart then comes that much
+ * sooner after the commit. A run that stops inside it leaves stage 0x3a and
+ * 0x6016 at 0, or the byte without SIOD_BACK.
  *
  * probe=1 (e1-hook/probe; with wd1_mark=1, so that everything the recipe maps and
  * checks at load is there) isn't a run. It reads, in the state the recipe makes,
@@ -3020,6 +3057,8 @@ static void m1_wd2_out(void)
 	/* gates_mark=1: its own stage in place of fabric_up=1's, since 0x6016 is its byte (gates_mark.h). */
 	if (gates_mark)
 		b[0] = gates_stage(b[0]);
+	if (sio_down)
+		b[0] = siod_stage(b[0]);
 	b[1] = m1_wd2_sample(pre, m1_wd2_bite_awake, ctl, post, after, c0, c1, phase);
 	m1_crumb(0x6004, b, 2);
 	for (i = 0; i < M1_SPMI_WORDS; i++)
@@ -3046,6 +3085,89 @@ static void m1_gates_read(u32 *g, u32 *lane)
 static_assert(ARRAY_SIZE(((u16[])LOOK_GATE_A_OFFS)) + ARRAY_SIZE(((u16[])LOOK_GATE_B_OFFS)) == GATES_N && GATES_AT == 0x6016);
 static_assert(LOOK_GATE_A == 0x28e5a0000ULL && LOOK_GATE_B == 0x28e09c000ULL && LOOK_SIO_PAGE == M1_PS_SIO_PAGE &&
 	      M1_PS_SIO_PAGE + GATE_LANE == 0x28e580160ULL && GATE_CLOSED == BIT(30) && GATE_LANE_VAL == 0x1000030fU);
+
+/* sio_down=1: up to 100 ms, B2's 255 tries, for the word at p to read want under mask. True if it did. */
+static bool m1_siod_poll(void __iomem *p, u32 mask, u32 want)
+{
+	u64 t0 = m1_now();
+
+	while ((readl(p) & mask) != want) {
+		if (m1_now() - t0 > m1_tps / 10)
+			return false;
+		cpu_relax();
+	}
+	return true;
+}
+
+/*
+ * sio_down=1: one power word written back as it was found, less the bits the kernel's driver never writes back
+ * either, with up to 10 ms for it to read as found. The only write-back there is. True if it read as found.
+ */
+static bool m1_siod_back(void __iomem *p, u32 found)
+{
+	u64 t0;
+
+	writel(found & ~ASC_PS_NOT_WRITTEN, p);
+	dsb(sy);
+	t0 = m1_now();
+	while (!gate_back(readl(p), found)) {
+		if (m1_now() - t0 > m1_tps / 100)
+			return false;
+		cpu_relax();
+	}
+	return true;
+}
+
+/*
+ * sio_down=1, step 8, right before the commit (the m1 comment; sio_down.h has the steps and the byte): SIO's subtree
+ * switched off as B2 switches it off, the gates polled as B2 polls them, the byte, and every word written back as
+ * found. Every write of the switch-off is a 0 to one of the 43 words; every one of them is written back, whatever the
+ * polls and the reads said. Returns the byte as last sent, for the alarm's last command.
+ */
+static u8 m1_sio_down(void)
+{
+	static const u16 off[SIOD_N] = SIOD_OFFS;
+	static const u8 grp[] = SIOD_GROUPS;
+	u32 was[SIOD_N], g[GATES_N], lane;
+	bool polls = true, down = true, back = true, was_closed;
+	unsigned int i, k, at;
+	u8 b;
+
+	for (i = 0; i < SIOD_N; i++)
+		was[i] = readl(m1_sio + off[i]);
+	was_closed = readl(m1_look_ga + GATE_SIO) & GATE_CLOSED;
+	for (k = 0, at = 0; k < ARRAY_SIZE(grp); at += grp[k++]) {
+		for (i = at; i < at + grp[k]; i++)
+			writel(0, m1_sio + off[i]);
+		dsb(sy);
+		for (i = at; i < at + grp[k]; i++) {
+			if (off[i] != SIOD_NOPOLL && !m1_siod_poll(m1_sio + off[i], SIOD_BUSY, 0))
+				polls = false;
+		}
+	}
+	m1_siod_poll(m1_look_ga + SIOD_GATE_64, GATE_CLOSED, GATE_CLOSED);
+	m1_siod_poll(m1_look_ga + GATE_SIO, GATE_CLOSED, GATE_CLOSED);
+	for (i = 0; i < SIOD_N; i++) {
+		if (!siod_off(readl(m1_sio + off[i])))
+			down = false;
+	}
+	m1_gates_read(g, &lane);
+	dsb(sy);
+	isb();
+	b = siod_byte(g, polls, down, false, was_closed);
+	m1_crumb(GATES_AT, &b, 1);
+	for (i = SIOD_N; i-- > 0;) {
+		if (!m1_siod_back(m1_sio + off[i], was[i]))
+			back = false;
+	}
+	b = siod_byte(g, polls, down, back, was_closed);
+	m1_crumb(GATES_AT, &b, 1);
+	return b;
+}
+static_assert(SIOD_N == 43 && (SIOD_LAST - SIOD_FIRST) / 8 + 1 == SIOD_N && SIOD_FIRST == LOOK_SIO_FIRST && SIOD_LAST == LOOK_SIO_LAST &&
+	      M1_PS_SIO_PAGE + SIOD_FIRST == 0x28e580180ULL && M1_PS_SIO_PAGE + SIOD_LAST == 0x28e5802d0ULL);
+static_assert(LOOK_GATE_A + SIOD_GATE_64 == 0x28e5a0064ULL && LOOK_GATE_A + GATE_SIO == 0x28e5a0050ULL && SIOD_BUSY == BIT(11) &&
+	      ASC_PS_NOT_WRITTEN == (BIT(11) | BIT(9) | BIT(8)));
 
 /* Steps K3, K4 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
@@ -3218,6 +3340,8 @@ static void __noreturn m1_after_slpa(void)
 		b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;
 		if (gates_mark)
 			b[0] = gates_stage(b[0]);
+		if (sio_down)
+			b[0] = siod_stage(b[0]);
 		b[1] = parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
 		b[3] = fabric_up ? m1_fab_byte(held, fab_pre, fab_set, fab_end, wd1) : hold ? held : down;
@@ -3236,7 +3360,7 @@ static void __noreturn m1_after_slpa(void)
 	 * that say where the run is; SError still unmasked, so that a read that faulted panics here, then their byte (the
 	 * m1 comment; gates_mark.h).
 	 */
-	if (gates_mark) {
+	if (gates_mark && !sio_down) {
 		u32 g[GATES_N], lane;
 
 		m1_gates_read(g, &lane);
@@ -3245,6 +3369,12 @@ static void __noreturn m1_after_slpa(void)
 		m1_gates = gates_byte(g, lane);
 		m1_crumb(GATES_AT, &m1_gates, 1);
 	}
+	/*
+	 * sio_down=1, in their place: B2's switch-off of SIO's subtree, its polls, the byte, and everything written back
+	 * (the m1 comment; sio_down.h). The alarm's last command sends m1_gates again, as for gates_mark=1.
+	 */
+	if (sio_down)
+		m1_gates = m1_sio_down();
 	/* recfg_bite=1: A2's bite word once more, SError still unmasked: a read that faulted panics here, before the commit, not under step 9's mask (the m1 comment). */
 	if (recfg_bite) {
 		sram = readl(m1_recfg + RECFG_BITE);
@@ -4193,6 +4323,48 @@ static int __init m1_gates_init(void)
 	return 0;
 }
 
+/*
+ * sio_down=1 at load, after m1_gates_init(): the 43 offsets are exactly the words from 0x28e580180 to 0x28e5802d0, each
+ * once, in B2's four groups; none is on the never-write list; the pages step 8 goes through are mapped; and the 43
+ * words logged awake. Reads only.
+ */
+static int __init m1_siod_init(void)
+{
+	static const u16 off[SIOD_N] = SIOD_OFFS;
+	static const u8 grp[] = SIOD_GROUPS;
+	unsigned int i, n = 0;
+	u64 seen = 0;
+
+	for (i = 0; i < ARRAY_SIZE(grp); i++)
+		n += grp[i];
+	for (i = 0; i < SIOD_N; i++) {
+		if (off[i] < SIOD_FIRST || off[i] > SIOD_LAST || (off[i] & 7) || e1_never_write(M1_PS_SIO_PAGE + off[i])) {
+			pr_err("m1: sio_down: 0x%llx isn't one of SIO's subtree's power words, or is on the never-write list; refusing\n",
+			       M1_PS_SIO_PAGE + off[i]);
+			return -EINVAL;
+		}
+		seen |= BIT_ULL((off[i] - SIOD_FIRST) / 8);
+	}
+	if (n != SIOD_N || seen != GENMASK_ULL(SIOD_N - 1, 0)) {
+		pr_err("m1: sio_down: the list isn't each of the 43 words once, in groups that add up; refusing\n");
+		return -EINVAL;
+	}
+	if (!m1_sio || !m1_look_ga || !m1_look_gb) {
+		pr_err("m1: sio_down: SIO's page or a gate page isn't mapped; refusing\n");
+		return -ENODEV;
+	}
+	/* In address order, eight to a line; the last line's five places past 0x28e5802d0 aren't read and print as 0. */
+	for (i = 0; i < SIOD_N; i += 8) {
+		u32 v[8] = {};
+
+		for (n = 0; n < 8 && i + n < SIOD_N; n++)
+			v[n] = readl(m1_sio + SIOD_FIRST + 8 * (i + n));
+		pr_info("m1: sio_down: awake: from 0x28e580%03x: %08x %08x %08x %08x %08x %08x %08x %08x\n", SIOD_FIRST + 8 * i, v[0], v[1], v[2],
+			v[3], v[4], v[5], v[6], v[7]);
+	}
+	return 0;
+}
+
 /* fabric_up=1 at load: the word off the never-write list and as it is awake, 0x333, so that 3 is its awake value. Reads only. */
 static int __init m1_fab_init(void)
 {
@@ -4479,6 +4651,12 @@ static int __init m1_init(void)
 	}
 	if (gates_mark) {
 		int ret = m1_gates_init();
+
+		if (ret)
+			return ret;
+	}
+	if (sio_down) {
+		int ret = m1_siod_init();
 
 		if (ret)
 			return ret;
@@ -5007,6 +5185,10 @@ static int __init e1_check_params(void)
 		pr_err("gates_mark=1 needs wd1_mark=1 and no probe=1 (its stages are that run's with 0x6016 its byte, and the probe never reaches step 8)\n");
 		return -EINVAL;
 	}
+	if (sio_down && (!gates_mark || probe)) {
+		pr_err("sio_down=1 needs gates_mark=1 and no probe=1 (it's that run with SIO's subtree switched off and put back in step 8, and its byte is at 0x6016 under its own stages)\n");
+		return -EINVAL;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -5180,7 +5362,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -5188,7 +5370,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;
 
