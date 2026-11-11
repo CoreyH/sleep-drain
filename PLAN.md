@@ -59,12 +59,17 @@ the PR with that session's work.
     2026-11-11; RESEARCH.md, "The gates read's run"): as after Linux's own suspend, 0x28e5a0050 open,
     and the restart at 90 s again. It doesn't place the stall: the recipe leaves SIO's parents and
     SIO_CPU on, and B2 switches them off itself before its poll.
-  - **Next, built and not run: `sio_down=1`, B2's own switch-off of SIO's subtree made by the AP**
-    before the commit, with the gate polled as B2 polls it, and put back (`pkexec e1-hook/run-floor
-    --quick --m1-sio-down` in a safe boot; RESEARCH.md, "`sio_down=1` as built"): an observation in the
-    AP's state, a lead either way. Then, by its reading, GPIO added to the switch-off (the gate
-    stayed open) or A2's three moves (`a2_pre=1`), neither built. "The order after the look", in
-    Track A below, is the place to start.
+  - B2's own switch-off of SIO's subtree, made by the AP before the commit and put back
+    (`--m1-sio-down`, run once, 2026-11-11; RESEARCH.md, "The `sio_down=1` run"): all 42 of B2's
+    bit-11 polls met, 0x28e5a0050 still open 100 ms on, the restart at 90 s again. Inconclusive on
+    the gate: at least one of the 43 words didn't read all 0, and the record's one bit doesn't say
+    whether that was its actual state (then the gate had to stay open) or only an auto field (then
+    the subtree was off in power state, but not shown as B2's 0 leaves it). The write-back wasn't
+    confirmed either, so the 90 s isn't shown to be the earlier runs' ending.
+  - **Next, not built: the same run with a record that separates them** (`sio_down=1`'s byte laid
+    out again; no new write). Then, by its reading, GPIO added to the switch-off (the gate stayed
+    open with everything off) or A2's three moves (`a2_pre=1`), neither built. "The order after the
+    look", in Track A below, is the place to start.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -474,7 +479,40 @@ steps, and restarting the DCP and the PMP afterwards.
       and 0x28e09c34c open), the lane at macOS's value, the restart at 90 s. The reading planned below
       for an open 0x28e5a0050 was wrong: the recipe leaves ps_sio, UART_P, SPI_P and SIO_CPU on, so the
       gate was bound to read open, and the read says nothing about op 140.
-      Next, **built and not run: `sio_down=1`** (`pkexec e1-hook/run-floor --quick --m1-sio-down` in a safe
+      **Run once, 2026-11-11: `sio_down=1`** (RESEARCH.md, "The `sio_down=1` run"; `results/sio-down-20261111/`):
+      the byte 0x96. All 42 bit-11 polls met; 0x28e5a0050 open before and still open 100 ms after the last
+      poll; 0x28e5a0064 closed and the other four gates unmoved; "all 43 read 0" not met; the write-back not
+      confirmed; the restart at 90 s. Inconclusive by the rule below: bit 3 asked for target, actual state and
+      auto fields all 0, and doesn't say which failed, or in which word.
+      Next, **not built: the record laid out again, and the run repeated.** No new write: `m1_sio_down()` as it
+      is, with what it already reads sorted into the byte differently (`sio_down.h`'s `siod_byte()`, `m1-crumbs`'
+      `siod_lines()`, their tests and mutants; the stages can stay, with one bit of the byte saying which
+      layout it is, or the run gets a parameter value of its own). What it has to separate:
+      - **target and actual state all 0** (the subtree is off, which is what the gate can depend on) from
+        **auto-enable and auto floor all 0** (whether B2's 0 reads back whole);
+      - **the 43 words back** in target and actual state from **their auto fields back**, and from **the
+        gate's last read**;
+      - **if a word's target or actual state didn't read 0, which word:** a second layout of the byte for that
+        case, the mark, a bit that says "this layout", and the word's place in B2's order (0 to 42) in the
+        other six. The gate's reading means nothing in that case, so nothing else is lost.
+      The layout for the case where all are off, in eight bits: the gate closed; every poll met; the auto
+      fields all 0; the words back in target and actual state; their auto fields back; the gate as before
+      after the write-back; the layout bit; the mark. That drops 0x28e5a0064's bit, "the other four gates"
+      and "closed before", which read the same in every run so far (closed; unmoved; open): if the gate is
+      to count as open before, the run can refuse the switch-off when it isn't, and say so in the second
+      layout with a place of 63.
+      Reading it. All off in power state **and** the auto fields all 0: B2's configuration is whole, and
+      the gate open is the lead on op 140 that this run couldn't give (GPIO next), the gate closed clears
+      op 140 as far as the AP's state can (`a2_pre=1` next). All off in power state with an auto field
+      not 0: the gate's reading is of a state between Linux's switch-off and B2's, said as that, and it
+      picks nothing by itself (Pullfrog on #85); what's next is why the field doesn't read 0 (which word,
+      what it reads, whether it's a readback that means nothing), not GPIO or `a2_pre=1`. A word that
+      stays up, named, is its own lead (what holds it). And the restart's time compares with the earlier
+      runs' only if the words came back in target and actual state. A check that needs no run, to do first if
+      it's cheap: whether any of the 43 is known not to take a 0 in its auto fields (the load's lines have
+      them awake: SIO 0x1f0000ff, SIO_CPU 0x1400024f, SIO_SPMI0-2 0x0f000200), from `results/look-20261110/`
+      and the sleep-peek dumps.
+      The plan for `sio_down=1` as it stood, **built and run:** (`pkexec e1-hook/run-floor --quick --m1-sio-down` in a safe
       boot, on battery, nothing attached; `e1-hook/sio_down.h`; RESEARCH.md, "`sio_down=1` as built"). On
       `--m1-gates`' recipe, in step 8 where its reads were, CPU0 writes 0 to the 43 power words of SIO's subtree
       (0x28e580180 to 0x28e5802d0) in B2's order and groups, polls each for bit 11 as B2 does, polls 0x28e5a0064

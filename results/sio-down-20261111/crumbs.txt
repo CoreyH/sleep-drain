@@ -1,0 +1,51 @@
+0x6000: 00 30 00 50 bc 7d 00 f5  00 00 00 00 00 00 00 00
+0x6010: e1 8e ff df 90 8e 96 00  00 00 00 00 00 00 00 00
+boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (the stage the last unclean end found; sticky, so it says nothing about this boot by itself; this boot's journal says, macsmc-reboot's "PMU logged N boot error(s)")
+stage 0x6004 = 0xbc (pmp_out=1: bit 7, so the stage is 0x3c) (pmgr_late=1): sio_down=1: gates_mark=1's 0x55: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2 was armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards, the run's last breadcrumb by design: it then took its deep WFI, unrecorded
+  (the last breadcrumb that reached the PMU: the run got at least that far)
+0x6015 = 0x8e: K4 ran: the idle pair returned 0, CPU_STATUS read non-zero by macOS's mask (low bits 10; the load log has the awake value), and RUN read 1 before its clear and reads 0 after the write: the PMP's CPU is stopped
+0x6006 = 0x00: macOS's other waits were all met within 10 ms; bits 2-5 (cluster_ack=1), the soc-cluster words whose up-done flag was still set at their wait's last read: none
+0x6007 = 0xf5: fabric_up=1's byte, in place of the cores that held:
+  the other cores: all seven wrote their stop bit and held
+  bit 0 (sio_on=1): ps_sio, UART_P and SPI_P all read actual f within 10 ms
+  the fabric's p-state word (0x28e20c000) before CPU0's write: 0x111: asked down to 1 by the kernel's suspend, and there
+  after the write of 3 to its low nibble: it read 0x333, not busy, within 10 ms; at the end of step 5, after the ClkGen park and PLL-off: 0x333
+  so: the fabric was at 3 when the table went out and still there when step 5 ended, where macOS has it at its commit: the kernel had lowered it, and the write brought it back
+  bits 7:6 (wd1_mark=1): WD1 stood as the marker just before the commit: armed, its bite 150 s, its count past 60 s and running. The restart's time is read against it below, as far as the stage and wd2_bite=1's sample bear a reading out
+  (how the run ended is the stage's and wd2_bite=1's sample's to say; PLAN.md has how an ending reads with this)
+RTC second just before the commit, from its low two bytes: 429793, 2561 s before now (432354); right if this read comes within 18 h of the commit
+0x6014 = 0x90: CPU0 had nothing pending before the commit; PCPM0 not read (hold_nowatch=1: CPU0 doesn't watch them), PCPM1 not read (hold_nowatch=1: CPU0 doesn't watch them); WD1 was off; K3's kernel-path write after slpa worked
+0x6014 bit 4 (cluster_ack=1): step 5 wrote ANE0's, AFR's and AVEMSR's soc-cluster words (0x28e09800c, 0x28e098014, 0x28e098020) as 0x20, target 0 with a 1 to bit 5, their up-done flag, not the table's 0; the four cluster waits asked for the whole word to read 0
+  so: each of the four words read 0 within 10 ms of its write, before the commit: target 0, not busy, and the flag clear
+  (how the run ended is the stage's and wd2_bite=1's sample's to say; PLAN.md has how an ending reads with this)
+0x6012 = 0xff, the steps before the commit:
+  internal DCP: stopped; external DCP: stopped; the domains of the DCPs that stopped: all read off
+  SMC's AP idle notice: acked within 200 ms; SIO's firmware: stopped
+0x6013 = 0xdf: ps_words=1 wrote the 20 power words, after the table:
+  the five UARTs: read actual 0 within 10 ms each
+  MSG: read actual 0 within 10 ms each
+  ATC1-3_USB_AON: read actual 0 within 10 ms each
+  ATC0-3_PCIE: read actual 0 within 10 ms each
+  ATC1-3_COMMON: read actual 0 within 10 ms each
+  PCIE0_REF, APCIE_GP_SYS, AFNC1_LW2, AFNC2_LW1: target and auto fields NOT all read back as written
+0x6005 = 0x7d: wd2_bite=1, after the commit, the alarm and the release:
+  WD2's bite before CPU0's write: 30 s, an A sequence's opening's; WD2's control showed RESET_EN, so CPU0 wrote the bite, 120 s
+  read after that: the bite 120 s; RESET_EN set; the count changing
+  PHASE, read last: 0x4 (the entry pair's first (A2))
+  so: the write took, and WD2 was armed and counting with a 120 s bite. The reset's time is the result now: about 120 s after the commit fits A2 arming last and never closing; no reset is a candidate for a completed entry; about 30 s, or another time T, fits a later sequence arming WD2 again, T - 30 s after the commit
+  (the readings, and why one run narrows the cases without deciding them: PLAN.md, "The order after run 14")
+0x6016 = 0x96: sio_down=1's byte, in place of the alarm's result: CPU0 wrote 0 to the 43 power words of SIO's subtree in step 8, as B2 does before its op 140, polled as B2 polls, and wrote them back before the commit:
+  B2's 42 polls for bit 11 clear: all met
+  the 43 words after the polls: NOT all off as written: at least one read a target, an actual state or an auto setting other than 0
+  0x28e5a0050 before the first write: open, as in --m1-gates' run
+  0x28e5a0064 (B2's op 139), after up to 100 ms: bit 30 SET, closed
+  0x28e5a0050 (B2's op 140), after up to 100 ms more: bit 30 clear, OPEN
+  the other four gates (0x28e5a030c, 0x28e09c310, 0x28e09c338, 0x28e09c34c): as --m1-gates' run found them: closed, open, closed, open
+  written back: NOT CONFIRMED: at least one of the 43 didn't read as found within 10 ms of its write-back, or 0x28e5a0050 didn't read as before within 100 ms after it, or the run stopped in the write-back, before the byte's second send, or that send's command failed
+  so: INCONCLUSIVE: SIO's subtree wasn't shown to be all off as B2's writes leave it, so the gate's reading isn't of that state (0x28e5a0050 read open)
+  without the write-back confirmed, the commit may not have found SIO's subtree as the recipe leaves it: the restart's time doesn't compare with --m1-gates'
+the SoC restarted about 90 s after the commit (89.3 to 91.3 s: the PMU's RTC counts whole seconds); its counter (CNTVCT) is 2470.7 s old. Right only in the first boot after the run
+  wd1_mark=1's marker: about 90 s is what WD1 gives with its count never zeroed: B2 didn't reach its op 224, and the stall is at B2's first poll, in the first handshake (A2's three steps of its own) or in B2's power-down. That's the reading that fits with nothing else assumed, not a proof of which watchdog fired: a pair that finished, with a later A sequence starting about 60 s after the commit and arming WD2 with its own 30 s, gives the same time
+PMU alarm: 0x1401 = 0x41 (armed, fires in 1039 s), 0x140c = 433393, 0x14c0 event 0x00, 0x14c2 mask 0x00
+  0x140c is the commit's second + 3600, as the run wrote it
+  the armed alarm survived the reset

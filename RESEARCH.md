@@ -4000,7 +4000,7 @@ nearest read there is, and it's the AP's state before the commit, not B2's at op
 ### `sio_down=1` as built: B2's switch-off of SIO's subtree, made by the AP and put back (2026-11-11)
 
 `e1_hook sio_down=1`, `pkexec e1-hook/run-floor --quick --m1-sio-down`: `--m1-gates`' recipe with one
-thing in place of its reads, and this one writes. Built, not run. `e1-hook/sio_down.h` has the words,
+thing in place of its reads, and this one writes. Run once since (the next section). `e1-hook/sio_down.h` has the words,
 their order, the byte and the stages.
 
 - **What it does.** In step 8, after the stage and the steps' outcomes and before the commit, CPU0
@@ -4068,6 +4068,60 @@ record claimed:
 Pullfrog's one: "all off" compared the target and the actual state only, so a word that kept its
 auto-enable or auto floor through the 0, the fields that set B2's 0 apart from Linux's own
 switch-off, still counted as off. Bit 3 now needs those to read 0 too.
+
+### The `sio_down=1` run: every bit-11 poll met, the gate open, and a record that can't say the subtree was all off (2026-11-11)
+
+`pkexec e1-hook/run-floor --quick --m1-sio-down`, in a safe boot, on battery (b453922; aurora15;
+`results/sio-down-20261111/`: the PMU's record, the clear and collect, the load's lines). Dark for
+about 90 s by Corey's watch, then a restart.
+
+- **The record is whole.** Stage 0xbc, every step's outcome as in the two runs before, SIO's firmware
+  stopped, the marker stood, WD2 armed and counting with the 120 s bite, `PHASE` 4, and the restart
+  89.3 to 91.3 s after the time stamp: run 17's time a third time. Whether it's run 17's ending isn't
+  shown, with the write-back unconfirmed (below).
+- **The byte: 0x96.**
+
+  | bit | | read |
+  |---|---|---|
+  | 2 | B2's 42 polls for bit 11 clear | all met |
+  | 3 | all 43 words 0 in target, actual state and auto settings | **no** |
+  | 6 | 0x28e5a0050 before the first write | open |
+  | 1 | 0x28e5a0064 after its poll | closed |
+  | 0 | 0x28e5a0050 after 100 ms more | **open** |
+  | 4 | the other four gates | as in `--m1-gates`' run |
+  | 5 | all 43 back as found, and the gate as before | **not confirmed** |
+
+- **So it's inconclusive, by the rule set before the run.** The gate stayed open, but at least one
+  word didn't read all 0, and the one bit doesn't say which word or which field. If a word's actual
+  state stayed up, the gate was bound to stay open. If only an auto field read non-zero, the subtree
+  was off in its power state, but not shown to be as B2's 0 leaves it, which is the difference from
+  Linux's own switch-off this run was built to make: the gate's reading would then be of a state
+  between the two (Pullfrog on #85). The check was target and actual state alone until Pullfrog's
+  finding on #84 added the auto fields to it; with one bit for both, the run can't tell the two apart.
+  That was the record's fault, not the review's: the two belonged in two bits.
+- **What it does show:**
+  - **B2's bit-11 polls after its SIO writes pass**, all 42, with a core up: its ops 91 to 138 are less
+    likely the stall.
+  - **The run got through the switch-off and the write-back** with no fault recorded before the
+    commit, reached its last breadcrumb after it, and restarted at about the same time as the runs
+    before. That isn't the same ending shown: with the write-back unconfirmed, the commit may have
+    found SIO's subtree differently, and an SIO parent that wasn't back would stall B2 earlier, at
+    its own raise of SIO_CPU, with WD1 still restarting the Mac at 90 s (Pullfrog on #85).
+  - 0x28e5a0064 and the four other gates don't move when SIO's subtree is written 0.
+- **One explanation would cover three things on file** (judgment, not shown): a power word's auto
+  fields don't always read back as written.
+  - Since run 12 `ps_words=1`'s last group, four words given macOS's auto settings, "didn't all read
+    back as written" in target and auto fields (0x6013 = 0xdf, here too).
+  - In the gate test the lane's auto floor read 0 before anything wrote it, where Linux has f awake:
+    "that field isn't simply what was last written".
+  - Here both bit 3 and bit 5 compare auto fields: bit 3 asks them to read 0 after the 0, bit 5 to
+    read as found after the write-back. A word whose auto fields read by their own rule fails both,
+    with its target and actual state exactly as meant.
+  The load's lines have the 43 awake: SIO 0x1f0000ff, SIO_CPU 0x1400024f, SIO_SPMI0-2 0x0f000200
+  with no Linux driver, the rest 0xff, 0x200, 0x244, 0x2ff or 0x300.
+- **Next: the same run with a record that separates them** (PLAN.md): target and actual state apart
+  from the auto fields, the words' write-back apart from the gate's last read, and, if a word did
+  stay up, which.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 
