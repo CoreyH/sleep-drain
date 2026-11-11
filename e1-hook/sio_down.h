@@ -25,18 +25,20 @@
  *      AUDIO_P and its poll; SIO and its poll. Each poll up to 100 ms (B2's
  *      255 tries); one that isn't met is recorded and the pass goes on
  *   2. 0x28e5a0064, then 0x28e5a0050, each polled for bit 30 for up to 100 ms
- *   3. the 43 words read again (target, actual state and auto settings all 0?),
- *      and the six gate words
- *   4. the byte to 0x6016, without SIOD_BACK
+ *   3. the 43 words read again, and the six gate words (as the first run read
+ *      them; only 0x28e5a0050's goes into the byte now)
+ *   4. the byte to 0x6016, with none of its three "back" bits
  *   5. all 43 written back, in the reverse of the order they were written
  *      (SIO first, SIO_CPU last), each as found less the bits the kernel never
  *      writes back (asc_probe.h's ASC_PS_NOT_WRITTEN), up to 10 ms for each to
  *      read as found (gate_test.h's gate_back()); then 0x28e5a0050 polled
- *      once more, up to 100 ms, to read as it did in step 0
- *   6. the byte again, with SIOD_BACK if all 43 read as found and the gate as
- *      before; the alarm's last command, after the commit, sends it a third
- *      time, as gates_mark=1 has it send its byte
- * "As found" is a word's target, auto-enable, auto floor and actual state.
+ *      once more, up to 100 ms, to read open again
+ *   6. the byte again, with what came back; the alarm's last command, after
+ *      the commit, sends it a third time, as gates_mark=1 has it send its byte
+ * If 0x28e5a0050 reads closed in step 0, which it hasn't in any run, nothing
+ * is written: the byte says so, once, and the run goes on to the commit.
+ * "As found" is a word's target and actual state, and its auto-enable and bits
+ * 27:24 (called the auto floor before this layout): the byte has a bit for each pair.
  * The two was-gated flags, bits 8 and 9, are neither written back nor
  * compared: a word that gated in between keeps them set where the recipe had
  * them clear (SIO_CPU's bit 9, which the table's entry 61 clears as macOS
@@ -53,19 +55,49 @@
  * it), and B2's raise of SIO_CPU with its poll of SIO's ASC (ops 49-51: the
  * table's entry 61 has SIO_CPU on already, and the probe read that word).
  *
- * The byte, at 0x6016 (gates_mark.h's GATES_AT), under the run's own stages:
- *   bit 0  0x28e5a0050 read closed (bit 30) after its poll: the answer
- *   bit 1  0x28e5a0064 read closed after its poll
- *   bit 2  every one of the 42 bit-11 polls was met
- *   bit 3  all 43 words read target 0, actual 0, auto-enable 0 and auto floor 0
- *          after the polls: the 0 took whole
- *   bit 4  the other four gates read as --m1-gates' run found them:
- *          0x28e5a030c closed, 0x28e09c310 open, 0x28e09c338 closed,
- *          0x28e09c34c open
- *   bit 5  all 43 read back as found, and 0x28e5a0050 then read as it did
- *          before the first write (never set in the first send)
- *   bit 6  0x28e5a0050 read closed before the first write
- *   bit 7  always set
+ * The byte, at 0x6016 (gates_mark.h's GATES_AT), under the run's own stages.
+ * It has two layouts, told apart by bit 6, and this is its second form: the
+ * first run's (b453922, 0x96) had one bit for "all 43 read 0 in target, actual
+ * state and auto fields" and one for "all back, and the gate", and couldn't
+ * say which half of either failed (RESEARCH.md, "The sio_down=1 run").
+ *
+ * Bit 6 clear: the subtree went off. Every one of the 43 read target 0 and
+ * actual state 0 after the polls, every poll was met, and the gate was open
+ * before the first write:
+ *   bit 0     0x28e5a0050 read closed (bit 30) after its poll: the answer
+ *   bits 2:1  what the 43 words' auto fields read after the 0 (enum siod_auto):
+ *             3  all 0: the 0 reads back whole
+ *             2  auto-enable (bit 28) 0 in all 43, and bits 27:24 either 0 or,
+ *                in SIO, SIO_CPU or SIO_SPMI0-2 only, f: what those five read
+ *                after any switch-off on file (below)
+ *             1  auto-enable 0 in all 43, bits 27:24 something else somewhere
+ *             0  an auto-enable still read set
+ *   bit 3     all 43 read as found in target and actual state, each within
+ *             10 ms of its write-back
+ *   bit 4     all 43 read as found in auto-enable and bits 27:24 then
+ *   bit 5     0x28e5a0050 read open again within 100 ms of the last write-back
+ *   bit 7     always set
+ * Bits 3 to 5 are never set in the first send.
+ *
+ * Bit 6 set: it didn't, and bits 5:0 say where:
+ *   0-42  the first word, by its place in B2's order (SIOD_OFFS), whose target
+ *         or actual state didn't read 0 after the polls. The gate's reading
+ *         means nothing then, so it isn't kept
+ *   62    all 43 read off, but a bit-11 poll wasn't met within its 100 ms
+ *   63    0x28e5a0050 read closed before the first write: nothing was written
+ * Nothing in this layout says what came back; the two sends are the same.
+ *
+ * Why 2 is its own code (RESEARCH.md, "The record laid out again"). Bits 27:24
+ * aren't a setting that holds what was written. Of the 43, only those five have
+ * ever read anything but 0 there. With auto-enable set the field has followed
+ * the actual state in every read on file (SIO f/f, SIO_CPU 4/4, the lane above
+ * SIO f/f awake and 0/0 once Linux's suspend had its children off); with
+ * auto-enable clear it has read f (SIO and SIO_CPU after Linux's switch-off,
+ * whose driver writes back what it read there; SIO_SPMI0-2 always). So a
+ * literal 0 is expected to read back 0x0f000000 in those five, and B2 writes
+ * the same 0 to the same words: code 2 is taken as "as B2's 0 leaves them",
+ * and said as that.
+ *
  * What bit 0 says: with B2's switch-off made by the AP, in the recipe's state,
  * the gate closed, or didn't. Either is an observation in the AP's state
  * before the commit, not B2's at op 140: the cores are up, A2's DCS and fabric
@@ -82,7 +114,7 @@
  * before it too.
  *
  * A run that stops inside it leaves stage 0x3a with 0x6016 at 0 (before the
- * first send) or without SIOD_BACK (in the write-back), and restarts by the
+ * first send) or with none of the "back" bits (in the write-back), and restarts by the
  * panic (about 10 s) or by WD1's marker (about 90 s after step 4).
  */
 #ifndef SIO_DOWN_H
@@ -92,6 +124,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 typedef uint8_t u8;
+typedef uint16_t u16;
 typedef uint32_t u32;
 #endif
 
@@ -116,52 +149,107 @@ typedef uint32_t u32;
 #define SIOD_BUSY		(1U << 11)	/* what B2 polls each word for: clear */
 #define SIOD_GATE_64		0x064		/* in the first gate page: 0x28e5a0064, polled before gate_test.h's GATE_SIO */
 
+/* A power word's fields, as the byte sorts them: gate_test.h's GATE_PS_SET and GATE_PS_ACTUAL, cut the other way. */
+#define SIOD_PS_STATE		(0xfU | GATE_PS_ACTUAL)		/* the target and the actual state */
+#define SIOD_PS_AUTO_EN		(1U << 28)			/* auto-enable */
+#define SIOD_PS_AUTO_ST		(0xfU << 24)			/* bits 27:24 */
+#define SIOD_PS_AUTO		(SIOD_PS_AUTO_EN | SIOD_PS_AUTO_ST)
+/* The five of the 43 whose bits 27:24 have read anything but 0, awake or after a switch-off: SIO, SIO_CPU, SIO_SPMI0-2. */
+#define SIOD_AUTO_OFFS		{ 0x180, 0x188, 0x218, 0x220, 0x228 }
+
+/* The byte with bit 6 clear: the subtree went off. */
 #define SIOD_CLOSED		(1U << 0)
-#define SIOD_CLOSED_64		(1U << 1)
-#define SIOD_POLLS		(1U << 2)
-#define SIOD_OFF		(1U << 3)
-#define SIOD_OTHERS		(1U << 4)
-#define SIOD_BACK		(1U << 5)
-#define SIOD_WAS_CLOSED		(1U << 6)
+#define SIOD_AUTO_SHIFT		1
+#define SIOD_AUTO_MASK		(3U << SIOD_AUTO_SHIFT)
+#define SIOD_BACK_STATE		(1U << 3)
+#define SIOD_BACK_AUTO		(1U << 4)
+#define SIOD_BACK_GATE		(1U << 5)
+#define SIOD_BACK_ALL		(SIOD_BACK_STATE | SIOD_BACK_AUTO | SIOD_BACK_GATE)
+/* Bit 6 set: it didn't, and bits 5:0 are a place. */
+#define SIOD_AT			(1U << 6)
+#define SIOD_AT_MASK		0x3fU
+#define SIOD_AT_POLL		62		/* all 43 read off, but a bit-11 poll wasn't met */
+#define SIOD_AT_CLOSED		63		/* the gate read closed before the first write: nothing written */
 #define SIOD_MARK		(1U << 7)
+
+/* What the 43 words' auto fields read after the 0, in bits 2:1. */
+enum siod_auto {
+	SIOD_AUTO_EN_SET,	/* an auto-enable still read set */
+	SIOD_AUTO_OTHER,	/* auto-enable 0 in all, bits 27:24 neither 0 nor the expected f somewhere */
+	SIOD_AUTO_F,		/* auto-enable 0 in all, bits 27:24 f in some of SIOD_AUTO_OFFS' five and 0 in the rest */
+	SIOD_AUTO_ZERO,		/* all 0 */
+};
 
 /* sio_down=1's stages, from step 8's command on, each for the one gates_mark=1 sends there. */
 #define M1_SIOD_STAGE_PRE	0x3a	/* in place of 0x4b */
 #define M1_SIOD_STAGE		0x3c	/* in place of 0x55 */
 #define M1_SIOD_STAGE_PEND	0x3b	/* in place of 0x54 */
 
-/*
- * A power word is off as B2's 0 leaves it: its target, its actual state, and its auto-enable and auto floor, which the
- * 0 clears too and Linux's own switch-off leaves set, all read 0 (Pullfrog on #84). The flags, bits 8, 9 and 11, aside.
- */
-static inline bool siod_off(u32 v)
+/* A power word is off in its power state: its target and its actual state read 0. What the gate can depend on. */
+static inline bool siod_down(u32 v)
 {
-	return !(v & (GATE_PS_SET | GATE_PS_ACTUAL));
+	return !(v & SIOD_PS_STATE);
+}
+
+/* off: a word's offset in SIO's page. True for the five whose bits 27:24 read f with auto-enable clear. */
+static inline bool siod_has_auto(u16 off)
+{
+	static const u16 five[] = SIOD_AUTO_OFFS;
+	unsigned int i;
+
+	for (i = 0; i < sizeof(five) / sizeof(five[0]); i++) {
+		if (off == five[i])
+			return true;
+	}
+	return false;
+}
+
+/* off: SIOD_OFFS. now: the 43 words in that order, read after the polls. Their auto fields, as one of enum siod_auto. */
+static inline u8 siod_auto(const u16 *off, const u32 *now)
+{
+	u8 c = SIOD_AUTO_ZERO;
+	unsigned int i;
+
+	for (i = 0; i < SIOD_N; i++) {
+		if (now[i] & SIOD_PS_AUTO_EN)
+			return SIOD_AUTO_EN_SET;
+		if (!(now[i] & SIOD_PS_AUTO_ST))
+			continue;
+		if ((now[i] & SIOD_PS_AUTO_ST) != SIOD_PS_AUTO_ST || !siod_has_auto(off[i]))
+			c = SIOD_AUTO_OTHER;
+		else if (c == SIOD_AUTO_ZERO)
+			c = SIOD_AUTO_F;
+	}
+	return c;
+}
+
+/* One word after its write-back, against how it was found: SIOD_BACK_STATE and SIOD_BACK_AUTO, each if those fields read the same. */
+static inline u8 siod_back(u32 v, u32 found)
+{
+	return (u8)(((v ^ found) & SIOD_PS_STATE ? 0 : SIOD_BACK_STATE) | ((v ^ found) & SIOD_PS_AUTO ? 0 : SIOD_BACK_AUTO));
+}
+
+/* The byte for a switch-off that wasn't made, or didn't leave the subtree off: place is 0 to 42, SIOD_AT_POLL or SIOD_AT_CLOSED. */
+static inline u8 siod_byte_at(unsigned int place)
+{
+	return (u8)(SIOD_MARK | SIOD_AT | (place & SIOD_AT_MASK));
 }
 
 /*
- * g: the six gate words in gates_mark.h's order, read after both polls. polls: every bit-11 poll was met. off: all 43
- * words read off then. back: all 43 read back as found, and the gate as before. was_closed: 0x28e5a0050 read closed before the first write.
+ * The byte. off: SIOD_OFFS. now: the 43 words in that order, read after the polls. polls: every bit-11 poll was met.
+ * closed: 0x28e5a0050 read closed after its poll. back: SIOD_BACK_ALL's bits, 0 in the first send.
  */
-static inline u8 siod_byte(const u32 *g, bool polls, bool off, bool back, bool was_closed)
+static inline u8 siod_byte(const u16 *off, const u32 *now, bool polls, bool closed, u8 back)
 {
-	u8 b = SIOD_MARK;
+	unsigned int i;
 
-	if (g[0] & GATE_CLOSED)
-		b |= SIOD_CLOSED;
-	if (g[1] & GATE_CLOSED)
-		b |= SIOD_CLOSED_64;
-	if (polls)
-		b |= SIOD_POLLS;
-	if (off)
-		b |= SIOD_OFF;
-	if ((g[2] & GATE_CLOSED) && !(g[3] & GATE_CLOSED) && (g[4] & GATE_CLOSED) && !(g[5] & GATE_CLOSED))
-		b |= SIOD_OTHERS;
-	if (back)
-		b |= SIOD_BACK;
-	if (was_closed)
-		b |= SIOD_WAS_CLOSED;
-	return b;
+	for (i = 0; i < SIOD_N; i++) {
+		if (!siod_down(now[i]))
+			return siod_byte_at(i);
+	}
+	if (!polls)
+		return siod_byte_at(SIOD_AT_POLL);
+	return (u8)(SIOD_MARK | (closed ? SIOD_CLOSED : 0) | ((unsigned int)siod_auto(off, now) << SIOD_AUTO_SHIFT) | (back & SIOD_BACK_ALL));
 }
 
 /* The stage sio_down=1 sends where gates_mark=1 would send s; any other stage as it is. */

@@ -127,24 +127,32 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   power words from 0x28e580180 to 0x28e5802d0 as found, writes each 0 in B2's order and groups (SIO_CPU first, SIO
   last), polls each for bit 11 clear as B2 does (not UART_N), polls 0x28e5a0064 and then 0x28e5a0050, the gate B2
   waits for at its op 140, for bit 30, up to 100 ms each, reads the 43 and the six gate words, and sends one byte to
-  0x6016: bit 0 that gate closed, 1 0x28e5a0064 closed, 2 every poll met, 3 all 43 read off as written (target, actual state and auto
-  settings 0), 4 the other four gates
-  as `--m1-gates` found them, 6 the gate already closed before the first write, 7 always. Then it writes all 43 back
-  in reverse order, each as found less the bits the kernel never writes back, and sends the byte again with bit 5 if
-  they all read as found within 10 ms each (target, auto settings and actual state; the two was-gated flags, bits 8
-  and 9, aren't written back or compared) and the gate then read as before the first write; the alarm's last command
+  0x6016. The byte has two layouts (its second form: the first run's, 0x96, couldn't say which part of "all off"
+  or of "back" failed). If all 43 read target 0 and actual state 0 and every poll was met, bit 6 is clear: bit 0
+  that gate closed; bits 2:1 what the words' auto fields read after the 0 (3 all 0; 2 auto-enable clear everywhere
+  and bits 27:24 f only in SIO, SIO_CPU or SIO_SPMI0-2, which is what those five read after any switch-off on file;
+  1 bits 27:24 something else; 0 an auto-enable still set); bit 7 always. If not, bit 6 is set and bits 5:0 are a
+  place: 0 to 42, the first word in B2's order whose target or actual state didn't read 0; 62, a poll unmet; 63,
+  the gate read closed before the first write, and then nothing is written at all. Then it writes all 43 back
+  in reverse order, each as found less the bits the kernel never writes back, and sends the byte again, in the
+  first layout with bit 3 if they all read as found in target and actual state within 10 ms each, bit 4 if in
+  auto-enable and bits 27:24 (the two was-gated flags, bits 8 and 9, aren't written back or compared), and bit 5
+  if the gate then read open again; the alarm's last command
   sends it a third time. The new writes are those
   86 (built on Corey's standing go-ahead of 2026-11-10); B2's GPIO cycle and its raise of SIO_CPU aren't made. So
-  the commit finds the subtree as the recipe leaves it, and the ending reads as `--m1-gates`' as long as bit 5 is
-  set. The run's stages are its own from step 8 on: 0x3a, 0x3c and 0x3b for 0x4b, 0x55 and 0x54 (0xba, 0xbc, 0xbb
+  the commit finds the subtree as the recipe leaves it, and the ending reads as `--m1-gates`' as long as bits 3
+  and 5 are set. The run's stages are its own from step 8 on: 0x3a, 0x3c and 0x3b for 0x4b, 0x55 and 0x54 (0xba, 0xbc, 0xbb
   with K4's bit). The load refuses unless the list is exactly those 43 words, none on the never-write list, with
   SIO's page and the gate pages mapped, and logs the 43 awake. `m1-crumbs` reads the byte only at those stages and
-  gives the verdict in this order: inconclusive unless 0x6012 says SIO's firmware was stopped (the switch-off
-  doesn't check that itself), every poll was met and all 43 read off; the gate closed
-  before anything was written; closed (op 140 less likely the stall, `a2_pre=1` next); open (a lead on op 140).
-  Either is the AP's state before the commit, not B2's at op 140. It normally adds a few ms before the commit and
-  100 ms while the gate stays open, about 5 s at the very worst. A run that stops inside it leaves stage 0xba with
-  0x6016 at 0, or the byte without bit 5.
+  reads it by its layout. A place names the word that stayed up (the lead is what holds it), the poll, or the gate
+  closed before; none of those gives a reading of the gate. Otherwise: inconclusive unless 0x6012 says SIO's
+  firmware was stopped (the switch-off doesn't check that itself); inconclusive on the gate if an auto-enable
+  survived or bits 27:24 read something unexpected (which word comes first); else closed (op 140 less likely the
+  stall, `a2_pre=1` next) or open (a lead on op 140, GPIO's power word next), with f in the five's bits 27:24 said
+  beside it. Either is the AP's state before the commit, not B2's at op 140. The restart's time compares with
+  `--m1-gates`' only if bits 3 and 5 are set. It normally adds a few ms before the commit and 100 ms while the gate
+  stays open, about 5 s at the very worst. A run that stops inside it leaves stage 0xba with 0x6016 at 0, or the
+  byte with none of bits 3 to 5.
 - `run-floor --quick` ahead of any recipe makes the reading 1 minute. `13` is the floor with the CPUs left up.
 
 ## The probe that isn't a run

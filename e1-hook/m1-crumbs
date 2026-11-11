@@ -992,12 +992,29 @@ def gates_lines(s, b, pmp):
     return out
 
 
-# sio_down=1's byte, sio_down.h's bits.
-SIOD_CLOSED, SIOD_CLOSED_64, SIOD_POLLS, SIOD_OFF, SIOD_OTHERS, SIOD_BACK, SIOD_WAS_CLOSED, SIOD_MARK = (1 << i for i in range(8))
+# sio_down=1's byte, sio_down.h's second layout (the first run's 0x96 had another: RESEARCH.md, "The `sio_down=1` run").
+SIOD_CLOSED, SIOD_BACK_STATE, SIOD_BACK_AUTO, SIOD_BACK_GATE, SIOD_AT, SIOD_MARK = 0x01, 0x08, 0x10, 0x20, 0x40, 0x80
+SIOD_AUTO_SHIFT = 1
+SIOD_AUTO_EN_SET, SIOD_AUTO_OTHER, SIOD_AUTO_F, SIOD_AUTO_ZERO = range(4)
+SIOD_AT_POLL, SIOD_AT_CLOSED = 62, 63
+# The 43 words in B2's order, sio_down.h's SIOD_OFFS: a place in the byte is an index into this.
+SIOD_WORDS = ((("SIO_CPU", 0x188),) + tuple((f"I2C{i}", 0x1a8 + 8 * i) for i in range(8)) + tuple((f"FPWM{i}", 0x190 + 8 * i) for i in range(3))
+              + tuple((f"SIO_SPMI{i}", 0x218 + 8 * i) for i in range(3)) + (("AES", 0x2d0),) + tuple((f"SPI{i}", 0x1f0 + 8 * i) for i in range(5))
+              + (("UART_N", 0x238),) + tuple((f"UART{i}", 0x240 + 8 * i) for i in range(5)) + (("UART6", 0x268), ("UART7", 0x270))
+              + tuple((f"MCA{i}", 0x288 + 8 * i) for i in range(4)) + tuple((f"DPA{i}", 0x2a8 + 8 * i) for i in range(5))
+              + (("SIO_ADMA", 0x280), ("SPI_P", 0x1e8), ("UART_P", 0x230), ("AUDIO_P", 0x278), ("SIO", 0x180)))
+SIOD_AUTO_LINES = {
+    SIOD_AUTO_ZERO: "all 0 in all 43: the 0 reads back whole",
+    SIOD_AUTO_F: "auto-enable 0 in all 43; bits 27:24 f in one or more of SIO, SIO_CPU and SIO_SPMI0-2, 0 everywhere else: what those five"
+                 " read after any switch-off on file, Linux's own included",
+    SIOD_AUTO_OTHER: "auto-enable 0 in all 43, but bits 27:24 NOT as expected: something other than 0 outside SIO, SIO_CPU and SIO_SPMI0-2,"
+                     " or other than 0 and f in one of those",
+    SIOD_AUTO_EN_SET: "AN AUTO-ENABLE (bit 28) STILL READ SET in at least one word",
+}
 
 
 def siod_lines(s, b, pmp):
-    """sio_down=1: 0x6016 at the run's stages (e1-hook/sio_down.h has the layout), read only where the record says it's that
+    """sio_down=1: 0x6016 at the run's stages (e1-hook/sio_down.h has the layouts), read only where the record says it's that
     byte: the stage has pmp_out=1's bit 7, the steps' outcomes, sent just before the switch-off, landed, and its own bit 7 is set."""
     v = b[0x16]
     if not pmp:
@@ -1017,52 +1034,90 @@ def siod_lines(s, b, pmp):
     if not v & SIOD_MARK:
         return [f"0x6016 = 0x{v:02x}: bit 7 is clear, so sio_down=1's byte didn't survive the reset, or isn't the one sent: stage"
                 f" 0x{s:02x} went out after it, and a command that fails stops every one after it. Not read"]
-    out = [f"0x6016 = 0x{v:02x}: sio_down=1's byte, in place of the alarm's result: CPU0 wrote 0 to the 43 power words of SIO's subtree"
-           " in step 8, as B2 does before its op 140, polled as B2 polls, and wrote them back before the commit:"]
-    out.append("  B2's 42 polls for bit 11 clear: " + ("all met" if v & SIOD_POLLS else "NOT all met within 100 ms each"))
-    out.append("  the 43 words after the polls: " + ("all read off as written: target, actual state and auto settings 0" if v & SIOD_OFF else
-                                                     "NOT all off as written: at least one read a target, an actual state or an auto setting"
-                                                     " other than 0"))
-    out.append("  0x28e5a0050 before the first write: " + ("ALREADY CLOSED, which it wasn't in --m1-gates' run" if v & SIOD_WAS_CLOSED else
-                                                           "open, as in --m1-gates' run"))
-    out.append("  0x28e5a0064 (B2's op 139), after up to 100 ms: bit 30 " + ("SET, closed" if v & SIOD_CLOSED_64 else "clear, OPEN"))
-    out.append("  0x28e5a0050 (B2's op 140), after up to 100 ms more: bit 30 " + ("SET, closed" if v & SIOD_CLOSED else "clear, OPEN"))
-    out.append("  the other four gates (0x28e5a030c, 0x28e09c310, 0x28e09c338, 0x28e09c34c): " +
-               ("as --m1-gates' run found them: closed, open, closed, open" if v & SIOD_OTHERS else
-                "NOT as --m1-gates' run found them (closed, open, closed, open): at least one moved"))
-    out.append("  written back: " + ("all 43 read as found within 10 ms each (target, auto settings and actual state; the two was-gated"
-                                     " flags aren't written back or compared), and 0x28e5a0050 then read as before the first write"
-                                     if v & SIOD_BACK else
-                                     "NOT CONFIRMED: at least one of the 43 didn't read as found within 10 ms of its write-back, or"
-                                     " 0x28e5a0050 didn't read as before within 100 ms after it, or the run stopped in the write-back,"
-                                     " before the byte's second send, or that send's command failed"))
+    out = [f"0x6016 = 0x{v:02x}: sio_down=1's byte, in place of the alarm's result: CPU0 was to write 0 to the 43 power words of SIO's"
+           " subtree in step 8, as B2 does before its op 140, poll as B2 polls, and write them back before the commit:"]
     stopped = b[0x12] >> 6 == 3  # sio_stop=1's outcome, sent with the marker fab_landed() has just checked
+    nostop = ("  so: INCONCLUSIVE: SIO's firmware isn't shown stopped (0x6012: " + SIO_CODES[b[0x12] >> 6] + "), so SIO_CPU was switched"
+              " off and on under it: not the state this is for")
+    late = ("  a poll that isn't met takes its 100 ms, so the commit came later than its time stamp, by up to about 5 s: a restart"
+            " by WD2 would read that much later than it was, and one by WD1's marker, counting since step 4, isn't moved")
+    pre = ("  stage 0x3a, so nothing records the commit after this byte (0x3b or 0x3c comes after it): inconclusive about the"
+           " rest of the entry")
+    if v & SIOD_AT:
+        at = v & 0x3f
+        if at == SIOD_AT_CLOSED:
+            out.append("  0x28e5a0050 before the first write: ALREADY CLOSED, which it wasn't in --m1-gates' run or the first sio_down=1 run")
+            out.append("  so: NOTHING WAS WRITTEN: the switch-off isn't made on a gate that's closed already. Something else differs in"
+                       " this run, and that is the lead. The commit found SIO's subtree as the recipe leaves it")
+        elif at == SIOD_AT_POLL:
+            out.append("  the 43 words after the polls: all read target 0 and actual state 0")
+            out.append("  B2's 42 polls for bit 11 clear: NOT all met within 100 ms each; which isn't recorded")
+            out.append("  so: INCONCLUSIVE on the gate, whose reading isn't kept in this case: B2 waits for each of those polls, and one"
+                       " that isn't met with a core up is its own lead" if stopped else nostop)
+            out.append(late)
+        elif at < len(SIOD_WORDS):
+            name, off = SIOD_WORDS[at]
+            out.append(f"  the 43 words after the polls: {name} (0x28e580{off:03x}), place {at} of 0 to 42 in B2's order, DIDN'T READ target 0 and"
+                       " actual state 0. It's the first in that order that didn't; whether a later one didn't either, what it read, and"
+                       " whether every poll was met aren't recorded")
+            out.append(f"  so: SIO's subtree wasn't off, so the gate was bound to stay open and its reading isn't kept. What holds {name}"
+                       " up after a 0 is the lead (PLAN.md)" if stopped else nostop)
+            out.append("  if a poll wasn't met either, it took its 100 ms, and the commit came later than its time stamp, by up to about 5 s")
+        else:
+            return [f"0x6016 = 0x{v:02x}: bit 6 says a place follows, and {at} isn't one sio_down=1 sends (0 to 42, 62, 63). Not read"]
+        if at != SIOD_AT_CLOSED:
+            out.append("  written back: NOT RECORDED in this case, so the commit isn't shown to have found SIO's subtree as the recipe leaves"
+                       " it: the restart's time doesn't compare with --m1-gates'")
+        if s == SIOD_PRE:
+            out.append(pre)
+        return out
+    auto = v >> SIOD_AUTO_SHIFT & 3
+    closed = "closed" if v & SIOD_CLOSED else "open"
+    out.append("  the 43 words after the polls: all read target 0 and actual state 0, and B2's 42 polls for bit 11 clear were all met:"
+               " SIO's subtree was off")
+    out.append("  0x28e5a0050 before the first write: open, as in every run so far")
+    out.append("  the 43 words' auto fields after the 0: " + SIOD_AUTO_LINES[auto])
+    out.append("  0x28e5a0050 (B2's op 140), after up to 100 ms for 0x28e5a0064 and 100 ms more for it: bit 30 "
+               + ("SET, closed" if v & SIOD_CLOSED else "clear, OPEN"))
+    if not v & (SIOD_BACK_STATE | SIOD_BACK_AUTO | SIOD_BACK_GATE):
+        out.append("  written back: NOTHING CONFIRMED: none of the 43's target and actual state, their auto fields and the gate read as"
+                   " before, or the run stopped in the write-back, before the byte's second send, or that send's command failed")
+    else:
+        out.append("  written back, target and actual state: " + ("all 43 read as found within 10 ms each" if v & SIOD_BACK_STATE else
+                                                                  "NOT all 43 read as found within 10 ms of their write-back"))
+        out.append("  written back, auto-enable and bits 27:24: " + ("all 43 read as found then" if v & SIOD_BACK_AUTO else
+                                                                     "not all 43 read as found then"))
+        out.append("  0x28e5a0050 after the write-back: " + ("open again within 100 ms" if v & SIOD_BACK_GATE else
+                                                              "NOT open again within 100 ms"))
     aps = (" This is the AP's state before the commit, not B2's at op 140: the cores are up, and A2's DCS and fabric moves and B2's own"
            " raises haven't been made")
+    asb2 = ("" if auto == SIOD_AUTO_ZERO else " Bits 27:24 read f after the 0 in some of the five words that read f after any switch-off:"
+            " taken as how those words read with auto-enable clear, not as a setting the 0 missed, since B2 writes the same 0 to the"
+            " same words (RESEARCH.md).")
     if not stopped:
-        out.append("  so: INCONCLUSIVE: SIO's firmware isn't shown stopped (0x6012: " + SIO_CODES[b[0x12] >> 6] + "), so SIO_CPU was switched"
-                   " off and on under it: not the state this is for (0x28e5a0050 read " + ("closed" if v & SIOD_CLOSED else "open") + ")")
-    elif not (v & SIOD_POLLS and v & SIOD_OFF):
-        out.append("  so: INCONCLUSIVE: SIO's subtree wasn't shown to be all off as B2's writes leave it, so the gate's reading isn't of that state"
-                   " (0x28e5a0050 read " + ("closed" if v & SIOD_CLOSED else "open") + ")")
-    elif v & SIOD_WAS_CLOSED:
-        out.append("  so: the gate read closed before anything was written, unlike --m1-gates' run: what it read afterwards ("
-                   + ("closed" if v & SIOD_CLOSED else "open") + ") isn't the switch-off's doing. Something else differs in this run")
+        out.append(nostop + f" (0x28e5a0050 read {closed})")
+    elif auto == SIOD_AUTO_EN_SET:
+        out.append("  so: INCONCLUSIVE on the gate: an auto-enable survived the 0, so the subtree, though off, wasn't as B2's 0 is meant to"
+                   f" leave it (0x28e5a0050 read {closed}). Which word, and why, comes before GPIO or a2_pre=1 (PLAN.md)")
+    elif auto == SIOD_AUTO_OTHER:
+        out.append("  so: INCONCLUSIVE on the gate: bits 27:24 read something after the 0 that no switch-off on file left, so the subtree,"
+                   f" though off, isn't shown to be as B2's 0 leaves it (0x28e5a0050 read {closed}). Which word, and what it read, comes"
+                   " before GPIO or a2_pre=1 (PLAN.md)")
     elif v & SIOD_CLOSED:
         out.append("  so: 0x28e5a0050 CLOSED once SIO's subtree was off: the gate can close in the recipe's state, so B2's poll at op 140"
-                   " is less likely the stall, and a2_pre=1 is next (PLAN.md)." + aps)
+                   " is less likely the stall, and a2_pre=1 is next (PLAN.md)." + asb2 + aps)
     else:
         out.append("  so: 0x28e5a0050 stayed OPEN with SIO's subtree off, B2's own words and values, in the recipe's state: a lead on"
-                   " B2's poll at op 140, stronger than the gate test's. What else is behind that gate is the question (PLAN.md)." + aps)
-    if not v & SIOD_POLLS:
-        out.append("  a poll that isn't met takes its 100 ms, so the commit came later than its time stamp, by up to about 5 s: a restart"
-                   " by WD2 would read that much later than it was, and one by WD1's marker, counting since step 4, isn't moved")
-    if not v & SIOD_BACK:
-        out.append("  without the write-back confirmed, the commit may not have found SIO's subtree as the recipe leaves it: the"
-                   " restart's time doesn't compare with --m1-gates'")
+                   " B2's poll at op 140, stronger than the gate test's. What else is behind that gate is the question, GPIO's power"
+                   " word first (PLAN.md)." + asb2 + aps)
+    if not (v & SIOD_BACK_STATE and v & SIOD_BACK_GATE):
+        out.append("  without the words' target and actual state and the gate confirmed back, the commit may not have found SIO's subtree"
+                   " as the recipe leaves it: the restart's time doesn't compare with --m1-gates'")
+    elif not v & SIOD_BACK_AUTO:
+        out.append("  the auto fields alone not reading as found doesn't say the commit found the subtree differently: under auto-enable,"
+                   " bits 27:24 have followed the actual state in every read on file. The restart's time compares with --m1-gates'")
     if s == SIOD_PRE:
-        out.append("  stage 0x3a, so nothing records the commit after this byte (0x3b or 0x3c comes after it): inconclusive about the"
-                   " rest of the entry")
+        out.append(pre)
     return out
 
 

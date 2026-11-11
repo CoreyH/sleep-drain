@@ -4123,6 +4123,68 @@ about 90 s by Corey's watch, then a restart.
   from the auto fields, the words' write-back apart from the gate's last read, and, if a word did
   stay up, which.
 
+### The record laid out again, and what's on file about bits 27:24 (2026-11-11)
+
+No run. The first `sio_down=1` run's byte couldn't say whether a word stayed up or only an auto field
+read non-zero. Before laying the byte out again, the cheap check PLAN.md asked for: is any of the 43
+known not to take a 0 in its auto fields? What's on file says five of them won't read 0 there, and
+that it means nothing.
+
+- **Only five of the 43 have the field.** SIO, SIO_CPU and SIO_SPMI0-2 are the only ones whose bits
+  28:24 read anything but 0, in the look's two passes and in two loads' awake lines
+  (`results/look-20261110/`, `results/sio-down-20261111/load.txt`).
+- **With auto-enable set, bits 27:24 read what the actual state reads,** in every read on file: SIO
+  0x1f0000ff, SIO_CPU 0x1400024f, ANS2 0x1f0003ff, 0x28e0802e8 and 0x28e0802f0 0x1000030f, awake;
+  and the lane above SIO, 0x1f0000ff awake and 0x1000030f after Linux's suspend, with nothing writing
+  it in between (the gate test).
+- **With auto-enable clear, they read f:** SIO and SIO_CPU after Linux's own switch-off (0x0f000200),
+  ANS2 and the two at 0x28e0802e8 (0x0f000300), SIO_SPMI0-2 in every read, with no driver. Linux's
+  driver never sets the field (mainline's `apple_pmgr_ps_set()`; aurora's copy not checked): it reads
+  the word, clears auto-enable, the flags and the target, and writes the rest back as read. So a word
+  that read 4 or 0 there before its switch-off (SIO_CPU; 0x28e0802e8, if it was idle then as it was
+  at the look's load) was written with that and reads f afterwards.
+- Apple's own writes don't treat it as a setting either: macOS's table writes SIO_CPU as 0x0400024f
+  (entry 61: auto-enable cleared, the rest as read), and B2 raises it with 0x0f00024f.
+- **So (judgment): bits 27:24 aren't a floor that holds what was written.** Under auto-enable they
+  follow the state; without it they read f. The name "auto floor", used here since run 12, was a
+  guess. This is the one explanation the last section asked for: `ps_words=1`'s last group "not
+  reading back as written" since run 12, and both unconfirmed bits of the first `sio_down=1` run.
+  After a literal 0 those five were bound to read 0x0f000000 with their flags, so "all 43 read 0 in
+  every field" couldn't be met whatever the subtree did, and "back as found" compared the same field.
+  The 0x96 is what a subtree that went off and came back would have left. It doesn't show that it did.
+
+**The byte's second form** (`e1-hook/sio_down.h`; `run-floor --m1-sio-down` as before; the same 86
+writes, or none):
+
+- **Bit 6 clear, the subtree went off** (all 43 read target 0 and actual state 0, every poll met, the
+  gate open before): bit 0, 0x28e5a0050 closed after its poll; bits 2:1, the auto fields after the 0
+  (3 all 0; 2 auto-enable clear in all 43 and bits 27:24 f in some of those five, 0 elsewhere; 1 bits
+  27:24 anything else; 0 an auto-enable still set); bit 3, all 43 back in target and actual state;
+  bit 4, back in auto-enable and bits 27:24; bit 5, the gate open again after the write-back; bit 7
+  always.
+- **Bit 6 set, it didn't:** bits 5:0 are the place in B2's order (0 to 42) of the first word whose
+  target or actual state didn't read 0; 62 for a poll unmet with all 43 off; 63 for the gate closed
+  before the first write, in which case nothing is written now. What came back isn't recorded in this
+  layout.
+- 0x28e5a0064's bit and "the other four gates" are dropped: they read the same in both runs so far.
+  The six gate words are still read where they were, so the run's accesses up to the byte are the
+  first run's.
+- **Expected, if the desk reading holds and the subtree goes off:** 0xbc with the gate open, 0xbd
+  closed; 0xac or 0xad if an auto field doesn't read as found after the write-back, which under
+  auto-enable it needn't.
+- **Code 2 is read as "as B2's 0 leaves them", and `m1-crumbs` says so beside the verdict.** The run
+  writes the literal B2 writes to the words B2 writes, so a field that reads f after it reads f
+  after B2's too, in this state; the check is there to catch a 0 that didn't take in the power state
+  or left an auto-enable on. Pullfrog's point on #85, a state between Linux's switch-off and B2's,
+  still holds for codes 0 and 1, which give no verdict on the gate. The restart's time compares with
+  `--m1-gates`' if bits 3 and 5 are set; bit 4 alone doesn't decide it.
+
+Checked: the module builds; `tests/m1_crumbs_test.py` (the byte against a second writing-out of both
+layouts, `m1_sio_down()` as it stands against the register model in 28 scenarios, every byte value
+through the decoder at each stage); `tests/e1a_launcher_test.py`; the 99 `siod` mutants, all caught.
+No adversarial pass: no new write, and the write path changed only by the early return and by what
+the write-back function reports.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
