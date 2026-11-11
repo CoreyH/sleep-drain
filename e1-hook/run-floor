@@ -149,9 +149,9 @@
 # found, and leave whether they read as found. New writes: those 43 words, each to 0 and back. SIO's firmware is
 # stopped by then, as in every run since --m1-sio-stop. m1-crumbs says whether the gate closed and what that makes the
 # next step, or which word stayed up (the byte's second form, since the first run: sio_down.h). If the gate reads
-# closed before the first write, nothing is written. The run's stages are its own from step 8 on (0xba, then 0xbc
-# or 0xbb), and it ends as --m1-gates' does, the same three readings of the restart's time included, as long as the
-# byte says the 43 were put back. A run that stops inside the switch-off leaves stage 0xba with no byte, or a byte
+# closed before the first write, nothing is written. The run's stages are its own from step 8 on (0xbd, then 0xbf
+# or 0xbe), and it ends as --m1-gates' does, the same three readings of the restart's time included, as long as the
+# byte says the 43 were put back. A run that stops inside the switch-off leaves stage 0xbd with no byte, or a byte
 # without "written back", and a restart about 10 s (a panic) or 90 s (WD1's marker) after the screen goes dark. Its
 # label is floor-m1-sio-down.
 # What's said of --m1, --m1-alarm and --m1-hold

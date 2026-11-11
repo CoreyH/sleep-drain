@@ -136,12 +136,12 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   the gate read closed before the first write, and then nothing is written at all. Then it writes all 43 back
   in reverse order, each as found less the bits the kernel never writes back, and sends the byte again, in the
   first layout with bit 3 if they all read as found in target and actual state within 10 ms each, bit 4 if in
-  auto-enable and bits 27:24 (the two was-gated flags, bits 8 and 9, aren't written back or compared), and bit 5
+  auto-enable (bits 27:24 and the two was-gated flags, bits 8 and 9, aren't compared), and bit 5
   if the gate then read open again; the alarm's last command
   sends it a third time. The new writes are those
   86 (built on Corey's standing go-ahead of 2026-11-10); B2's GPIO cycle and its raise of SIO_CPU aren't made. So
-  the commit finds the subtree as the recipe leaves it, and the ending reads as `--m1-gates`' as long as bits 3
-  and 5 are set. The run's stages are its own from step 8 on: 0x3a, 0x3c and 0x3b for 0x4b, 0x55 and 0x54 (0xba, 0xbc, 0xbb
+  the commit finds the subtree as the recipe leaves it, and the ending reads as `--m1-gates`' as long as bits 3,
+  4 and 5 are set. The run's stages are its own from step 8 on: 0x3d, 0x3f and 0x3e for 0x4b, 0x55 and 0x54 (0xbd, 0xbf, 0xbe
   with K4's bit). The load refuses unless the list is exactly those 43 words, none on the never-write list, with
   SIO's page and the gate pages mapped, and logs the 43 awake. `m1-crumbs` reads the byte only at those stages and
   reads it by its layout. A place names the word that stayed up (the lead is what holds it), the poll, or the gate
@@ -150,8 +150,8 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   survived or bits 27:24 read something unexpected (which word comes first); else closed (op 140 less likely the
   stall, `a2_pre=1` next) or open (a lead on op 140, GPIO's power word next), with f in the five's bits 27:24 said
   beside it. Either is the AP's state before the commit, not B2's at op 140. The restart's time compares with
-  `--m1-gates`' only if bits 3 and 5 are set. It normally adds a few ms before the commit and 100 ms while the gate
-  stays open, about 5 s at the very worst. A run that stops inside it leaves stage 0xba with 0x6016 at 0, or the
+  `--m1-gates`' only if bits 3, 4 and 5 are set. It normally adds a few ms before the commit and 100 ms while the gate
+  stays open, about 5 s at the very worst. A run that stops inside it leaves stage 0xbd with 0x6016 at 0, or the
   byte with none of bits 3 to 5.
 - `run-floor --quick` ahead of any recipe makes the reading 1 minute. `13` is the floor with the CPUs left up.
 

@@ -38,7 +38,7 @@ used to sit in CLAUDE.md, entry for entry):
   polled in order, the byte before any write-back, 43 write-backs in reverse with the value found less bits 11, 9
   and 8, each waited for, the byte again, and no other write. It runs `m1_siod_init()` against a list with a word twice, outside
   the subtree or off its place, groups that don't add up, an unmapped page and a word on the never-write list;
-  pins step 8's order and the parameter's guards; reads the byte at 0x3a, 0x3b and 0x3c for every value; and
+  pins step 8's order and the parameter's guards; reads the byte at 0x3d, 0x3e and 0x3f for every value; and
   `--clear` never takes it for the alarm's result. For probe=1 it compiles
   `asc_probe.h`'s bytes and `m1_probe_word()` against a scripted page, runs `m1_probe_prepare()` and
   `m1_probe_late()` as they stand against a model of the registers in sixteen scenarios (no word read

@@ -37,8 +37,10 @@
  *      the commit, sends it a third time, as gates_mark=1 has it send its byte
  * If 0x28e5a0050 reads closed in step 0, which it hasn't in any run, nothing
  * is written: the byte says so, once, and the run goes on to the commit.
- * "As found" is a word's target and actual state, and its auto-enable and bits
- * 27:24 (called the auto floor before this layout): the byte has a bit for each pair.
+ * "As found", for the write-back's wait, is a word's target and actual state,
+ * its auto-enable and bits 27:24 (called the auto floor before this layout).
+ * The byte then says whether the first two came back, and whether the
+ * auto-enable did.
  * The two was-gated flags, bits 8 and 9, are neither written back nor
  * compared: a word that gated in between keeps them set where the recipe had
  * them clear (SIO_CPU's bit 9, which the table's entry 61 clears as macOS
@@ -56,8 +58,10 @@
  * table's entry 61 has SIO_CPU on already, and the probe read that word).
  *
  * The byte, at 0x6016 (gates_mark.h's GATES_AT), under the run's own stages.
- * It has two layouts, told apart by bit 6, and this is its second form: the
- * first run's (b453922, 0x96) had one bit for "all 43 read 0 in target, actual
+ * It has two layouts, told apart by bit 6, and this is its second form, under
+ * stages of its own (below), so that the two forms' records can't be taken for
+ * each other (Pullfrog on #86): the
+ * first run's (b453922, 0x96, stages 0x3a, 0x3c, 0x3b) had one bit for "all 43 read 0 in target, actual
  * state and auto fields" and one for "all back, and the gate", and couldn't
  * say which half of either failed (RESEARCH.md, "The sio_down=1 run").
  *
@@ -74,7 +78,9 @@
  *             0  an auto-enable still read set
  *   bit 3     all 43 read as found in target and actual state, each within
  *             10 ms of its write-back
- *   bit 4     all 43 read as found in auto-enable and bits 27:24 then
+ *   bit 4     all 43 read as found in auto-enable (bit 28) then. Bits 27:24
+ *             aren't compared: they aren't a setting (below), and under
+ *             auto-enable they follow the actual state, which bit 3 has
  *   bit 5     0x28e5a0050 read open again within 100 ms of the last write-back
  *   bit 7     always set
  * Bits 3 to 5 are never set in the first send.
@@ -104,8 +110,8 @@
  * moves haven't been made, nor B2's own raises (Pullfrog on #83).
  *
  * The stages are the run's own from step 8's command on, gates_mark=1's with
- * the byte's meaning the one difference (siod_stage()): 0x3a for 0x4b, 0x3c
- * and 0x3b for 0x55 and 0x54.
+ * the byte's meaning the one difference (siod_stage()): 0x3d for 0x4b, 0x3f
+ * and 0x3e for 0x55 and 0x54.
  *
  * What it adds to the time between step 4, where WD1's marker is set, and the
  * commit: a few ms if every poll is met at once, 100 ms more for a gate that
@@ -113,7 +119,7 @@
  * of 10 ms). The RTC's second is read before it, so a restart is timed from
  * before it too.
  *
- * A run that stops inside it leaves stage 0x3a with 0x6016 at 0 (before the
+ * A run that stops inside it leaves stage 0x3d with 0x6016 at 0 (before the
  * first send) or with none of the "back" bits (in the write-back), and restarts by the
  * panic (about 10 s) or by WD1's marker (about 90 s after step 4).
  */
@@ -162,9 +168,9 @@ typedef uint32_t u32;
 #define SIOD_AUTO_SHIFT		1
 #define SIOD_AUTO_MASK		(3U << SIOD_AUTO_SHIFT)
 #define SIOD_BACK_STATE		(1U << 3)
-#define SIOD_BACK_AUTO		(1U << 4)
+#define SIOD_BACK_EN		(1U << 4)
 #define SIOD_BACK_GATE		(1U << 5)
-#define SIOD_BACK_ALL		(SIOD_BACK_STATE | SIOD_BACK_AUTO | SIOD_BACK_GATE)
+#define SIOD_BACK_ALL		(SIOD_BACK_STATE | SIOD_BACK_EN | SIOD_BACK_GATE)
 /* Bit 6 set: it didn't, and bits 5:0 are a place. */
 #define SIOD_AT			(1U << 6)
 #define SIOD_AT_MASK		0x3fU
@@ -181,9 +187,9 @@ enum siod_auto {
 };
 
 /* sio_down=1's stages, from step 8's command on, each for the one gates_mark=1 sends there. */
-#define M1_SIOD_STAGE_PRE	0x3a	/* in place of 0x4b */
-#define M1_SIOD_STAGE		0x3c	/* in place of 0x55 */
-#define M1_SIOD_STAGE_PEND	0x3b	/* in place of 0x54 */
+#define M1_SIOD_STAGE_PRE	0x3d	/* in place of 0x4b */
+#define M1_SIOD_STAGE		0x3f	/* in place of 0x55 */
+#define M1_SIOD_STAGE_PEND	0x3e	/* in place of 0x54 */
 
 /* A power word is off in its power state: its target and its actual state read 0. What the gate can depend on. */
 static inline bool siod_down(u32 v)
@@ -223,10 +229,14 @@ static inline u8 siod_auto(const u16 *off, const u32 *now)
 	return c;
 }
 
-/* One word after its write-back, against how it was found: SIOD_BACK_STATE and SIOD_BACK_AUTO, each if those fields read the same. */
+/*
+ * One word after its write-back, against how it was found: SIOD_BACK_STATE if its target and actual state read the same,
+ * SIOD_BACK_EN if its auto-enable does. That one is a setting, and the commit has to find it as the recipe left it
+ * (Pullfrog on #86); bits 27:24 aren't, and aren't asked.
+ */
 static inline u8 siod_back(u32 v, u32 found)
 {
-	return (u8)(((v ^ found) & SIOD_PS_STATE ? 0 : SIOD_BACK_STATE) | ((v ^ found) & SIOD_PS_AUTO ? 0 : SIOD_BACK_AUTO));
+	return (u8)(((v ^ found) & SIOD_PS_STATE ? 0 : SIOD_BACK_STATE) | ((v ^ found) & SIOD_PS_AUTO_EN ? 0 : SIOD_BACK_EN));
 }
 
 /* The byte for a switch-off that wasn't made, or didn't leave the subtree off: place is 0 to 42, SIOD_AT_POLL or SIOD_AT_CLOSED. */

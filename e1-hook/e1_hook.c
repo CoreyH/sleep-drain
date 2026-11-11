@@ -361,7 +361,7 @@ MODULE_PARM_DESC(gates_mark, "With wd1_mark=1, never with probe=1: reads only. I
 /* B2's own switch-off of SIO's subtree, made by the AP before the commit, and put back (PLAN.md, "The order after the look"). */
 static bool sio_down;
 module_param(sio_down, bool, 0444);
-MODULE_PARM_DESC(sio_down, "With gates_mark=1, never with probe=1: in step 8, in place of gates_mark=1's reads and right before the commit, CPU0 writes 0 to the 43 power words of SIO's subtree (0x28e580180-0x28e5802d0) in the order the engine's B2 does, polls each for bit 11 clear and the gates 0x28e5a0064 and 0x28e5a0050 for bit 30 as B2 does (up to 100 ms each), sends one byte to 0x6016 (sio_down.h: the gate, and what the words' auto fields read; or, if a word's target or actual state didn't read 0, which word), writes all 43 back as found and sends the byte again with what came back (target and actual state, auto fields, the gate). If the gate reads closed before the first write, nothing is written. The run's last stages are its own: 0x3a, 0x3c, 0x3b");
+MODULE_PARM_DESC(sio_down, "With gates_mark=1, never with probe=1: in step 8, in place of gates_mark=1's reads and right before the commit, CPU0 writes 0 to the 43 power words of SIO's subtree (0x28e580180-0x28e5802d0) in the order the engine's B2 does, polls each for bit 11 clear and the gates 0x28e5a0064 and 0x28e5a0050 for bit 30 as B2 does (up to 100 ms each), sends one byte to 0x6016 (sio_down.h: the gate, and what the words' auto fields read; or, if a word's target or actual state didn't read 0, which word), writes all 43 back as found and sends the byte again with what came back (target and actual state, auto-enable, the gate). If the gate reads closed before the first write, nothing is written. The run's last stages are its own: 0x3d, 0x3f, 0x3e");
 /* Not a run: the three coprocessor words B2 polls, read in the recipe's state, and the suspend failed (PLAN.md, "The order after run 17"). */
 static bool probe;
 module_param(probe, bool, 0444);
@@ -1493,7 +1493,7 @@ static void e1_after_slpa(void)
  * commit, which says nothing: the recipe leaves ps_sio, UART_P, SPI_P and SIO_CPU
  * on, and B2 switches them off itself. Here, in step 8, where gates_mark=1's
  * reads would be (they aren't made: m1_sio_down() makes its own), after stage
- * 0x3a's command and the outcomes and with SError unmasked: the 43 power words
+ * 0x3d's command and the outcomes and with SError unmasked: the 43 power words
  * from 0x28e580180 to 0x28e5802d0 are read as found; each is written 0, in B2's
  * order and groups, and polled for bit 11 clear as B2 polls it (not UART_N), up
  * to 100 ms; 0x28e5a0064 and then 0x28e5a0050 are polled for bit 30, up to
@@ -1502,7 +1502,7 @@ static void e1_after_slpa(void)
  * the kernel never writes back, with up to 10 ms to read as found; 0x28e5a0050
  * is polled once more, up to 100 ms, to read open again; and the byte goes out
  * again, with a bit each for the words' target and actual state back, their
- * auto fields back, and the gate open again. The byte's second form (sio_down.h;
+ * auto-enable back, and the gate open again. The byte's second form (sio_down.h;
  * the first run's couldn't say which part of "all off" or of "back" failed): if
  * every word's target and actual state read 0 and every poll was met, the gate,
  * and what the auto fields read after the 0; if not, the place in B2's order of
@@ -1524,11 +1524,11 @@ static void e1_after_slpa(void)
  * island: only PMGR words and nub-spmi0. At the load, m1_siod_init() refuses
  * unless the 43 offsets are exactly those words, none is on the never-write
  * list, and SIO's page and the first gate page are mapped, and logs the 43
- * awake. The stages are siod_stage()'s: 0x3a, then 0x3c or 0x3b after the
+ * awake. The stages are siod_stage()'s: 0x3d, then 0x3f or 0x3e after the
  * release. It adds a few ms before the commit, 100 ms more while a gate stays
  * open, and about 5 s at the very worst, every poll and wait unmet; WD1's
  * marker has been counting since step 4, so the restart then comes that much
- * sooner after the commit. A run that stops inside it leaves stage 0x3a and
+ * sooner after the commit. A run that stops inside it leaves stage 0x3d and
  * 0x6016 at 0, or the byte with none of its three "back" bits.
  *
  * probe=1 (e1-hook/probe; with wd1_mark=1, so that everything the recipe maps and
@@ -3117,7 +3117,7 @@ static bool m1_siod_poll(void __iomem *p, u32 mask, u32 want)
 /*
  * sio_down=1: one power word written back as it was found, less the bits the kernel's driver never writes back
  * either, with up to 10 ms for it to read as found. The only write-back there is. What its last read had as found:
- * siod_back()'s SIOD_BACK_STATE and SIOD_BACK_AUTO.
+ * siod_back()'s SIOD_BACK_STATE and SIOD_BACK_EN.
  */
 static u8 m1_siod_back(void __iomem *p, u32 found)
 {
@@ -3147,7 +3147,7 @@ static u8 m1_sio_down(void)
 	static const u16 off[SIOD_N] = SIOD_OFFS;
 	static const u8 grp[] = SIOD_GROUPS;
 	u32 was[SIOD_N], now[SIOD_N], g[GATES_N], lane;
-	u8 b, back = SIOD_BACK_STATE | SIOD_BACK_AUTO;
+	u8 b, back = SIOD_BACK_STATE | SIOD_BACK_EN;
 	bool polls = true;
 	unsigned int i, k, at;
 

@@ -4160,8 +4160,8 @@ writes, or none):
   gate open before): bit 0, 0x28e5a0050 closed after its poll; bits 2:1, the auto fields after the 0
   (3 all 0; 2 auto-enable clear in all 43 and bits 27:24 f in some of those five, 0 elsewhere; 1 bits
   27:24 anything else; 0 an auto-enable still set); bit 3, all 43 back in target and actual state;
-  bit 4, back in auto-enable and bits 27:24; bit 5, the gate open again after the write-back; bit 7
-  always.
+  bit 4, back in auto-enable, which is a setting (bits 27:24 aren't compared); bit 5, the gate open
+  again after the write-back; bit 7 always.
 - **Bit 6 set, it didn't:** bits 5:0 are the place in B2's order (0 to 42) of the first word whose
   target or actual state didn't read 0; 62 for a poll unmet with all 43 off; 63 for the gate closed
   before the first write, in which case nothing is written now. What came back isn't recorded in this
@@ -4169,21 +4169,29 @@ writes, or none):
 - 0x28e5a0064's bit and "the other four gates" are dropped: they read the same in both runs so far.
   The six gate words are still read where they were, so the run's accesses up to the byte are the
   first run's.
-- **Expected, if the desk reading holds and the subtree goes off:** 0xbc with the gate open, 0xbd
-  closed; 0xac or 0xad if an auto field doesn't read as found after the write-back, which under
-  auto-enable it needn't.
+- **Stages of its own:** 0xbd before the commit, then 0xbf, or 0xbe with an exception pending (0x3d,
+  0x3f, 0x3e under K4's bit), where the first form had 0xba, 0xbc, 0xbb. `m1-crumbs` doesn't read a
+  record at the first form's stages.
+- **Expected, if the desk reading holds and the subtree goes off and comes back:** stage 0xbf, and
+  0xbc at 0x6016 with the gate open, 0xbd closed.
 - **Code 2 is read as "as B2's 0 leaves them", and `m1-crumbs` says so beside the verdict.** The run
   writes the literal B2 writes to the words B2 writes, so a field that reads f after it reads f
   after B2's too, in this state; the check is there to catch a 0 that didn't take in the power state
   or left an auto-enable on. Pullfrog's point on #85, a state between Linux's switch-off and B2's,
   still holds for codes 0 and 1, which give no verdict on the gate. The restart's time compares with
-  `--m1-gates`' if bits 3 and 5 are set; bit 4 alone doesn't decide it.
+  `--m1-gates`' only if bits 3, 4 and 5 are all set.
 
 Checked: the module builds; `tests/m1_crumbs_test.py` (the byte against a second writing-out of both
 layouts, `m1_sio_down()` as it stands against the register model in 28 scenarios, every byte value
 through the decoder at each stage); `tests/e1a_launcher_test.py`; the 99 `siod` mutants, all caught.
 No adversarial pass: no new write, and the write path changed only by the early return and by what
 the write-back function reports.
+
+Pullfrog's two on #86, both taken. Bit 4 first covered auto-enable and bits 27:24 together, and the
+decoder excused it with the argument about bits 27:24: a word that came back without its
+auto-enable would have passed as comparable. It's auto-enable alone now, and the time compares only
+with all three bits. And the second form first kept the first form's stages, so the filed 0x96 read
+as "all off, all 0, GPIO next" under the new decoder: hence the stages of its own.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

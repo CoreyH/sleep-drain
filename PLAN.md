@@ -497,12 +497,13 @@ steps, and restarting the DCP and the PMP afterwards.
       can be met, in two layouts:
       - **the subtree went off** (all 43 target 0 and actual state 0, every poll met): the gate; the auto
         fields as a code (3 all 0; 2 auto-enable clear and f only in those five; 1 something else in bits
-        27:24; 0 an auto-enable still set); and three bits for what came back (target and actual state; auto
-        fields; the gate open again);
+        27:24; 0 an auto-enable still set); and three bits for what came back (target and actual state;
+        auto-enable; the gate open again);
       - **it didn't:** the place in B2's order of the first word that stayed up, or 62 for a poll unmet, or 63
         for the gate closed before (nothing written).
-      Expected if the subtree goes off and comes back: 0xbc (the gate open) or 0xbd (closed); 0xac or 0xad if
-      only an auto field doesn't read as found afterwards.
+      The stages are the second form's own (0xbd, then 0xbf or 0xbe; the first run's were 0xba, 0xbc, 0xbb).
+      Expected if the subtree goes off and comes back: stage 0xbf, and 0xbc at 0x6016 (the gate open) or 0xbd
+      (closed).
       Reading it (`m1-crumbs` says the same):
       - **Code 3 or 2, the gate open:** the lead on op 140 the first run couldn't give. Next, built on this
         rung: GPIO's power word added to the switch-off (B2 cycles it around this: 0x28e080120 := 0x8000000f,
@@ -519,8 +520,9 @@ steps, and restarting the DCP and the PMP afterwards.
         reading isn't kept. **62 or 63:** a lead of its own (a poll B2 waits for, unmet with a core up;
         something else differs in this run).
       - Either verdict is the AP's state before the commit, not B2's at op 140 (Pullfrog on #83).
-      - The restart's time compares with the earlier runs' only if bits 3 and 5 are set (the words back in
-        target and actual state, the gate open again). In the place layout nothing says what came back.
+      - The restart's time compares with the earlier runs' only if bits 3, 4 and 5 are set (the words back
+        in target and actual state and in auto-enable, the gate open again). In the place layout nothing says
+        what came back.
       The plan for `sio_down=1` as it stood, **built and run:** (`pkexec e1-hook/run-floor --quick --m1-sio-down` in a safe
       boot, on battery, nothing attached; `e1-hook/sio_down.h`; RESEARCH.md, "`sio_down=1` as built"). On
       `--m1-gates`' recipe, in step 8 where its reads were, CPU0 writes 0 to the 43 power words of SIO's subtree
