@@ -4077,7 +4077,8 @@ about 90 s by Corey's watch, then a restart.
 
 - **The record is whole.** Stage 0xbc, every step's outcome as in the two runs before, SIO's firmware
   stopped, the marker stood, WD2 armed and counting with the 120 s bite, `PHASE` 4, and the restart
-  89.3 to 91.3 s after the time stamp. Run 17's ending a third time.
+  89.3 to 91.3 s after the time stamp: run 17's time a third time. Whether it's run 17's ending isn't
+  shown, with the write-back unconfirmed (below).
 - **The byte: 0x96.**
 
   | bit | | read |
@@ -4093,14 +4094,19 @@ about 90 s by Corey's watch, then a restart.
 - **So it's inconclusive, by the rule set before the run.** The gate stayed open, but at least one
   word didn't read all 0, and the one bit doesn't say which word or which field. If a word's actual
   state stayed up, the gate was bound to stay open. If only an auto field read non-zero, the subtree
-  was off and the gate's reading stands. The check was target and actual state alone until Pullfrog's
+  was off in its power state, but not shown to be as B2's 0 leaves it, which is the difference from
+  Linux's own switch-off this run was built to make: the gate's reading would then be of a state
+  between the two (Pullfrog on #85). The check was target and actual state alone until Pullfrog's
   finding on #84 added the auto fields to it; with one bit for both, the run can't tell the two apart.
   That was the record's fault, not the review's: the two belonged in two bits.
 - **What it does show:**
   - **B2's bit-11 polls after its SIO writes pass**, all 42, with a core up: its ops 91 to 138 are less
     likely the stall.
-  - **The switch-off and the write-back do no harm to the run:** it went on to the commit and ended as
-    the runs before it, with a write-back that wasn't confirmed.
+  - **The run got through the switch-off and the write-back** with no fault recorded before the
+    commit, reached its last breadcrumb after it, and restarted at about the same time as the runs
+    before. That isn't the same ending shown: with the write-back unconfirmed, the commit may have
+    found SIO's subtree differently, and an SIO parent that wasn't back would stall B2 earlier, at
+    its own raise of SIO_CPU, with WD1 still restarting the Mac at 90 s (Pullfrog on #85).
   - 0x28e5a0064 and the four other gates don't move when SIO's subtree is written 0.
 - **One explanation would cover three things on file** (judgment, not shown): a power word's auto
   fields don't always read back as written.

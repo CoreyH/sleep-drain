@@ -64,7 +64,8 @@ the PR with that session's work.
     bit-11 polls met, 0x28e5a0050 still open 100 ms on, the restart at 90 s again. Inconclusive on
     the gate: at least one of the 43 words didn't read all 0, and the record's one bit doesn't say
     whether that was its actual state (then the gate had to stay open) or only an auto field (then
-    the reading stands).
+    the subtree was off in power state, but not shown as B2's 0 leaves it). The write-back wasn't
+    confirmed either, so the 90 s isn't shown to be the earlier runs' ending.
   - **Next, not built: the same run with a record that separates them** (`sio_down=1`'s byte laid
     out again; no new write). Then, by its reading, GPIO added to the switch-off (the gate stayed
     open with everything off) or A2's three moves (`a2_pre=1`), neither built. "The order after the
@@ -500,9 +501,14 @@ steps, and restarting the DCP and the PMP afterwards.
       and "closed before", which read the same in every run so far (closed; unmoved; open): if the gate is
       to count as open before, the run can refuse the switch-off when it isn't, and say so in the second
       layout with a place of 63.
-      Reading it: all off and the gate open is the lead on op 140 that this run couldn't give, and GPIO is
-      next; all off and the gate closed clears op 140 as far as the AP's state can, and `a2_pre=1` is next;
-      a word that stays up, named, is its own lead (what holds it). A check that needs no run, to do first if
+      Reading it. All off in power state **and** the auto fields all 0: B2's configuration is whole, and
+      the gate open is the lead on op 140 that this run couldn't give (GPIO next), the gate closed clears
+      op 140 as far as the AP's state can (`a2_pre=1` next). All off in power state with an auto field
+      not 0: the gate's reading is of a state between Linux's switch-off and B2's, said as that, and it
+      picks nothing by itself (Pullfrog on #85); what's next is why the field doesn't read 0 (which word,
+      what it reads, whether it's a readback that means nothing), not GPIO or `a2_pre=1`. A word that
+      stays up, named, is its own lead (what holds it). And the restart's time compares with the earlier
+      runs' only if the words came back in target and actual state. A check that needs no run, to do first if
       it's cheap: whether any of the 43 is known not to take a 0 in its auto fields (the load's lines have
       them awake: SIO 0x1f0000ff, SIO_CPU 0x1400024f, SIO_SPMI0-2 0x0f000200), from `results/look-20261110/`
       and the sleep-peek dumps.
