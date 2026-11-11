@@ -3958,6 +3958,45 @@ Checked: Pullfrog, the module's build, `tests/m1_crumbs_test.py`, `tests/e1a_lau
 new code's own mutants (41, all caught); no adversarial pass, since nothing new is written. Built by a
 subagent (Opus) and reviewed here.
 
+### The gates read's run: the six gates read as after Linux's own suspend, and the restart came at 90 s again (2026-11-11)
+
+`pkexec e1-hook/run-floor --quick --m1-gates`, in a safe boot, on battery (e3a444d; aurora15;
+`results/gates-20261111/`). Dark for about 90 s by Corey's watch, then a restart.
+
+- **The record is whole.** Stage 0xd5, every step's outcome as in run 17, the marker stood, WD2 armed
+  and counting with the 120 s bite, `PHASE` 4, and the restart 90.0-92.0 s after the commit. Run 17's
+  ending, a second time: B2 doesn't reach its op 224.
+- **The reads work there.** Seven PMGR words read with the clocks parked, no fault.
+- **The byte: 0xd6.** Awake at the load it was 0x92 (0x28e5a0050 8004030f, 0x28e5a0064 c0040302,
+  0x28e5a030c 80040308, 0x28e09c310 8004031d, 0x28e09c338 c004030f, 0x28e09c34c 8004030e; the lane
+  0x1f0000ff). Right before the commit:
+
+  | word | awake | before the commit |
+  |---|---|---|
+  | 0x28e5a0050 (SIO's subtree; op 140) | open | open |
+  | 0x28e5a0064 | closed | closed |
+  | 0x28e5a030c (ANS2) | open | closed |
+  | 0x28e09c310 (the PMP, DWI) | open | open |
+  | 0x28e09c338 | closed | closed |
+  | 0x28e09c34c (PCIe) | open | open |
+  | AFNC2_LW1 | 0x1f0000ff | 0x1000030f, macOS's |
+
+  That is what the look read after Linux's own suspend. Nothing the recipe adds (the stopped
+  firmware, the parked cores, macOS's table, the power words) closes a gate or opens one.
+- **What it doesn't say, and the plan said it would.** PLAN.md had "open there too" as pointing at
+  op 140. It doesn't: the recipe leaves ps_sio, UART_P, SPI_P and SIO_CPU on at the commit, as macOS
+  has them (`sio_on=1`, the table's entry 61), and B2 switches them off itself before it polls. So
+  0x28e5a0050 was bound to read open here, and likewise 0x28e09c310 with the PMP's power word never
+  written. That was knowable before the run. The one reading with the subtree all off is still the
+  gate test's, in Linux's suspended state: open.
+- **The lane has macOS's whole word at the commit,** so the fabric group's 0xdf is one of the other
+  three words (PCIE0_REF, APCIE_GP_SYS, AFNC1_LW2), or its check's timing.
+
+`m1-crumbs`' line for an open 0x28e5a0050 said "the stall's likeliest place"; it now says what the
+read can't show. The question it leaves is the one that matters: does that gate close once SIO's
+subtree goes off in the recipe's state? The AP making B2's own switch-off there, and polling, is the
+nearest read there is, and it's the AP's state before the commit, not B2's at op 140 (PLAN.md).
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

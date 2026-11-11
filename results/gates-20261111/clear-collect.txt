@@ -1,0 +1,6 @@
+  the armed alarm survived the reset
+disarmed: 0x1401 = 0x01
+cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros
+collected 20261111T071654-2
+collected 20261111T071654
+collected 20261111T071755
