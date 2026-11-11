@@ -4193,6 +4193,54 @@ auto-enable would have passed as comparable. It's auto-enable alone now, and the
 with all three bits. And the second form first kept the first form's stages, so the filed 0x96 read
 as "all off, all 0, GPIO next" under the new decoder: hence the stages of its own.
 
+### The second `sio_down=1` run: the subtree off, the gate still open, and 22 words B2 writes first that nothing here has touched (2026-11-11)
+
+`pkexec e1-hook/run-floor --quick --m1-sio-down`, in a safe boot, on battery (5fb0f10; aurora15;
+`results/sio-down-2-20261111/`: the PMU's record, the clear and collect, the load's lines). Dark for
+about 90 s by Corey's watch, then a restart.
+
+- **The record is whole.** Stage 0xbf, every step's outcome as in the three runs before, SIO's
+  firmware stopped, the marker stood, WD2 armed and counting with the 120 s bite, `PHASE` 4, the
+  restart 89.0 to 91.0 s after the time stamp.
+- **The byte: 0xb4**, the first layout (the subtree went off):
+
+  | bits | | read |
+  |---|---|---|
+  | 6 | all 43 target 0 and actual state 0, all 42 polls met, the gate open before | yes |
+  | 2:1 | the auto fields after the 0 | code 2: auto-enable clear in all 43, bits 27:24 f only in the five |
+  | 0 | 0x28e5a0050, 100 ms after 0x28e5a0064's poll | **open** |
+  | 3 | all 43 back in target and actual state within 10 ms each | **no** |
+  | 4 | all 43 back in auto-enable | yes |
+  | 5 | the gate open again after the write-back | yes |
+
+- **What it shows:**
+  - **B2's 0 switches SIO's subtree off from the AP**, every word, in the recipe's state, and the
+    desk reading of bits 27:24 held: f in the five after a literal 0, no auto-enable left. The first
+    run's "not all 0" was very likely that readback (that run's own words can't be read again).
+  - **0x28e5a0050 stays open with all of it off**, B2's words and values. That's the lead on B2's
+    op 140 the first run couldn't give. As before it's the AP's state before the commit, not B2's at
+    op 140.
+  - **A word doesn't read as found in target or actual state 10 ms after its write-back.** Which
+    isn't recorded. The plain candidates (judgment): a domain that takes longer than 10 ms to come
+    up from fully off, or a word found mid-change. So the restart's time doesn't compare with
+    `--m1-gates`' by the rule: 90 s a fourth time, but a parent of SIO_CPU that wasn't back at the
+    commit would stall B2 earlier and end the same way.
+- **What else B2 does before op 140, from the local listing** (no run; the listing stays out of
+  the repo). Between its gate and the first handshake, before any power word, B2 writes:
+  - op 8: 0x28e03801c := 0x80101100 (the wake sequence B1 writes 0x80100100 there);
+  - ops 9 to 15: 1 to the seven words 0x28e0a0004 to 0x28e0a001c;
+  - ops 16 to 29: 1 to the fourteen words 0x28e5b0004 to 0x28e5b0038.
+
+  The two pages are the ones right after the two gate pages (0x28e09c000, 0x28e5a0000). B0, a wake
+  sequence, writes the same 21 ones. No run and no look has read or written any of the 22: the
+  look's "gates' enables" were bit 31 of the six gate words themselves. Linux's device tree doesn't
+  cover those pages, so `pmgr-peek` refuses them. If they are what lets a gate close (inferred from
+  where they are and when B2 writes them, nothing more), the AP's switch-off was never going to
+  close 0x28e5a0050 without them. And GPIO, the planned next thing, already reads off after
+  Linux's own suspend (the look): B2's part there is a cycle, 0x8000000f and then 0, not a
+  switch-off the recipe lacks.
+- **Next: read the 22, awake and after noirq** (PLAN.md): the look again with them added, read-only.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

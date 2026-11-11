@@ -66,14 +66,16 @@ the PR with that session's work.
     whether that was its actual state (then the gate had to stay open) or only an auto field (then
     the subtree was off in power state, but not shown as B2's 0 leaves it). The write-back wasn't
     confirmed either, so the 90 s isn't shown to be the earlier runs' ending.
-  - **Built, not run: the same run with a record that separates them** (`run-floor --quick --m1-sio-down`
-    again; `sio_down=1`'s byte in its second form, no new write; RESEARCH.md, "The record laid out
-    again"). A desk check came first: bits 27:24 of a power word aren't a floor that holds what's
-    written. Five of the 43 have the field and read f there whenever auto-enable is clear, so the first
-    run's "all 43 read 0" couldn't be met. The new byte expects that and says it. **Corey's side: one
-    safe-boot run.** Then, by its reading: GPIO added to the switch-off (the gate open with everything
-    off), A2's three moves (`a2_pre=1`; the gate closed), or the word that stayed up; none built. "The
-    order after the look", in Track A below, is the place to start.
+  - The same run with a record that separates them (`sio_down=1`'s byte in its second form, run once,
+    2026-11-11; RESEARCH.md, "The second `sio_down=1` run"): the byte 0xb4. All 43 words off in target
+    and actual state, every poll met, bits 27:24 f only in the five words that read f after any
+    switch-off (the desk reading held), and 0x28e5a0050 still open: the lead on op 140. One word
+    didn't read as found 10 ms after its write-back (which isn't recorded), so the 90 s doesn't
+    compare with the earlier runs'.
+  - **Next, not built: a look at 22 words B2 writes before its power-downs** and nothing here has
+    read: 0x28e03801c, 0x28e0a0004 to 0x28e0a001c, 0x28e5b0004 to 0x28e5b0038 (the pages after the
+    two gate pages). Read-only, `probe --look` with them added. "The order after the look", in Track A
+    below, is the place to start.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -488,7 +490,34 @@ steps, and restarting the DCP and the PMP afterwards.
       poll; 0x28e5a0064 closed and the other four gates unmoved; "all 43 read 0" not met; the write-back not
       confirmed; the restart at 90 s. Inconclusive by the rule below: bit 3 asked for target, actual state and
       auto fields all 0, and doesn't say which failed, or in which word.
-      Next, **built and not run: the record laid out again, and the run repeated** (the same command,
+      **Run once, 2026-11-11: `sio_down=1`'s second form** (RESEARCH.md, "The second `sio_down=1` run";
+      `results/sio-down-2-20261111/`): the byte 0xb4 under stage 0xbf. The subtree off (all 43 target 0 and
+      actual state 0, all polls met), the auto fields code 2, 0x28e5a0050 open 100 ms on; back in auto-enable
+      and the gate open again, but not all 43 back in target and actual state within 10 ms; the restart at
+      90 s. By the reading below that is the lead on op 140, and the time doesn't compare.
+      Next, **not built: the look with 22 more words** (read-only; `pkexec e1-hook/probe --look` in a safe
+      boot, which came back last time; `e1-hook/look.h` has the list to extend; Pullfrog and its own checks,
+      no adversarial pass). The local B2 listing shows what the AP's switch-off left out: before the first
+      handshake B2 writes 0x28e03801c := 0x80101100 (op 8), 1 to 0x28e0a0004, 8, c, 10, 14, 18 and 1c (ops
+      9 to 15) and 1 to the fourteen words 0x28e5b0004 to 0x28e5b0038 (ops 16 to 29). B0, a wake sequence,
+      writes the same 21. They sit in the pages after the two gate pages, and nothing has read them. The
+      look maps both pages (they're outside Linux's PMGR windows), reads the 22 awake at the load and after
+      noirq, and logs them in full with the rest. A read that faults there is what the look's marks are for.
+      Reading it:
+      - **Some of the fourteen at 0x28e5b0004 don't read 1:** a state B2 sets and Linux doesn't have. Next,
+        on the `sio_down=1` rung: CPU0 writes B2's 1s there before the switch-off (new writes: an
+        adversarial pass), and the gate's reading says whether that's what lets it close. If it closes, the
+        same writes belong in the recipe before the commit, whatever B2 then does itself.
+      - **All 22 read as B2 writes them:** not the difference. Then B2's GPIO cycle on this rung
+        (0x28e080120 := 0x8000000f, then 0, its bit 11 polled; GPIO already reads off after Linux's
+        suspend, so it's the cycle that's new), or `a2_pre=1`, below.
+      - **They read something that isn't 0 or 1,** or change across noirq: read against B0's and B1's
+        writes to the same pages in the local listing before choosing.
+      Two things to settle while building the next one-way run, whichever it is: the write-back's wait
+      (10 ms isn't enough for one word; B2's own polls allow about 100 ms, and the record could name the
+      word), and whether the rung should keep writing the 43 back at all once the gate's question is
+      answered.
+      The plan for the second form as it stood, **built and run:** (the same command,
       `pkexec e1-hook/run-floor --quick --m1-sio-down`, in a safe boot, on battery, nothing attached;
       `e1-hook/sio_down.h`; RESEARCH.md, "The record laid out again"). No new write: the 86 as before, or none
       at all if 0x28e5a0050 reads closed before the first one. The desk check that came first: of the 43 only
