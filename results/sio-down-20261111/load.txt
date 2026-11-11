@@ -1,0 +1,8 @@
+e1_hook: m1: gates_mark: awake: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c 80040308; 0x28e09c000: +310 8004031d +338 c004030f +34c 8004030e; AFNC2_LW1 0x28e580160 1f0000ff; byte 92. Step 8 reads them again, right before the commit
+e1_hook: m1: sio_down: awake: from 0x28e580180: 1f0000ff 1400024f 000000ff 00000200 00000200 000000ff 000000ff 000000ff
+e1_hook: m1: sio_down: awake: from 0x28e5801c0: 000000ff 00000200 00000200 00000200 00000200 000000ff 00000200 00000200
+e1_hook: m1: sio_down: awake: from 0x28e580200: 00000200 00000200 00000200 0f000200 0f000200 0f000200 000000ff 00000200
+e1_hook: m1: sio_down: awake: from 0x28e580240: 00000200 00000200 00000244 00000244 00000244 00000244 00000244 000002ff
+e1_hook: m1: sio_down: awake: from 0x28e580280: 000002ff 00000200 00000200 000002ff 00000200 00000200 00000200 00000200
+e1_hook: m1: sio_down: awake: from 0x28e5802c0: 00000200 00000200 00000300 00000000 00000000 00000000 00000000 00000000
+e1_hook: loaded: s2idle ops set through s2idle_set_ops+0x0/0x34; times are trace_clock_local(); replay=15 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 gates_mark=1 sio_down=1
