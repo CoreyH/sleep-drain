@@ -197,11 +197,13 @@ run. The charger may stay in (`tests/e1_hook_probe_test.py`).
 
 `probe=1 look=1` (`pkexec e1-hook/probe --look`; `look.h` has the list) is the probe with none of its
 steps: nothing is idled or stopped, ANS2 isn't raised, and no register is written. Awake at the load and
-again at the first `prepare_late`, after noirq, it reads 98 words the pair's remaining waits depend on
-(the three p-state words, six words of the engine's page, the power words B2 switches off or polls, six
-gate-status words, fifteen clock generators' first two words, and last the two words of the engine's
-page that its sequences only write) and logs each in full; the suspend is then failed as the probe fails
-it. In the PMU it leaves stage 0x0f and, at 0x6010, the group it's reading, with 0x10 set at the load;
+again at the first `prepare_late`, after noirq, it reads 120 words: the 98 the pair's remaining waits
+depend on (the three p-state words, six words of the engine's page, the power words B2 switches off or
+polls, six gate-status words, fifteen clock generators' first two words, then the two words of the
+engine's page that its sequences only write), and last of all, since 2026-11-11, the 22 words B2 writes
+before its first handshake (0x28e03801c, 0x28e0a0004 to 0x28e0a001c, 0x28e5b0004 to 0x28e5b0038; the
+last two pages had never been read here, and each has a mark of its own). It logs each in full; the
+suspend is then failed as the probe fails it. In the PMU it leaves stage 0x0f and, at 0x6010, the group it's reading, with 0x10 set at the load;
 the load's look zeroes both again once it's through. Its start-up is the last of the load's steps and
 refuses unless every page it reads through is mapped. The launcher doesn't load `pmp_sleep_release` for
 it and refuses if it's loaded, refuses to go on unless the loaded module reads `look=Y` (without it the
@@ -209,8 +211,10 @@ module would stop the firmware), prints and saves the load's look before it asks
 by `prepare_late_calls` for asking again, and prints and saves the look after noirq. Its log grows in
 `/run` and goes into `/var/log/sleep-drain` whole, once for each save (`-load.txt`, then the record):
 a file there never changes between two saves, since `collect` keeps the first copy it has. Nothing is stopped,
-so the Mac should come back as from any failed suspend; that hasn't been tried, and why the probe itself
-didn't come back isn't explained (RESEARCH.md, "The probe's run").
+so the Mac should come back as from any failed suspend, as it did from the first look (2026-11-10, with
+the 98 words); why the probe itself didn't come back isn't explained (RESEARCH.md, "The probe's run"). A
+read of one of the two new pages that faults would take the Mac down, at the load before anything is
+saved: `m1-crumbs` after the restart then names the page.
 
 `probe=1 look=1 gate=1` (`pkexec e1-hook/probe --gate`; `gate_test.h`) is the look and one test after
 it, the only part of a look that writes registers. After the look that follows noirq it reads the six

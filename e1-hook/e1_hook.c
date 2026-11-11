@@ -369,7 +369,7 @@ MODULE_PARM_DESC(probe, "With wd1_mark=1: no replay, ever. At the prepare and pr
 /* probe=1's other form: nothing stopped and no register written, only read (PLAN.md, "The order after the probe"). */
 static bool look;
 module_param(look, bool, 0444);
-MODULE_PARM_DESC(look, "With probe=1: none of the probe's steps. It stops no firmware and writes no register: awake at the load and again after the noirq pass of the first suspend to get that far, it reads the words the entry pair's remaining waits depend on (the clock generators', six gate-status words, eight words of the engine's page, the three p-state words and the power words B2 polls), logs each in full, and fails every suspend with -EIO as probe=1 does. Stage 0x0f and the group being read at 0x6010 in the PMU while it reads, with 0x10 set at the load (look.h)");
+MODULE_PARM_DESC(look, "With probe=1: none of the probe's steps. It stops no firmware and writes no register: awake at the load and again after the noirq pass of the first suspend to get that far, it reads the words the entry pair's remaining waits depend on (the clock generators', six gate-status words, eight words of the engine's page, the three p-state words, the power words B2 polls and the 22 words B2 writes before its first handshake), logs each in full, and fails every suspend with -EIO as probe=1 does. Stage 0x0f and the group being read at 0x6010 in the PMU while it reads, with 0x10 set at the load (look.h)");
 /* look=1's one test with writes: does the gate B2 waits on after SIO's subtree close? (PLAN.md, "The order after the look") */
 static bool gate;
 module_param(gate, bool, 0444);
@@ -4018,8 +4018,13 @@ static int __init m1_probe_init(void)
 
 /* look=1: the clock generators' blocks and the two pages with the gate-status words (m1_look_ga and m1_look_gb, declared with m1_pos for gates_mark=1's step 8); the other words' pages are the recipe's. Only ever read. */
 static void __iomem *m1_look_clk;
+/* And the three pages with the 22 words B2 writes before its first handshake (look.h). Only ever read. */
+static void __iomem *m1_look_pc, *m1_look_pa, *m1_look_pb;
 static_assert(LOOK_AON_PAGE == M1_POS_PAGE && LOOK_SIO_PAGE == M1_PS_SIO_PAGE && LOOK_PS_PAGE == M1_PMGR_PS);
 static_assert(LOOK_SIO_PAGE + LOOK_SIO_ANS2 == M1_PS_SIO_PAGE + M1_PS_ANS2 && LOOK_SIO_FIRST == M1_PS_SIO && LOOK_SIO_LAST < LOOK_SIO_ANS2);
+
+/* A row of the longer of the two runs of those words, fourteen, as " %08x" each. */
+#define LOOK_PRE_ROW		((LOOK_PRE_B_LAST - LOOK_PRE_FIRST) / 4 * 9 + 9 + 1)
 
 /* look=1: the group about to be read, to the PMU's scratch, so that a read that faults says where (look.h). */
 static void m1_look_at(u8 group)
@@ -4037,7 +4042,8 @@ static void m1_look(const char *when, u8 pass)
 	static const u16 aon[] = LOOK_AON_OFFS, aonw[] = LOOK_AON_W_OFFS, ps[] = LOOK_PS_OFFS, ga[] = LOOK_GATE_A_OFFS,
 		gb[] = LOOK_GATE_B_OFFS;
 	static const u8 stage = LOOK_STAGE;
-	unsigned int i, off;
+	unsigned int i, off, n;
+	char pre[LOOK_PRE_ROW];
 	u32 v[8];
 
 	m1_kwrite(0x6004, &stage, 1);
@@ -4088,12 +4094,30 @@ static void m1_look(const char *when, u8 pass)
 	for (i = 0; i < ARRAY_SIZE(aonw); i++)
 		v[i] = readl(m1_pos + aonw[i]);
 	pr_info("look: %s: AON 0x2922c0000, written by the engine and never read by it: +008 %08x +024 %08x\n", when, v[0], v[1]);
+
+	/* Last of all, a mark to a page: what B2 writes before its first handshake. The second and third pages have never been read here. */
+	m1_look_at(pass | LOOK_AT_PRE_CLK);
+	v[0] = readl(m1_look_pc + LOOK_PRE_CLK_OFF);
+	pr_info("look: %s: pre 0x28e03801c (B2's op 8 writes 80101100): %08x\n", when, v[0]);
+	m1_look_at(pass | LOOK_AT_PRE_A);
+	for (n = 0, off = LOOK_PRE_FIRST; off <= LOOK_PRE_A_LAST; off += 4)
+		n += scnprintf(pre + n, sizeof(pre) - n, " %08x", readl(m1_look_pa + off));
+	pr_info("look: %s: pre 0x28e0a0004 to 0x28e0a001c, 4 apart (B2's ops 9 to 15 write 1):%s\n", when, pre);
+	m1_look_at(pass | LOOK_AT_PRE_B);
+	for (n = 0, off = LOOK_PRE_FIRST; off <= LOOK_PRE_B_LAST; off += 4)
+		n += scnprintf(pre + n, sizeof(pre) - n, " %08x", readl(m1_look_pb + off));
+	pr_info("look: %s: pre 0x28e5b0004 to 0x28e5b0038, 4 apart (B2's ops 16 to 29 write 1):%s\n", when, pre);
 	m1_look_at(pass | LOOK_AT_DONE);
 	pr_info("look: %s: done\n", when);
 }
 static_assert(ARRAY_SIZE(((u16[])LOOK_AON_OFFS)) == 6 && ARRAY_SIZE(((u16[])LOOK_AON_W_OFFS)) == 2 && ARRAY_SIZE(((u16[])LOOK_PS_OFFS)) == 7);
 static_assert((LOOK_LOAD & LOOK_AT_DONE) == 0 && LOOK_AT_DONE < LOOK_LOAD);
 static_assert(ARRAY_SIZE(((u16[])LOOK_GATE_A_OFFS)) == 3 && ARRAY_SIZE(((u16[])LOOK_GATE_B_OFFS)) == 3);
+static_assert(LOOK_PRE_CLK + LOOK_PRE_CLK_OFF == 0x28e03801cULL && LOOK_PRE_A + LOOK_PRE_A_LAST == 0x28e0a001cULL &&
+	      LOOK_PRE_B + LOOK_PRE_B_LAST == 0x28e5b0038ULL && LOOK_PRE_ROW == 14 * 9 + 1 && LOOK_AT_DONE == 7 && LOOK_AT_PRE_CLK == 8 &&
+	      LOOK_AT_PRE_B == 10 && LOOK_AT_PRE_B < LOOK_LOAD);
+static_assert((LOOK_PRE_A_LAST - LOOK_PRE_FIRST) / 4 + 1 == 7 && (LOOK_PRE_B_LAST - LOOK_PRE_FIRST) / 4 + 1 == 14 &&
+	      LOOK_PRE_B_LAST < PAGE_SIZE && !((LOOK_PRE_CLK | LOOK_PRE_A | LOOK_PRE_B) & ~PAGE_MASK));
 
 /* gate=1: the six gate words, on one line. */
 static void m1_gate_log(const char *when)
@@ -4266,7 +4290,7 @@ static_assert(GATE_LANE < LOOK_SIO_FIRST && (LOOK_GATE_A & PAGE_MASK) == LOOK_GA
 static_assert(LOOK_AT == 0x6010 && GATE_AT_NOT_MADE < LOOK_LOAD && !(GATE_NO_SNAP & (GATE_PASS | LOOK_LOAD | (LOOK_LOAD - 1))));
 
 /*
- * look=1 at load, the last of m1_init()'s steps: its three mappings, the engine's page if nothing has mapped it yet,
+ * look=1 at load, the last of m1_init()'s steps: its six mappings, the engine's page if nothing has mapped it yet,
  * and the look awake. It refuses unless every page m1_look() reads through is there: the first build looked before
  * m1_wd2_init() had mapped the engine's page, which would have been a NULL read at insmod (Pullfrog on #78). A read
  * that faults leaves its group's mark in the PMU; once the look is through, the stage and the mark are zeroed
@@ -4279,9 +4303,12 @@ static int __init m1_look_init(void)
 	m1_look_clk = ioremap_np(LOOK_CLKGEN, LOOK_CLKGEN_N * LOOK_CLKGEN_STEP);
 	m1_look_ga = ioremap_np(LOOK_GATE_A, PAGE_SIZE);
 	m1_look_gb = ioremap_np(LOOK_GATE_B, PAGE_SIZE);
+	m1_look_pc = ioremap_np(LOOK_PRE_CLK, PAGE_SIZE);
+	m1_look_pa = ioremap_np(LOOK_PRE_A, PAGE_SIZE);
+	m1_look_pb = ioremap_np(LOOK_PRE_B, PAGE_SIZE);
 	if (!m1_pos)
 		m1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);
-	if (!m1_look_clk || !m1_look_ga || !m1_look_gb || !m1_pos) {
+	if (!m1_look_clk || !m1_look_ga || !m1_look_gb || !m1_look_pc || !m1_look_pa || !m1_look_pb || !m1_pos) {
 		pr_err("m1: look: a mapping failed; refusing\n");
 		return -ENOMEM;
 	}
@@ -4808,6 +4835,12 @@ static void m1_unmap(void)
 		iounmap(m1_look_ga);
 	if (m1_look_gb)
 		iounmap(m1_look_gb);
+	if (m1_look_pc)
+		iounmap(m1_look_pc);
+	if (m1_look_pa)
+		iounmap(m1_look_pa);
+	if (m1_look_pb)
+		iounmap(m1_look_pb);
 	if (m1_sio_mbox)
 		iounmap(m1_sio_mbox);
 	if (m1_ans_mbox)

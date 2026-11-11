@@ -584,7 +584,9 @@ FAB_WAS = ("another value: neither 0x333 nor asked down to 1", "0x111: asked dow
 
 
 # probe=1 look=1 (e1-hook/probe --look): its stage, and the groups of words it reads, by the number it leaves at
-# 0x6010 before reading each (look.h's enum look_at), with LOOK_LOAD set by the look at the module's load.
+# 0x6010 before reading each (look.h's enum look_at), with LOOK_LOAD set by the look at the module's load. 7 is the
+# last mark of a look, as it was when the look read 98 words (results/look-20261110/); 8 to 10, added with the 22
+# words B2 writes first, are marked before it.
 LOOK_STAGE = 0x0f
 LOOK_LOAD = 0x10
 LOOK_AT = ("nothing marked",
@@ -594,8 +596,11 @@ LOOK_AT = ("nothing marked",
            "six gate-status words",
            "fifteen clock generators' two words each",
            "two words of the engine's page that its sequences only write (+0x008, +0x024)",
-           "every group read")
-LOOK_DONE = len(LOOK_AT) - 1
+           "every group read",
+           "0x28e03801c, which B2's op 8 writes",
+           "0x28e0a0004 to 0x28e0a001c, which B2's ops 9 to 15 write: a page not read before this look",
+           "0x28e5b0004 to 0x28e5b0038, which B2's ops 16 to 29 write: a page not read before this look")
+LOOK_DONE = 7
 
 
 # gate=1 (e1-hook/probe --gate): its steps, by the number it leaves at 0x6010 with GATE_PASS set (gate_test.h's enum
@@ -712,7 +717,7 @@ def look_lines(at):
     """look=1's record: which of its two looks, and the group it was about to read when it last wrote 0x6010. Its
     words are in the kernel log e1-hook/probe saves; the PMU has only how far it got."""
     load, n = bool(at & LOOK_LOAD), at & ~LOOK_LOAD
-    group = LOOK_AT[n] if n <= LOOK_DONE else "not a group's number"
+    group = LOOK_AT[n] if n < len(LOOK_AT) else "not a group's number"
     if n == LOOK_DONE and not load:
         return [f"0x6010 = 0x{at:02x}: {group}: the look after noirq read all of them. What became of the suspend after it,"
                 " this record doesn't say"]

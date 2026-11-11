@@ -46,7 +46,7 @@ used to sit in CLAUDE.md, entry for entry):
   written, a read that wasn't made never called clear), pins the guards that keep the replay from
   running and what the load checks, and decodes stage 0x0e. For look=1 it runs `m1_look()` and
   `m1_look_init()` as they stand against pages that say what was read, with no `writel()` for them to
-  call: the 98 words of PLAN.md's list and no other, each group after its mark, each logged under its
+  call: the 120 words of PLAN.md's list and no other (the 22 B2 writes first last, a mark to a page), each group after its mark, each logged under its
   address, and the load's start-up from the pointers a load can find (one not yet mapped, a mapping
   that fails). For gate=1 it runs `m1_gate_test()` as it stands against a model of the six power words,
   the gate and the PMU's bytes in twenty scenarios: twelve writes and no other in a test that's made and
