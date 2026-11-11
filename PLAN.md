@@ -60,8 +60,8 @@ the PR with that session's work.
     and the restart at 90 s again. It doesn't place the stall: the recipe leaves SIO's parents and
     SIO_CPU on, and B2 switches them off itself before its poll.
   - **Next, not built: `sio_down=1`, B2's own switch-off of SIO's subtree made by the AP** before the
-    commit, with the gate polled as B2 polls it. It writes power words, so it gets the adversarial
-    pass. Then A2's three moves (`a2_pre=1`), not built. "The order after the look", in Track A below,
+    commit, with the gate polled as B2 polls it: an observation in the AP's state, a lead either
+    way. It writes power words, so it gets the adversarial pass. Then A2's three moves (`a2_pre=1`), not built. "The order after the look", in Track A below,
     is the place to start.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
@@ -477,11 +477,16 @@ steps, and restarting the DCP and the PMP afterwards.
       (the local decode's `final/logic.txt` has them; check each against the never-write list and
       against what the recipe has written before), then polls 0x28e5a0050's bit 30 as B2 does (255
       tries, about 100 ms). The gate byte's bit 0, read after, is the answer, with a mark that tells
-      the run from `--m1-gates`. Closed: op 140 is cleared for real, and if the restart still comes at
-      90 s, `a2_pre=1` is next. Open: B2 waits there for ever, which is the stall or one of them, and
-      the question is what else is behind the gate (the same rung can then switch more off, one thing
-      a run). To settle when building: B2 raises SIO earlier (its op 51 polls SIO's ASC), so what the
-      commit finds differs from macOS's state; say what that changes about reading the restart's time.
+      the run from `--m1-gates`. Either result is an observation in the AP's state before the commit,
+      not B2's at op 140 (Pullfrog on #83): the cores are up, A2's DCS and fabric moves haven't been
+      made, B2's own raises haven't either, and what B2's 255-try poll does at its end isn't known.
+      Closed: the gate can close in the recipe's state, so op 140 is less likely the stall; if the
+      restart still comes at 90 s, `a2_pre=1` is next. Open: a lead on op 140, stronger than the gate
+      test's, and the question is what else is behind the gate (the same rung can then switch more
+      off, one thing a run). To settle when building: the commit then finds SIO's subtree off, where
+      macOS has it on. B2 raises SIO_CPU itself (its op 51 polls SIO's ASC) but not SIO's parent, so
+      the changed entry state could add a wait of its own, earlier than op 140; say how the restart's
+      time reads with that, or put the words back before the commit.
       The plan for `gates_mark=1` as it stood: on
       `--m1-mark`'s recipe, after its last step and right before the commit, CPU0 reads
       0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338 and 0x28e09c34c and leaves

@@ -3994,8 +3994,8 @@ subagent (Opus) and reviewed here.
 
 `m1-crumbs`' line for an open 0x28e5a0050 said "the stall's likeliest place"; it now says what the
 read can't show. The question it leaves is the one that matters: does that gate close once SIO's
-subtree goes off in the recipe's state? Only the AP making B2's own switch-off there, and polling,
-can read that (PLAN.md).
+subtree goes off in the recipe's state? The AP making B2's own switch-off there, and polling, is the
+nearest read there is, and it's the AP's state before the commit, not B2's at op 140 (PLAN.md).
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 
