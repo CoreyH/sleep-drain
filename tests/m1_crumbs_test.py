@@ -2611,10 +2611,10 @@ def sio_down_tests(g, src):
               " before, and gives no reading of the gate; otherwise each line follows its field, the gate's reading counts only with the auto"
               " fields all 0 or f in the five, and only if SIO's firmware was stopped, the restart's time compares only with the words' power"
               " state, their auto-enable and the gate all back; and nothing is read from a byte without bit 7", str(wrong[:2]))
-        # The first run's record, as filed (results/sio-down-20261111/crumbs.txt): its stages and its byte's layout were the first
-        # form's, and none of it is read by the second form's rules.
+        # The first run's record, its bytes as filed in results/sio-down-20261111/crumbs.txt (written out here: mutants.py's copies
+        # have no results/): its stages and its byte's layout were the first form's, and none of it is read by the second form's rules.
         first = bytes.fromhex("00300050bc7d00f5" + "00" * 8 + "e18effdf908e9600" + "00" * 8)
-        filed = open(os.path.join(os.path.dirname(HOOK), "..", "results", "sio-down-20261111", "crumbs.txt")).read().splitlines()[:2]
+        filed = ["0x6000: 00 30 00 50 bc 7d 00 f5  00 00 00 00 00 00 00 00", "0x6010: e1 8e ff df 90 8e 96 00  00 00 00 00 00 00 00 00"]
         fake(path, first, rtc_secs=121544 + 130, alarm=alarm)
         r = run(path, cnt="960000000 24000000")
         check(r.returncode == 0 and filed == r.stdout.splitlines()[:2] and len(r.stdout.splitlines()) == 3

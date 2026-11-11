@@ -9,7 +9,8 @@ Each mutant is one change to e1-hook/e1_hook.c, one of its headers, e1-hook/m1-c
 that isn't gated, a check dropped, a bit read wrong. It's applied in a copy of e1-hook/ and tests/, never in the
 tree, and the tests run there. A mutant is caught if a check fails or the tests can't build what they compile; it
 survived if they still say "all ok", and then the tests have a hole. A mutant whose text isn't in the file any more
-is reported as stale: the code moved, and the list needs the same change. Exit status: 0 if every one was caught.
+is reported as stale: the code moved, and the list needs the same change. Before any mutant, the unchanged tests are run
+in such a copy and have to pass there. Exit status: 0 if every one was caught.
 
 Add the mutants a new rung calls for when it's built: the ones a review would ask about.
 """
@@ -562,6 +563,16 @@ def main():
         return 2
     bad = 0
     with tempfile.TemporaryDirectory() as base, concurrent.futures.ThreadPoolExecutor(6) as pool:
+        # A change that changes nothing has to survive in a copy: if the tests can't finish there (a file the copy doesn't
+        # have), every mutant would pass as caught (Pullfrog on #86).
+        tests = {}
+        for m in chosen:
+            tests.setdefault(TESTS.get(m[1], "m1_crumbs_test.py"), m)
+        for test, m in sorted(tests.items()):
+            verdict = one((f"nothing changed ({test})", m[1], m[2], m[2]), base)[1]
+            if not verdict.startswith("SURVIVED"):
+                print(f"the unchanged tests don't pass in a copy ({test}: {verdict}): no mutant's verdict would mean anything", file=sys.stderr)
+                return 2
         for name, verdict in pool.map(lambda m: one(m, base), chosen):
             print(f"{verdict}: {name}", flush=True)
             bad += not verdict.startswith("caught")
