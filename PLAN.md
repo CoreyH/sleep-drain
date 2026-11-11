@@ -1,6 +1,6 @@
 # Plan
 
-Last updated 2026-11-10. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-11. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
@@ -55,12 +55,14 @@ the PR with that session's work.
     all of SIO's subtree off, the gate B2 waits on there (0x28e5a0050) stayed open, and the fabric
     lane above SIO read as macOS has it before the test wrote it. So the lane isn't what holds
     that gate, nothing on SIO's page is, and B2's poll of it (op 140) stands higher as the stall.
-  - **Next, built and not run: the six gate words read in the recipe's state** (`pkexec
-    e1-hook/run-floor --quick --m1-gates` in a safe boot, on battery, nothing attached; RESEARCH.md,
-    "The gates read as built"). Run 17's recipe with seven reads right before the commit and their
-    byte in the PMU; no new write. After the restart, `e1-hook/m1-crumbs` says what each gate read.
-    Then A2's three moves made by the AP before the commit, not built. "The order after the look", in
-    Track A below, is the place to start.
+  - The six gate words read in the recipe's state, right before the commit (`--m1-gates`, run once,
+    2026-11-11; RESEARCH.md, "The gates read's run"): as after Linux's own suspend, 0x28e5a0050 open,
+    and the restart at 90 s again. It doesn't place the stall: the recipe leaves SIO's parents and
+    SIO_CPU on, and B2 switches them off itself before its poll.
+  - **Next, not built: `sio_down=1`, B2's own switch-off of SIO's subtree made by the AP** before the
+    commit, with the gate polled as B2 polls it. It writes power words, so it gets the adversarial
+    pass. Then A2's three moves (`a2_pre=1`), not built. "The order after the look", in Track A below,
+    is the place to start.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -465,9 +467,22 @@ steps, and restarting the DCP and the PMP afterwards.
       gate stayed open through both polls; the lane read 0x1000030f, macOS's value, before the
       test wrote it; the Mac didn't resume (black, a restart by itself at about 30 s), so the PMU's
       record is all there is. The lane lead is closed, and `--gate` is one-way in practice.
-      Next, **built and not run: `gates_mark=1`, the six gate words read in the recipe's state**
-      (`run-floor --quick --m1-gates`; RESEARCH.md, "The gates read as built"; the byte is at 0x6016, in
-      the alarm's result's place, and the lane has its bit 6). As planned: on
+      **Run once, 2026-11-11: `gates_mark=1`** (`run-floor --quick --m1-gates`; RESEARCH.md, "The gates
+      read's run"): the byte 0xd6, the six gates as after Linux's own suspend (0x28e5a0050, 0x28e09c310
+      and 0x28e09c34c open), the lane at macOS's value, the restart at 90 s. The reading planned below
+      for an open 0x28e5a0050 was wrong: the recipe leaves ps_sio, UART_P, SPI_P and SIO_CPU on, so the
+      gate was bound to read open, and the read says nothing about op 140.
+      Next, **not built: `sio_down=1`.** On `--m1-gates`' recipe, before step 8's gate reads, CPU0
+      switches SIO's subtree off with the words and values B2 writes before its op 140, in B2's order
+      (the local decode's `final/logic.txt` has them; check each against the never-write list and
+      against what the recipe has written before), then polls 0x28e5a0050's bit 30 as B2 does (255
+      tries, about 100 ms). The gate byte's bit 0, read after, is the answer, with a mark that tells
+      the run from `--m1-gates`. Closed: op 140 is cleared for real, and if the restart still comes at
+      90 s, `a2_pre=1` is next. Open: B2 waits there for ever, which is the stall or one of them, and
+      the question is what else is behind the gate (the same rung can then switch more off, one thing
+      a run). To settle when building: B2 raises SIO earlier (its op 51 polls SIO's ASC), so what the
+      commit finds differs from macOS's state; say what that changes about reading the restart's time.
+      The plan for `gates_mark=1` as it stood: on
       `--m1-mark`'s recipe, after its last step and right before the commit, CPU0 reads
       0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338 and 0x28e09c34c and leaves
       their bit 30s in one byte of the PMU's scratch, with the lane's word packed beside it if a

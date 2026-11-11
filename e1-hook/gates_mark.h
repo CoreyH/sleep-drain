@@ -26,9 +26,11 @@
  *   bit 7     always set, so that the byte can't be taken for one never
  *             written: step 8's first command leaves 0x6016 at 0
  * What a bit says: that gate as CPU0 found it before the commit, before B2's
- * own writes. For 0x28e5a0050, read open there too, B2's op 140 is the stall's
- * likeliest place, and what holds that gate the question; read closed, that
- * poll is cleared, and a2_pre=1 is next (PLAN.md).
+ * own writes. For 0x28e5a0050: read closed, B2's poll at op 140 is cleared, and
+ * a2_pre=1 is next (PLAN.md). Read open, as it did in the one run (RESEARCH.md,
+ * "The gates read's run"), it doesn't place the stall: the recipe leaves ps_sio,
+ * UART_P, SPI_P and SIO_CPU on, as macOS has them, and B2 switches them off
+ * itself before that poll.
  *
  * 0x6016 is the alarm's result in every run since run 4, and every byte is
  * spoken for by the run's end. The alarm's is the one the ending needs least:

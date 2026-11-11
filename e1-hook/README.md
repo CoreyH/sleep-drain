@@ -115,8 +115,9 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   difference: 0x4b, 0x55 and 0x54 for 0x52, 0x53 and 0x51 (0xcb, 0xd5, 0xd4 with K4's bit). The load maps the two
   gate pages, refuses unless they and SIO's page are mapped, and logs the seven words awake. `m1-crumbs` reads the
   byte only at those stages, with K4's bit, the outcomes' marker at 0x6013 and its own bit 7, and says what each
-  gate read and, for 0x28e5a0050 (B2's op 140), what follows: open there too, op 140 is the stall's likeliest
-  place; closed, `a2_pre=1` is next. A read that faults or never returns leaves stage 0xcb with 0x6016 still 0,
+  gate read and, for 0x28e5a0050 (B2's op 140), what follows: closed, that poll is cleared and `a2_pre=1`
+  is next; open, as in the one run, nothing, since the recipe leaves SIO's parents and SIO_CPU on and B2
+  switches them off itself before the poll. A read that faults or never returns leaves stage 0xcb with 0x6016 still 0,
   which `m1-crumbs` calls out, and a restart about 10 s later (the SError's panic, if its restart works) or about
   90 s after step 4 (WD1's marker); a byte whose own command failed leaves the same record, and the run then went
   on unrecorded. The rest of the ending reads as `--m1-mark`'s.

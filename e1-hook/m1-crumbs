@@ -964,8 +964,10 @@ def gates_lines(s, b, pmp):
         out.append("  so: 0x28e5a0050 read closed in the recipe's state: B2's poll of it at op 140 is cleared, as far as a read before"
                    " B2's own writes can clear it, and a2_pre=1 is next (PLAN.md)")
     else:
-        out.append("  so: 0x28e5a0050 read OPEN in the recipe's state too, as after Linux's own suspend: B2's op 140, its poll of that"
-                   " gate, is the stall's likeliest place, and what holds the gate open is the question (PLAN.md)")
+        out.append("  so: 0x28e5a0050 read OPEN in the recipe's state too, as after Linux's own suspend. That doesn't place the stall:"
+                   " the recipe leaves ps_sio, UART_P, SPI_P and SIO_CPU on, as macOS has them, and B2 switches them off itself"
+                   " before its poll at op 140. Whether the gate closes then, this read can't say (RESEARCH.md, \"The gates read's"
+                   " run\")")
     if s == GATES_PRE:
         out.append("  stage 0x4b, so nothing records the commit after this byte (0x54 or 0x55 comes after it): inconclusive about the"
                    " rest of the entry")
