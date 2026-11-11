@@ -72,10 +72,11 @@ the PR with that session's work.
     switch-off (the desk reading held), and 0x28e5a0050 still open: the lead on op 140. One word
     didn't read as found 10 ms after its write-back (which isn't recorded), so the 90 s doesn't
     compare with the earlier runs'.
-  - **Next, not built: a look at 22 words B2 writes before its power-downs** and nothing here has
-    read: 0x28e03801c, 0x28e0a0004 to 0x28e0a001c, 0x28e5b0004 to 0x28e5b0038 (the pages after the
-    two gate pages). Read-only, `probe --look` with them added. "The order after the look", in Track A
-    below, is the place to start.
+  - **Next, built and not run: a look at 22 words B2 writes before its power-downs** and nothing here
+    has read: 0x28e03801c, 0x28e0a0004 to 0x28e0a001c, 0x28e5b0004 to 0x28e5b0038 (the pages after the
+    two gate pages). Read-only: `pkexec e1-hook/probe --look` in a safe boot, which now reads them
+    last, after the 98 (RESEARCH.md, "The look with the 22 words, as built"). Corey runs it; "The
+    order after the look", in Track A below, has the steps and how to read it.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -495,9 +496,15 @@ steps, and restarting the DCP and the PMP afterwards.
       actual state 0, all polls met), the auto fields code 2, 0x28e5a0050 open 100 ms on; back in auto-enable
       and the gate open again, but not all 43 back in target and actual state within 10 ms; the restart at
       90 s. By the reading below that is the lead on op 140, and the time doesn't compare.
-      Next, **not built: the look with 22 more words** (read-only; `pkexec e1-hook/probe --look` in a safe
-      boot, which came back last time; `e1-hook/look.h` has the list to extend; Pullfrog and its own checks,
-      no adversarial pass). The local B2 listing shows what the AP's switch-off left out: before the first
+      Next, **built and not run: the look with 22 more words** (read-only; `e1-hook/look.h`; RESEARCH.md,
+      "The look with the 22 words, as built"). The run, Corey's: restart into a safe boot (`pkexec
+      sleep-drain-safe boot`, then restart), `make -C e1-hook`, `pkexec e1-hook/probe --look`; the charger
+      may stay in. It should come back as the first look did: photograph the block, restart normally,
+      then `e1-hook/m1-crumbs`, `pkexec e1-hook/m1-crumbs --clear` and `pkexec sleep-drain-safe collect`.
+      New in this run: the 22 reads, the last two pages for the first time. If one faults, the Mac goes
+      down at the load (a frozen or panic screen, since this launcher sets no `kernel.panic`: the power
+      key), nothing is saved, and `m1-crumbs` after the restart reads 0x18 or 0x19 at 0x6010: the page.
+      As planned: the local B2 listing shows what the AP's switch-off left out: before the first
       handshake B2 writes 0x28e03801c := 0x80101100 (op 8), 1 to 0x28e0a0004, 8, c, 10, 14, 18 and 1c (ops
       9 to 15) and 1 to the fourteen words 0x28e5b0004 to 0x28e5b0038 (ops 16 to 29). B0, a wake sequence,
       writes the same 21. They sit in the pages after the two gate pages, and nothing has read them. The

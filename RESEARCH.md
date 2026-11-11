@@ -4241,6 +4241,27 @@ about 90 s by Corey's watch, then a restart.
   switch-off the recipe lacks.
 - **Next: read the 22, awake and after noirq** (PLAN.md): the look again with them added, read-only.
 
+### The look with the 22 words, as built (2026-11-11)
+
+Built, not run. `probe --look` now reads 120 words: the 98 as before, in the same order, and then
+the 22 above, last of all (`e1-hook/look.h`). Nothing is written to any register, as before.
+
+- **Three new marks at 0x6010, one to a page:** 7 for 0x28e03801c, 8 for 0x28e0a0004 to 0x28e0a001c,
+  9 for 0x28e5b0004 to 0x28e5b0038; "every group read" is now 10. 0x28e03801c is in a page the
+  recipe's waits already read (the ClkGen muxes at 0x28e038164 and on), so only marks 8 and 9 guard
+  pages nothing here has read.
+- **What a fault would look like.** The first read of each new page is at the module's load, awake,
+  before the launcher has saved anything. If it faults the Mac goes down there, and the PMU's
+  0x6010 reads 0x18 or 0x19 after the restart (`m1-crumbs`). That B2 writes these words says they
+  exist, not that the AP may read them (judgment: likely, since the gate pages beside them read).
+- **The log** has three more lines for each look, each naming what B2 writes there:
+  `pre 0x28e03801c (B2's op 8 writes 80101100)`, `pre 0x28e0a0004 to 0x28e0a001c, 4 apart` and
+  `pre 0x28e5b0004 to 0x28e5b0038, 4 apart`.
+- **Checked:** `tests/m1_crumbs_test.py` runs `m1_look()` and `m1_look_init()` as they stand: the
+  120 words and no other, each page after its mark, a failed mapping of a new page refused; twelve
+  new mutants (`tests/mutants.py look`). The module builds against aurora15. Pullfrog only, as for
+  any step that only reads.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
