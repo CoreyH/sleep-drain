@@ -4264,6 +4264,33 @@ the 22 above, last of all (`e1-hook/look.h`). Nothing is written to any register
   new mutants (`tests/mutants.py look`). The module builds against aurora15. Pullfrog only, as for
   any step that only reads.
 
+### The second look's run: the 22 words are as the wake sequence leaves them (2026-11-11)
+
+`pkexec e1-hook/probe --look` in a safe boot, 15:12, the build of #88; `results/look-2-20261111/`.
+It came back as the first look did: the suspend failed as meant, the log was saved and collected,
+the PMU read stage 0x0f with 0x6010 = 0x07 (cleared since). Neither new page faulted.
+
+- **The 22, the same awake at the load and after noirq:**
+  - 0x28e03801c = 0x80100100. B2's op 8 writes 0x80101100.
+  - 0x28e0a0004 to 0x28e0a001c = 2 2 2 2 3 2 2. B2's ops 9 to 15 write 1 to each.
+  - 0x28e5b0004 to 0x28e5b0038 = 2 2 2 2 2 2 2 2 0 0 2 2 1 1. B2's ops 16 to 29 write 1 to each.
+- **Read against the local listing:** these are, word for word, the last values the wake sequence
+  B1 writes there (its continuation writes the 21 in two commands near its end; B1 itself writes
+  0x80100100). Linux's suspend moves none of them. So they are in the state B2 is written to
+  start from, as the first look found for the engine's page, the clock generators and the gates.
+- **What they look like** (judgment, from the listing alone): selects with a sleep setting, 1,
+  which B0 and B2 give all 21, and a running setting which B1 puts back (2 for most). Two of them
+  (0x28e5b0034, 0x28e5b0038) already read 1. 0x28e03801c is a clock-control word of the kind the
+  table's ClkGen entries write: B1 polls its bit 30 after writing it. B2 polls nothing after ops 8
+  to 29; its first handshake comes next.
+- **The other 98 words** read exactly as in the first look, at the load and after noirq.
+- **What it says about the stall:** nothing is out of place before B2 starts, again. What it
+  leaves open is the question the read was for: the AP's switch-off of SIO's subtree
+  (`sio_down=1`) left 0x28e5a0050 open with these 22 at their running values, and B2 makes the
+  switch-off after moving them. Whether the gate closes once they're moved isn't known.
+- **Next** (PLAN.md): the `sio_down=1` rung with B2's ops 8 to 29 made by the AP first. New
+  writes, so it gets an adversarial pass.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

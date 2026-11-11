@@ -211,10 +211,9 @@ module would stop the firmware), prints and saves the load's look before it asks
 by `prepare_late_calls` for asking again, and prints and saves the look after noirq. Its log grows in
 `/run` and goes into `/var/log/sleep-drain` whole, once for each save (`-load.txt`, then the record):
 a file there never changes between two saves, since `collect` keeps the first copy it has. Nothing is stopped,
-so the Mac should come back as from any failed suspend, as it did from the first look (2026-11-10, with
-the 98 words); why the probe itself didn't come back isn't explained (RESEARCH.md, "The probe's run"). A
-read of one of the two new pages that faults would take the Mac down, at the load before anything is
-saved: `m1-crumbs` after the restart then names the page.
+so the Mac comes back as from any failed suspend: it did both times (2026-11-10 with the 98 words,
+2026-11-11 with the 120, neither new page faulting); why the probe itself didn't come back isn't
+explained (RESEARCH.md, "The probe's run").
 
 `probe=1 look=1 gate=1` (`pkexec e1-hook/probe --gate`; `gate_test.h`) is the look and one test after
 it, the only part of a look that writes registers. After the look that follows noirq it reads the six

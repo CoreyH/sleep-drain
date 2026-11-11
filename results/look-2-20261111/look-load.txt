@@ -1,0 +1,37 @@
+2026-11-11 15:12:09 loading e1_hook with replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 probe=1 look=1
+kernel log, the look awake, at the load:
+  [  180.480890] e1_hook: look: awake, at load: p-states 0x28e20c000: fabric 00000333 +400 00000222 DCS 00000666
+  [  180.480938] e1_hook: look: awake, at load: AON 0x2922c0000: +038 00000000 +03c 00000100 +040 00000003 +044 00000008 +10c 80000000 +110 00000000
+  [  180.480984] e1_hook: look: awake, at load: power 0x28e580180, 8 apart: 1f0000ff 1400024f 000000ff 00000200
+  [  180.480990] e1_hook: look: awake, at load: power 0x28e5801a0, 8 apart: 00000200 000000ff 000000ff 000000ff
+  [  180.480997] e1_hook: look: awake, at load: power 0x28e5801c0, 8 apart: 000000ff 00000200 00000200 00000200
+  [  180.481004] e1_hook: look: awake, at load: power 0x28e5801e0, 8 apart: 00000200 000000ff 00000200 00000200
+  [  180.481009] e1_hook: look: awake, at load: power 0x28e580200, 8 apart: 00000200 00000200 00000200 0f000200
+  [  180.481016] e1_hook: look: awake, at load: power 0x28e580220, 8 apart: 0f000200 0f000200 000000ff 00000200
+  [  180.481021] e1_hook: look: awake, at load: power 0x28e580240, 8 apart: 00000200 00000200 00000244 00000244
+  [  180.481026] e1_hook: look: awake, at load: power 0x28e580260, 8 apart: 00000244 00000244 00000244 000002ff
+  [  180.481031] e1_hook: look: awake, at load: power 0x28e580280, 8 apart: 000002ff 00000200 00000200 000002ff
+  [  180.481037] e1_hook: look: awake, at load: power 0x28e5802a0, 8 apart: 00000200 00000200 00000200 00000200
+  [  180.481041] e1_hook: look: awake, at load: power 0x28e5802c0, 8 apart: 00000200 00000200 00000300
+  [  180.481049] e1_hook: look: awake, at load: power 0x28e5803b8 (ANS2) 1f0003ff; 0x28e080000: +108 000000ff +110 000000ff +120 000000ff +2d8 1f0f03ff +2e8 1000030f +2f0 1000030f +320 1f0000ff
+  [  180.481398] e1_hook: look: awake, at load: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c 80040308; 0x28e09c000: +310 8004031d +338 c004030f +34c 8004030e
+  [  180.481438] e1_hook: look: awake, at load: clkgen 0x28e000000: +0 00000001 +4 00000004
+  [  180.481444] e1_hook: look: awake, at load: clkgen 0x28e002000: +0 00000001 +4 00000002
+  [  180.481449] e1_hook: look: awake, at load: clkgen 0x28e004000: +0 00000001 +4 00000004
+  [  180.481455] e1_hook: look: awake, at load: clkgen 0x28e006000: +0 00000001 +4 00000004
+  [  180.481460] e1_hook: look: awake, at load: clkgen 0x28e008000: +0 00000001 +4 00000004
+  [  180.481464] e1_hook: look: awake, at load: clkgen 0x28e00a000: +0 00000001 +4 00000004
+  [  180.481468] e1_hook: look: awake, at load: clkgen 0x28e00c000: +0 00000001 +4 00000004
+  [  180.481472] e1_hook: look: awake, at load: clkgen 0x28e00e000: +0 00000001 +4 00000004
+  [  180.481476] e1_hook: look: awake, at load: clkgen 0x28e010000: +0 00000001 +4 00000004
+  [  180.481480] e1_hook: look: awake, at load: clkgen 0x28e012000: +0 00000001 +4 00000004
+  [  180.481484] e1_hook: look: awake, at load: clkgen 0x28e014000: +0 00000001 +4 00000004
+  [  180.481488] e1_hook: look: awake, at load: clkgen 0x28e016000: +0 00000001 +4 00000005
+  [  180.481494] e1_hook: look: awake, at load: clkgen 0x28e018000: +0 00000001 +4 00000001
+  [  180.481499] e1_hook: look: awake, at load: clkgen 0x28e01a000: +0 00000001 +4 00000004
+  [  180.481503] e1_hook: look: awake, at load: clkgen 0x28e01c000: +0 00000001 +4 00000004
+  [  180.481542] e1_hook: look: awake, at load: AON 0x2922c0000, written by the engine and never read by it: +008 00000001 +024 00000000
+  [  180.481583] e1_hook: look: awake, at load: pre 0x28e03801c (B2's op 8 writes 80101100): 80100100
+  [  180.481629] e1_hook: look: awake, at load: pre 0x28e0a0004 to 0x28e0a001c, 4 apart (B2's ops 9 to 15 write 1): 00000002 00000002 00000002 00000002 00000003 00000002 00000002
+  [  180.481677] e1_hook: look: awake, at load: pre 0x28e5b0004 to 0x28e5b0038, 4 apart (B2's ops 16 to 29 write 1): 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000000 00000000 00000002 00000002 00000001 00000001
+  [  180.481715] e1_hook: look: awake, at load: done
