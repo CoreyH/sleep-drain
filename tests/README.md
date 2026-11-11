@@ -27,16 +27,18 @@ used to sit in CLAUDE.md, entry for entry):
   stage, the outcomes, the reads, dsb and isb, the byte), the alarm's last command carrying the byte, and the
   load's refusals; reads the byte at 0x4b, 0x54 and 0x55 for every value, never where the record doesn't say
   it's there, the time against the marker as at fabric_up=1's stages; and `--clear` never takes it for the
-  alarm's result. For sio_down=1 it compiles `sio_down.h`'s list, byte and stage map against a second writing-out
-  of B2's order, and runs `m1_sio_down()` with its poll and write-back functions as they stand against a model of
-  SIO's page and the gate pages in twenty scenarios (the gate closing at once, late, never, closed before, or staying closed; a
-  poll never met; a word that stays on, or keeps its auto settings; a word that doesn't come back, in its settings or only in its actual
-  state; UART_N busy): the 43 read as found, 43
+  alarm's result. For sio_down=1 it compiles `sio_down.h`'s list, stage map and byte against a second writing-out
+  of B2's order and of the byte's two layouts (each place alone and 400 drawn cases), and runs `m1_sio_down()` with
+  its poll and write-back functions as they stand against a model of SIO's page and the gate pages in 28 scenarios
+  (the gate closing at once, late, never, or staying closed; closed before, when nothing may be written; a poll never
+  met; a word that stays on; bits 27:24 reading f in the five words that have the field, kept elsewhere, or an
+  auto-enable kept; a word that doesn't come back, in its auto fields or only in its actual state; UART_N busy): the
+  43 read as found, 43
   writes of 0 in B2's order and groups with each group's polls after its writes and none of UART_N, the two gates
   polled in order, the byte before any write-back, 43 write-backs in reverse with the value found less bits 11, 9
-  and 8, the byte again, and no other write. It runs `m1_siod_init()` against a list with a word twice, outside
+  and 8, each waited for, the byte again, and no other write. It runs `m1_siod_init()` against a list with a word twice, outside
   the subtree or off its place, groups that don't add up, an unmapped page and a word on the never-write list;
-  pins step 8's order and the parameter's guards; reads the byte at 0x3a, 0x3b and 0x3c for every value; and
+  pins step 8's order and the parameter's guards; reads the byte at 0x3d, 0x3e and 0x3f for every value; and
   `--clear` never takes it for the alarm's result. For probe=1 it compiles
   `asc_probe.h`'s bytes and `m1_probe_word()` against a scripted page, runs `m1_probe_prepare()` and
   `m1_probe_late()` as they stand against a model of the registers in sixteen scenarios (no word read

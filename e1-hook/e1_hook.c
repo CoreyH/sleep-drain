@@ -361,7 +361,7 @@ MODULE_PARM_DESC(gates_mark, "With wd1_mark=1, never with probe=1: reads only. I
 /* B2's own switch-off of SIO's subtree, made by the AP before the commit, and put back (PLAN.md, "The order after the look"). */
 static bool sio_down;
 module_param(sio_down, bool, 0444);
-MODULE_PARM_DESC(sio_down, "With gates_mark=1, never with probe=1: in step 8, in place of gates_mark=1's reads and right before the commit, CPU0 writes 0 to the 43 power words of SIO's subtree (0x28e580180-0x28e5802d0) in the order the engine's B2 does, polls each for bit 11 clear and the gates 0x28e5a0064 and 0x28e5a0050 for bit 30 as B2 does (up to 100 ms each), sends one byte to 0x6016 (sio_down.h), writes all 43 back as found and sends the byte again with whether they read as found. The run's last stages are its own: 0x3a, 0x3c, 0x3b");
+MODULE_PARM_DESC(sio_down, "With gates_mark=1, never with probe=1: in step 8, in place of gates_mark=1's reads and right before the commit, CPU0 writes 0 to the 43 power words of SIO's subtree (0x28e580180-0x28e5802d0) in the order the engine's B2 does, polls each for bit 11 clear and the gates 0x28e5a0064 and 0x28e5a0050 for bit 30 as B2 does (up to 100 ms each), sends one byte to 0x6016 (sio_down.h: the gate, and what the words' auto fields read; or, if a word's target or actual state didn't read 0, which word), writes all 43 back as found and sends the byte again with what came back (target and actual state, auto-enable, the gate). If the gate reads closed before the first write, nothing is written. The run's last stages are its own: 0x3d, 0x3f, 0x3e");
 /* Not a run: the three coprocessor words B2 polls, read in the recipe's state, and the suspend failed (PLAN.md, "The order after run 17"). */
 static bool probe;
 module_param(probe, bool, 0444);
@@ -1493,16 +1493,23 @@ static void e1_after_slpa(void)
  * commit, which says nothing: the recipe leaves ps_sio, UART_P, SPI_P and SIO_CPU
  * on, and B2 switches them off itself. Here, in step 8, where gates_mark=1's
  * reads would be (they aren't made: m1_sio_down() makes its own), after stage
- * 0x3a's command and the outcomes and with SError unmasked: the 43 power words
+ * 0x3d's command and the outcomes and with SError unmasked: the 43 power words
  * from 0x28e580180 to 0x28e5802d0 are read as found; each is written 0, in B2's
  * order and groups, and polled for bit 11 clear as B2 polls it (not UART_N), up
  * to 100 ms; 0x28e5a0064 and then 0x28e5a0050 are polled for bit 30, up to
  * 100 ms each; the 43 and the six gate words are read; siod_byte() goes to
  * 0x6016; all 43 are written back in reverse order, each as found less the bits
  * the kernel never writes back, with up to 10 ms to read as found; 0x28e5a0050
- * is polled once more, up to 100 ms, to read as it did before the first write;
- * and the byte goes out again, with SIOD_BACK if all of that held. "As found"
- * is the target, the auto settings and the actual state: the two was-gated
+ * is polled once more, up to 100 ms, to read open again; and the byte goes out
+ * again, with a bit each for the words' target and actual state back, their
+ * auto-enable back, and the gate open again. The byte's second form (sio_down.h;
+ * the first run's couldn't say which part of "all off" or of "back" failed): if
+ * every word's target and actual state read 0 and every poll was met, the gate,
+ * and what the auto fields read after the 0; if not, the place in B2's order of
+ * the first word that stayed up, or that a poll wasn't met. If 0x28e5a0050
+ * reads closed before the first write, which no run has seen, nothing is
+ * written and the byte says that. "As found"
+ * is the target, the auto fields and the actual state: the two was-gated
  * flags (bits 8 and 9) aren't written back or compared, so a word that gated
  * in between keeps them set, SIO_CPU's bit 9 among them, which entry 61 had
  * cleared as macOS does (the review of #84; B2 writes that bit itself at its
@@ -1517,12 +1524,12 @@ static void e1_after_slpa(void)
  * island: only PMGR words and nub-spmi0. At the load, m1_siod_init() refuses
  * unless the 43 offsets are exactly those words, none is on the never-write
  * list, and SIO's page and the first gate page are mapped, and logs the 43
- * awake. The stages are siod_stage()'s: 0x3a, then 0x3c or 0x3b after the
+ * awake. The stages are siod_stage()'s: 0x3d, then 0x3f or 0x3e after the
  * release. It adds a few ms before the commit, 100 ms more while a gate stays
  * open, and about 5 s at the very worst, every poll and wait unmet; WD1's
  * marker has been counting since step 4, so the restart then comes that much
- * sooner after the commit. A run that stops inside it leaves stage 0x3a and
- * 0x6016 at 0, or the byte without SIOD_BACK.
+ * sooner after the commit. A run that stops inside it leaves stage 0x3d and
+ * 0x6016 at 0, or the byte with none of its three "back" bits.
  *
  * probe=1 (e1-hook/probe; with wd1_mark=1, so that everything the recipe maps and
  * checks at load is there) isn't a run. It reads, in the state the recipe makes,
@@ -3109,41 +3116,48 @@ static bool m1_siod_poll(void __iomem *p, u32 mask, u32 want)
 
 /*
  * sio_down=1: one power word written back as it was found, less the bits the kernel's driver never writes back
- * either, with up to 10 ms for it to read as found. The only write-back there is. True if it read as found.
+ * either, with up to 10 ms for it to read as found. The only write-back there is. What its last read had as found:
+ * siod_back()'s SIOD_BACK_STATE and SIOD_BACK_EN.
  */
-static bool m1_siod_back(void __iomem *p, u32 found)
+static u8 m1_siod_back(void __iomem *p, u32 found)
 {
 	u64 t0;
+	u32 v;
 
 	writel(found & ~ASC_PS_NOT_WRITTEN, p);
 	dsb(sy);
 	t0 = m1_now();
-	while (!gate_back(readl(p), found)) {
+	while (!gate_back(v = readl(p), found)) {
 		if (m1_now() - t0 > m1_tps / 100)
-			return false;
+			break;
 		cpu_relax();
 	}
-	return true;
+	return siod_back(v, found);
 }
 
 /*
  * sio_down=1, step 8, right before the commit (the m1 comment; sio_down.h has the steps and the byte): SIO's subtree
  * switched off as B2 switches it off, the gates polled as B2 polls them, the byte, and every word written back as
  * found. Every write of the switch-off is a 0 to one of the 43 words; every one of them is written back, whatever the
- * polls and the reads said. Returns the byte as last sent, for the alarm's last command.
+ * polls and the reads said. If the gate reads closed before the first write, nothing is written at all. Returns the
+ * byte as last sent, for the alarm's last command.
  */
 static u8 m1_sio_down(void)
 {
 	static const u16 off[SIOD_N] = SIOD_OFFS;
 	static const u8 grp[] = SIOD_GROUPS;
-	u32 was[SIOD_N], g[GATES_N], lane;
-	bool polls = true, down = true, back = true, was_closed;
+	u32 was[SIOD_N], now[SIOD_N], g[GATES_N], lane;
+	u8 b, back = SIOD_BACK_STATE | SIOD_BACK_EN;
+	bool polls = true;
 	unsigned int i, k, at;
-	u8 b;
 
 	for (i = 0; i < SIOD_N; i++)
 		was[i] = readl(m1_sio + off[i]);
-	was_closed = readl(m1_look_ga + GATE_SIO) & GATE_CLOSED;
+	if (readl(m1_look_ga + GATE_SIO) & GATE_CLOSED) {
+		b = siod_byte_at(SIOD_AT_CLOSED);
+		m1_crumb(GATES_AT, &b, 1);
+		return b;
+	}
 	for (k = 0, at = 0; k < ARRAY_SIZE(grp); at += grp[k++]) {
 		for (i = at; i < at + grp[k]; i++)
 			writel(0, m1_sio + off[i]);
@@ -3155,23 +3169,20 @@ static u8 m1_sio_down(void)
 	}
 	m1_siod_poll(m1_look_ga + SIOD_GATE_64, GATE_CLOSED, GATE_CLOSED);
 	m1_siod_poll(m1_look_ga + GATE_SIO, GATE_CLOSED, GATE_CLOSED);
-	for (i = 0; i < SIOD_N; i++) {
-		if (!siod_off(readl(m1_sio + off[i])))
-			down = false;
-	}
+	for (i = 0; i < SIOD_N; i++)
+		now[i] = readl(m1_sio + off[i]);
+	/* All six gates and the lane, as the first run read them here; the byte takes 0x28e5a0050's alone. */
 	m1_gates_read(g, &lane);
 	dsb(sy);
 	isb();
-	b = siod_byte(g, polls, down, false, was_closed);
+	b = siod_byte(off, now, polls, g[0] & GATE_CLOSED, 0);
 	m1_crumb(GATES_AT, &b, 1);
-	for (i = SIOD_N; i-- > 0;) {
-		if (!m1_siod_back(m1_sio + off[i], was[i]))
-			back = false;
-	}
-	/* The gate once more, with everything back (the review of #84): "back" is also the gate reading as it did before the first write. */
-	if (!m1_siod_poll(m1_look_ga + GATE_SIO, GATE_CLOSED, was_closed ? GATE_CLOSED : 0))
-		back = false;
-	b = siod_byte(g, polls, down, back, was_closed);
+	for (i = SIOD_N; i-- > 0;)
+		back &= m1_siod_back(m1_sio + off[i], was[i]);
+	/* The gate once more, with everything back (the review of #84): it was open before the first write. */
+	if (m1_siod_poll(m1_look_ga + GATE_SIO, GATE_CLOSED, 0))
+		back |= SIOD_BACK_GATE;
+	b = siod_byte(off, now, polls, g[0] & GATE_CLOSED, back);
 	m1_crumb(GATES_AT, &b, 1);
 	return b;
 }
@@ -3179,6 +3190,8 @@ static_assert(SIOD_N == 43 && (SIOD_LAST - SIOD_FIRST) / 8 + 1 == SIOD_N && SIOD
 	      M1_PS_SIO_PAGE + SIOD_FIRST == 0x28e580180ULL && M1_PS_SIO_PAGE + SIOD_LAST == 0x28e5802d0ULL);
 static_assert(LOOK_GATE_A + SIOD_GATE_64 == 0x28e5a0064ULL && LOOK_GATE_A + GATE_SIO == 0x28e5a0050ULL && SIOD_BUSY == BIT(11) &&
 	      ASC_PS_NOT_WRITTEN == (BIT(11) | BIT(9) | BIT(8)));
+static_assert((SIOD_PS_STATE | SIOD_PS_AUTO) == (GATE_PS_SET | GATE_PS_ACTUAL) && !(SIOD_PS_STATE & SIOD_PS_AUTO) && SIOD_N <= SIOD_AT_POLL &&
+	      !((SIOD_CLOSED | SIOD_AUTO_MASK | SIOD_BACK_ALL) & (SIOD_AT | SIOD_MARK)));
 
 /* Steps K3, K4 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
