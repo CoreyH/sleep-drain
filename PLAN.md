@@ -538,7 +538,8 @@ steps, and restarting the DCP and the PMP afterwards.
       holds against the device tree; SIO's 42 polls are covered; of the other seven polled words the
       recipe writes one, APCIE_GP_SYS, and its ports are live at the commit where macOS has it idle
       and gated. 2: nothing B2 raises sits under an off or self-gated parent. 3: nothing new can be
-      read. 4: no counterpart to add; Linux has the 16 DCS words in auto mode already.
+      read; the inferred wake-status words (0x292004024) showed no new bit in run 2, and nothing
+      rules a wake source out with every core down. 4: no counterpart to add; Linux has the 16 DCS words in auto mode already.
       **Next, not built: `pcie_down=1` on `--m1-gates`' rung** (the name is the build's to choose;
       no `sio_down=1` in it, so that the restart's time compares with `--m1-gates`'). In step 8,
       right before the commit, CPU0 makes B2's ops 141 to 148 in B2's order and leaves them:

@@ -4435,9 +4435,13 @@ was posted.
 
 **3. The first gate.** Nothing new can be read. With CPU0 up it holds (run 6), which is what the
 M4 Pro's driver says a core does; with CPU0 down nothing can see it, and nothing B2 writes before
-op 224 outlasts the reset. For a pending wake source: CPU0 had no exception pending before its
-last WFI in both `sio_down=1` runs (their stages), and no address for this chip's wake status
-words is on file (the M4's are in its AOP's block).
+op 224 outlasts the reset. For a pending wake source, what's on file: CPU0 had no exception
+pending before its last WFI in both `sio_down=1` runs (their stages); and the seven words
+inferred to be the AP's wake status (0x292004024, right after the masks, as on T8103 and T6020)
+read 0 awake and showed no new bit after the commit in run 2, the one run that sampled them
+there, with CPU7 up. That address is inferred, not confirmed, and whether those words are what
+the first gate follows isn't known (the M4's are in its AOP's block). So nothing on file points
+at a wake source, and nothing rules one out with every core down.
 
 **4. After B2.** The next sequence waits, with no timeout, for the 16 DCS power words to read
 actual state 0. Linux already has all 16 in auto mode (0x1f0000ff or 0x1f0002ff awake,
