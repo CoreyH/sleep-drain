@@ -4480,6 +4480,61 @@ tests it from the AP with a reading that doesn't depend on a gate: B2's own five
 before the commit, bit 11 and the actual state recorded, and the words left off so that B2 finds
 them done. A restart at 120 s instead of 90 s would say B2 got through. `pre=1` comes after it.
 
+### `pcie_down=1` as built: B2's PCIe switch-off, made by the AP and left (2026-11-12)
+
+`pkexec e1-hook/run-floor --quick --m1-pcie-down`, `--m1-gates`' recipe with one thing in place of its
+reads (`e1-hook/pcie_down.h` has the words, the byte and the stages). Built on Corey's standing go-ahead
+of 2026-11-10; nothing in it outlasts the restart.
+
+- **What CPU0 does in step 8, right before the commit:** reads APCIE_GP_SYS as found; writes a
+  literal 0 to APCIE_ST_SYS, APCIE_ST1_SYS and APCIE_GP_SYS (0x28e0802e8, 0x28e0802f0, 0x28e080320:
+  B2's ops 141 to 143); polls each for bit 11 clear, up to 100 ms, as B2's ops 144 to 146 do; sends
+  the byte; writes 0 to APCIE_ST and APCIE_GP (0x28e080148, 0x28e080150: ops 147, 148), with up to
+  100 ms each to read off; polls the gate 0x28e09c34c (op 156) for bit 30, up to 100 ms; and sends
+  the byte again.
+- **The new writes: those five, each a 0, each one B2's own, made a little early.** Nothing is
+  written back, so B2 finds the five off and its own 0 changes nothing. No PCIe register is touched,
+  and nothing after it in the run touches one.
+- **B2's plain 0, not the M4 Pro driver's by-hand version** (auto-enable cleared first, then the
+  bridge's bits): what the run asks is what B2's own write meets.
+- **The byte, at 0x6016:** bit 0 APCIE_GP_SYS found up; bit 1 found with bit 11 already set (the
+  recipe's own `ps_words=1` write would be why); bit 2 its poll met; bit 3 it read off and idle
+  (target 0, actual state 0, bit 11 clear) at the send's last read; bit 4 the two storage words'
+  polls met and both off and idle; bit 5 APCIE_ST and APCIE_GP off;
+  bit 6 the gate closed; bit 7 always. 0xbd is a clean switch-off with the gate open.
+- **Stages of its own:** 0x1d before the commit, then 0x1f, or 0x1e with an exception pending
+  (0x9d, 0x9f, 0x9e under K4's bit).
+- **What it can say:**
+  - Bit 3 clear in the second send: the word wasn't off and idle at the last read before the
+    commit, with the ports live. That is a lead on B2's op 146, the M4's latch by the look of it,
+    and not proof that B2 waits there for good: the AP's 100 ms isn't the engine's wait, and the
+    restart's time still says how far B2 got (Pullfrog on #93). At 90 s, the ports' stop is the
+    build. Bit 2 clear with bit 3 set: bit 11 was slow, and had cleared by the commit.
+  - 0xbd or 0xfd and a restart at about 120 s: B2 got past its op 224 for the first time.
+  - 0xbd or 0xfd and 90 s: B2's PCIe step passes as the AP makes it; the stall is elsewhere.
+- **Guards:** the five addresses are pinned at build time, each offset against `ps_pmp`'s (the
+  never-write word is in the same page) and the list's length too; the load compares the list with
+  the five offsets written out a second time, refuses if one is on the never-write list or a page
+  isn't mapped, and logs the five and the gate awake.
+- **The adversarial pass** (a subagent, on f842e85) found no path to a write outside the five. Its
+  three findings, all taken: the decoder's clean verdict ignored a word found already down, parents
+  that stayed up and the stage; the load's check would have let a short or wrong list through
+  (a list one short ends in offset 0, a core's own word); and two comments said all five were read
+  as found where only APCIE_GP_SYS is.
+
+Checked: the module builds; `tests/m1_crumbs_test.py` (the header against a second writing-out in
+1,600 cases; `m1_pcie_down()` as it stands against a register model in 28 scenarios; the load's
+refusals; every byte value through the decoder at each stage; `--clear`); `tests/e1a_launcher_test.py`;
+the 221 `pcd`, `gates` and `siod` mutants, all caught; and one adversarial pass, as for every build
+that writes.
+
+Pullfrog's two on #93, both taken. The decoder read an unmet poll or a word still up as proof
+that B2 stops at op 146 and told the reader to set the restart's time aside: the AP's 100 ms isn't
+the engine's wait, so it's a lead, and the time is still read. With that, bit 3 now asks for bit
+11 clear as well, so the last read before the commit says whether a slow bit 11 had cleared. And
+the clean verdict claimed all five off without the second send's bit: the adversarial pass had
+found the same.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

@@ -88,9 +88,12 @@ the PR with that session's work.
     thing differs from macOS at the commit: the internal PCIe ports are live (Linux's suspend
     leaves them alone), where macOS has APCIE_GP_SYS idle and gated, and B2 switches that word off
     and polls it. Two working drivers stop those ports before the commit.
-  - **Next, a build and a run: `pcie_down=1`** (the name is the build's to choose): B2's five PCIe
-    writes made by the AP right before the commit and left, with bit 11 and the actual state
-    recorded. "The order after the look", in Track A below, has it. Then `pre=1`.
+  - **Next, a run of Corey's: `pkexec e1-hook/run-floor --quick --m1-pcie-down`**, in a safe boot,
+    on battery (built 2026-11-12; RESEARCH.md, "`pcie_down=1` as built"): B2's five PCIe writes made
+    by the AP right before the commit and left, with bit 11 and the actual state recorded. New in
+    this run: those five power words written 0. Dark for about 90 s or about 120 s, then a restart;
+    which of the two is part of the result. "The order after the look", in Track A below, has the
+    outcomes. Then `pre=1`.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -540,7 +543,8 @@ steps, and restarting the DCP and the PMP afterwards.
       and gated. 2: nothing B2 raises sits under an off or self-gated parent. 3: nothing new can be
       read; the inferred wake-status words (0x292004024) showed no new bit in run 2, and nothing
       rules a wake source out with every core down. 4: no counterpart to add; Linux has the 16 DCS words in auto mode already.
-      **Next, not built: `pcie_down=1` on `--m1-gates`' rung** (the name is the build's to choose;
+      **Next, built 2026-11-12 and not yet run: `pcie_down=1` on `--m1-gates`' rung**
+      (`run-floor --m1-pcie-down`; RESEARCH.md, "`pcie_down=1` as built";
       no `sio_down=1` in it, so that the restart's time compares with `--m1-gates`'). In step 8,
       right before the commit, CPU0 makes B2's ops 141 to 148 in B2's order and leaves them:
       0 to APCIE_ST_SYS, APCIE_ST1_SYS and APCIE_GP_SYS (0x28e0802e8, 0x28e0802f0, 0x28e080320),
@@ -550,16 +554,19 @@ steps, and restarting the DCP and the PMP afterwards.
       Recorded: APCIE_GP_SYS as found (actual state, bit 11, bits 27:24), each word's bit 11 and
       actual state after its 0, APCIE_GP's actual state, and 0x28e09c34c's bit 30 (expected open
       whatever happens, if the 21 words are its mode). New writes, so one adversarial pass.
-      - **Bit 11 stays set, or APCIE_GP_SYS stays up:** the M4's latch, on this chip, at a word B2
-        polls with no way past it. Then the ports' stop before the 0, as T8140's and the M4 Pro's
-        drivers make it (aurora's `pcie-apple.c` has this chip's port registers), is the build.
+      - **APCIE_GP_SYS not off and idle at the last read before the commit** (bit 11 still set, or
+        its state still up): a lead on B2's op 146, the M4's latch by the look of it, not proof
+        (the AP's 100 ms isn't the engine's wait). With the restart at 90 s, the ports' stop before
+        the 0, as T8140's and the M4 Pro's drivers make it (aurora's `pcie-apple.c` has this chip's
+        port registers), is the build. At 120 s it cleared later and B2 got through all the same.
       - **All off, no bit 11, and the restart at 120 s:** B2 got past op 224 for the first time, and
         PCIe was what held it. WD2 ends the run then, and what's after B2 is next.
       - **All off, no bit 11, and the restart at 90 s:** B2's PCIe step passes as the AP makes it,
         and the stall is elsewhere. Then `pre=1`.
-      Open for the build: whether the three `_SYS` words' auto-enable has to be cleared first (B2
-      writes a plain 0; the M4 Pro's driver clears it and the bridge bits by hand), and where the
-      byte goes. The sweep's cheap rider below can go in the same run.
+      As built: B2's plain 0, since that is what B2's own write meets (the M4 Pro's driver clears
+      auto-enable and the bridge bits by hand first); the byte at 0x6016, sent after the three
+      `_SYS` words and again after the gate, under stages 0x1d, 0x1f and 0x1e. The sweep's cheap
+      rider below isn't in it: it would be four more reads in a block no run here has mapped.
       After it, **not built: `pre=1` on the `sio_down=1` rung** (the name is the build's to choose). In
       step 8, before the switch-off, CPU0 makes B2's ops 8 to 29 in B2's order: 0x28e03801c :=
       0x80101100, 1 to the seven, 1 to the fourteen (B2's order there is 4, c, 10, 14, 8, 18 and on).

@@ -27,7 +27,12 @@ used to sit in CLAUDE.md, entry for entry):
   stage, the outcomes, the reads, dsb and isb, the byte), the alarm's last command carrying the byte, and the
   load's refusals; reads the byte at 0x4b, 0x54 and 0x55 for every value, never where the record doesn't say
   it's there, the time against the marker as at fabric_up=1's stages; and `--clear` never takes it for the
-  alarm's result. For sio_down=1 it compiles `sio_down.h`'s list, stage map and byte against a second writing-out
+  alarm's result. For pcie_down=1 it compiles `pcie_down.h`'s list, stage map and byte against a second
+  writing-out of them (1,600 cases), runs `m1_pcie_down()` as it stands against a model of the power page and the
+  gate page in 28 scenarios (bit 11 kept, kept for 30 ms or for 130 ms, the word staying up or dropping late, found busy or found
+  gated, a storage word busy or up, a parent staying up, the gate closing or not): five writes, each a 0, in B2's
+  order, the byte after the third and after the fifth, nothing written back, `ps_pmp`'s word untouched; the load's
+  refusals; the byte through m1-crumbs for every value at each stage; and `--clear`. For sio_down=1 it compiles `sio_down.h`'s list, stage map and byte against a second writing-out
   of B2's order and of the byte's two layouts (each place alone and 400 drawn cases), and runs `m1_sio_down()` with
   its poll and write-back functions as they stand against a model of SIO's page and the gate pages in 28 scenarios
   (the gate closing at once, late, never, or staying closed; closed before, when nothing may be written; a poll never

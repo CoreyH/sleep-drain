@@ -121,6 +121,21 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   which `m1-crumbs` calls out, and a restart about 10 s later (the SError's panic, if its restart works) or about
   90 s after step 4 (WD1's marker); a byte whose own command failed leaves the same record, and the run then went
   on unrecorded. The rest of the ending reads as `--m1-mark`'s.
+- `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
+  `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
+  power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be
+  (they aren't made), CPU0 reads APCIE_GP_SYS as found, writes 0 to APCIE_ST_SYS, APCIE_ST1_SYS and APCIE_GP_SYS
+  (0x28e0802e8, 0x28e0802f0, 0x28e080320; B2's ops 141 to 143), polls each for bit 11 clear as B2 does, up to
+  100 ms, sends one byte to 0x6016, writes 0 to APCIE_ST and APCIE_GP (0x28e080148, 0x28e080150; B2's ops 147 and
+  148), gives each up to 100 ms to read off, polls the gate 0x28e09c34c (B2's op 156) for bit 30, and sends the
+  byte again. Five new writes, each a 0; nothing is written back, and no PCIe register is touched. The byte: bit 0
+  APCIE_GP_SYS found up, bit 1 found with bit 11 set, bit 2 its poll met, bit 3 it read off and idle at the send's
+  last read, bit 4 the two storage words' polls met and both off and idle, bit 5 APCIE_ST and APCIE_GP off, bit 6 the gate
+  closed, bit 7 always; bits 5 and 6 are never set in the first send. 0xbd is a clean switch-off with the gate
+  open, 0xfd with it closed. Stages of its own: 0x1d before the commit, then 0x1f, or 0x1e with an exception
+  pending (0x9d, 0x9f, 0x9e under K4's bit). The commit finds the words off, so a restart at about 120 s in place
+  of 90 s says B2 got past its op 224. The load refuses if one of the five is on the never-write list (`ps_pmp`'s
+  word is in the same page), and the build pins the five addresses.
 - `sio_down=1` (`run-floor --m1-sio-down`, on `gates_mark=1`, never with `probe=1`; `e1-hook/sio_down.h` has the
   words, their order, the byte and the stages) makes B2's own switch-off of SIO's subtree from the AP, before the
   commit, and puts it back. In step 8, where `gates_mark=1`'s reads would be (they aren't made), CPU0 reads the 43

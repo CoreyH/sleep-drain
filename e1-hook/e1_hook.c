@@ -93,6 +93,7 @@
  *   pkexec e1-hook/run-floor --m1-mark            (--m1-fabric-up's and wd1_mark=1: the same)
  *   pkexec e1-hook/run-floor --m1-gates           (--m1-mark's and gates_mark=1: PLAN.md, "The order after the look")
  *   pkexec e1-hook/run-floor --m1-sio-down        (--m1-gates' and sio_down=1: the same)
+ *   pkexec e1-hook/run-floor --m1-pcie-down       (--m1-gates' and pcie_down=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -141,6 +142,7 @@
 #include "wd1_mark.h"
 #include "gates_mark.h"
 #include "sio_down.h"
+#include "pcie_down.h"
 #include "wd2_bite.h"
 
 #if IS_ENABLED(CONFIG_ACPI)
@@ -362,6 +364,10 @@ MODULE_PARM_DESC(gates_mark, "With wd1_mark=1, never with probe=1: reads only. I
 static bool sio_down;
 module_param(sio_down, bool, 0444);
 MODULE_PARM_DESC(sio_down, "With gates_mark=1, never with probe=1: in step 8, in place of gates_mark=1's reads and right before the commit, CPU0 writes 0 to the 43 power words of SIO's subtree (0x28e580180-0x28e5802d0) in the order the engine's B2 does, polls each for bit 11 clear and the gates 0x28e5a0064 and 0x28e5a0050 for bit 30 as B2 does (up to 100 ms each), sends one byte to 0x6016 (sio_down.h: the gate, and what the words' auto fields read; or, if a word's target or actual state didn't read 0, which word), writes all 43 back as found and sends the byte again with what came back (target and actual state, auto-enable, the gate). If the gate reads closed before the first write, nothing is written. The run's last stages are its own: 0x3d, 0x3f, 0x3e");
+/* B2's own switch-off of the PCIe power words, made by the AP before the commit, and left (PLAN.md, "The order after the look"). */
+static bool pcie_down;
+module_param(pcie_down, bool, 0444);
+MODULE_PARM_DESC(pcie_down, "With gates_mark=1, never with sio_down=1 or probe=1: in step 8, in place of gates_mark=1's reads and right before the commit, CPU0 writes 0 to APCIE_ST_SYS, APCIE_ST1_SYS and APCIE_GP_SYS (0x28e0802e8, 0x28e0802f0, 0x28e080320), B2's ops 141 to 143, polls each for bit 11 clear as B2 does, up to 100 ms, then writes 0 to APCIE_ST and APCIE_GP (0x28e080148, 0x28e080150), B2's ops 147 and 148, and polls the gate 0x28e09c34c for bit 30. Nothing is written back and no PCIe register is touched. A byte at 0x6016, sent twice, under stages 0x1d, 0x1f and 0x1e (for 0x4b, 0x55 and 0x54). The five words are read and logged awake at the load, which refuses if one is on the never-write list (pcie_down.h)");
 /* Not a run: the three coprocessor words B2 polls, read in the recipe's state, and the suspend failed (PLAN.md, "The order after run 17"). */
 static bool probe;
 module_param(probe, bool, 0444);
@@ -1484,6 +1490,28 @@ static void e1_after_slpa(void)
  * returns leaves WD1's marker to restart the Mac about 90 s after step 4; both
  * leave stage 0x4b, 0x6013's marker and 0x6016 at 0. So does a byte whose own
  * command failed, after which the run went on unrecorded.
+ *
+ * pcie_down=1 (run-floor --m1-pcie-down; with gates_mark=1, never with sio_down=1
+ * or probe=1) is B2's own switch-off of the PCIe power words, made by CPU0
+ * before the commit and left (PLAN.md, "The order after the look"; pcie_down.h
+ * has the words, their order, the byte and the stages). Linux's suspend leaves
+ * the internal PCIe host's ports live, so APCIE_GP_SYS is up at the commit
+ * where macOS has it idle and gated, and B2 writes 0 to it and waits on its
+ * bit 11. Here, in step 8, where gates_mark=1's reads would be, after stage
+ * 0x1d's command and the outcomes and with SError unmasked: APCIE_GP_SYS is
+ * read as found; APCIE_ST_SYS, APCIE_ST1_SYS and APCIE_GP_SYS are written 0, in
+ * B2's order, and each polled for bit 11 clear, up to 100 ms; pcd_byte() goes
+ * to 0x6016; APCIE_ST and APCIE_GP are written 0 and given up to 100 ms each to
+ * read off; 0x28e09c34c is polled for bit 30, up to 100 ms; and the byte goes
+ * out again with those two. Nothing is written back, so that B2 finds the five
+ * off, and nothing after this touches a PCIe register: the rest of the run is
+ * PMGR words, the watchdogs and nub-spmi0. The new writes are those five, each
+ * a 0, each B2's own (built on Corey's standing go-ahead of 2026-11-10; they
+ * don't outlast the restart). At the load, m1_pcd_init() refuses unless the
+ * five are the words named, none is on the never-write list (ps_pmp,
+ * 0x28e0802d8, is in the same page), and the two pages are mapped, and logs
+ * the five awake. The stages are pcd_stage()'s: 0x1d, then 0x1f or 0x1e after
+ * the release. It adds at most about 0.6 s before the commit.
  *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
@@ -3074,6 +3102,8 @@ static void m1_wd2_out(void)
 		b[0] = gates_stage(b[0]);
 	if (sio_down)
 		b[0] = siod_stage(b[0]);
+	if (pcie_down)
+		b[0] = pcd_stage(b[0]);
 	b[1] = m1_wd2_sample(pre, m1_wd2_bite_awake, ctl, post, after, c0, c1, phase);
 	m1_crumb(0x6004, b, 2);
 	for (i = 0; i < M1_SPMI_WORDS; i++)
@@ -3192,6 +3222,57 @@ static_assert(LOOK_GATE_A + SIOD_GATE_64 == 0x28e5a0064ULL && LOOK_GATE_A + GATE
 	      ASC_PS_NOT_WRITTEN == (BIT(11) | BIT(9) | BIT(8)));
 static_assert((SIOD_PS_STATE | SIOD_PS_AUTO) == (GATE_PS_SET | GATE_PS_ACTUAL) && !(SIOD_PS_STATE & SIOD_PS_AUTO) && SIOD_N <= SIOD_AT_POLL &&
 	      !((SIOD_CLOSED | SIOD_AUTO_MASK | SIOD_BACK_ALL) & (SIOD_AT | SIOD_MARK)));
+
+/*
+ * pcie_down=1, step 8, right before the commit (the m1 comment; pcie_down.h has the steps and the byte): the PCIe power
+ * words switched off as B2 switches them off, and left. Every write is a 0 to one of the five words, in B2's order;
+ * nothing is written back. Returns the byte as last sent, for the alarm's last command.
+ */
+static u8 m1_pcie_down(void)
+{
+	static const u16 off[PCD_N] = PCD_OFFS;
+	u32 found, now[PCD_SYS_N];
+	u8 b, polls = 0, second = PCD_PARENTS;
+	unsigned int i;
+
+	found = readl(m1_ps + off[PCD_GP_SYS]);
+	for (i = 0; i < PCD_SYS_N; i++)
+		writel(0, m1_ps + off[i]);
+	dsb(sy);
+	for (i = 0; i < PCD_SYS_N; i++) {
+		if (m1_siod_poll(m1_ps + off[i], PCD_BUSY, 0))
+			polls |= BIT(i);
+	}
+	for (i = 0; i < PCD_SYS_N; i++)
+		now[i] = readl(m1_ps + off[i]);
+	dsb(sy);
+	isb();
+	b = pcd_byte(found, now, polls, 0);
+	m1_crumb(GATES_AT, &b, 1);
+	for (i = PCD_SYS_N; i < PCD_N; i++)
+		writel(0, m1_ps + off[i]);
+	dsb(sy);
+	for (i = PCD_SYS_N; i < PCD_N; i++) {
+		if (!m1_siod_poll(m1_ps + off[i], PCD_PS_STATE, 0))
+			second = 0;
+	}
+	if (m1_siod_poll(m1_look_gb + PCD_GATE, GATE_CLOSED, GATE_CLOSED))
+		second |= PCD_CLOSED;
+	now[PCD_GP_SYS] = readl(m1_ps + off[PCD_GP_SYS]);
+	dsb(sy);
+	isb();
+	b = pcd_byte(found, now, polls, second);
+	m1_crumb(GATES_AT, &b, 1);
+	return b;
+}
+/* The five addresses, pinned: none is ps_pmp's 0x28e0802d8, which is in this page and on the never-write list. */
+static_assert(ARRAY_SIZE(((u16[])PCD_OFFS)) == PCD_N && PCD_N == 5 && PCD_SYS_N == 3 && PCD_GP_SYS == 2 && PCD_BUSY == BIT(11) && LOOK_GATE_B + PCD_GATE == 0x28e09c34cULL &&
+	      PCD_PS_STATE == 0xffU && !(PCD_SECOND & (PCD_FOUND_UP | PCD_FOUND_BUSY | PCD_POLL | PCD_DOWN | PCD_ST_OK | PCD_MARK)));
+static_assert(M1_PMGR_PS + PCD_ST_SYS == 0x28e0802e8ULL && M1_PMGR_PS + PCD_ST1_SYS == 0x28e0802f0ULL &&
+	      M1_PMGR_PS + PCD_GP_SYS_OFF == 0x28e080320ULL && M1_PMGR_PS + PCD_ST == 0x28e080148ULL &&
+	      M1_PMGR_PS + PCD_GP == 0x28e080150ULL && M1_PMGR_PS + M1_PS_PMP_RO == 0x28e0802d8ULL &&
+	      PCD_ST_SYS != M1_PS_PMP_RO && PCD_ST1_SYS != M1_PS_PMP_RO && PCD_GP_SYS_OFF != M1_PS_PMP_RO && PCD_ST != M1_PS_PMP_RO &&
+	      PCD_GP != M1_PS_PMP_RO && LOOK_PS_PAGE == M1_PMGR_PS);
 
 /* Steps K3, K4 and 1-10, on CPU0 right after MBSE=slpa was accepted. Never returns. */
 static void __noreturn m1_after_slpa(void)
@@ -3366,6 +3447,8 @@ static void __noreturn m1_after_slpa(void)
 			b[0] = gates_stage(b[0]);
 		if (sio_down)
 			b[0] = siod_stage(b[0]);
+		if (pcie_down)
+			b[0] = pcd_stage(b[0]);
 		b[1] = parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
 		b[3] = fabric_up ? m1_fab_byte(held, fab_pre, fab_set, fab_end, wd1) : hold ? held : down;
@@ -3384,7 +3467,7 @@ static void __noreturn m1_after_slpa(void)
 	 * that say where the run is; SError still unmasked, so that a read that faulted panics here, then their byte (the
 	 * m1 comment; gates_mark.h).
 	 */
-	if (gates_mark && !sio_down) {
+	if (gates_mark && !sio_down && !pcie_down) {
 		u32 g[GATES_N], lane;
 
 		m1_gates_read(g, &lane);
@@ -3399,6 +3482,9 @@ static void __noreturn m1_after_slpa(void)
 	 */
 	if (sio_down)
 		m1_gates = m1_sio_down();
+	/* pcie_down=1, in their place: B2's switch-off of the PCIe power words, its polls and the byte; nothing written back (pcie_down.h). */
+	if (pcie_down)
+		m1_gates = m1_pcie_down();
 	/* recfg_bite=1: A2's bite word once more, SError still unmasked: a read that faulted panics here, before the commit, not under step 9's mask (the m1 comment). */
 	if (recfg_bite) {
 		sram = readl(m1_recfg + RECFG_BITE);
@@ -4416,6 +4502,37 @@ static int __init m1_siod_init(void)
 	return 0;
 }
 
+/*
+ * pcie_down=1 at load, after m1_gates_init(): the list is exactly the five words named here, in B2's order (a second
+ * writing-out of them: a list that came out short would otherwise end in offset 0, a core's own word; the adversarial
+ * review of #93), none is on the never-write list, the two pages step 8 goes through are mapped, and the five and the
+ * gate logged awake. Reads only.
+ */
+static int __init m1_pcd_init(void)
+{
+	static const u16 off[PCD_N] = PCD_OFFS;
+	static const u16 want[PCD_N] = { 0x2e8, 0x2f0, 0x320, 0x148, 0x150 };
+	u32 v[PCD_N];
+	unsigned int i;
+
+	for (i = 0; i < PCD_N; i++) {
+		if (off[i] != want[i] || e1_never_write(M1_PMGR_PS + off[i])) {
+			pr_err("m1: pcie_down: 0x%llx isn't the PCIe power word meant at its place, or is on the never-write list; refusing\n",
+			       M1_PMGR_PS + off[i]);
+			return -EINVAL;
+		}
+	}
+	if (!m1_ps || !m1_look_gb) {
+		pr_err("m1: pcie_down: the first power page or the second gate page isn't mapped; refusing\n");
+		return -ENODEV;
+	}
+	for (i = 0; i < PCD_N; i++)
+		v[i] = readl(m1_ps + off[i]);
+	pr_info("m1: pcie_down: awake: APCIE_ST_SYS %08x APCIE_ST1_SYS %08x APCIE_GP_SYS %08x APCIE_ST %08x APCIE_GP %08x; gate 0x28e09c34c %08x. Step 8 writes 0 to the five, right before the commit, and leaves them\n",
+		v[0], v[1], v[2], v[3], v[4], readl(m1_look_gb + PCD_GATE));
+	return 0;
+}
+
 /* fabric_up=1 at load: the word off the never-write list and as it is awake, 0x333, so that 3 is its awake value. Reads only. */
 static int __init m1_fab_init(void)
 {
@@ -4708,6 +4825,12 @@ static int __init m1_init(void)
 	}
 	if (sio_down) {
 		int ret = m1_siod_init();
+
+		if (ret)
+			return ret;
+	}
+	if (pcie_down) {
+		int ret = m1_pcd_init();
 
 		if (ret)
 			return ret;
@@ -5246,6 +5369,10 @@ static int __init e1_check_params(void)
 		pr_err("sio_down=1 needs gates_mark=1 and no probe=1 (it's that run with SIO's subtree switched off and put back in step 8, and its byte is at 0x6016 under its own stages)\n");
 		return -EINVAL;
 	}
+	if (pcie_down && (!gates_mark || sio_down || probe)) {
+		pr_err("pcie_down=1 needs gates_mark=1 and neither sio_down=1 nor probe=1 (it's that run with the PCIe power words switched off in step 8 and left, and its byte is at 0x6016 under its own stages)\n");
+		return -EINVAL;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -5419,7 +5546,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -5427,7 +5554,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;
 
