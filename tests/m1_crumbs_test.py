@@ -1123,8 +1123,8 @@ def main():
     check(defs.get("M1_PMU_ALARM_CTRL") == g["ALARM_CTRL"] and defs.get("M1_PMU_ALARM") == g["ALARM"]
           and defs.get("M1_PMU_ALARM_EVENT") == g["ALARM_EVENT"] and defs.get("M1_PMU_ALARM_MASK") == g["ALARM_MASK"]
           and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"]
-          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x46, 0x47,
-                                    0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f)
+          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x46, 0x47,
+                                    0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f)
           and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src and "hold ? 0x5a : alarm ? 0x59 : 0x58" in src
           and "m1_stage(sio_stop ? 0x4f : 0x5b)" in src and "b[0] = 0x5c" in src and "? 0x5d : 0x5e" in src and "hold ? 0x39 :" in src
           and "hold ? 0x31 :" in src,
@@ -1141,6 +1141,7 @@ def main():
     mark_tests(g, src)
     gates_mark_tests(g, src)
     sio_down_tests(g, src)
+    pcie_down_tests(g, src)
     with tempfile.TemporaryDirectory() as tmp:
         ppath = os.path.join(tmp, "nvmem")
 
@@ -1357,7 +1358,7 @@ def cluster_ack_tests(g, src):
     # 0x31-0x37 and 0x39 for hold=1's stop requests, 0x4e before the commit, wd2_bite=1's two after it; and fabric_up=1's and
     # gates_mark=1's in place of those three.
     check(g["ACK_EARLY"] == (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39)
-          and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53, 0x4b, 0x54, 0x55, 0x3d, 0x3e, 0x3f)
+          and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53, 0x4b, 0x54, 0x55, 0x3d, 0x3e, 0x3f, 0x1d, 0x1e, 0x1f)
           and "b[0] = 0x28;" in after and "m1_stage((hold ? 0x31 : pmgr_late ? 0x29 : 0x21) + i);" in after
           and "b[0] = hold ? 0x39 : pmgr_late ? 0x38 : 0x30;" in after and "b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;" in after
           and "else if (!recfg_bite && !wd2_bite)\n\t\t\tm1_stage(sio_stop ? 0x4f : 0x5b);" in after
@@ -1610,8 +1611,9 @@ def mark_tests(g, src):
     # counted, in the whole file and in the replay's own function. A new one changes the count, and has to be accounted for here.
     after_code = re.sub(r"/\*.*?\*/", "", after, flags=re.S)
     # 48 since the probe (probe_tests() has its six: SIO_CPU's table word twice, SIO's RUN, ANS2 up and back, the PMP's RUN).
-    check(len(re.findall(wr, code_only)) == 51 and len(re.findall(wr, after_code)) == 11,
-          "e1_hook.c makes 51 MMIO write calls, 11 of them in m1_after_slpa() itself: none has been added without this count",
+    # 53 since pcie_down=1 (pcie_down_tests() has its two: the three _SYS words' 0, and APCIE_ST's and APCIE_GP's).
+    check(len(re.findall(wr, code_only)) == 53 and len(re.findall(wr, after_code)) == 11,
+          "e1_hook.c makes 53 MMIO write calls, 11 of them in m1_after_slpa() itself: none has been added without this count",
           f"{len(re.findall(wr, code_only))} {len(re.findall(wr, after_code))}")
     check("\tif (!m1_fab_awake(v)) {\n\t\tpr_err(" in cut("static int __init m1_fab_init(void)", "\n}\n")
           and "if (e1_never_write(FAB_PS)) {" in src and "m1_never(WD1_WDT + WD1_COUNT, 1) || m1_never(WD1_WDT + WD1_BITE, 1) || m1_never(WD1_WDT + WD1_CTRL, 1)" in src,
@@ -1802,20 +1804,20 @@ def gates_mark_tests(g, src):
     # Step 8: after stage 0x4b's command and the outcomes, the reads, dsb and isb, then the byte, all before step 9's mask and the commit.
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
     check(in_order_of(after, ["\t\tb[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;\n"
-                              "\t\tif (gates_mark)\n\t\t\tb[0] = gates_stage(b[0]);\n\t\tif (sio_down)\n\t\t\tb[0] = siod_stage(b[0]);\n\t\tb[1] = parked",
+                              "\t\tif (gates_mark)\n\t\t\tb[0] = gates_stage(b[0]);\n\t\tif (sio_down)\n\t\t\tb[0] = siod_stage(b[0]);\n\t\tif (pcie_down)\n\t\t\tb[0] = pcd_stage(b[0]);\n\t\tb[1] = parked",
                               "\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n",
-                              "\tif (gates_mark && !sio_down) {\n\t\tu32 g[GATES_N], lane;\n\n\t\tm1_gates_read(g, &lane);\n\t\tdsb(sy);\n\t\tisb();\n"
+                              "\tif (gates_mark && !sio_down && !pcie_down) {\n\t\tu32 g[GATES_N], lane;\n\n\t\tm1_gates_read(g, &lane);\n\t\tdsb(sy);\n\t\tisb();\n"
                               "\t\tm1_gates = gates_byte(g, lane);\n\t\tm1_crumb(GATES_AT, &m1_gates, 1);\n\t}\n",
                               "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_gates_read(") == 1 and len(re.findall(r"\bm1_gates_read\(", code_only)) == 4
-          and re.findall(r"\bm1_gates\s*=[^=;]*;", code_only) == ["m1_gates = gates_byte(g, lane);", "m1_gates = m1_sio_down();"] and len(re.findall(r"\bgates_stage\(", code_only)) == 2,
+          and re.findall(r"\bm1_gates\s*=[^=;]*;", code_only) == ["m1_gates = gates_byte(g, lane);", "m1_gates = m1_sio_down();", "m1_gates = m1_pcie_down();"] and len(re.findall(r"\bgates_stage\(", code_only)) == 2,
           "step 8 sends stage 0x4b in 0x52's place, then the outcomes, then reads the seven words and sends their byte, SError still unmasked,"
-          " before the commit, and not with sio_down=1, whose own byte is the only other thing that sets it; the stage is mapped in two places", after[-4000:])
+          " before the commit, and not with sio_down=1 or pcie_down=1, whose own bytes are the only other things that set it; the stage is mapped in two places", after[-4000:])
     alarm_fn = cut("static void m1_alarm_arm(const u8 *rtc)", "\n}\n")
     wout = cut("static void m1_wd2_out(void)", "\n}\n")
     check("done:\n\tm1_crumb(0x6016, gates_mark ? &m1_gates : &res, 1);\n}" in alarm_fn and alarm_fn.count("m1_crumb(") == 1
           and in_order_of(wout, ["\telse\n\t\tb[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;\n",
-                                 "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tb[1] = m1_wd2_sample("]),
+                                 "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tb[1] = m1_wd2_sample("]),
           "after the commit: the alarm's one command to the PMU sends the gate byte in its result's place, and the last stage is the run's own",
           alarm_fn + wout)
     # No register written: no MMIO write names the gate pages, and the count of MMIO writes is mark_tests()' as it was.
@@ -1957,7 +1959,7 @@ def gates_mark_tests(g, src):
         before = fake(path, scratch(0xd5, **lost), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
         check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
-              and "after gates_mark=1's and sio_down=1's stages it never does: it's that run's byte" in r.stderr,
+              and "after gates_mark=1's, sio_down=1's and pcie_down=1's stages it never does: it's that run's byte" in r.stderr,
               "--clear after 0xd5 with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
         before = fake(path, scratch(0xd3, **lost), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
@@ -2445,11 +2447,11 @@ def sio_down_tests(g, src):
           "m1_sio_down() writes 0 to the listed words in one place, the write-back is one function called from one place, and the poll and"
           " the load write nothing")
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
-    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down) {\n",
+    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down) {\n",
                               "\tif (sio_down)\n\t\tm1_gates = m1_sio_down();\n", "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();",
                               "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_sio_down(") == 1 and len(re.findall(r"\bsiod_stage\(", code_only)) == 2
-          and "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tb[1] = m1_wd2_sample(" in src,
+          and "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tb[1] = m1_wd2_sample(" in src,
           "step 8: after the stage and the outcomes, in place of gates_mark=1's reads and before step 9's mask and the commit; its byte is"
           " what the alarm's last command sends; the stage is mapped in two places", after[-4500:])
     params = cut("static int __init e1_check_params(void)", "\n}\n")
@@ -2643,8 +2645,460 @@ def sio_down_tests(g, src):
         before = fake(path, scratch(0xbf, **dict(rec, secs=0, drained=0xbd)), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
         check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
-              and "after gates_mark=1's and sio_down=1's stages it never does: it's that run's byte" in r.stderr,
+              and "after gates_mark=1's, sio_down=1's and pcie_down=1's stages it never does: it's that run's byte" in r.stderr,
               "--clear after 0xbf with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
+
+
+PCD_HDR = r"""
+#include <stdio.h>
+#include "pcie_down.h"
+int main(void)
+{
+	static const u16 off[] = PCD_OFFS;
+	unsigned int i, p, s;
+	u32 found, now[PCD_SYS_N];
+
+	printf("consts %d %d %d %x %x %x %x", PCD_N, PCD_SYS_N, PCD_GP_SYS, PCD_BUSY, PCD_GATE, PCD_PS_STATE, GATES_AT);
+	for (i = 0; i < sizeof(off) / sizeof(off[0]); i++)
+		printf(" %x", off[i]);
+	printf("\nbits %x %x %x %x %x %x %x %x %x\n", PCD_FOUND_UP, PCD_FOUND_BUSY, PCD_POLL, PCD_DOWN, PCD_ST_OK, PCD_PARENTS, PCD_CLOSED, PCD_MARK,
+	       PCD_SECOND);
+	printf("stages %x %x %x\n", M1_PCD_STAGE_PRE, M1_PCD_STAGE, M1_PCD_STAGE_PEND);
+	for (s = 0; s < 256; s++)
+		printf("st %x %x\n", s, pcd_stage((u8)s));
+	while (scanf("%x %x %x %x %x %x", &found, &now[0], &now[1], &now[2], &p, &s) == 6)
+		printf("b %x\n", pcd_byte(found, now, (u8)p, (u8)s));
+	return 0;
+}
+"""
+# m1_pcie_down() and the poll it calls, as they stand, against a model of the first power page and the second gate page that logs
+# every read, write and PMU byte. The scenario is argv[1], letters: b APCIE_GP_SYS keeps bit 11 after its 0; l it keeps it for
+# 30 ms; u its actual state stays f; d its actual state takes 50 ms to drop; f it is found with bit 11 set; g it is found gated,
+# as macOS has it; s APCIE_ST_SYS keeps bit 11; t APCIE_ST1_SYS's actual state stays up; p APCIE_GP's actual state stays f; c the
+# gate 0x28e09c34c closes once APCIE_GP_SYS and APCIE_GP read off.
+PCD_FN_PRELUDE = r"""
+#include <stdio.h>
+#include <string.h>
+#include "pcie_down.h"
+typedef uint64_t u64;
+#define __iomem
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define static_assert(...) _Static_assert(__VA_ARGS__, "")
+#define BIT(n) (1U << (n))
+#define dsb(x) do { } while (0)
+#define isb() do { } while (0)
+#define cpu_relax() do { } while (0)
+static unsigned char ps_page[0x4000], gb_page[0x4000];
+static void *m1_ps = ps_page, *m1_look_gb = gb_page;
+static const char *sc;
+static u64 clk, m1_tps = 24000000, gp_sys_at;
+static int gp_sys_written;
+static u32 word[0x400 / 4];
+/* Every look at the clock is 1 ms on. */
+static u64 m1_now(void) { return clk += m1_tps / 1000; }
+static int has(char c) { return strchr(sc, c) != NULL; }
+static u32 ps_read(unsigned long o)
+{
+	u32 v = word[o / 4];
+
+	if (o == 0x320 && gp_sys_written) {
+		if (has('l') && clk < gp_sys_at + 30 * m1_tps / 1000)
+			v |= 0x800;
+		if (has('d') && clk < gp_sys_at + 50 * m1_tps / 1000)
+			v |= 0xf0;
+	}
+	return v;
+}
+static u32 readl(const void *p)
+{
+	const unsigned char *c = p;
+	unsigned long o;
+	u32 v;
+
+	if (c >= ps_page && c < ps_page + sizeof(ps_page)) {
+		o = (unsigned long)(c - ps_page);
+		v = o < 0x400 ? ps_read(o) : 0xdead0000;
+		printf("r P %lx %x\n", o, v);
+		return v;
+	}
+	o = (unsigned long)(c - gb_page);
+	v = 0x8004030e;
+	if (o == 0x34c && has('c') && !(ps_read(0x320) & 0xff) && !(ps_read(0x150) & 0xff))
+		v |= GATE_CLOSED;
+	printf("r B %lx %x\n", o, v);
+	return v;
+}
+static void writel(u32 v, void *p)
+{
+	unsigned long o = (unsigned long)((unsigned char *)p - ps_page);
+	u32 was;
+
+	printf("w P %lx %x\n", o, v);
+	if (o >= 0x400)
+		return;
+	was = word[o / 4];
+	/* The settings as written, the actual state following the target, bit 11 clear, the two flags kept. */
+	word[o / 4] = (v & 0x1f00000f) | ((v & 0xf) << 4) | (was & 0x300);
+	if (o == 0x320) {
+		gp_sys_at = clk;
+		gp_sys_written = 1;
+		if (has('b'))
+			word[o / 4] |= 0x800;
+		if (has('u'))
+			word[o / 4] |= 0xf0;
+	}
+	if (has('s') && o == 0x2e8)
+		word[o / 4] |= 0x800;
+	if (has('t') && o == 0x2f0)
+		word[o / 4] |= 0x40;
+	if (has('p') && o == 0x150)
+		word[o / 4] |= 0xf0;
+}
+static void m1_crumb(unsigned int addr, const u8 *b, unsigned int n)
+{
+	printf("k %x %u %x\n", addr, n, b[0]);
+}
+"""
+PCD_FN_MAIN = r"""
+int main(int argc, char **argv)
+{
+	static const u16 off[] = PCD_OFFS;
+	unsigned int i;
+	u8 b;
+
+	(void)argc;
+	sc = argv[1];
+	/* As Linux's suspend and ps_words=1 leave them: the two storage words and APCIE_ST off, APCIE_GP_SYS and APCIE_GP on. */
+	word[0x2e8 / 4] = 0x0f000300;
+	word[0x2f0 / 4] = 0x0f000300;
+	word[0x320 / 4] = has('g') ? 0x1000030f : has('f') ? 0x1f0008ff : 0x1f0000ff;
+	word[0x148 / 4] = 0x00000200;
+	word[0x150 / 4] = 0x000000ff;
+	word[0x2d8 / 4] = 0x1f0f03ff;
+	b = m1_pcie_down();
+	printf("ret %x\n", b);
+	for (i = 0; i < ARRAY_SIZE(off); i++)
+		printf("end %x %x\n", off[i], word[off[i] / 4]);
+	printf("end 2d8 %x\n", word[0x2d8 / 4]);
+	return 0;
+}
+"""
+PCD_INIT_PRELUDE = r"""
+#include <stdarg.h>
+#include <stdio.h>
+#include "pcie_down.h"
+typedef uint64_t u64;
+#define __iomem
+#define __init
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define EINVAL 22
+#define ENODEV 19
+#define PAGE_SIZE 0x4000
+#define M1_PMGR_PS 0x28e080000ULL
+#define M1_PS_PMP_RO 0x2d8
+static unsigned char page[0x4000];
+static void *m1_ps, *m1_look_gb;
+static unsigned int nread;
+static u64 never;
+static u32 readl(const void *p) { printf("read %lx\n", (unsigned long)((const unsigned char *)p - page)); return 0x1000 + nread++; }
+static int e1_never_write(u64 addr) { return addr == never; }
+static void pr_err(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("err "); vprintf(fmt, ap); va_end(ap); }
+static void pr_info(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("info "); vprintf(fmt, ap); va_end(ap); }
+"""
+PCD_INIT_MAIN = r"""
+int main(int argc, char **argv)
+{
+	int ret;
+
+	(void)argc;
+	/* argv[1]: two letters, the power page and the gate page mapped (m) or not; argv[2]: an address on the never-write list. */
+	m1_ps = argv[1][0] == 'm' ? page : NULL;
+	m1_look_gb = argv[1][1] == 'm' ? page : NULL;
+	sscanf(argv[2], "%llx", (unsigned long long *)&never);
+	ret = m1_pcd_init();
+	printf("ret %d reads %u\n", ret, nread);
+	return 0;
+}
+"""
+# B2's order, written out a second time: APCIE_ST_SYS, APCIE_ST1_SYS, APCIE_GP_SYS; APCIE_ST, APCIE_GP.
+PCD_ORDER = [0x2e8, 0x2f0, 0x320, 0x148, 0x150]
+
+
+def pcie_down_tests(g, src):
+    """pcie_down=1: pcie_down.h against an independent reading of it; m1_pcie_down() compiled as it stands against a model of the
+    registers that logs every access; m1_pcd_init()'s refusals; the places in e1_hook.c that use them; and the byte, the run's
+    stages and --clear through m1-crumbs."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    def byte(found, now, polls, second):
+        down = [not w & 0xff for w in now]
+        return (0x80 | (1 if found & 0xf0 else 0) | (2 if found & 0x800 else 0) | (4 if polls & 4 else 0) | (8 if down[2] else 0)
+                | (0x10 if polls & 3 == 3 and down[0] and down[1] else 0) | (second & 0x60))
+
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    fns = cut("static bool m1_siod_poll(", "\n}\n") + cut("static u8 m1_pcie_down(void)", "\n}\n")
+    init = cut("static int __init m1_pcd_init(void)", "\n}\n")
+    scen = ("", "c", "b", "l", "u", "d", "f", "g", "s", "t", "p", "cb", "cl", "cu", "cd", "cf", "cg", "cs", "cp", "bu", "bsp", "gc", "fb", "lcd", "st")
+    with tempfile.TemporaryDirectory() as tmp:
+        def build(name, code):
+            c = os.path.join(tmp, name + ".c")
+            with open(c, "w") as f:
+                f.write(code)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(tmp, name), c], check=True)
+            return os.path.join(tmp, name)
+
+        def out(exe, *args):
+            return subprocess.run([exe, *args], capture_output=True, text=True, check=True).stdout.splitlines()
+
+        rnd = random.Random(20261112)
+        words = (0, 0x300, 0x0f000300, 0x800, 0xb00, 0x10, 0xf0, 0x1, 0xf, 0x1f0000ff, 0x1000030f, 0x1f0008ff, 0x10000000, 0x0f000000, 0xffffff00)
+        cases = [(f, [a, b, c], p, s) for f in (0x1f0000ff, 0x1000030f, 0x1f0008ff, 0x800, 0) for a in (0, 0x10) for b in (0, 0x1) for c in (0, 0xf0, 0x800)
+                 for p in range(8) for s in (0, 0x20, 0x40, 0x60, 0xff)]
+        cases += [(rnd.choice(words), [rnd.choice(words) for _ in range(3)], rnd.randrange(256), rnd.randrange(256)) for _ in range(400)]
+        feed = "".join(f"{f:x} {n[0]:x} {n[1]:x} {n[2]:x} {p:x} {s:x}\n" for f, n, p, s in cases)
+        hdr = [l.split() for l in subprocess.run([build("hdr", PCD_HDR)], input=feed, capture_output=True, text=True, check=True).stdout.splitlines()]
+        fn = build("fn", PCD_FN_PRELUDE + fns + PCD_FN_MAIN)
+        runs = {a: out(fn, a) for a in scen}
+        ini = build("ini", PCD_INIT_PRELUDE + init + PCD_INIT_MAIN)
+        loads = {a: out(ini, *a) for a in (("mm", "0"), ("nm", "0"), ("mn", "0"), ("mm", "28e0802d8"), ("mm", "28e080320"), ("mm", "28e080148"),
+                                           ("mm", "28e0802e8"))}
+        bad_lists = {}
+        for what, last in (("ps_pmp's word", 0x2d8), ("a word off its place", 0x154), ("a word past the page", 0x4150)):
+            redef = "#undef PCD_OFFS\n#define PCD_OFFS { 0x2e8, 0x2f0, 0x320, 0x148, " + hex(last) + " }\n"
+            bad_lists[what] = out(build("bad" + hex(last), PCD_INIT_PRELUDE + redef + init + PCD_INIT_MAIN), "mm", "0")
+
+    # The header against a second writing-out of it.
+    consts, bits, stages = hdr[0], hdr[1], hdr[2]
+    st = {int(l[1], 16): int(l[2], 16) for l in hdr if l[0] == "st"}
+    got = [int(l[1], 16) for l in hdr if l[0] == "b"]
+    check(consts == ["consts", "5", "3", "2", "800", "34c", "ff", "6016"] + [f"{o:x}" for o in PCD_ORDER]
+          and bits == ["bits", "1", "2", "4", "8", "10", "20", "40", "80", "60"] and stages == ["stages", "1d", "1f", "1e"],
+          "pcie_down.h: the five words in B2's order, the first three polled for bit 11, APCIE_GP_SYS the third, the gate at 0x34c, the"
+          " byte at 0x6016 with its eight bits, and stages 0x1d, 0x1f and 0x1e", str(hdr[:3]))
+    check(all(st[s] == {0x4b: 0x1d, 0x55: 0x1f, 0x54: 0x1e}.get(s, s) for s in range(256)),
+          "pcd_stage(): 0x1d, 0x1f and 0x1e for gates_mark=1's 0x4b, 0x55 and 0x54, and every other stage as it is")
+    wrong = [(c, hex(b)) for c, b in zip(cases, got) if b != byte(*c)]
+    check(len(got) == len(cases) and not wrong,
+          f"pcd_byte() in {len(cases)} cases: APCIE_GP_SYS as found (its actual state, its bit 11), its poll, its last read, the two storage"
+          " words' polls and reads together, the second send's two bits and no other from its argument, and bit 7 always", str(wrong[:3]))
+    check((g["PCD_PRE"], g["PCD_WD2"], g["PCD_STAGES"]) == (0x1d, (0x1e, 0x1f), (0x1d, 0x1e, 0x1f))
+          and tuple(g[n] for n in ("PCD_FOUND_UP", "PCD_FOUND_BUSY", "PCD_POLL", "PCD_DOWN", "PCD_ST_OK", "PCD_PARENTS", "PCD_CLOSED", "PCD_MARK"))
+          == (1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80)
+          and not set(g["PCD_STAGES"]) & (set(g["GATES_STAGES"]) | set(g["SIOD_STAGES"]) | set(g["SIOD1_STAGES"]) | set(g["POSITION"])
+                                          | set(g["ACK_EARLY"]) | {0x0e, 0x0f}),
+          "m1-crumbs has the byte's fields and the stages as the header has them, and the stages are no other run's")
+
+    # m1_pcie_down() in every scenario: the accesses, in order.
+    for a in scen:
+        ev = [l.split() for l in runs[a]]
+        acc = [(e[0], e[1], int(e[2], 16), int(e[3], 16)) for e in ev if e[0] in "rw"]
+        ws = [(i, e[2], e[3]) for i, e in enumerate(acc) if e[0] == "w"]
+        ks = [(i, int(e[1], 16), int(e[2]), int(e[3], 16)) for i, e in enumerate(ev) if e[0] == "k"]
+        wi = [i for i, e in enumerate(ev) if e[0] == "w"]
+        ret = int([e for e in ev if e[0] == "ret"][0][1], 16)
+        end = {int(e[1], 16): int(e[2], 16) for e in ev if e[0] == "end"}
+        found = 0x1000030f if "g" in a else 0x1f0008ff if "f" in a else 0x1f0000ff
+        gp_down = "u" not in a
+        polls = (0 if "s" in a else 1) | 2 | (0 if "b" in a else 4)
+        now1 = [0x800 if "s" in a else 0, 0x40 if "t" in a else 0, (0x800 if "b" in a else 0) | (0xf0 if "u" in a or "d" in a else 0)]
+        now2 = now1[:2] + [(0x800 if "b" in a else 0) | (0 if gp_down else 0xf0)]
+        closed = "c" in a and gp_down and "p" not in a
+        second = (0 if "p" in a else 0x20) | (0x40 if closed else 0)
+        want1, want2 = byte(found, now1, polls, 0), byte(found, now2, polls, second)
+        gate = [e for e in acc if e[1] == "B"]
+        first_reads = [e for e in acc[:acc.index(("w", "P", 0x2e8, 0))]]
+        ok = (first_reads == [("r", "P", 0x320, found)]
+              and [(o, v) for _, o, v in ws] == [(o, 0) for o in PCD_ORDER]
+              and [(k[1], k[2], k[3]) for k in ks] == [(0x6016, 1, want1), (0x6016, 1, want2)] and ret == want2
+              and wi[2] < ks[0][0] < wi[3] and wi[4] < ks[1][0]
+              and all(e[2] in PCD_ORDER for e in acc if e[1] == "P") and all(e[2] == 0x34c and e[0] == "r" for e in gate)
+              and 1 <= len(gate) <= 102 and (len(gate) < 60) == closed and bool(gate[-1][3] & 0x40000000) == closed
+              and not any(e[3] & 0x40000000 for e in gate[:-1])
+              and all(i > wi[4] for i, e in enumerate(ev) if e[0] == "r" and e[1] == "B")
+              and len([e for e in acc if e[1] == "P" and e[0] == "r"]) <= 1 + 3 * 102 + 3 + 2 * 102 + 1
+              and end[0x2d8] == 0x1f0f03ff and all(not end[o] & 0x1f00000f for o in PCD_ORDER))
+        check(ok, f"m1_pcie_down(), scenario '{a}': APCIE_GP_SYS read as found; 0 to the three _SYS words in B2's order, each polled for bit 11,"
+              " and the byte; 0 to APCIE_ST and APCIE_GP, the gate polled, the byte again with its last two bits; five writes, each a 0,"
+              " nothing written back, ps_pmp's word untouched", "\n".join(runs[a][:12]) + f"\nwant {want1:x} {want2:x}")
+    check(int(runs[""][-7].split()[1], 16) == 0xbd and int(runs["c"][-7].split()[1], 16) == 0xfd and int(runs["b"][-7].split()[1], 16) == 0xb9 and int(runs["bu"][-7].split()[1], 16) == 0xb1
+          and int(runs["g"][-7].split()[1], 16) == 0xbc and int(runs["f"][-7].split()[1], 16) == 0xbf and int(runs["u"][-7].split()[1], 16) == 0xb5
+          and int(runs["d"][-7].split()[1], 16) == 0xbd and [l for l in runs["d"] if l.startswith("k ")][0].split()[3] == "95",
+          "m1_pcie_down(): 0xbd if the 0 takes with the gate open and 0xfd closed; 0xb9 with bit 11 latched, 0xb1 if the word is up too; 0xb5 with the word up alone;"
+          " a word that drops late is up in the first send and off in the second", str({a: runs[a][-7] for a in ("", "c", "b", "bu", "g", "f", "u", "d")}))
+
+    # The source: what the function writes, and nothing else like it.
+    body = cut("static u8 m1_pcie_down(void)", "\n}\n")
+    wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
+    check(re.findall(wr + r"[^;]*;", body) == ["writel(0, m1_ps + off[i]);", "writel(0, m1_ps + off[i]);"] and not re.search(wr, init)
+          and len(re.findall(r"\bm1_pcie_down\(", code_only)) == 2 and not re.search(r"\bm1_sio\b", body) and "m1_look_ga" not in body
+          and body.count("for (i = 0; i < PCD_SYS_N; i++)\n\t\twritel(0, m1_ps + off[i]);") == 1
+          and body.count("for (i = PCD_SYS_N; i < PCD_N; i++)\n\t\twritel(0, m1_ps + off[i]);") == 1,
+          "m1_pcie_down() writes 0 to the listed words in two places, the three and then the two, and nothing else; the load writes nothing")
+    check(all(t in src for t in ("M1_PMGR_PS + PCD_ST_SYS == 0x28e0802e8ULL", "M1_PMGR_PS + PCD_ST1_SYS == 0x28e0802f0ULL",
+                                 "M1_PMGR_PS + PCD_GP_SYS_OFF == 0x28e080320ULL", "M1_PMGR_PS + PCD_ST == 0x28e080148ULL",
+                                 "M1_PMGR_PS + PCD_GP == 0x28e080150ULL", "PCD_GP_SYS_OFF != M1_PS_PMP_RO", "PCD_ST_SYS != M1_PS_PMP_RO",
+                                 "PCD_ST1_SYS != M1_PS_PMP_RO", "PCD_ST != M1_PS_PMP_RO", "PCD_GP != M1_PS_PMP_RO",
+                                 "LOOK_GATE_B + PCD_GATE == 0x28e09c34cULL"))
+          and "#define PCD_OFFS\t\t{ PCD_ST_SYS, PCD_ST1_SYS, PCD_GP_SYS_OFF, PCD_ST, PCD_GP }\n" in open(os.path.join(os.path.dirname(HOOK), "pcie_down.h")).read(),
+          "the five addresses and the gate's are pinned at build time, each word's offset against ps_pmp's, and the list is made of those five names")
+    after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
+    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down) {\n",
+                              "\tif (sio_down)\n\t\tm1_gates = m1_sio_down();\n", "\tif (pcie_down)\n\t\tm1_gates = m1_pcie_down();\n",
+                              "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
+          and after.count("m1_pcie_down(") == 1 and len(re.findall(r"\bpcd_stage\(", code_only)) == 2,
+          "step 8: after the stage and the outcomes, in place of gates_mark=1's reads and before step 9's mask and the commit; its byte is"
+          " what the alarm's last command sends; the stage is mapped in two places", after[-4500:])
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    check("static bool pcie_down;\nmodule_param(pcie_down, bool, 0444);\n" in src and not re.search(r"\bpcie_down\s*=[^=]", code_only)
+          and in_order_of(params, ["\tif (pcie_down && (!gates_mark || sio_down || probe)) {\n\t\tpr_err(", "\t\treturn -EINVAL;\n\t}\n", "\treturn 0;\n\nbad_wait:"])
+          and 'pcie_down ? " pcie_down=1" : ""' in src
+          and in_order_of(src, ["\tif (gates_mark) {\n\t\tint ret = m1_gates_init();", "\tif (pcie_down) {\n\t\tint ret = m1_pcd_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"]),
+          "pcie_down=1 loads only with gates_mark=1 and never with sio_down=1 or probe=1; it's off by default, read-only, named in the load"
+          " line, and the load runs m1_pcd_init() after the gate pages are mapped and returns its refusal", params[-1500:])
+
+    # m1_pcd_init(): the five and the gate read once each and logged; refused, with nothing read, if a page isn't mapped, a word is on
+    # the never-write list, or the list has ps_pmp's word, one off its place or one past the page.
+    ok = loads[("mm", "0")]
+    check(ok[-1] == "ret 0 reads 6" and [r for r in ok if r.startswith("read ")] == [f"read {o:x}" for o in PCD_ORDER + [0x34c]]
+          and len([r for r in ok if r.startswith("info m1: pcie_down: awake: APCIE_ST_SYS 00001000 APCIE_ST1_SYS 00001001 APCIE_GP_SYS 00001002"
+                                                 " APCIE_ST 00001003 APCIE_GP 00001004; gate 0x28e09c34c 00001005")]) == 1
+          and not any(r.startswith("err") for r in ok),
+          "m1_pcd_init(): the five words and the gate read once each, in B2's order, and logged", "\n".join(ok))
+    check(all(loads[(m, "0")][-1] == "ret -19 reads 0" for m in ("nm", "mn"))
+          and all(loads[("mm", n)][-1] == "ret -22 reads 0" for n in ("28e080320", "28e080148", "28e0802e8"))
+          and loads[("mm", "28e0802d8")][-1] == "ret 0 reads 6"
+          and all(v[-1] == "ret -22 reads 0" and any(r.startswith("err m1: pcie_down:") for r in v) for v in bad_lists.values()),
+          "m1_pcd_init(): refuses, reading nothing, if a page isn't mapped, one of the five is on the never-write list, or the list has"
+          " ps_pmp's word, a word off its place or one past the page", str(loads) + str(bad_lists))
+
+    # m1-crumbs. The run's record at its last stage, all as meant, with its byte at 0x6016.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+        alarm = (0x41, 121544 + 3600, 0, 0)
+        rec = dict(parked=0x7d, left=0, down=0xf5, secs=121544, prog=(0xff, 0xff), flags=0x90, isrs=0x8d)
+
+        def dec(stage, gb, x=217, **kw):
+            fake(path, scratch(stage, **dict(rec, drained=gb, **kw)), rtc_secs=121544 + x + 40, alarm=alarm)
+            r = run(path, cnt="960000000 24000000")
+            return r.returncode, r.stdout, r.stderr
+
+        rc, out_, err = dec(0x9f, 0xbd, x=90)
+        check(rc == 0 and "stage 0x6004 = 0x9f (pmp_out=1: bit 7, so the stage is 0x1f) (pmgr_late=1): pcie_down=1: gates_mark=1's 0x55:" in out_
+              and "0x6016 = 0xbd: pcie_down=1's byte, in place of the alarm's result:" in out_
+              and "  APCIE_GP_SYS (0x28e080320) as found, before any 0: actual state not 0: up, as both looks had it; bit 11 clear\n" in out_
+              and "  APCIE_GP_SYS after its 0 (B2's op 143), polled as B2's op 146 polls it: bit 11 read clear within 100 ms\n" in out_
+              and "  APCIE_GP_SYS at this send's last read: target and actual state 0: off\n" in out_
+              and "  APCIE_ST_SYS and APCIE_ST1_SYS (0x28e0802e8, 0x28e0802f0; B2's ops 141, 142, 144, 145): both polls met, both off\n" in out_
+              and "  APCIE_ST and APCIE_GP (0x28e080148, 0x28e080150; B2's ops 147, 148) within 100 ms of their 0: both read target 0 and actual state 0\n" in out_
+              and "  0x28e09c34c (B2's op 156) within 100 ms after that: bit 30 clear, open" in out_
+              and "  so: APCIE_GP_SYS went off cleanly with B2's own 0" in out_ and "nothing records the commit" not in out_
+              and "alarm command" not in out_ and "gates_mark=1's byte" not in out_ and "sio_down=1's byte" not in out_
+              and "0x6007 = 0xf5: fabric_up=1's byte, in place of the cores that held:\n" in out_ and "WD1 stood as the marker" in out_
+              and "0x6005 = 0x7d: wd2_bite=1, after the commit, the alarm and the release:\n" in out_
+              and "0x6013 = 0xff: ps_words=1 wrote the 20 power words" in out_
+              and "  wd1_mark=1's marker: about 90 s is what WD1 gives with its count never zeroed: B2 didn't reach its op 224" in out_
+              and "0x140c is the commit's second + 3600, as the run wrote it" in out_,
+              "pcie_down=1's 0x9f: its byte read line by line in the alarm's result's place; the rest read as --m1-gates' 0xd5", out_ + err)
+        rc5, out5, err5 = dec(0xd5, 0xbd)
+        rcc, outc, errc = dec(0x9f, 0xbd)
+        skip = ("0x6000:", "0x6010:", "stage 0x6004", "0x6016", "  0x28e", "  AFNC2", "  so: ", "  APCIE", "  the other four")
+        missing = [l for l in out5.splitlines() if not l.startswith(skip) and l not in outc.splitlines()]
+        check(rc5 == 0 and rcc == 0 and "gates_mark=1's byte" in out5 and "pcie_down=1's byte" not in out5 and not missing,
+              "0xbd at 0x6016: the gate byte under 0xd5, pcie_down=1's under 0x9f, and nothing else read differently", "\n".join(missing))
+        rc, out_, err = dec(0x9e, 0xfd)
+        check(rc == 0 and "so the stage is 0x1e" in out_ and "pcie_down=1: gates_mark=1's 0x54:" in out_ and "pending afterwards" in out_
+              and "bit 30 SET, closed" in out_ and "  wd1_mark=1's marker: not read. CPU0 had an exception pending" in out_,
+              "pcie_down=1's 0x9e: the pending stage, its byte, and no reading of the time", out_ + err)
+        rc, out_, err = dec(0x9f, 0xb1, x=90)
+        check(rc == 0 and "bit 11 STAYED SET for 100 ms" in out_ and "target and actual state NOT both 0: NOT OFF" in out_
+              and "  so: THE 0 DIDN'T TAKE CLEANLY ON APCIE_GP_SYS, with the PCIe ports live behind it: bit 11 stayed set, the word didn't read off," in out_
+              and "The ports' stop before the 0" in out_ and "went off cleanly" not in out_,
+              "pcie_down=1's 0xb1: bit 11 latched and the word still up, said as the latch, with the ports' stop as the next build", out_ + err)
+        rc, out_, err = dec(0x9d, 0x9d, x=90, parked=0xfe)
+        check(rc == 0 and "so the stage is 0x1d" in out_ and "8 (pcie_down=1): gates_mark=1's 0x4b, with the PCIe power words switched off" in out_
+              and "parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out_
+              and "  APCIE_ST, APCIE_GP and the gate 0x28e09c34c: not in this byte." in out_
+              and "  stage 0x1d, so nothing records the commit after this byte (0x1e or 0x1f comes after it)" in out_
+              and "  wd1_mark=1's marker: not read. Stage 0x1d is the last before the commit" in out_,
+              "pcie_down=1's 0x9d with the byte's first send: the stage before the commit, the last two bits not read, no reading of the time",
+              out_ + err)
+        for x in (10, 90):
+            rc, out_, err = dec(0x9d, 0, x=x, parked=0xfe)
+            check(rc == 0 and "0x6016 = 0x00: PCIE_DOWN'S BYTE DIDN'T LAND (bit 7 clear), though stage 0x1d and the steps' outcomes did" in out_
+                  and "bit 30" not in out_ and "APCIE_GP_SYS (0x28e080320) as found" not in out_ and "so: APCIE" not in out_ and "so: THE 0" not in out_
+                  and f"the SoC restarted about {x} s after the commit" in out_,
+                  f"pcie_down=1's 0x9d with 0x6016 = 0, a restart at {x} s: said to have stopped in the switch-off", out_ + err)
+        for stage, gb, kw, want in ((0x9f, 0x00, {}, "0x6016 = 0x00: bit 7 is clear, so pcie_down=1's byte didn't survive the reset"),
+                                    (0x9e, 0x7f, {}, "0x6016 = 0x7f: bit 7 is clear"),
+                                    (0x9f, 0xbd, dict(prog=(0xff, 0x00)), "0x6016 = 0xbd: not read. pcie_down=1's byte goes out after the steps' outcomes"),
+                                    (0x1f, 0xbd, {}, "0x6016 = 0xbd: not read. A pcie_down=1 run's stages always carry pmp_out=1's bit 7")):
+            rc, out_, err = dec(stage, gb, **kw)
+            check(rc == 0 and want in out_ and "bit 30" not in out_ and "PCIE_DOWN'S BYTE" not in out_ and "alarm command" not in out_
+                  and "APCIE_GP_SYS (0x28e080320) as found" not in out_ and "so: APCIE" not in out_ and "so: THE 0" not in out_,
+                  f"stage 0x{stage:02x}, 0x6016 = 0x{gb:02x}{', no outcomes marker' if kw.get('prog') else ''}: pcie_down=1's byte isn't read", out_ + err)
+        # Every byte, at each of the run's stages, read independently of the decoder.
+        wrong = []
+        for s in (0x1d, 0x1e, 0x1f):
+            for v in range(256):
+                b = bytearray(0x20)
+                b[0x12], b[0x13], b[0x16] = 0xc0, 0xff, v
+                lines = g["pcd_lines"](s, bytes(b), True)
+                text = "\n".join(lines)
+                so = [l for l in lines if l.startswith("  so: ")]
+                if not v & 0x80:
+                    ok = len(lines) == 1 and not so and ("DIDN'T LAND" in text) == (s == 0x1d) and ("Not read" in text) == (s != 0x1d)
+                else:
+                    first = s == 0x1d and not v & 0x60
+                    ok = (len(so) == 1 and "pcie_down=1's byte" in lines[0]
+                          and ("not 0: up" in lines[1]) == bool(v & 1) and ("ALREADY DOWN OR GATED" in lines[1]) == (not v & 1)
+                          and ("BIT 11 ALREADY SET" in lines[1]) == bool(v & 2) and ("bit 11 clear" in lines[1]) == (not v & 2)
+                          and ("read clear within 100 ms" in lines[2]) == bool(v & 4) and ("STAYED SET" in lines[2]) == (not v & 4)
+                          and ("0: off" in lines[3]) == bool(v & 8) and ("NOT OFF" in lines[3]) == (not v & 8)
+                          and ("both polls met, both off" in lines[4]) == bool(v & 0x10) and ("A POLL UNMET" in lines[4]) == (not v & 0x10)
+                          and ("not in this byte" in text) == first
+                          and (first or (("both read target 0 and actual state 0" in lines[5]) == bool(v & 0x20)
+                                         and ("SET, closed" in lines[6]) == bool(v & 0x40) and ("clear, open" in lines[6]) == (not v & 0x40)))
+                          and ("BEFORE ANYTHING HERE WROTE IT" in so[0]) == bool(v & 2)
+                          and ("DIDN'T TAKE CLEANLY" in so[0]) == (not v & 2 and v & 0xc != 0xc)
+                          and ("one of the two storage words didn't" in so[0]) == (not v & 2 and v & 0xc == 0xc and not v & 0x10)
+                          and ("went off cleanly with B2's own 0" in so[0] and "about 120 s" in so[0]) == (v & 0x1e == 0x1c)
+                          and ("nothing records the commit" in text) == (s == 0x1d)
+                          and "SIO's firmware isn't shown stopped" not in text)
+                if not ok:
+                    wrong.append((hex(s), hex(v), lines))
+            b = bytearray(0x20)
+            b[0x12], b[0x13], b[0x16] = 0x40, 0xff, 0xbd
+            if sum("SIO's firmware isn't shown stopped" in l for l in g["pcd_lines"](s, bytes(b), True)) != 1:
+                wrong.append((hex(s), "SIO's firmware not stopped: not said"))
+            b[0x12] = 0xc0
+            if "not read" not in g["pcd_lines"](s, bytes(b), False)[0] or len(g["pcd_lines"](s, bytes(b), False)) != 1:
+                wrong.append((hex(s), "no pmp_out=1 bit"))
+        check(not wrong, "pcie_down=1: for every byte at each of its stages: each line follows its bit; one verdict, which is the latch if"
+              " bit 11 was set as found, stayed set or the word stayed up, and a clean switch-off only with all three clear of that and"
+              " the storage words off; the first send's last two bits aren't read; nothing is read from a byte without bit 7", str(wrong[:2]))
+        mr = g["mark_reading"]
+        wrong = [(hex(v), x) for v in range(256) for x in (60, 88, 90, 105, 120, 123, 135, 146, 150, 163, 300)
+                 if mr(x, 0x1d, v) != mr(x, 0x4b, v).replace("Stage 0x4b", "Stage 0x1d") or mr(x, 0x1e, v) != mr(x, 0x54, v)
+                 or mr(x, 0x1f, v) != mr(x, 0x55, v)]
+        check(not wrong and "Stage 0x1d is the last before the commit" in mr(90, 0x1d, 0x7d),
+              "the restart's time is read against the marker at 0x1d, 0x1e and 0x1f exactly as at 0x4b, 0x54 and 0x55", str(wrong[:3]))
+        # --clear: the run's alarm disarmed by its compare value; with the second lost, 0x6016 is never taken for the alarm's result.
+        for stage, kw in ((0x9f, {}), (0x9e, {}), (0x9d, dict(parked=0xfe))):
+            before = fake(path, scratch(stage, **dict(rec, drained=0xbd, **kw)), rtc_secs=121761, alarm=alarm)
+            r = run(path, "--clear", cnt="4800000000 24000000")
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and open(path, "rb").read() == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                  f"--clear after pcie_down=1's 0x{stage:02x}: the run's alarm disarmed by its compare value, and the crumbs zeroed", r.stdout + r.stderr)
+        before = fake(path, scratch(0x9f, **dict(rec, secs=0, drained=0xbd)), rtc_secs=121761, alarm=alarm)
+        r = run(path, "--clear", cnt="4800000000 24000000")
+        check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
+              and "after gates_mark=1's, sio_down=1's and pcie_down=1's stages it never does: it's that run's byte" in r.stderr,
+              "--clear after 0x9f with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
 
 
 PROBE_HDR = r"""
@@ -4828,7 +5282,7 @@ def position_tests(g, src):
                   f"cluster_ack=1 with 0x6006 and 0x6007 both 0 (0x6014 = 0x{flags:02x}): no word is said to have read 0", out + err)
         rc, out, err = dec(0xd7, dict(ack15, flags=0xa0))
         UNREAD = ("  0x6014's bits 4 and 5 are cluster_ack=1's alone in a sio_stop=1 run: bit 5 only with bit 4, and only at that run's stages (0x4e, 0x56, 0x57,"
-                  " or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, or sio_down=1's 0x3d, 0x3e, 0x3f, with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
+                  " or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, or sio_down=1's 0x3d, 0x3e, 0x3f, or pcie_down=1's 0x1d, 0x1e, 0x1f, with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
         check(rc == 0 and "0x6014 bit 4 (cluster_ack=1)" not in out and UNREAD in out,
               "bit 5 without the mark in a sio_stop=1 record: called out, and not read as cluster_ack=1's", out + err)
         # Stages no cluster_ack=1 run sends (0x4f, and recfg_bite=1's), and a stage without pmp_out=1's bit: the mark isn't read there.
@@ -4839,7 +5293,7 @@ def position_tests(g, src):
                   f"stage 0x{stage:02x} with 0x6014 = 0x90: not a cluster_ack=1 run's stage, so the mark isn't read and the bits are called unreadable", out + err)
         # The mark's byte lost (bit 7 clear), or a stage before it was sent: 0x6006's cluster bits can't be read either way, and it says so,
         # whether or not one is set.
-        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1, 0x3d with sio_down=1){}."
+        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1, 0x3d with sio_down=1, 0x1d with pcie_down=1){}."
                   " In one, bits 2-5 are the cluster words whose flag stayed, not the waits on bit 4 that timed out)\n")
         for stage in (0xce, 0xd6, 0xd7):
             for left in (0x04, 0x00):
@@ -5397,7 +5851,7 @@ def position_tests(g, src):
     # recfg_bite=1: the module reads, and never writes, the SRAM; the sample goes out once, after the release, in one command with its stage.
     tool = open(TOOL).read()
     check("#define M1_RECFG_STAGE\t\t0x47" in src and "#define M1_RECFG_STAGE_PEND\t0x46" in src and "RECFG_STAGES = (0x46, 0x47)\n" in tool
-          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f),
+          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f),
           "recfg_bite=1's stages are 0x46 and 0x47 in the module and in m1-crumbs, with sio_stop=1's stages")
     uses = [l for l in src.splitlines() if re.search(r"\bm1_recfg\b", l)]
     literals = [int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", src)]
@@ -5457,8 +5911,8 @@ def position_tests(g, src):
           " after it, and returns their refusals")
 
     # wd2_bite=1: one write to WD2, its bite, by CPU0 after the release, and only if WD2 showed RESET_EN; the sample in one command with its stage.
-    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2\n" in tool
-          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f) and g["WD2_PEND"] == (0x56, 0x51, 0x54, 0x3e),
+    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2\n" in tool
+          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f) and g["WD2_PEND"] == (0x56, 0x51, 0x54, 0x3e, 0x1e),
           "wd2_bite=1's stages are 0x56 and 0x57 in the module and in m1-crumbs, with recfg_bite=1's as the stages whose 0x6005 is a sample")
     wout = src[src.index("static void m1_wd2_out(void)"):]
     wout = wout[:wout.index("\n}\n")]

@@ -2,9 +2,9 @@
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
 --m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words,
---m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark, --m1-gates or --m1-sio-down; e1_hook m1=1, observe=1, pmgr_late=1,
+--m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark, --m1-gates, --m1-sio-down or --m1-pcie-down; e1_hook m1=1, observe=1, pmgr_late=1,
 alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1, one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1,
-wd2_bite=1, cluster_ack=1, fabric_up=1, wd1_mark=1, gates_mark=1, sio_down=1) leaves in the PMU, read and decoded, and cleared again. And the
+wd2_bite=1, cluster_ack=1, fabric_up=1, wd1_mark=1, gates_mark=1, sio_down=1, pcie_down=1) leaves in the PMU, read and decoded, and cleared again. And the
 three bytes e1-hook/probe (probe=1) leaves, which isn't a run: stage 0x0e.
 
   e1-hook/m1-crumbs               read them (no root needed)
@@ -81,11 +81,17 @@ SIOD_PRE = 0x3d
 SIOD1_STAGES = (0x3a, 0x3b, 0x3c)
 SIOD_WD2 = (0x3e, 0x3f)
 SIOD_STAGES = (SIOD_PRE,) + SIOD_WD2
-PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE)  # the last stage before the commit, from fabric_up=1 on
-FAB_STAGES = (FAB_PRE,) + FAB_WD2 + GATES_STAGES + SIOD_STAGES
+# pcie_down=1 (run-floor --m1-pcie-down; e1-hook/pcie_down.h has the words, the byte and the stages): gates_mark=1's run with B2's
+# switch-off of the PCIe power words made by CPU0 in step 8, and left, where the gate words' reads were. 0x6016 is its own
+# byte, so its stages are its own: 0x1d for 0x4b, and 0x1e and 0x1f for 0x54 and 0x55.
+PCD_PRE = 0x1d
+PCD_WD2 = (0x1e, 0x1f)
+PCD_STAGES = (PCD_PRE,) + PCD_WD2
+PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE)  # the last stage before the commit, from fabric_up=1 on
+FAB_STAGES = (FAB_PRE,) + FAB_WD2 + GATES_STAGES + SIOD_STAGES + PCD_STAGES
 # wd2_bite=1, the same way: 0x6005 is its own sample (e1_hook's M1_WD2_STAGE_PEND and M1_WD2_STAGE)
-WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2
-WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0])  # CPU0 had an exception pending after its reads
+WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2
+WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0])  # CPU0 had an exception pending after its reads
 SAMPLE_STAGES = RECFG_STAGES + WD2_STAGES  # 0x6005 isn't the parked cores
 SIO_STOP_STAGES = (0x4e, 0x4f) + PRE_STAGES + SAMPLE_STAGES  # sio_stop=1, in place of 0x5a and 0x5b: 0x6012 has the K steps' outcomes
 # alarm=1 (0x59, 0x5f), hold=1 (0x5a-0x5e) and position=1: 0x6016 is the alarm's byte, and the alarm may be armed
@@ -248,6 +254,18 @@ HOLD_TEXT = {
           " armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards, the run's last breadcrumb by design: it then"
           " took its deep WFI, unrecorded",
     0x3e: "sio_down=1: gates_mark=1's 0x54: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2 was"
+          " armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards: that would end its deep"
+          " WFI, so it likely never went down (a write or a read that faulted after the commit would leave an SError pending,"
+          " masked)",
+    0x1d: "8 (pcie_down=1): gates_mark=1's 0x4b, with the PCIe power words switched off after it and left: the steps' outcomes"
+          " (0x6012) follow it, then CPU0 wrote 0 to APCIE_ST_SYS, APCIE_ST1_SYS and APCIE_GP_SYS, polled them, sent its byte"
+          " (0x6016), wrote 0 to APCIE_ST and APCIE_GP, polled the gate 0x28e09c34c and sent the byte again, the last SPMI command"
+          " before the commit; next came nub-spmi0's acks, the first commit, the alarm's commands (the byte again the last of"
+          " them), the release and stage 0x1e or 0x1f",
+    0x1f: "pcie_down=1: gates_mark=1's 0x55: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2 was"
+          " armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards, the run's last breadcrumb by design: it then"
+          " took its deep WFI, unrecorded",
+    0x1e: "pcie_down=1: gates_mark=1's 0x54: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2 was"
           " armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards: that would end its deep"
           " WFI, so it likely never went down (a write or a read that faulted after the commit would leave an SError pending,"
           " masked)",
@@ -956,8 +974,8 @@ GATES_LANE, GATES_MARK = 0x40, 0x80
 
 
 def alarm_res(b, s):
-    """0x6016 as the alarm's result, or None at gates_mark=1's and sio_down=1's stages, whose byte it is there instead."""
-    return None if s in GATES_STAGES + SIOD_STAGES else b[0x16]
+    """0x6016 as the alarm's result, or None at gates_mark=1's, sio_down=1's and pcie_down=1's stages, whose byte it is there instead."""
+    return None if s in GATES_STAGES + SIOD_STAGES + PCD_STAGES else b[0x16]
 
 
 def gates_lines(s, b, pmp):
@@ -1126,6 +1144,76 @@ def siod_lines(s, b, pmp):
     return out
 
 
+# pcie_down=1's byte, pcie_down.h's.
+PCD_FOUND_UP, PCD_FOUND_BUSY, PCD_POLL, PCD_DOWN, PCD_ST_OK, PCD_PARENTS, PCD_CLOSED, PCD_MARK = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80
+
+
+def pcd_lines(s, b, pmp):
+    """pcie_down=1: 0x6016 at the run's stages (e1-hook/pcie_down.h has the layout), read only where the record says it's that
+    byte: the stage has pmp_out=1's bit 7, the steps' outcomes, sent just before the switch-off, landed, and its own bit 7 is set."""
+    v = b[0x16]
+    if not pmp:
+        return [f"0x6016 = 0x{v:02x}: not read. A pcie_down=1 run's stages always carry pmp_out=1's bit 7, and this one doesn't: not a"
+                " record that run leaves"]
+    if not fab_landed(b):
+        return [f"0x6016 = 0x{v:02x}: not read. pcie_down=1's byte goes out after the steps' outcomes, and only if their command didn't"
+                " fail, and their marker isn't at 0x6013: the byte isn't shown to have been sent"]
+    if not v & PCD_MARK and s == PCD_PRE:
+        return [f"0x6016 = 0x{v:02x}: PCIE_DOWN'S BYTE DIDN'T LAND (bit 7 clear), though stage 0x1d and the steps' outcomes did: CPU0 was"
+                " reading APCIE_GP_SYS, writing 0 to the three _SYS words, polling them, or sending the byte, when the record"
+                " stopped. Which of the three were off by then isn't recorded. A read or a write that faulted (its SError panics"
+                " the kernel: a restart about 10 s later, if the panic's restart works), one that never returned (WD1's marker: a"
+                " restart about 90 s after step 4), or the byte's own command failing, after which the run went on with nothing"
+                " more recorded: this record doesn't tell them apart, and the restart's time, below, only in part"]
+    if not v & PCD_MARK:
+        return [f"0x6016 = 0x{v:02x}: bit 7 is clear, so pcie_down=1's byte didn't survive the reset, or isn't the one sent: stage"
+                f" 0x{s:02x} went out after it, and a command that fails stops every one after it. Not read"]
+    first = s == PCD_PRE and not v & (PCD_PARENTS | PCD_CLOSED)
+    out = [f"0x6016 = 0x{v:02x}: pcie_down=1's byte, in place of the alarm's result: CPU0 was to write 0 to the five PCIe power words"
+           " in step 8, as B2 does at its ops 141 to 148, poll as B2 polls, and leave them off for the commit:",
+           "  APCIE_GP_SYS (0x28e080320) as found, before any 0: actual state "
+           + ("not 0: up, as both looks had it" if v & PCD_FOUND_UP else "0: ALREADY DOWN OR GATED, which no look has seen")
+           + ("; BIT 11 ALREADY SET, before B2's 0 or this one" if v & PCD_FOUND_BUSY else "; bit 11 clear"),
+           "  APCIE_GP_SYS after its 0 (B2's op 143), polled as B2's op 146 polls it: bit 11 "
+           + ("read clear within 100 ms" if v & PCD_POLL else "STAYED SET for 100 ms"),
+           "  APCIE_GP_SYS at this send's last read: target and actual state " + ("0: off" if v & PCD_DOWN else "NOT both 0: NOT OFF"),
+           "  APCIE_ST_SYS and APCIE_ST1_SYS (0x28e0802e8, 0x28e0802f0; B2's ops 141, 142, 144, 145): "
+           + ("both polls met, both off" if v & PCD_ST_OK else "A POLL UNMET, OR ONE NOT OFF")]
+    if first:
+        out.append("  APCIE_ST, APCIE_GP and the gate 0x28e09c34c: not in this byte. Stage 0x1d with neither of its last two bits is the"
+                   " first send, or a second send in which neither came out as meant: this record can't tell which")
+    else:
+        out.append("  APCIE_ST and APCIE_GP (0x28e080148, 0x28e080150; B2's ops 147, 148) within 100 ms of their 0: "
+                   + ("both read target 0 and actual state 0" if v & PCD_PARENTS else "NOT both off (B2 doesn't wait for them)"))
+        out.append("  0x28e09c34c (B2's op 156) within 100 ms after that: bit 30 "
+                   + ("SET, closed" if v & PCD_CLOSED else "clear, open (which may only say that the 21 words B2 sets to 1 first"
+                      " weren't moved: RESEARCH.md)"))
+    if not b[0x12] >> 6 == 3:
+        out.append("  (SIO's firmware isn't shown stopped, 0x6012: " + SIO_CODES[b[0x12] >> 6] + ": this run's writes don't depend on"
+                   " it, but the recipe's state does)")
+    if v & PCD_FOUND_BUSY:
+        out.append("  so: BIT 11 WAS SET ON APCIE_GP_SYS BEFORE ANYTHING HERE WROTE IT: the recipe itself leaves the word B2 polls at its"
+                   " op 146 in the state B2 waits on. ps_words=1's write of 0x1000030f is the one write the recipe makes to it (PLAN.md)")
+    elif not v & PCD_POLL or not v & PCD_DOWN:
+        out.append("  so: THE 0 DIDN'T TAKE CLEANLY ON APCIE_GP_SYS, with the PCIe ports live behind it: "
+                   + ("bit 11 stayed set, " if not v & PCD_POLL else "")
+                   + ("the word didn't read off, " if not v & PCD_DOWN else "")
+                   + "which is what B2's own 0 would meet at its ops 143 and 146, where it waits with no way past. The ports' stop"
+                   " before the 0, as T8140's and the M4 Pro's drivers make it, is the next build (PLAN.md). The restart's time says"
+                   " nothing new: B2 was bound to stop there")
+    elif not v & PCD_ST_OK:
+        out.append("  so: APCIE_GP_SYS went off cleanly, but one of the two storage words didn't, which Linux's suspend leaves off"
+                   " already: unexpected, and to be read before anything else (PLAN.md)")
+    else:
+        out.append("  so: APCIE_GP_SYS went off cleanly with B2's own 0, bit 11 clear, in the recipe's state: B2's PCIe step passes as"
+                   " the AP makes it, and B2 found the words already off. The restart's time, below, says whether that was what held"
+                   " B2: about 120 s (WD2's bite) in place of 90 s (WD1's marker) means B2 got past its op 224")
+    if s == PCD_PRE:
+        out.append("  stage 0x1d, so nothing records the commit after this byte (0x1e or 0x1f comes after it): inconclusive about the"
+                   " rest of the entry")
+    return out
+
+
 def ack_lines(f, q, held):
     """cluster_ack=1: 0x6014's bits 4 and 5 with qto's bits 2-5 (e1_hook.c's m1 comment). f has bits 7 and 4 set; held is
     0x6007, sent in one command with qto: non-zero, it shows that command's last bytes landed. It says what the words
@@ -1201,7 +1289,7 @@ def alarm_lines(s, commit, alarm, now, res):
     right = commit is not None and when == commit + ALARM_SECS
     recorded, acked = res is not None and bool(res & 0x80), res in ALARM_ACKED
     # gates_mark=1: the alarm's commands ran as ever, but their result isn't recorded.
-    nores = "this run records no result for the alarm's commands (gates_mark=1's byte, or sio_down=1's, has 0x6016)"
+    nores = "this run records no result for the alarm's commands (gates_mark=1's byte, or sio_down=1's or pcie_down=1's, has 0x6016)"
     if commit is None:
         out.append("  the commit's second isn't known, so 0x140c can't be checked")
     elif right:
@@ -1284,7 +1372,7 @@ def decode(b, rtc, cnt=None, alarm=None):
         ack = bool(b[0x14] & F_ACK) if b[0x14] & 0x80 else None
     else:
         ack = None if pmp and s in ACK_EARLY else False
-    pre = SIOD_PRE if s in SIOD_STAGES else GATES_PRE if s in GATES_STAGES else FAB_PRE  # the run's stage before the commit, for fabric_up=1's byte
+    pre = PCD_PRE if s in PCD_STAGES else SIOD_PRE if s in SIOD_STAGES else GATES_PRE if s in GATES_STAGES else FAB_PRE  # the run's stage before the commit, for fabric_up=1's byte
     ares = alarm_res(b, s)  # 0x6016 as the alarm's result, or None
     out = [
         f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
@@ -1334,7 +1422,7 @@ def decode(b, rtc, cnt=None, alarm=None):
             out.append(f"0x6006 = {qto(b[6], bool(ack))}")
             if ack is None:
                 out.append("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before"
-                           " stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1, 0x3d with sio_down=1)" + (", and that byte didn't survive" if s in ACK_MARKED else "") + ". In one, bits 2-5 are"
+                           " stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1, 0x3d with sio_down=1, 0x1d with pcie_down=1)" + (", and that byte didn't survive" if s in ACK_MARKED else "") + ". In one, bits 2-5 are"
                            " the cluster words whose flag stayed, not the waits on bit 4 that timed out)")
         if base >= 0x30:
             if not late:
@@ -1405,7 +1493,7 @@ def decode(b, rtc, cnt=None, alarm=None):
                 out += ack_lines(f, b[6], b[7])
             elif s in SIO_STOP_STAGES and f & (F_ACK | F_ACK_REST):
                 out.append("  0x6014's bits 4 and 5 are cluster_ack=1's alone in a sio_stop=1 run: bit 5 only with bit 4, and only at"
-                           " that run's stages (0x4e, 0x56, 0x57, or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, or sio_down=1's 0x3d, 0x3e, 0x3f, with pmp_out=1's bit 7). Here they aren't"
+                           " that run's stages (0x4e, 0x56, 0x57, or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, or sio_down=1's 0x3d, 0x3e, 0x3f, or pcie_down=1's 0x1d, 0x1e, 0x1f, with pmp_out=1's bit 7). Here they aren't"
                            " that: don't read them")
         else:
             cmd = ("its own one-byte command" if s in POSITION else
@@ -1494,6 +1582,8 @@ def decode(b, rtc, cnt=None, alarm=None):
             out += gates_lines(s, b, pmp)
         elif s in SIOD_STAGES:
             out += siod_lines(s, b, pmp)
+        elif s in PCD_STAGES:
+            out += pcd_lines(s, b, pmp)
         elif s in ALARM_STAGES:
             out.append(alarm_byte(b[0x16]))
             if s in (0x59, 0x5a, 0x4e, FAB_PRE) and b[0x16] in ALARM_ACKED:
@@ -1560,7 +1650,7 @@ def main():
             elif st in ALARM_STAGES and not secs and alarm[0] & 0x40:
                 die(f"0x1401 reads armed (0x{alarm[0]:02x}) after an alarm stage, but the commit's second was lost and"
                     " 0x6016 doesn't say 0x1401's write was acked"
-                    + (" (after gates_mark=1's and sio_down=1's stages it never does: it's that run's byte)" if res is None else "")
+                    + (" (after gates_mark=1's, sio_down=1's and pcie_down=1's stages it never does: it's that run's byte)" if res is None else "")
                     + ", so whose alarm this is can't be told. Nothing is"
                     " written: the breadcrumbs stay, and clearing it needs Corey's word")
             elif alarm[0] & 0x40:
