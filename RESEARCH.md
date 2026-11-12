@@ -4291,6 +4291,45 @@ the PMU read stage 0x0f with 0x6010 = 0x07 (cleared since). Neither new page fau
 - **Next** (PLAN.md): the `sio_down=1` rung with B2's ops 8 to 29 made by the AP first. New
   writes, so it gets an adversarial pass.
 
+### What the other projects have since 2026-11-10 (sweep of 2026-11-12)
+
+Read on GitHub at Corey's request: PR descriptions, DeepIdle's `docs/` (status, worklog, its
+question for Naeem), commit headlines. No m1n1 or Aura code, no driver source. Nothing posted.
+
+- **omacom/linux-aurora#351 (our alarm series): a third PMU works.** p4ulcristian tested its
+  rtc-macsmc unchanged on a J413 (M2 Air, Stowe PMU, aurora16) with a T8112 description, which is
+  their draft #454 on top of #351: 3 of 3 awake alarms, 19 of 19 timed s2idle wakes. On Stowe the
+  control byte's event bit clears with the event-byte write, not by writing it as 0; the driver's
+  sequence covers both. T8112's controller has 256 peripheral interrupts, so patch 1 isn't involved.
+- **A Pro and a Max now sleep, on M4.** aurora-silicon/linux#1664 (AxxzyWasTaken, draft,
+  2026-11-12): suspend to RAM on a J616c (M4 Max, T6041) at EL2 under aura, entry, wake and full
+  resume, 3 and 7 sleeps in a row; a 5 minute sleep cost about 1 mAh. #1477 (fbalazsy, open):
+  the same for J616s (M4 Pro, T6040), its controller following "the order of macOS's PMGR quiesce
+  and commit (CPU complexes, power gates, axi2af bridges, APCIe, DCS, the MasterMini S2R timer)".
+  #1664 notes a reset 5 s after the commit when the parked cores hadn't been stopped. These are
+  the first published completed entries on Pro or Max chips; both go through aura at EL2, a path
+  this Mac doesn't have. Their sources weren't read.
+- **DeepIdle (M2 Pro, T6020) is at the wall we're at,** runs R25 to R38B (2026-11-11). With every
+  core asleep and nothing touched after the commit, WD2 (which the commit reloads to 60 s) resets
+  the Mac 61 s later. What they saw with an observer core, all in `MPMGR_AON` (0x29e5c0000, the
+  block whose + 0x4000 is the timer; T6000's is 0x2925c0000):
+  - the system state counter moves from `SYS_AWAKE` to `SYS_SLP_DDR`; the SoC-level state stays
+    `AWAKE`;
+  - five words change within 4 ms of the commit and then nothing moves: + 0x14 3 → 1, + 0x100
+    8 → 0xa, + 0x4000 1 → 0, + 0x4008 0x00010000 → 1, + 0x400c 0 → 1; none changes without it;
+  - pages 8 to 10 of the block (+ 0x8000 and up) hang whoever reads them, from Linux too;
+  - no change from Naeem's global-sleep order (cores arm deep sleep only after the commit, R38A)
+    or from the SPMI interrupt word as macOS leaves it (R38B).
+
+  Not compared here: T6000's 0x2925c0014 was already on the list of reads worth making
+  ("Before the feasibility run"), and nothing on this Mac has read it or + 0x100, + 0x4008, + 0x400c.
+- **Naeem Malik (T8103):** nothing public since 2026-11-09 (linux-aurora 11-08, the lab's hand-over
+  note 11-09). DeepIdle's worklog says he answered their question with "working on the driver".
+  The 0.05 W over 3 hours is his post of 2026-11-07. A newer post wasn't found by search.
+- **maralcbr/linux:** no push since 2026-11-05.
+- **Diljit Singh (T8140):** the sleep core (#1445) is merged in aurora-silicon; #1658 (merged) makes
+  the Neo's wake 0.21 s faster.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
