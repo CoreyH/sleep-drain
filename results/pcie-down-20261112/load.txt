@@ -1,0 +1,9 @@
+e1_hook: loaded: s2idle ops set through s2idle_set_ops+0x0/0x34; times are trace_clock_local(); replay=15 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 gates_mark=1 pcie_down=1
+e1_hook: m1: cluster_ack: awake, the soc-cluster words 0-8: 0000000f 0000002f 0000002f 0000002f 00000000 0000002f 0000002f 0000000f 0000002f
+e1_hook: m1: cluster_ack: entry 55, 0x28e09800c: awake 0000002f; step 5 writes 00000020, not the table's 00000000, and waits for 0
+e1_hook: m1: cluster_ack: entry 57, 0x28e098014: awake 0000002f; step 5 writes 00000020, not the table's 00000000, and waits for 0
+e1_hook: m1: cluster_ack: entry 60, 0x28e098020: awake 0000002f; step 5 writes 00000020, not the table's 00000000, and waits for 0
+e1_hook: m1: fabric_up: 0x28e20c000 awake 00000333; step 5 first writes it back with its low nibble := 3 (00000113 for the 00000111 suspend_noirq leaves) and waits for 333
+e1_hook: m1: gates_mark: awake: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c 80040308; 0x28e09c000: +310 8004031d +338 c004030f +34c 8004030e; AFNC2_LW1 0x28e580160 1f0000ff; byte 92. Step 8 reads them again, right before the commit
+e1_hook: m1: pcie_down: awake: APCIE_ST_SYS 1000030f APCIE_ST1_SYS 1000030f APCIE_GP_SYS 1f0000ff APCIE_ST 000000ff APCIE_GP 000000ff; gate 0x28e09c34c 8004030e. Step 8 writes 0 to the five, right before the commit, and leaves them
+e1_hook: m1: wd1_mark: awake: WD1 ctrl 4 count 0ed22058 bite 2aea5400 (the kernel's, which its suspend stops); step 4 writes bite d693a400 (150 s), count 55d4a800 (60 s), then control 4
