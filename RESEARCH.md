@@ -4659,6 +4659,55 @@ the AP hasn't, lets 0x28e5a0050 close.
   the new waits, GPIO's two checks apart, the 0x28e5a0064 poll, or the auto-enable's part in
   "back" was pinned by a test. Ten scenarios and twelve mutants more.
 
+### The `sio_steps=1` run: the gate stays open with GPIO's cycle made; the 22 don't all read back; the 43 aren't shown back; 90 s again (2026-11-12)
+
+`pkexec e1-hook/run-floor --quick --m1-sio-steps`, in a safe boot, on battery, 15:00 (a086f30;
+aurora15; `results/sio-steps-20261112/`: the PMU's record, the clear and collect, the load's
+lines). Dark for about 90 s by Corey's reckoning (they missed the start), then a restart.
+
+- **The record is whole.** Stage 0x97, every step's outcome as in the runs before, SIO's firmware
+  stopped, the marker stood, WD2 armed and counting with the 120 s bite, `PHASE` 4, the restart
+  89 to 91.5 s after the time stamp (two reads).
+- **The byte: 0xcc**, the second layout (the pass went through):
+
+  | bit | | read |
+  |---|---|---|
+  | 2 | all 43 off, every poll met, auto fields as B2's 0 leaves them | yes |
+  | 3 | GPIO's cycle made: up within 100 ms of 0x8000000f, then off and idle | yes |
+  | 0 | 0x28e5a0050 after that | **open** |
+  | 4 | the 22 written and all read back as written | **no** |
+  | 1 | 0x28e5a0050 after them | **open** |
+  | 5 | all 43 back as found within 100 ms each, and the gate open again | **no** |
+
+- **Awake at the load:** GPIO 0xff; 0x28e03801c 0x80100100; the seven 2 2 2 2 3 2 2; the
+  fourteen 2 2 2 2 2 2 2 2 0 0 2 2 1 1; the gate 0x8004030f. As both looks had them.
+- **What it shows:**
+  - **GPIO's cycle isn't what the gate follows.** With SIO's subtree off as B2 switches it off
+    and GPIO taken through on-with-reset and off, where B2 does it, 0x28e5a0050 stayed open: the
+    third reading of that gate with the subtree off, and the first with the cycle. This half of
+    the run is clean.
+  - **The 22 are written, and not all of them read back as B2 writes them.** Which isn't
+    recorded: the byte has one bit for all three groups. The candidates (judgment): 0x28e03801c's
+    bit 30, pending, not clearing within 100 ms with the cores up (B1 polls it after its own
+    write, 255 tries); or a word of the 21 that doesn't take a 1 in this state. The local listing
+    says the 21 are plain settings as far as the engine goes: B0, B1 and B2 write them 0, 1 and 2
+    and never read one, and what both looks read is, word for word, what B1's continuation
+    writes. The same page has a word at + 0 that B0 and B1 write (0x2000000) and nothing here
+    has read. So the gate staying open after them says nothing yet about the 22.
+  - **The 43 aren't shown back, with 100 ms each.** The second `sio_down=1` run had the same
+    with 10 ms (target or actual state), so the wait wasn't the reason. Either a word can't
+    read as found again (SIO_CPU is the candidate: awake it reads target f with actual state 4,
+    under its firmware, which is stopped by step 8), or, new here, the subtree doesn't come up
+    with the 21 at 1. The byte doesn't say which, nor whether it was the words or the gate.
+  - **90 s again**, which by the rule doesn't compare with `--m1-gates'`: the commit isn't shown
+    to have found SIO's subtree as the recipe leaves it, and the 22 not as B2 writes them.
+- **What the record lacked.** One bit for "the 22 read back" and one for "back" were too few: the
+  run's two open questions are both "which word". A run's stages leave 0x6016 alone; the probe's
+  stage has seven bytes free (0x6005, 0x6011 to 0x6016, as the gate test used them).
+- **Next** (PLAN.md), to be built, nothing to run yet: the 22 written and read back by
+  themselves, in the look's state, with the whole read-back in the log and in the PMU: which of
+  them take B2's values with the cores up, and whether bit 30 clears.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

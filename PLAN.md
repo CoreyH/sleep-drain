@@ -93,13 +93,13 @@ the PR with that session's work.
     0x28e09c34c, closed within 100 ms; the restart still came at 90 s. So PCIe isn't the stall,
     and a gate can close for the AP with the 21 words unmoved, which makes 0x28e5a0050 staying
     open with SIO's subtree off a lead again: B2's op 140.
-  - **Next, a run of Corey's: `pkexec e1-hook/run-floor --quick --m1-sio-steps`** in a safe boot,
-    on battery, nothing attached (built, not run; RESEARCH.md, "`sio_steps=1` as built"; "The
-    order after the look", in Track A below). SIO's subtree switched off with B2's cycle of GPIO
-    inside it and 0x28e5a0050 polled; then, if it's still open, the 22 words and the gate again;
-    the 43 put back. One run says which of the two, if either, lets that gate close: 0xed GPIO's
-    cycle, 0xfe the 22, 0xfc neither. Afterwards: `pkexec e1-hook/m1-crumbs`, then `--clear`, then
-    `pkexec sleep-drain-safe collect`.
+  - That run (`--m1-sio-steps`, run once, 2026-11-12; RESEARCH.md, "The `sio_steps=1` run"): the
+    byte 0xcc. The subtree went off and GPIO's cycle was made, and the gate stayed open: GPIO's
+    cycle isn't what it follows. The 22 were written and didn't all read back as B2 writes them
+    (which isn't recorded), so the gate staying open after them says nothing yet. The 43 aren't
+    shown back, with 100 ms each. Restart at 90 s.
+  - **Next, a build, nothing to run yet: the 22 by themselves, in the look's state, every
+    read-back recorded** (not built; "The order after the look", in Track A below).
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -577,8 +577,32 @@ steps, and restarting the DCP and the PMP afterwards.
       auto-enable and the bridge bits by hand first); the byte at 0x6016, sent after the three
       `_SYS` words and again after the gate, under stages 0x1d, 0x1f and 0x1e. The sweep's cheap
       rider below isn't in it: it would be four more reads in a block no run here has mapped.
-      **Built, not run: `sio_steps=1`** (`--m1-sio-steps`; RESEARCH.md, "`sio_steps=1` as
-      built"), which is the build planned here as `pre=1` in stages. Settled in it: GPIO's cycle
+      **Next, not built: the 22 by themselves, on `probe --look`** (the name is the build's to
+      choose). The `sio_steps=1` run (below; byte 0xcc) left two "which word" questions its one
+      byte couldn't hold. This asks the first where the record has room: after the look that
+      follows noirq, with nothing stopped, CPU0 writes B2's ops 8 to 29 (0x28e03801c :=
+      0x80101100; 1 to the seven; 1 to the fourteen, B2's order), reads each back at once and
+      again after B2-like waits (0x28e03801c for bit 30, up to 100 ms and then once more later),
+      logs all 22 values, packs "reads as written" for each into the probe's free PMU bytes
+      (0x6005, 0x6011 to 0x6016), writes all 22 back as found, reads them again, and fails the
+      suspend as the look does. New: the same 22 writes in a state meant to come back, and their
+      write-back, so one adversarial pass; treat it as one-way all the same (the gate test didn't
+      come back). To settle in the build: whether the gate words and the page's + 0 word
+      (0x28e5b0000, which B0 and B1 write 0x2000000 and nothing here has read) are read beside
+      them; the order of the write-back (B1's: the clock word first, the 21 near its end).
+      - **All 22 take, bit 30 clears:** then in the run it was the recipe's state that differed
+        (cores parked, firmware stopped). `sio_steps=1` again with a byte that names the group
+        and what came back, or the 22 before the switch-off as B2 has them.
+      - **Bit 30 of 0x28e03801c stays set:** that word can't be moved with a core up. Then
+        `sio_steps=1` without it, the 21 alone, and its bit 4 means the 21.
+      - **Some of the 21 don't read 1:** which, and what they read, against the gate entries
+        beside them: a setting the AP can't make is one B2 makes with every core down, and op
+        140 can't be asked from the AP. Then `a2_pre=1`.
+      Also open from that run: which of the 43 doesn't read as found after its write-back (the
+      candidate is SIO_CPU, found with actual state 4 under its firmware), for the next build on
+      the `sio_steps=1` rung to record by place, as `sio_down=1`'s byte does.
+      **Built and run: `sio_steps=1`** (`--m1-sio-steps`; RESEARCH.md, "`sio_steps=1` as
+      built" and "The `sio_steps=1` run"), which is the build planned here as `pre=1` in stages. Settled in it: GPIO's cycle
       goes inside the switch-off, where B2 has it (the switch-off alone has been read twice); the
       22 go in after the switch-off, so the gate can be read between; the 43 go back, GPIO and the
       22 stay as B2 writes them. After the run:
