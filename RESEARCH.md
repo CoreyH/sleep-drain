@@ -4654,7 +4654,8 @@ the AP hasn't, lets 0x28e5a0050 close.
   these, all taken: the decoder said the commit found GPIO at 0 and the 22 as B2 writes them on
   bit 5 alone, whatever bits 3 and 4 said; the 0xfe verdict didn't allow for a gate that closes
   late by itself; a stop in the 22 and a failed command read as if the restart's time told them
-  apart (it only tells a panic from the rest); and the model had no slow register, so none of
+  apart (it only tells a panic from the rest; and after a failed command the run goes on
+  unrecorded, so that case isn't bound to end at 90 s: Pullfrog's second pass); and the model had no slow register, so none of
   the new waits, GPIO's two checks apart, the 0x28e5a0064 poll, or the auto-enable's part in
   "back" was pinned by a test. Ten scenarios and twelve mutants more.
 

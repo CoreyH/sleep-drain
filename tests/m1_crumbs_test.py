@@ -3201,7 +3201,8 @@ def sio_steps_tests(g, src):
               and "  the 22 words: 1 of their three groups written and read back when the record stops; next was the seven words 0x28e0a0004 to 0x28e0a001c (B2's ops 9 to 15)\n" in out_
               and "  so: THE RUN STOPPED AT the seven words 0x28e0a0004 to 0x28e0a001c (B2's ops 9 to 15): in its writes, its read-back or the byte after it." in out_
               and "Nothing shows the 43 written back" in out_ and "  stage 0x15, so nothing records the commit after this byte" in out_
-              and "both end at WD1's marker (about 90 s after step 4), and this record doesn't tell those two apart" in out_
+              and "A byte whose command failed stops the record, not the run: the pass, the write-back and the commit went on unrecorded" in out_
+              and "So a restart at about 90 s fits both, and this record doesn't tell them apart" in out_ and "both end at WD1's marker" not in out_
               and "  wd1_mark=1's marker: not read. Stage 0x15 is the last before the commit" in out_,
               "sio_steps=1's 0x95 with the byte's first layout and one group in: the stage before the commit, the group it stopped at, no reading"
               " of the time", out_ + err)

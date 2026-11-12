@@ -1238,8 +1238,10 @@ def sst_lines(s, b, pmp):
                        " core down: that group is the lead, to be left out or made last (PLAN.md)")
                        + ". Or the byte's command failed and the run went on unrecorded. Nothing shows the 43 written back")
         out.append("  stage 0x15, so nothing records the commit after this byte: the restart's time, below, tells a panic (about 10 s)"
-                   " from the rest. A write that never returned and a byte whose command failed both end at WD1's marker (about 90 s"
-                   " after step 4), and this record doesn't tell those two apart")
+                   " from the rest. A write that never returned ends at WD1's marker (about 90 s after step 4). A byte whose command"
+                   " failed stops the record, not the run: the pass, the write-back and the commit went on unrecorded, to whatever"
+                   " ending the entry then had (WD1's marker at about 90 s in every run so far; later, or no restart, if B2 got"
+                   " further). So a restart at about 90 s fits both, and this record doesn't tell them apart")
         return out
     second = (v & (SST_SUB | SST_G1)) == SST_SUB
     if (v & SST_G1 and v & SST_G2) or (not second and v & (SST_G2 | SST_PRE_OK)):
