@@ -1123,8 +1123,8 @@ def main():
     check(defs.get("M1_PMU_ALARM_CTRL") == g["ALARM_CTRL"] and defs.get("M1_PMU_ALARM") == g["ALARM"]
           and defs.get("M1_PMU_ALARM_EVENT") == g["ALARM_EVENT"] and defs.get("M1_PMU_ALARM_MASK") == g["ALARM_MASK"]
           and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"]
-          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x46, 0x47,
-                                    0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f)
+          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x15, 0x46, 0x47,
+                                    0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17)
           and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src and "hold ? 0x5a : alarm ? 0x59 : 0x58" in src
           and "m1_stage(sio_stop ? 0x4f : 0x5b)" in src and "b[0] = 0x5c" in src and "? 0x5d : 0x5e" in src and "hold ? 0x39 :" in src
           and "hold ? 0x31 :" in src,
@@ -1142,6 +1142,7 @@ def main():
     gates_mark_tests(g, src)
     sio_down_tests(g, src)
     pcie_down_tests(g, src)
+    sio_steps_tests(g, src)
     with tempfile.TemporaryDirectory() as tmp:
         ppath = os.path.join(tmp, "nvmem")
 
@@ -1358,7 +1359,7 @@ def cluster_ack_tests(g, src):
     # 0x31-0x37 and 0x39 for hold=1's stop requests, 0x4e before the commit, wd2_bite=1's two after it; and fabric_up=1's and
     # gates_mark=1's in place of those three.
     check(g["ACK_EARLY"] == (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39)
-          and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53, 0x4b, 0x54, 0x55, 0x3d, 0x3e, 0x3f, 0x1d, 0x1e, 0x1f)
+          and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53, 0x4b, 0x54, 0x55, 0x3d, 0x3e, 0x3f, 0x1d, 0x1e, 0x1f, 0x15, 0x16, 0x17)
           and "b[0] = 0x28;" in after and "m1_stage((hold ? 0x31 : pmgr_late ? 0x29 : 0x21) + i);" in after
           and "b[0] = hold ? 0x39 : pmgr_late ? 0x38 : 0x30;" in after and "b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;" in after
           and "else if (!recfg_bite && !wd2_bite)\n\t\t\tm1_stage(sio_stop ? 0x4f : 0x5b);" in after
@@ -1612,8 +1613,9 @@ def mark_tests(g, src):
     after_code = re.sub(r"/\*.*?\*/", "", after, flags=re.S)
     # 48 since the probe (probe_tests() has its six: SIO_CPU's table word twice, SIO's RUN, ANS2 up and back, the PMP's RUN).
     # 53 since pcie_down=1 (pcie_down_tests() has its two: the three _SYS words' 0, and APCIE_ST's and APCIE_GP's).
-    check(len(re.findall(wr, code_only)) == 53 and len(re.findall(wr, after_code)) == 11,
-          "e1_hook.c makes 53 MMIO write calls, 11 of them in m1_after_slpa() itself: none has been added without this count",
+    # 59 since sio_steps=1 (sio_steps_tests() has its six: GPIO's raise and its 0, the 43's 0, 0x28e03801c, the seven, the fourteen).
+    check(len(re.findall(wr, code_only)) == 59 and len(re.findall(wr, after_code)) == 11,
+          "e1_hook.c makes 59 MMIO write calls, 11 of them in m1_after_slpa() itself: none has been added without this count",
           f"{len(re.findall(wr, code_only))} {len(re.findall(wr, after_code))}")
     check("\tif (!m1_fab_awake(v)) {\n\t\tpr_err(" in cut("static int __init m1_fab_init(void)", "\n}\n")
           and "if (e1_never_write(FAB_PS)) {" in src and "m1_never(WD1_WDT + WD1_COUNT, 1) || m1_never(WD1_WDT + WD1_BITE, 1) || m1_never(WD1_WDT + WD1_CTRL, 1)" in src,
@@ -1804,20 +1806,20 @@ def gates_mark_tests(g, src):
     # Step 8: after stage 0x4b's command and the outcomes, the reads, dsb and isb, then the byte, all before step 9's mask and the commit.
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
     check(in_order_of(after, ["\t\tb[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;\n"
-                              "\t\tif (gates_mark)\n\t\t\tb[0] = gates_stage(b[0]);\n\t\tif (sio_down)\n\t\t\tb[0] = siod_stage(b[0]);\n\t\tif (pcie_down)\n\t\t\tb[0] = pcd_stage(b[0]);\n\t\tb[1] = parked",
+                              "\t\tif (gates_mark)\n\t\t\tb[0] = gates_stage(b[0]);\n\t\tif (sio_down)\n\t\t\tb[0] = siod_stage(b[0]);\n\t\tif (pcie_down)\n\t\t\tb[0] = pcd_stage(b[0]);\n\t\tif (sio_steps)\n\t\t\tb[0] = sst_stage(b[0]);\n\t\tb[1] = parked",
                               "\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n",
-                              "\tif (gates_mark && !sio_down && !pcie_down) {\n\t\tu32 g[GATES_N], lane;\n\n\t\tm1_gates_read(g, &lane);\n\t\tdsb(sy);\n\t\tisb();\n"
+                              "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps) {\n\t\tu32 g[GATES_N], lane;\n\n\t\tm1_gates_read(g, &lane);\n\t\tdsb(sy);\n\t\tisb();\n"
                               "\t\tm1_gates = gates_byte(g, lane);\n\t\tm1_crumb(GATES_AT, &m1_gates, 1);\n\t}\n",
                               "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_gates_read(") == 1 and len(re.findall(r"\bm1_gates_read\(", code_only)) == 4
-          and re.findall(r"\bm1_gates\s*=[^=;]*;", code_only) == ["m1_gates = gates_byte(g, lane);", "m1_gates = m1_sio_down();", "m1_gates = m1_pcie_down();"] and len(re.findall(r"\bgates_stage\(", code_only)) == 2,
+          and re.findall(r"\bm1_gates\s*=[^=;]*;", code_only) == ["m1_gates = gates_byte(g, lane);", "m1_gates = m1_sio_down();", "m1_gates = m1_pcie_down();", "m1_gates = m1_sio_steps();"] and len(re.findall(r"\bgates_stage\(", code_only)) == 2,
           "step 8 sends stage 0x4b in 0x52's place, then the outcomes, then reads the seven words and sends their byte, SError still unmasked,"
-          " before the commit, and not with sio_down=1 or pcie_down=1, whose own bytes are the only other things that set it; the stage is mapped in two places", after[-4000:])
+          " before the commit, and not with sio_down=1, pcie_down=1 or sio_steps=1, whose own bytes are the only other things that set it; the stage is mapped in two places", after[-4000:])
     alarm_fn = cut("static void m1_alarm_arm(const u8 *rtc)", "\n}\n")
     wout = cut("static void m1_wd2_out(void)", "\n}\n")
     check("done:\n\tm1_crumb(0x6016, gates_mark ? &m1_gates : &res, 1);\n}" in alarm_fn and alarm_fn.count("m1_crumb(") == 1
           and in_order_of(wout, ["\telse\n\t\tb[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;\n",
-                                 "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tb[1] = m1_wd2_sample("]),
+                                 "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tb[1] = m1_wd2_sample("]),
           "after the commit: the alarm's one command to the PMU sends the gate byte in its result's place, and the last stage is the run's own",
           alarm_fn + wout)
     # No register written: no MMIO write names the gate pages, and the count of MMIO writes is mark_tests()' as it was.
@@ -1959,7 +1961,7 @@ def gates_mark_tests(g, src):
         before = fake(path, scratch(0xd5, **lost), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
         check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
-              and "after gates_mark=1's, sio_down=1's and pcie_down=1's stages it never does: it's that run's byte" in r.stderr,
+              and "after gates_mark=1's, sio_down=1's, pcie_down=1's and sio_steps=1's stages it never does: it's that run's byte" in r.stderr,
               "--clear after 0xd5 with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
         before = fake(path, scratch(0xd3, **lost), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
@@ -2442,16 +2444,16 @@ def sio_down_tests(g, src):
     poll = cut("static bool m1_siod_poll(", "\n}\n")
     wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
     check(re.findall(wr + r"[^;]*;", body) == ["writel(0, m1_sio + off[i]);"] and re.findall(wr + r"[^;]*;", back) == ["writel(found & ~ASC_PS_NOT_WRITTEN, p);"]
-          and not re.search(wr, poll) and not re.search(wr, init) and len(re.findall(r"\bm1_siod_back\(", code_only)) == 2
+          and not re.search(wr, poll) and not re.search(wr, init) and len(re.findall(r"\bm1_siod_back\(", code_only)) == 3
           and len(re.findall(r"\bm1_sio_down\(", code_only)) == 2 and "m1_look_gb" not in body.replace("m1_gates_read", ""),
-          "m1_sio_down() writes 0 to the listed words in one place, the write-back is one function called from one place, and the poll and"
+          "m1_sio_down() writes 0 to the listed words in one place, the write-back is one function called from one place (and from sio_steps=1's), and the poll and"
           " the load write nothing")
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
-    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down) {\n",
+    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps) {\n",
                               "\tif (sio_down)\n\t\tm1_gates = m1_sio_down();\n", "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();",
                               "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_sio_down(") == 1 and len(re.findall(r"\bsiod_stage\(", code_only)) == 2
-          and "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tb[1] = m1_wd2_sample(" in src,
+          and "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tb[1] = m1_wd2_sample(" in src,
           "step 8: after the stage and the outcomes, in place of gates_mark=1's reads and before step 9's mask and the commit; its byte is"
           " what the alarm's last command sends; the stage is mapped in two places", after[-4500:])
     params = cut("static int __init e1_check_params(void)", "\n}\n")
@@ -2645,8 +2647,597 @@ def sio_down_tests(g, src):
         before = fake(path, scratch(0xbf, **dict(rec, secs=0, drained=0xbd)), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
         check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
-              and "after gates_mark=1's, sio_down=1's and pcie_down=1's stages it never does: it's that run's byte" in r.stderr,
+              and "after gates_mark=1's, sio_down=1's, pcie_down=1's and sio_steps=1's stages it never does: it's that run's byte" in r.stderr,
               "--clear after 0xbf with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
+
+
+SST_HDR = r"""
+#include <stdio.h>
+#include "sio_steps.h"
+int main(void)
+{
+	static const u8 a[] = SST_A_OFFS, b[] = SST_B_OFFS;
+	static const u32 w[] = { 0, 0x200, 0x300, 0x800, 0xb00, 0x10, 0xf0, 1, 0xf, 0xff, 0x8000000f, 0x800000ff, 0x0f000200, 0x80101100, 0xc0101100,
+				 0x80100100, 0xc0100100, 0x00101100, 0x80101101, 0x40000000, 0x80000000, 0x10000000 };
+	unsigned int i, s, n;
+
+	printf("consts %x %x %x %x %d %d %x %x %d %d %d", SST_GPIO, SST_GPIO_UP, SST_CLK_VAL, SST_CLK_PENDING, SST_A_N, SST_B_N, SST_PRE_VAL,
+	       GATES_AT, (int)(sizeof(a) / sizeof(a[0])), (int)(sizeof(b) / sizeof(b[0])), SST_GROUPS);
+	for (i = 0; i < sizeof(a) / sizeof(a[0]); i++)
+		printf(" %x", a[i]);
+	for (i = 0; i < sizeof(b) / sizeof(b[0]); i++)
+		printf(" %x", b[i]);
+	printf("\nbits %x %x %x %x %x %x %x %x %x %x %x %x %x\n", SST_G1, SST_G2, SST_SUB, SST_GPIO_OK, SST_PRE, SST_BACK, SST_FINAL, SST_MARK, SST_RES,
+	       SST_GO_KEEP, SST_GO_AT_LO, SST_GO_AT_HI, SST_GO_CLOSED);
+	printf("stages %x %x %x\ncb %x\n", M1_SST_STAGE_PRE, M1_SST_STAGE, M1_SST_STAGE_PEND, sst_closed_before());
+	for (s = 0; s < 256; s++) {
+		printf("st %x %x\nf %x %x %d\n", s, sst_stage((u8)s), s, sst_final((u8)s), sst_second((u8)s));
+		for (n = 0; n < 8; n++)
+			printf("g %x %x %x\n", s, n, sst_going((u8)s, n));
+	}
+	for (i = 0; i < sizeof(w) / sizeof(w[0]); i++)
+		printf("w %x %d %d\n", w[i], sst_idle(w[i]), sst_clk_ok(w[i]));
+	return 0;
+}
+"""
+# m1_sio_steps(), the poll and the write-back it calls, as they stand, against a model of the six pages that logs every read, write
+# and PMU byte. The scenario is argv[1], letters: c the gate reads closed before anything; g it closes once the subtree is off and
+# GPIO has been up and is off again; h it closes once the subtree is off and all 22 read as B2 writes them; o once closed it stays
+# closed; u GPIO's actual state never comes up; b GPIO keeps bit 11 after its 0; k I2C0 keeps bit 11 after its 0; n SPI_P's actual
+# state stays f after its 0; Q 0x28e03801c doesn't take the write; q it reads with bit 30 set; r 0x28e5b0024 doesn't take its 1; R
+# 0x28e0a0014 doesn't; x SIO_CPU's actual state stays 0 after its write-back; z it comes back after 50 ms.
+SST_FN_PRELUDE = r"""
+#include <stdio.h>
+#include <string.h>
+#include "asc_probe.h"
+#include "sio_steps.h"
+typedef uint64_t u64;
+#define __iomem
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define static_assert(...) _Static_assert(__VA_ARGS__, "")
+#define BIT(n) (1U << (n))
+#define dsb(x) do { } while (0)
+#define isb() do { } while (0)
+#define cpu_relax() do { } while (0)
+static unsigned char pg[6][0x4000];
+static void *m1_sio = pg[0], *m1_ps = pg[1], *m1_look_ga = pg[2], *m1_look_pc = pg[3], *m1_look_pa = pg[4], *m1_look_pb = pg[5];
+static const char names[] = "SPACXY";
+static const char *sc;
+static u64 clk, m1_tps = 24000000, cpu_back_at;
+static int gpio_up, gpio_cycled, latched, cpu_back;
+static u32 w[6][0x400 / 4];
+/* Every look at the clock is 1 ms on. */
+static u64 m1_now(void) { return clk += m1_tps / 1000; }
+static int has(char c) { return strchr(sc, c) != NULL; }
+static int sub_off(void)
+{
+	unsigned int o;
+
+	for (o = 0x180; o <= 0x2d0; o += 8) {
+		if (w[0][o / 4] & 0xff)
+			return 0;
+	}
+	return 1;
+}
+static int pre_done(void)
+{
+	unsigned int o;
+
+	if ((w[3][0x1c / 4] & ~0x40000000U) != 0x80101100)
+		return 0;
+	for (o = 4; o <= 0x1c; o += 4) {
+		if (w[4][o / 4] != 1)
+			return 0;
+	}
+	for (o = 4; o <= 0x38; o += 4) {
+		if (w[5][o / 4] != 1)
+			return 0;
+	}
+	return 1;
+}
+static u32 readl(const void *p)
+{
+	unsigned int k = (unsigned int)(((const unsigned char *)p - pg[0]) / 0x4000);
+	unsigned long o = (unsigned long)((const unsigned char *)p - pg[k]);
+	u32 v = o < 0x400 ? w[k][o / 4] : 0xdead0000;
+
+	if (k == 0 && o == 0x188 && has('z') && cpu_back && clk < cpu_back_at + 50 * m1_tps / 1000)
+		v &= ~0xf0U;
+	if (k == 2) {
+		int closed = o == 0x64 || has('c') || latched || (has('g') && sub_off() && gpio_cycled && !(w[1][0x120 / 4] & 0xff)) ||
+			     (has('h') && sub_off() && pre_done());
+
+		if (o == 0x50 && closed && has('o'))
+			latched = 1;
+		v = 0x80040000 | (closed ? 0x40000000 : 0);
+	}
+	if (k == 3 && has('q'))
+		v |= 0x40000000;
+	printf("r %c %lx %x\n", names[k], o, v);
+	return v;
+}
+static void writel(u32 v, void *p)
+{
+	unsigned int k = (unsigned int)(((unsigned char *)p - pg[0]) / 0x4000);
+	unsigned long o = (unsigned long)((unsigned char *)p - pg[k]);
+	u32 was;
+
+	printf("w %c %lx %x\n", names[k], o, v);
+	if (o >= 0x400)
+		return;
+	was = w[k][o / 4];
+	if (k == 0) {
+		/* The settings as written, the actual state following the target, bit 11 clear, the two flags kept. */
+		w[k][o / 4] = (v & 0x1f00000f) | ((v & 0xf) << 4) | (was & 0x300);
+		if (has('k') && o == 0x1a8 && !v)
+			w[k][o / 4] |= 0x800;
+		if (has('n') && o == 0x1e8 && !v)
+			w[k][o / 4] |= 0xf0;
+		if (o == 0x188 && v) {
+			cpu_back = 1;
+			cpu_back_at = clk;
+			if (has('x'))
+				w[k][o / 4] &= ~0xf0U;
+		}
+	} else if (k == 1 && o == 0x120) {
+		if (v & 0xf) {
+			gpio_up = !has('u');
+			w[k][o / 4] = v | (gpio_up ? (v & 0xf) << 4 : 0);
+		} else {
+			if (gpio_up)
+				gpio_cycled = 1;
+			w[k][o / 4] = 0x200 | (has('b') ? 0x800 : 0);
+		}
+	} else if (k == 3 && !has('Q')) {
+		w[k][o / 4] = v;
+	} else if ((k == 4 && !(has('R') && o == 0x14)) || (k == 5 && !(has('r') && o == 0x24))) {
+		w[k][o / 4] = v;
+	}
+}
+static void m1_crumb(unsigned int addr, const u8 *b, unsigned int n)
+{
+	printf("k %x %u %x\n", addr, n, b[0]);
+}
+"""
+SST_FN_MAIN = r"""
+int main(int argc, char **argv)
+{
+	static const u32 a[] = { 2, 2, 2, 2, 3, 2, 2 }, b[] = { 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 2, 2, 1, 1 };
+	unsigned int o, i;
+	u8 r;
+
+	(void)argc;
+	sc = argv[1];
+	/* As the recipe leaves them: SIO, SIO_CPU, SPI_P and UART_P on, UART2 at Linux's 0x244, the rest off; GPIO off; the 22 as B1 leaves them. */
+	for (o = 0x180; o <= 0x2d0; o += 8)
+		w[0][o / 4] = 0x200;
+	w[0][0x180 / 4] = 0x1f0000ff;
+	w[0][0x188 / 4] = 0x040002ff;
+	w[0][0x1e8 / 4] = 0x000000ff;
+	w[0][0x230 / 4] = 0x000001ff;
+	w[0][0x250 / 4] = 0x00000244;
+	w[1][0x120 / 4] = 0x200;
+	w[1][0x2d8 / 4] = 0x1f0f03ff;
+	w[3][0x1c / 4] = 0x80100100;
+	for (i = 0; i < 7; i++)
+		w[4][1 + i] = a[i];
+	for (i = 0; i < 14; i++)
+		w[5][1 + i] = b[i];
+	r = m1_sio_steps();
+	printf("ret %x\n", r);
+	for (o = 0x180; o <= 0x2d0; o += 8)
+		printf("end S %x %x\n", o, w[0][o / 4]);
+	printf("end P 120 %x\nend P 2d8 %x\nend C 1c %x\n", w[1][0x120 / 4], w[1][0x2d8 / 4], w[3][0x1c / 4]);
+	for (i = 0; i < 7; i++)
+		printf("end X %x %x\n", 4 + 4 * i, w[4][1 + i]);
+	for (i = 0; i < 14; i++)
+		printf("end Y %x %x\n", 4 + 4 * i, w[5][1 + i]);
+	return 0;
+}
+"""
+SST_INIT_PRELUDE = r"""
+#include <stdarg.h>
+#include <stdio.h>
+#include "sio_steps.h"
+typedef uint64_t u64;
+#define __iomem
+#define __init
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define EINVAL 22
+#define ENODEV 19
+#define PAGE_SIZE 0x4000
+#define M1_PMGR_PS 0x28e080000ULL
+static unsigned char pg[6][0x4000];
+static const char names[] = "SPACXY";
+static void *m1_sio, *m1_ps, *m1_look_ga, *m1_look_pc, *m1_look_pa, *m1_look_pb;
+static unsigned int nread, nmap;
+static u64 never;
+static const char *maps;
+static u32 readl(const void *p)
+{
+	unsigned int k = (unsigned int)(((const unsigned char *)p - pg[0]) / 0x4000);
+
+	printf("read %c %lx\n", names[k], (unsigned long)((const unsigned char *)p - pg[k]));
+	return 0x1000 + nread++;
+}
+static void *ioremap_np(u64 a, unsigned long n)
+{
+	unsigned int k = a == 0x28e038000ULL ? 3 : a == 0x28e0a0000ULL ? 4 : a == 0x28e5b0000ULL ? 5 : 0;
+
+	printf("map %llx %lx\n", (unsigned long long)a, n);
+	nmap++;
+	return k && maps[k] == 'm' ? pg[k] : NULL;
+}
+static int e1_never_write(u64 addr) { return addr == never; }
+static void pr_err(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("err "); vprintf(fmt, ap); va_end(ap); }
+static void pr_info(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("info "); vprintf(fmt, ap); va_end(ap); }
+"""
+SST_INIT_MAIN = r"""
+int main(int argc, char **argv)
+{
+	int ret;
+
+	(void)argc;
+	/* argv[1]: six letters, SIO's page, the power page and the gate page mapped (m) or not, then the three pages of the 22: mapped
+	 * already (p, as look=1 leaves them), to be mapped here (m), or failing to map (n); argv[2]: an address on the never-write list. */
+	maps = argv[1];
+	m1_sio = maps[0] == 'm' ? pg[0] : NULL;
+	m1_ps = maps[1] == 'm' ? pg[1] : NULL;
+	m1_look_ga = maps[2] == 'm' ? pg[2] : NULL;
+	m1_look_pc = maps[3] == 'p' ? pg[3] : NULL;
+	m1_look_pa = maps[4] == 'p' ? pg[4] : NULL;
+	m1_look_pb = maps[5] == 'p' ? pg[5] : NULL;
+	sscanf(argv[2], "%llx", (unsigned long long *)&never);
+	ret = m1_sst_init();
+	printf("ret %d reads %u maps %u\n", ret, nread, nmap);
+	return 0;
+}
+"""
+# B2's order for its ops 9 to 15 and 16 to 29, written out a second time.
+SST_A_ORDER = [0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c]
+SST_B_ORDER = [0x04, 0x0c, 0x10, 0x14, 0x08, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c, 0x30, 0x34, 0x38]
+
+
+def sio_steps_tests(g, src):
+    """sio_steps=1: sio_steps.h against an independent reading of it; m1_sio_steps() compiled as it stands against a model of the
+    registers that logs every access; m1_sst_init()'s refusals; the places in e1_hook.c that use them; and the byte, the run's
+    stages and --clear through m1-crumbs."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    def going(res, n):
+        return 0x80 | (res & 0x0d) | (2 if n & 1 else 0) | (0x10 if n & 2 else 0)
+
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    fns = cut("static bool m1_siod_poll(", "\n}\n") + cut("static u8 m1_siod_back(", "\n}\n") + cut("static u8 m1_sio_steps(void)", "\n}\n")
+    init = cut("static int __init m1_sst_init(void)", "\n}\n")
+    scen = ("", "g", "h", "c", "u", "b", "k", "n", "Q", "q", "r", "R", "x", "z", "go", "ho", "gu", "gn", "hr", "hq", "gb", "hx", "ub", "kn", "hQ", "cg")
+    with tempfile.TemporaryDirectory() as tmp:
+        def build(name, code):
+            c = os.path.join(tmp, name + ".c")
+            with open(c, "w") as f:
+                f.write(code)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(tmp, name), c], check=True)
+            return os.path.join(tmp, name)
+
+        def out(exe, *args):
+            return subprocess.run([exe, *args], capture_output=True, text=True, check=True).stdout.splitlines()
+
+        hdr = [l.split() for l in out(build("hdr", SST_HDR))]
+        fn = build("fn", SST_FN_PRELUDE + fns + SST_FN_MAIN)
+        runs = {a: out(fn, a) for a in scen}
+        ini = build("ini", SST_INIT_PRELUDE + init + SST_INIT_MAIN)
+        loads = {a: out(ini, *a) for a in (("mmmmmm", "0"), ("mmmppp", "0"), ("mmmpmp", "0"), ("nmmmmm", "0"), ("mnmmmm", "0"), ("mmnmmm", "0"),
+                                           ("mmmnmm", "0"), ("mmmmnm", "0"), ("mmmmmn", "0"), ("mmmmmm", "28e080120"), ("mmmmmm", "28e03801c"),
+                                           ("mmmmmm", "28e0a0010"), ("mmmmmm", "28e5b0038"), ("mmmmmm", "28e0802d8"))}
+        bad_lists = {}
+        for what, name, lst in (("the fourteen in address order, not B2's", "SST_B_OFFS", "0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c, 0x30, 0x34, 0x38"),
+                                ("one of the fourteen past the last", "SST_B_OFFS", "0x04, 0x0c, 0x10, 0x14, 0x08, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c, 0x30, 0x34, 0x3c"),
+                                ("the fourteen one short, which ends in offset 0", "SST_B_OFFS", "0x04, 0x0c, 0x10, 0x14, 0x08, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c, 0x30, 0x34"),
+                                ("one of the seven at offset 0", "SST_A_OFFS", "0x00, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c"),
+                                ("the seven one short", "SST_A_OFFS", "0x04, 0x08, 0x0c, 0x10, 0x14, 0x18"),
+                                ("two of the seven swapped", "SST_A_OFFS", "0x04, 0x08, 0x0c, 0x14, 0x10, 0x18, 0x1c")):
+            redef = f"#undef {name}\n#define {name} {{ {lst} }}\n"
+            bad_lists[what] = out(build("bad" + str(len(bad_lists)), SST_INIT_PRELUDE + redef + init + SST_INIT_MAIN), "mmmmmm", "0")
+
+    # The header against a second writing-out of it.
+    st = {int(l[1], 16): int(l[2], 16) for l in hdr if l[0] == "st"}
+    fin = {int(l[1], 16): (int(l[2], 16), int(l[3])) for l in hdr if l[0] == "f"}
+    go = {(int(l[1], 16), int(l[2], 16)): int(l[3], 16) for l in hdr if l[0] == "g"}
+    wd = {int(l[1], 16): (int(l[2]), int(l[3])) for l in hdr if l[0] == "w"}
+    check(hdr[0] == ["consts", "120", "8000000f", "80101100", "40000000", "7", "14", "1", "6016", "7", "14", "3"] + [f"{o:x}" for o in SST_A_ORDER + SST_B_ORDER]
+          and hdr[1] == ["bits", "1", "2", "4", "8", "10", "20", "40", "80", "3f", "d", "2", "10", "20"] and hdr[2] == ["stages", "15", "17", "16"]
+          and hdr[3] == ["cb", "a0"],
+          "sio_steps.h: GPIO's word at 0x120 and B2's 0x8000000f for it, 0x80101100 for 0x28e03801c with bit 30 aside, the seven and the"
+          " fourteen in B2's order, each written 1, the byte at 0x6016 with its bits in both layouts, 0xa0 for a gate closed before, and"
+          " stages 0x15, 0x17 and 0x16", str(hdr[:4]))
+    check(all(st[s] == {0x4b: 0x15, 0x55: 0x17, 0x54: 0x16}.get(s, s) for s in range(256)),
+          "sst_stage(): 0x15, 0x17 and 0x16 for gates_mark=1's 0x4b, 0x55 and 0x54, and every other stage as it is")
+    check(len(fin) == 256 and len(go) == 2048 and all(fin[r] == (0xc0 | (r & 0x3f), int(r & 5 == 4)) for r in range(256))
+          and all(go[(r, n)] == going(r, n) for r in range(256) for n in range(8))
+          and not any(v & 0x60 for v in go.values()) and len({go[(r, n)] for r in (0, 1, 4, 5, 8, 9, 12, 13) for n in range(4)}) == 32,
+          "sst_final() keeps its six bits and sets bits 6 and 7; sst_second() is true only for a subtree that went off with the gate open;"
+          " sst_going() keeps the gate, the subtree and GPIO, puts the count of groups in bits 1 and 4, and never sets bit 5 or 6: 32"
+          " bytes, each its own")
+    check(all(wd[v][0] == int(not v & 0x8ff) for v in wd) and all(wd[v][1] == int(v | 0x40000000 == 0xc0101100) for v in wd) and len(wd) == 22
+          and wd[0x80101100] == (1, 1) and wd[0xc0101100] == (1, 1) and wd[0x80100100] == (1, 0) and wd[0x200] == (1, 0) and wd[0x800] == (0, 0) and wd[0xf0] == (0, 0),
+          "sst_idle(): target 0, actual state 0 and bit 11 clear, the was-gated flags aside; sst_clk_ok(): B2's value, bit 30 either way")
+    check((g["SST_PRE"], g["SST_WD2"], g["SST_STAGES"]) == (0x15, (0x16, 0x17), (0x15, 0x16, 0x17))
+          and tuple(g[n] for n in ("SST_G1", "SST_G2", "SST_SUB", "SST_GPIO_OK", "SST_PRE_OK", "SST_BACK", "SST_FINAL", "SST_MARK", "SST_GO_AT_LO",
+                                   "SST_GO_AT_HI", "SST_GO_CLOSED")) == (1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80, 2, 0x10, 0x20)
+          and not set(g["SST_STAGES"]) & (set(g["GATES_STAGES"]) | set(g["SIOD_STAGES"]) | set(g["SIOD1_STAGES"]) | set(g["PCD_STAGES"])
+                                          | set(g["POSITION"]) | set(g["ACK_EARLY"]) | {0x0e, 0x0f}),
+          "m1-crumbs has the byte's fields and the stages as the header has them, and the stages are no other run's")
+
+    # m1_sio_steps() in every scenario: the accesses, in order.
+    found = {o: 0x200 for o in SIOD_ORDER}
+    found.update({0x180: 0x1f0000ff, 0x188: 0x040002ff, 0x1e8: 0xff, 0x230: 0x1ff, 0x250: 0x244})
+    rets = {}
+    for a in scen:
+        ev = [l.split() for l in runs[a]]
+        acc = [(i, e[0], e[1], int(e[2], 16), int(e[3], 16)) for i, e in enumerate(ev) if e[0] in "rw"]
+        ws = [(i, p, o, v) for i, t, p, o, v in acc if t == "w"]
+        ks = [(i, int(e[1], 16), int(e[2]), int(e[3], 16)) for i, e in enumerate(ev) if e[0] == "k"]
+        ret = rets[a] = int([e for e in ev if e[0] == "ret"][0][1], 16)
+        end = {(e[1], int(e[2], 16)): int(e[3], 16) for e in ev if e[0] == "end"}
+        first = [(t, p, o) for i, t, p, o, v in acc if not ws or i < ws[0][0]]
+        if "c" in a:
+            ok = (not ws and [k[1:] for k in ks] == [(0x6016, 1, 0xa0)] and ret == 0xa0 and first == [("r", "S", o) for o in SIOD_ORDER] + [("r", "A", 0x50)]
+                  and all(end[("S", o)] == found[o] for o in SIOD_ORDER) and end[("P", 0x120)] == 0x200 and end[("C", 0x1c)] == 0x80100100)
+            check(ok, f"m1_sio_steps(), scenario '{a}': the gate closed before the first write: the 43 and the gate read, nothing written, 0xa0 sent"
+                  " once and returned", "\n".join(runs[a][-12:]))
+            continue
+        sub = "k" not in a and "n" not in a
+        g1 = "g" in a and "n" not in a and "u" not in a
+        res = (4 if sub else 0) | (8 if "u" not in a and "b" not in a else 0) | (1 if g1 else 0)
+        second = sub and not g1
+        pre = second and not any(c in a for c in "QrR")
+        g2 = second and pre and "h" in a
+        res2 = res | (0x10 if pre else 0) | (2 if g2 else 0)
+        back = "x" not in a and not ("o" in a and (g1 or g2))
+        want_k = ([going(res, 0)] + ([going(res, n) for n in (1, 2, 3)] if second else []) + [0xc0 | res2, 0xc0 | res2 | (0x20 if back else 0)])
+        want_w = ([("P", 0x120, 0x8000000f)] + [("S", o, 0) for o in SIOD_ORDER[:38]] + [("P", 0x120, 0)] + [("S", o, 0) for o in SIOD_ORDER[38:]]
+                  + ([("C", 0x1c, 0x80101100)] + [("X", o, 1) for o in SST_A_ORDER] + [("Y", o, 1) for o in SST_B_ORDER] if second else [])
+                  + [("S", o, found[o] & ~0xb00) for o in reversed(SIOD_ORDER)])
+        wi = [w[0] for w in ws]
+        n0 = 45 + (22 if second else 0)  # the writes before the write-back
+        between = lambda lo, hi: [(t, p, o) for i, t, p, o, v in acc if lo < i < hi]
+        ok = ([w[1:] for w in ws] == want_w and [k[1:] for k in ks] == [(0x6016, 1, b) for b in want_k] and ret == want_k[-1]
+              and first == [("r", "S", o) for o in SIOD_ORDER] + [("r", "A", 0x50)]
+              # GPIO's raise: only its own word is read before the first 0; its 0 follows the 38th with nothing between.
+              and all(x == ("r", "P", 0x120) for x in between(wi[0], wi[1])) and len(between(wi[0], wi[1])) >= 1 and wi[39] == wi[38] + 1
+              # No page is touched but at the words meant: GPIO's alone in the power page, the two gates read-only.
+              and all(o == 0x120 for i, t, p, o, v in acc if p == "P") and all(t == "r" and o in (0x50, 0x64) for i, t, p, o, v in acc if p == "A")
+              and all(o in SIOD_ORDER for i, t, p, o, v in acc if p == "S") and all(o == 0x1c for i, t, p, o, v in acc if p == "C")
+              and all(o in SST_A_ORDER for i, t, p, o, v in acc if p == "X") and all(o in SST_B_ORDER for i, t, p, o, v in acc if p == "Y")
+              # The bytes' places: the first after the last 0 and the gates' polls, one after each group, the last two around the write-back.
+              and wi[44] < ks[0][0] < wi[45] and ks[-2][0] < wi[n0] and wi[-1] < ks[-1][0]
+              and (not second or (wi[45] < ks[1][0] < wi[46] and wi[52] < ks[2][0] < wi[53] and wi[66] < ks[3][0] < ks[4][0] < wi[67]
+                                  and [x for x in between(ks[3][0], ks[4][0]) if x[0] == "r"] and all(x == ("r", "A", 0x50) for x in between(ks[3][0], ks[4][0]))))
+              and (second or not any(p in "CXY" for i, t, p, o, v in acc))
+              # UART_N is written and never polled, as in B2: read as found and after the polls, and not between.
+              and len([1 for i, t, p, o, v in acc if p == "S" and o == 0x238 and t == "r" and i < ks[0][0]]) == 2
+              and end[("P", 0x2d8)] == 0x1f0f03ff and not end[("P", 0x120)] & 0x8000000f
+              and all(not (end[("S", o)] ^ found[o]) & 0x1f0000ff for o in SIOD_ORDER if not ("x" in a and o == 0x188))
+              and (not pre or (end[("C", 0x1c)] == 0x80101100 and all(end[("X", o)] == 1 for o in SST_A_ORDER) and all(end[("Y", o)] == 1 for o in SST_B_ORDER)))
+              and (second or (end[("C", 0x1c)] == 0x80100100 and [end[("X", o)] for o in SST_A_ORDER] == [2, 2, 2, 2, 3, 2, 2])))
+        check(ok, f"m1_sio_steps(), scenario '{a}': the 43 and the gate read as found; GPIO raised, B2's 0 to the first 38, GPIO's 0 right after,"
+              " the polls, the rest in B2's groups, the gates polled and the byte; the 22 in B2's order with a byte after each group only if the"
+              " subtree went off and the gate stayed open; the byte's second layout; the 43 back in reverse as found and the byte again; no"
+              " other word of any page touched, ps_pmp's untouched", "\n".join(runs[a][-40:]) + f"\nwant {[hex(b) for b in want_k]}")
+    check(rets == dict(rets, **{"": 0xfc, "g": 0xed, "h": 0xfe, "c": 0xa0, "cg": 0xa0, "u": 0xf4, "b": 0xf4, "k": 0xe8, "n": 0xe8, "Q": 0xec, "q": 0xfc,
+                                "r": 0xec, "R": 0xec, "x": 0xdc, "z": 0xfc, "go": 0xcd, "ho": 0xde, "gu": 0xf4, "gn": 0xe8, "hr": 0xec, "hq": 0xfe,
+                                "gb": 0xe5, "hx": 0xde, "ub": 0xf4, "kn": 0xe8, "hQ": 0xec}),
+          "m1_sio_steps(): 0xfc with everything made and the gate open throughout; 0xed if it closes with GPIO's cycle and 0xfe once the 22"
+          " are in; a GPIO that doesn't come up or keeps bit 11, a word of the subtree that stays up or busy, a word of the 22 that doesn't"
+          " take, a word that doesn't come back and a gate that stays closed each clear their own bit; a word back after 50 ms counts as"
+          " back; bit 30 of 0x28e03801c isn't compared", str({a: hex(v) for a, v in rets.items()}))
+
+    # The source: what the function writes, and nothing else like it.
+    body = cut("static u8 m1_sio_steps(void)", "\n}\n")
+    wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
+    check(re.findall(wr + r"[^;]*;", body) == ["writel(SST_GPIO_UP, m1_ps + SST_GPIO);", "writel(0, m1_sio + off[i]);", "writel(0, m1_ps + SST_GPIO);",
+                                               "writel(SST_CLK_VAL, m1_look_pc + LOOK_PRE_CLK_OFF);", "writel(SST_PRE_VAL, m1_look_pa + pa[i]);",
+                                               "writel(SST_PRE_VAL, m1_look_pb + pb[i]);"]
+          and not re.search(wr, init) and len(re.findall(r"\bm1_sio_steps\(", code_only)) == 2 and "m1_look_gb" not in body
+          and body.count("m1_siod_back(m1_sio + off[i], was[i], m1_tps / 10)") == 1 and "\tif (sst_second(res)) {\n" in body
+          and all(len(re.findall(r"\b" + x + r"\b", re.sub(r"/\*.*?\*/", "", body, flags=re.S))) == n for x, n in (("m1_look_pc", 2), ("m1_look_pa", 2), ("m1_look_pb", 2))),
+          "m1_sio_steps() writes in six places: GPIO's raise, the 43's 0, GPIO's 0, 0x28e03801c, the seven, the fourteen, the last three"
+          " under sst_second(); the write-back is sio_down=1's function with 100 ms; the load writes nothing")
+    hdr_src = open(os.path.join(os.path.dirname(HOOK), "sio_steps.h")).read()
+    check(all(t in src for t in ("M1_PMGR_PS + SST_GPIO == 0x28e080120ULL", "SST_GPIO != M1_PS_PMP_RO", "SST_GPIO_UP == 0x8000000fU", "SST_CLK_VAL == 0x80101100U",
+                                 "LOOK_PRE_CLK + LOOK_PRE_CLK_OFF == 0x28e03801cULL", "ARRAY_SIZE(((u8[])SST_A_OFFS)) == SST_A_N && SST_A_N == 7",
+                                 "ARRAY_SIZE(((u8[])SST_B_OFFS)) == SST_B_N && SST_B_N == 14", "LOOK_PRE_A == 0x28e0a0000ULL && LOOK_PRE_B == 0x28e5b0000ULL"))
+          and "\tstatic const u8 wa[SST_A_N] = { 0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c };\n" in init
+          and "\tstatic const u8 wb[SST_B_N] = { 0x04, 0x0c, 0x10, 0x14, 0x08, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c, 0x30, 0x34, 0x38 };\n" in init
+          and "#define SST_GPIO\t\t0x120\n" in hdr_src and "#define SST_GPIO_UP\t\t0x8000000fU\n" in hdr_src,
+          "the 24 new addresses and the two values are pinned at build time, GPIO's offset against ps_pmp's, the lists' lengths too, and the"
+          " load compares the two lists with a second writing-out of them")
+    after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
+    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps) {\n",
+                              "\tif (pcie_down)\n\t\tm1_gates = m1_pcie_down();\n", "\tif (sio_steps)\n\t\tm1_gates = m1_sio_steps();\n",
+                              "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
+          and after.count("m1_sio_steps(") == 1 and len(re.findall(r"\bsst_stage\(", code_only)) == 2,
+          "step 8: after the stage and the outcomes, in place of gates_mark=1's reads and before step 9's mask and the commit; its byte is"
+          " what the alarm's last command sends; the stage is mapped in two places", after[-4500:])
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    check("static bool sio_steps;\nmodule_param(sio_steps, bool, 0444);\n" in src and not re.search(r"\bsio_steps\s*=[^=]", code_only)
+          and in_order_of(params, ["\tif (sio_steps && (!gates_mark || sio_down || pcie_down || probe)) {\n\t\tpr_err(", "\t\treturn -EINVAL;\n\t}\n", "\treturn 0;\n\nbad_wait:"])
+          and 'sio_steps ? " sio_steps=1" : ""' in src
+          and in_order_of(src, ["\tif (gates_mark) {\n\t\tint ret = m1_gates_init();",
+                                "\tif (sio_steps) {\n\t\tint ret = m1_siod_init();\n\n\t\tif (!ret)\n\t\t\tret = m1_sst_init();\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"]),
+          "sio_steps=1 loads only with gates_mark=1 and never with sio_down=1, pcie_down=1 or probe=1; it's off by default, read-only, named in"
+          " the load line, and the load runs sio_down=1's check of the 43 and then m1_sst_init(), after the gate pages are mapped, and returns"
+          " a refusal", params[-1500:])
+
+    # m1_sst_init(): the pages of the 22 mapped unless they are already, the 24 words and the gate read once each and logged; refused,
+    # with nothing read, if a page isn't there, an address is on the never-write list, or a list isn't B2's.
+    ok = loads[("mmmmmm", "0")]
+    reads = sorted(r for r in ok if r.startswith("read "))
+    check(ok[-1] == "ret 0 reads 24 maps 3" and [r for r in ok if r.startswith("map ")] == ["map 28e038000 4000", "map 28e0a0000 4000", "map 28e5b0000 4000"]
+          and reads == sorted(["read P 120", "read C 1c", "read A 50"] + [f"read X {o:x}" for o in SST_A_ORDER] + [f"read Y {o:x}" for o in SST_B_ORDER])
+          and len([r for r in ok if r.startswith("info m1: sio_steps: awake: GPIO 0x28e080120 ")]) == 1 and not any(r.startswith("err") for r in ok)
+          and loads[("mmmppp", "0")][-1] == "ret 0 reads 24 maps 0" and loads[("mmmpmp", "0")][-1] == "ret 0 reads 24 maps 1",
+          "m1_sst_init(): the three pages mapped here unless look=1 mapped them, and GPIO's word, the 22 and the gate read once each and logged",
+          "\n".join(ok))
+    check(all(loads[(m, "0")][-1].startswith("ret -19 reads 0") for m in ("nmmmmm", "mnmmmm", "mmnmmm", "mmmnmm", "mmmmnm", "mmmmmn"))
+          and all(loads[("mmmmmm", n)][-1] == "ret -22 reads 0 maps 0" for n in ("28e080120", "28e03801c", "28e0a0010", "28e5b0038"))
+          and loads[("mmmmmm", "28e0802d8")][-1] == "ret 0 reads 24 maps 3"
+          and all(v[-1] == "ret -22 reads 0 maps 0" and any(r.startswith("err m1: sio_steps:") for r in v) for v in bad_lists.values()),
+          "m1_sst_init(): refuses, reading nothing, if a page isn't mapped or doesn't map, if GPIO's word, 0x28e03801c or one of the 21 is"
+          " on the never-write list, or if a list is out of B2's order, has a word off its place, or is one short", str(loads) + str(bad_lists))
+
+    # m1-crumbs. The run's record at its last stage, all as meant, with its byte at 0x6016.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+        alarm = (0x41, 121544 + 3600, 0, 0)
+        rec = dict(parked=0x7d, left=0, down=0xf5, secs=121544, prog=(0xff, 0xff), flags=0x90, isrs=0x8d)
+
+        def dec(stage, gb, x=217, **kw):
+            fake(path, scratch(stage, **dict(rec, drained=gb, **kw)), rtc_secs=121544 + x + 40, alarm=alarm)
+            r = run(path, cnt="960000000 24000000")
+            return r.returncode, r.stdout, r.stderr
+
+        rc, out_, err = dec(0x97, 0xfc, x=90)
+        check(rc == 0 and "stage 0x6004 = 0x97 (pmp_out=1: bit 7, so the stage is 0x17) (pmgr_late=1): sio_steps=1: gates_mark=1's 0x55:" in out_
+              and "0x6016 = 0xfc: sio_steps=1's byte, in place of the alarm's result:" in out_
+              and "  the 43 words of SIO's subtree after the polls: all read target 0 and actual state 0, and B2's 42 polls for bit 11 clear were all met: the subtree was off\n" in out_
+              and "its bit-11 poll after the 0 was met, and it read off and idle after the gates' polls: the cycle was made\n" in out_
+              and "  0x28e5a0050 after that, with up to 100 ms for 0x28e5a0064 and 100 ms more for it: bit 30 clear, OPEN\n" in out_
+              and "written after that: all read back as written\n" in out_ and "  0x28e5a0050 after them, with up to 100 ms more: bit 30 clear, OPEN\n" in out_
+              and "  written back: all 43 read as found in target, actual state and auto-enable within 100 ms each, and 0x28e5a0050 read open again\n" in out_
+              and "  so: 0x28e5a0050 stayed OPEN with SIO's subtree off, GPIO cycled as B2 cycles it and the 22 words as B2 writes them: neither is what the gate follows" in out_
+              and "the restart's time is read as --m1-gates' is" in out_ and "nothing records the commit" not in out_
+              and "alarm command" not in out_ and "gates_mark=1's byte" not in out_ and "sio_down=1's byte" not in out_ and "pcie_down=1's byte" not in out_
+              and "0x6007 = 0xf5: fabric_up=1's byte, in place of the cores that held:\n" in out_ and "WD1 stood as the marker" in out_
+              and "0x6005 = 0x7d: wd2_bite=1, after the commit, the alarm and the release:\n" in out_
+              and "  wd1_mark=1's marker: about 90 s is what WD1 gives with its count never zeroed: B2 didn't reach its op 224" in out_
+              and "0x140c is the commit's second + 3600, as the run wrote it" in out_,
+              "sio_steps=1's 0x97: its byte read line by line in the alarm's result's place; the rest read as --m1-gates' 0xd5", out_ + err)
+        rc5, out5, err5 = dec(0xd5, 0xfc)
+        rcc, outc, errc = dec(0x97, 0xfc)
+        skip = ("0x6000:", "0x6010:", "stage 0x6004", "0x6016", "  0x28e", "  AFNC2", "  so: ", "  the 43", "  GPIO", "  the 22", "  written back", "  the commit found",
+                "  a poll that", "  the other four")
+        missing = [l for l in out5.splitlines() if not l.startswith(skip) and l not in outc.splitlines()]
+        check(rc5 == 0 and rcc == 0 and "gates_mark=1's byte" in out5 and "sio_steps=1's byte" not in out5 and not missing,
+              "0xfc at 0x6016: the gate byte under 0xd5, sio_steps=1's under 0x97, and nothing else read differently", "\n".join(missing))
+        for gb, want, what in ((0xed, "  so: 0x28e5a0050 CLOSED with GPIO's cycle made inside the switch-off, where it stayed open twice without it", "closed with GPIO's cycle"),
+                               (0xfe, "  so: 0x28e5a0050 CLOSED ONCE THE 22 WORDS WERE WRITTEN, and not before: the gate follows them, or some of them", "closed once the 22 were in"),
+                               (0xe5, "  so: 0x28e5a0050 CLOSED after the switch-off, where it stayed open twice (sio_down=1), but GPIO's cycle isn't shown made as meant", "closed without GPIO's cycle shown"),
+                               (0xe8, "  so: INCONCLUSIVE on the gate: SIO's subtree wasn't off, or a poll B2 waits for wasn't met", "the subtree not off"),
+                               (0xec, "  so: 0x28e5a0050 stayed OPEN, but the 22 didn't all read back as written", "open with the 22 not as written")):
+            rc, out_, err = dec(0x97, gb, x=90)
+            check(rc == 0 and want in out_ and out_.count("  so: ") == 1 + out5.count("  so: ") - 1 and "Not read" not in out_.split("0x6016 = ")[1].split("\n0x")[0],
+                  f"sio_steps=1's 0x{gb:02x}: {what}, said once", out_ + err)
+        rc, out_, err = dec(0x96, 0xdc)
+        check(rc == 0 and "so the stage is 0x16" in out_ and "sio_steps=1: gates_mark=1's 0x54:" in out_ and "pending afterwards" in out_
+              and "  written back: NOT CONFIRMED" in out_ and "the restart's time doesn't compare with --m1-gates'" in out_
+              and "  wd1_mark=1's marker: not read. CPU0 had an exception pending" in out_,
+              "sio_steps=1's 0x96: the pending stage, a write-back that isn't confirmed, and no reading of the time", out_ + err)
+        rc, out_, err = dec(0x95, 0x8e, x=90, parked=0xfe)
+        check(rc == 0 and "so the stage is 0x15" in out_ and "8 (sio_steps=1): gates_mark=1's 0x4b, with SIO's subtree switched off around GPIO's cycle" in out_
+              and "parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out_
+              and "  the 22 words: 1 of their three groups written and read back when the record stops; next was the seven words 0x28e0a0004 to 0x28e0a001c (B2's ops 9 to 15)\n" in out_
+              and "  so: THE RUN STOPPED AT the seven words 0x28e0a0004 to 0x28e0a001c (B2's ops 9 to 15): in its writes, its read-back or the byte after it." in out_
+              and "Nothing shows the 43 written back" in out_ and "  stage 0x15, so nothing records the commit after this byte" in out_
+              and "  wd1_mark=1's marker: not read. Stage 0x15 is the last before the commit" in out_,
+              "sio_steps=1's 0x95 with the byte's first layout and one group in: the stage before the commit, the group it stopped at, no reading"
+              " of the time", out_ + err)
+        for x in (10, 90):
+            rc, out_, err = dec(0x95, 0, x=x, parked=0xfe)
+            check(rc == 0 and "0x6016 = 0x00: SIO_STEPS' BYTE DIDN'T LAND (bit 7 clear), though stage 0x15 and the steps' outcomes did" in out_
+                  and "bit 30" not in out_ and "  so: " not in out_.split("0x6016 = ")[1].split("\n0x")[0]
+                  and f"the SoC restarted about {x} s after the commit" in out_,
+                  f"sio_steps=1's 0x95 with 0x6016 = 0, a restart at {x} s: said to have stopped in the switch-off or GPIO's cycle", out_ + err)
+        for stage, gb, kw, want in ((0x97, 0x00, {}, "0x6016 = 0x00: bit 7 is clear, so sio_steps=1's byte didn't survive the reset"),
+                                    (0x96, 0x7f, {}, "0x6016 = 0x7f: bit 7 is clear"),
+                                    (0x97, 0xfc, dict(prog=(0xff, 0x00)), "0x6016 = 0xfc: not read. sio_steps=1's byte goes out after the steps' outcomes"),
+                                    (0x17, 0xfc, {}, "0x6016 = 0xfc: not read. A sio_steps=1 run's stages always carry pmp_out=1's bit 7"),
+                                    (0x97, 0x8c, {}, "0x6016 = 0x8c: bit 6 is clear, the byte's first layout, and this isn't one sio_steps=1 sends in it at stage 0x17"),
+                                    (0x97, 0xc3, {}, "0x6016 = 0xc3: bit 6 is set, the byte's second layout, and this isn't one sio_steps=1 sends in it")):
+            rc, out_, err = dec(stage, gb, **kw)
+            check(rc == 0 and want in out_ and "bit 30" not in out_ and "SIO_STEPS' BYTE" not in out_ and "alarm command" not in out_
+                  and "the 43 words of SIO's subtree after the polls" not in out_ and "so: 0x28e5a0050" not in out_,
+                  f"stage 0x{stage:02x}, 0x6016 = 0x{gb:02x}{', no outcomes marker' if kw.get('prog') else ''}: sio_steps=1's byte isn't read", out_ + err)
+        rc, out_, err = dec(0x97, 0xfc, prog=(0xff, 0x00))
+        check(rc == 0 and "The steps' outcomes go out right after stage 0x15's command" in out_,
+              "sio_steps=1 without the outcomes' marker: fabric_up=1's byte is said to follow stage 0x15's command, the run's own", out_ + err)
+        # Every byte, at each of the run's stages, read independently of the decoder.
+        wrong = []
+        for s in (0x15, 0x16, 0x17):
+            for v in range(256):
+                for stop in (0xc0, 0x40):
+                    b = bytearray(0x20)
+                    b[0x12], b[0x13], b[0x16] = stop, 0xff, v
+                    lines = g["sst_lines"](s, bytes(b), True)
+                    text = "\n".join(lines)
+                    so = [l for l in lines if l.startswith("  so: ")]
+                    sub, g1, g2, gp, pr, bk = bool(v & 4), bool(v & 1), bool(v & 2), bool(v & 8), bool(v & 0x10), bool(v & 0x20)
+                    second = sub and not g1
+                    if not v & 0x80:
+                        ok = len(lines) == 1 and not so and ("DIDN'T LAND" in text) == (s == 0x15) and ("Not read" in text) == (s != 0x15)
+                    elif v == 0xa0:
+                        ok = len(so) == 1 and "NOTHING WAS WRITTEN" in so[0] and "ALREADY CLOSED" in text and len(lines) == 3
+                    elif not v & 0x40:
+                        n = (1 if v & 2 else 0) | (2 if v & 0x10 else 0)
+                        if v & 0x20 or s != 0x15 or (n and not second):
+                            ok = len(lines) == 1 and "Not read" in text and "first layout" in text
+                        else:
+                            ok = (len(so) == 1 and ("THE RECORD STOPS BEFORE THE BYTE'S SECOND LAYOUT" in so[0]) == (not second)
+                                  and ("THE RUN STOPPED" in so[0]) == second and (f"the 22 words: {n} of their three groups" in text) == second
+                                  and ("AT 0x28e03801c" in so[0]) == (second and n == 0) and ("AT the seven" in so[0]) == (second and n == 1)
+                                  and ("AT the fourteen" in so[0]) == (second and n == 2) and ("IN THE GATE'S SECOND POLL" in so[0]) == (second and n == 3)
+                                  and ("the subtree was off" in lines[1]) == sub and ("the cycle was made" in lines[2]) == gp
+                                  and ("SET, closed" in lines[3]) == g1 and "Nothing shows the 43 written back" in so[0]
+                                  and "nothing records the commit" in text and "the commit found" not in text and "CLOSED" not in so[0] and "OPEN" not in so[0])
+                    elif (g1 and g2) or (not second and (g2 or pr)):
+                        ok = len(lines) == 1 and "Not read" in text and "second layout" in text
+                    else:
+                        live = stop == 0xc0
+                        ok = (len(so) == 1 and "sio_steps=1's byte" in lines[0]
+                              and ("the subtree was off" in lines[1]) == sub and ("NOT all off" in lines[1]) == (not sub)
+                              and ("the cycle was made" in lines[2]) == gp and ("THE CYCLE ISN'T SHOWN MADE" in lines[2]) == (not gp)
+                              and ("SET, closed" in lines[3]) == g1 and ("clear, OPEN" in lines[3]) == (not g1)
+                              and (": all read back as written" in lines[4]) == (second and pr) and ("NOT all read back as written" in lines[4]) == (second and not pr)
+                              and ("the 22 words: not written" in lines[4]) == (not second)
+                              and (not second or (("SET, closed" in lines[5]) == g2 and ("clear, OPEN" in lines[5]) == (not g2)))
+                              and ("written back: all 43 read as found" in text) == bk and ("written back: NOT CONFIRMED" in text) == (not bk)
+                              and ("SIO's firmware isn't shown stopped" in so[0]) == (not live)
+                              and ("INCONCLUSIVE on the gate: SIO's subtree wasn't off" in so[0]) == (live and not sub)
+                              and ("CLOSED with GPIO's cycle made inside the switch-off" in so[0]) == (live and sub and g1 and gp)
+                              and ("but GPIO's cycle isn't shown made as meant" in so[0]) == (live and sub and g1 and not gp)
+                              and ("CLOSED ONCE THE 22 WORDS WERE WRITTEN" in so[0]) == (live and second and g2)
+                              and ("the gate follows them, or some of them" in so[0]) == (live and second and g2 and pr)
+                              and ("that the cycle doesn't close it isn't shown" in so[0]) == (live and second and g2 and not gp)
+                              and ("neither is what the gate follows" in so[0]) == (live and second and not g2 and gp and pr)
+                              and ("stayed OPEN, but" in so[0]) == (live and second and not g2 and not (gp and pr))
+                              and ("GPIO's cycle isn't shown made" in so[0] and "stayed OPEN, but" in so[0]) == (live and second and not g2 and not gp)
+                              and ("the 22 didn't all read back as written" in so[0]) == (live and second and not g2 and not pr)
+                              and ("a2_pre=1 is next" in so[0]) == (live and sub and ((g1 and gp) or g2))
+                              and ("doesn't compare with --m1-gates'" in text) == (not bk) and ("the commit found SIO's subtree as the recipe leaves it" in text) == bk
+                              and ("and the 22 as B2 writes them" in text) == (bk and second)
+                              and ("nothing records the commit" in text) == (s == 0x15))
+                    if not ok:
+                        wrong.append((hex(s), hex(v), hex(stop)))
+        check(not wrong, "every byte at sio_steps=1's three stages, with SIO's firmware stopped and not: each line follows its own bit, one verdict"
+              " or none, the verdict the one its bits allow, and a byte no pass sends isn't read", str(wrong[:8]))
+        for stage in (0x95, 0x96, 0x97):
+            before = fake(path, scratch(stage, **dict(rec, drained=0xfc)), rtc_secs=121761, alarm=alarm)
+            r = run(path, "--clear", cnt="4800000000 24000000")
+            after_ = open(path, "rb").read()
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and after_ == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                  f"--clear after sio_steps=1's 0x{stage:02x}: the run's alarm disarmed by its compare value, and the crumbs zeroed", r.stdout + r.stderr)
+        lost = dict(rec, secs=0, drained=0xfc)
+        before = fake(path, scratch(0x97, **lost), rtc_secs=121761, alarm=alarm)
+        r = run(path, "--clear", cnt="4800000000 24000000")
+        check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
+              and "after gates_mark=1's, sio_down=1's, pcie_down=1's and sio_steps=1's stages it never does: it's that run's byte" in r.stderr,
+              "--clear after 0x97 with the second lost and 0xfc at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
 
 
 PCD_HDR = r"""
@@ -2950,7 +3541,7 @@ def pcie_down_tests(g, src):
           and "#define PCD_OFFS\t\t{ PCD_ST_SYS, PCD_ST1_SYS, PCD_GP_SYS_OFF, PCD_ST, PCD_GP }\n" in open(os.path.join(os.path.dirname(HOOK), "pcie_down.h")).read(),
           "the five addresses and the gate's are pinned at build time, each word's offset against ps_pmp's, and the list is made of those five names")
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
-    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down) {\n",
+    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps) {\n",
                               "\tif (sio_down)\n\t\tm1_gates = m1_sio_down();\n", "\tif (pcie_down)\n\t\tm1_gates = m1_pcie_down();\n",
                               "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_pcie_down(") == 1 and len(re.findall(r"\bpcd_stage\(", code_only)) == 2,
@@ -3131,7 +3722,7 @@ def pcie_down_tests(g, src):
         before = fake(path, scratch(0x9f, **dict(rec, secs=0, drained=0xbd)), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
         check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
-              and "after gates_mark=1's, sio_down=1's and pcie_down=1's stages it never does: it's that run's byte" in r.stderr,
+              and "after gates_mark=1's, sio_down=1's, pcie_down=1's and sio_steps=1's stages it never does: it's that run's byte" in r.stderr,
               "--clear after 0x9f with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
 
 
@@ -4074,7 +4665,7 @@ def look_tests(g, src, dec):
           and "static_assert(LOOK_AON_PAGE == M1_POS_PAGE && LOOK_SIO_PAGE == M1_PS_SIO_PAGE && LOOK_PS_PAGE == M1_PMGR_PS);\n" in src
           and "\tif (m1_look_clk)\n\t\tiounmap(m1_look_clk);\n\tif (m1_look_ga)\n\t\tiounmap(m1_look_ga);\n\tif (m1_look_gb)\n\t\tiounmap(m1_look_gb);\n"
               "\tif (m1_look_pc)\n\t\tiounmap(m1_look_pc);\n\tif (m1_look_pa)\n\t\tiounmap(m1_look_pa);\n\tif (m1_look_pb)\n\t\tiounmap(m1_look_pb);\n" in src
-          and all(len(re.findall(r"\b" + x + r"\b", code_only)) == n for x, n in (("m1_look_pc", 6), ("m1_look_pa", 6), ("m1_look_pb", 6))),
+          and all(len(re.findall(r"\b" + x + r"\b", code_only)) == n for x, n in (("m1_look_pc", 12), ("m1_look_pa", 12), ("m1_look_pb", 12))),
           "the load maps the look's six ranges, each at its own address, looks once awake, and zeroes its mark and its stage again; no"
           " function of the look's writes a register; its pages are the recipe's where the recipe has them; all six are unmapped, and the"
           " three new pages' pointers are used nowhere else", linit)
@@ -5316,7 +5907,7 @@ def position_tests(g, src):
                   f"cluster_ack=1 with 0x6006 and 0x6007 both 0 (0x6014 = 0x{flags:02x}): no word is said to have read 0", out + err)
         rc, out, err = dec(0xd7, dict(ack15, flags=0xa0))
         UNREAD = ("  0x6014's bits 4 and 5 are cluster_ack=1's alone in a sio_stop=1 run: bit 5 only with bit 4, and only at that run's stages (0x4e, 0x56, 0x57,"
-                  " or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, or sio_down=1's 0x3d, 0x3e, 0x3f, or pcie_down=1's 0x1d, 0x1e, 0x1f, with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
+                  " or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, or sio_down=1's 0x3d, 0x3e, 0x3f, or pcie_down=1's 0x1d, 0x1e, 0x1f, or sio_steps=1's 0x15, 0x16, 0x17, with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
         check(rc == 0 and "0x6014 bit 4 (cluster_ack=1)" not in out and UNREAD in out,
               "bit 5 without the mark in a sio_stop=1 record: called out, and not read as cluster_ack=1's", out + err)
         # Stages no cluster_ack=1 run sends (0x4f, and recfg_bite=1's), and a stage without pmp_out=1's bit: the mark isn't read there.
@@ -5327,7 +5918,7 @@ def position_tests(g, src):
                   f"stage 0x{stage:02x} with 0x6014 = 0x90: not a cluster_ack=1 run's stage, so the mark isn't read and the bits are called unreadable", out + err)
         # The mark's byte lost (bit 7 clear), or a stage before it was sent: 0x6006's cluster bits can't be read either way, and it says so,
         # whether or not one is set.
-        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1, 0x3d with sio_down=1, 0x1d with pcie_down=1){}."
+        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1, 0x3d with sio_down=1, 0x1d with pcie_down=1, 0x15 with sio_steps=1){}."
                   " In one, bits 2-5 are the cluster words whose flag stayed, not the waits on bit 4 that timed out)\n")
         for stage in (0xce, 0xd6, 0xd7):
             for left in (0x04, 0x00):
@@ -5885,7 +6476,7 @@ def position_tests(g, src):
     # recfg_bite=1: the module reads, and never writes, the SRAM; the sample goes out once, after the release, in one command with its stage.
     tool = open(TOOL).read()
     check("#define M1_RECFG_STAGE\t\t0x47" in src and "#define M1_RECFG_STAGE_PEND\t0x46" in src and "RECFG_STAGES = (0x46, 0x47)\n" in tool
-          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f),
+          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x15, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17),
           "recfg_bite=1's stages are 0x46 and 0x47 in the module and in m1-crumbs, with sio_stop=1's stages")
     uses = [l for l in src.splitlines() if re.search(r"\bm1_recfg\b", l)]
     literals = [int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", src)]
@@ -5945,8 +6536,8 @@ def position_tests(g, src):
           " after it, and returns their refusals")
 
     # wd2_bite=1: one write to WD2, its bite, by CPU0 after the release, and only if WD2 showed RESET_EN; the sample in one command with its stage.
-    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2\n" in tool
-          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f) and g["WD2_PEND"] == (0x56, 0x51, 0x54, 0x3e, 0x1e),
+    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2 + SST_WD2\n" in tool
+          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17) and g["WD2_PEND"] == (0x56, 0x51, 0x54, 0x3e, 0x1e, 0x16),
           "wd2_bite=1's stages are 0x56 and 0x57 in the module and in m1-crumbs, with recfg_bite=1's as the stages whose 0x6005 is a sample")
     wout = src[src.index("static void m1_wd2_out(void)"):]
     wout = wout[:wout.index("\n}\n")]

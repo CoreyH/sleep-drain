@@ -93,10 +93,13 @@ the PR with that session's work.
     0x28e09c34c, closed within 100 ms; the restart still came at 90 s. So PCIe isn't the stall,
     and a gate can close for the AP with the 21 words unmoved, which makes 0x28e5a0050 staying
     open with SIO's subtree off a lead again: B2's op 140.
-  - **Next, a build: `pre=1` on the `sio_down=1` rung, in stages** (not built; "The order after
-    the look", in Track A below): with SIO's subtree off and 0x28e5a0050 read, B2's cycle of GPIO
-    and the gate again, then the 22 words and the gate again, so that one run says which of the
-    two, if either, lets that gate close.
+  - **Next, a run of Corey's: `pkexec e1-hook/run-floor --quick --m1-sio-steps`** in a safe boot,
+    on battery, nothing attached (built, not run; RESEARCH.md, "`sio_steps=1` as built"; "The
+    order after the look", in Track A below). SIO's subtree switched off with B2's cycle of GPIO
+    inside it and 0x28e5a0050 polled; then, if it's still open, the 22 words and the gate again;
+    the 43 put back. One run says which of the two, if either, lets that gate close: 0xed GPIO's
+    cycle, 0xfe the 22, 0xfc neither. Afterwards: `pkexec e1-hook/m1-crumbs`, then `--clear`, then
+    `pkexec sleep-drain-safe collect`.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -574,8 +577,20 @@ steps, and restarting the DCP and the PMP afterwards.
       auto-enable and the bridge bits by hand first); the byte at 0x6016, sent after the three
       `_SYS` words and again after the gate, under stages 0x1d, 0x1f and 0x1e. The sweep's cheap
       rider below isn't in it: it would be four more reads in a block no run here has mapped.
-      **Next, not built: `pre=1` on the `sio_down=1` rung, in stages** (the name is the build's
-      to choose). After the PCIe run the 22 words are no longer the likeliest thing behind
+      **Built, not run: `sio_steps=1`** (`--m1-sio-steps`; RESEARCH.md, "`sio_steps=1` as
+      built"), which is the build planned here as `pre=1` in stages. Settled in it: GPIO's cycle
+      goes inside the switch-off, where B2 has it (the switch-off alone has been read twice); the
+      22 go in after the switch-off, so the gate can be read between; the 43 go back, GPIO and the
+      22 stay as B2 writes them. After the run:
+      - **0xed (closed with GPIO's cycle) or 0xfe (closed once the 22 were in):** op 140 is
+        cleared as far as the AP can clear it. Then `a2_pre=1`. If the restart came later than
+        90 s, that is the bigger finding, and what's after B2's op 224 is next.
+      - **0xfc (open throughout):** neither is what the gate follows, as the AP can make them.
+        Then what else is behind that gate (the other words of SIO's page that Linux leaves on,
+        read at the commit), or one pass in B2's own order, the 22 first.
+      - **A stop in one of the 22's groups** (stage 0x95, the byte's first layout): that group
+        is left out, or made last, in a second run.
+      The plan as it stood: after the PCIe run the 22 words are no longer the likeliest thing behind
       0x28e5a0050, and B2's cycle of GPIO (its ops 47 and 90: 0x28e080120 := 0x8000000f, then 0,
       made inside its switch-off of SIO's subtree; GPIO's parents are PMS and SIO) is the other
       thing B2 does there that the AP hasn't. One run can ask both, a reading of the gate after
