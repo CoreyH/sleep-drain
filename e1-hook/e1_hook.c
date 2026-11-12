@@ -1498,7 +1498,7 @@ static void e1_after_slpa(void)
  * the internal PCIe host's ports live, so APCIE_GP_SYS is up at the commit
  * where macOS has it idle and gated, and B2 writes 0 to it and waits on its
  * bit 11. Here, in step 8, where gates_mark=1's reads would be, after stage
- * 0x1d's command and the outcomes and with SError unmasked: the five words are
+ * 0x1d's command and the outcomes and with SError unmasked: APCIE_GP_SYS is
  * read as found; APCIE_ST_SYS, APCIE_ST1_SYS and APCIE_GP_SYS are written 0, in
  * B2's order, and each polled for bit 11 clear, up to 100 ms; pcd_byte() goes
  * to 0x6016; APCIE_ST and APCIE_GP are written 0 and given up to 100 ms each to
@@ -3266,7 +3266,7 @@ static u8 m1_pcie_down(void)
 	return b;
 }
 /* The five addresses, pinned: none is ps_pmp's 0x28e0802d8, which is in this page and on the never-write list. */
-static_assert(PCD_N == 5 && PCD_SYS_N == 3 && PCD_GP_SYS == 2 && PCD_BUSY == BIT(11) && LOOK_GATE_B + PCD_GATE == 0x28e09c34cULL &&
+static_assert(ARRAY_SIZE(((u16[])PCD_OFFS)) == PCD_N && PCD_N == 5 && PCD_SYS_N == 3 && PCD_GP_SYS == 2 && PCD_BUSY == BIT(11) && LOOK_GATE_B + PCD_GATE == 0x28e09c34cULL &&
 	      PCD_PS_STATE == 0xffU && !(PCD_SECOND & (PCD_FOUND_UP | PCD_FOUND_BUSY | PCD_POLL | PCD_DOWN | PCD_ST_OK | PCD_MARK)));
 static_assert(M1_PMGR_PS + PCD_ST_SYS == 0x28e0802e8ULL && M1_PMGR_PS + PCD_ST1_SYS == 0x28e0802f0ULL &&
 	      M1_PMGR_PS + PCD_GP_SYS_OFF == 0x28e080320ULL && M1_PMGR_PS + PCD_ST == 0x28e080148ULL &&
@@ -4503,19 +4503,21 @@ static int __init m1_siod_init(void)
 }
 
 /*
- * pcie_down=1 at load, after m1_gates_init(): none of the five is on the never-write list, each is a power word of the
- * first page and not ps_pmp's, the two pages step 8 goes through are mapped, and the five and the gate logged awake.
- * Reads only.
+ * pcie_down=1 at load, after m1_gates_init(): the list is exactly the five words named here, in B2's order (a second
+ * writing-out of them: a list that came out short would otherwise end in offset 0, a core's own word; the adversarial
+ * review of #93), none is on the never-write list, the two pages step 8 goes through are mapped, and the five and the
+ * gate logged awake. Reads only.
  */
 static int __init m1_pcd_init(void)
 {
 	static const u16 off[PCD_N] = PCD_OFFS;
+	static const u16 want[PCD_N] = { 0x2e8, 0x2f0, 0x320, 0x148, 0x150 };
 	u32 v[PCD_N];
 	unsigned int i;
 
 	for (i = 0; i < PCD_N; i++) {
-		if (off[i] >= PAGE_SIZE || (off[i] & 7) || off[i] == M1_PS_PMP_RO || e1_never_write(M1_PMGR_PS + off[i])) {
-			pr_err("m1: pcie_down: 0x%llx isn't a power word this may write, or is on the never-write list; refusing\n",
+		if (off[i] != want[i] || e1_never_write(M1_PMGR_PS + off[i])) {
+			pr_err("m1: pcie_down: 0x%llx isn't the PCIe power word meant at its place, or is on the never-write list; refusing\n",
 			       M1_PMGR_PS + off[i]);
 			return -EINVAL;
 		}

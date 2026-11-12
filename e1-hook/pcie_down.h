@@ -22,7 +22,7 @@
  * So e1_hook pcie_down=1, on --m1-gates' recipe, has CPU0 do in step 8, after
  * the stage and the steps' outcomes and before the commit, in place of
  * gates_mark=1's reads:
- *   0. the five words read as found
+ *   0. APCIE_GP_SYS read as found (the other four aren't: the byte has no room for them, and the load logs all five awake)
  *   1. B2's ops 141 to 143: a literal 0 to the three _SYS words, in B2's
  *      order; then B2's polls, each word for bit 11 clear, up to 100 ms (B2's
  *      255 tries). One that isn't met is recorded and the pass goes on
@@ -55,12 +55,13 @@
  *   bit 1  APCIE_GP_SYS read with bit 11 set as found, before any 0
  *   bit 2  APCIE_GP_SYS's poll was met: bit 11 read clear within 100 ms of
  *          the 0
- *   bit 3  APCIE_GP_SYS read target 0 and actual state 0 at the send's last
- *          read of it (after the polls in the first send; after the gate's
- *          poll in the second)
+ *   bit 3  APCIE_GP_SYS read target 0, actual state 0 and bit 11 clear at the
+ *          send's last read of it (after the polls in the first send; after
+ *          the gate's poll, the last read before the commit, in the second)
  *   bit 4  APCIE_ST_SYS and APCIE_ST1_SYS: both polls met, and both read
- *          target 0 and actual state 0 after them (Linux's suspend leaves
- *          them off already)
+ *          target 0, actual state 0 and bit 11 clear after them (Linux's suspend leaves
+ *          them off already, by both looks; they aren't read as found here,
+ *          so the bit doesn't say whether this 0 is what switched them off)
  *   bit 5  APCIE_ST and APCIE_GP both read target 0 and actual state 0 within
  *          100 ms of their 0. Never set in the first send
  *   bit 6  0x28e09c34c read closed (bit 30) within 100 ms after that. Never
@@ -68,7 +69,13 @@
  *          first may be what lets a gate close (RESEARCH.md)
  *   bit 7  always set
  * As the desk reading expects it if the 0 takes: 0xbd, or 0xfd with the gate
- * closed. Bit 2 clear, or bit 3 clear in the second send, is the latch.
+ * closed. Bit 3 clear in the second send says the word wasn't off and idle at
+ * the last read before the commit: a lead on B2's op 146, not proof that B2
+ * waits there for good, since the AP's 100 ms isn't B2's wait and the restart's
+ * time still says how far B2 got (Pullfrog on #93). Bit 2 clear with bit 3 set
+ * says bit 11 took longer than 100 ms and had cleared by the commit. Bit 0
+ * clear says the premise wasn't there: the word was down or gated already, so
+ * the 0 met no live port (the adversarial review of #93).
  *
  * The stages are the run's own from step 8's command on, gates_mark=1's with
  * the byte's meaning the one difference (pcd_stage()): 0x1d for 0x4b, 0x1f and
@@ -129,10 +136,10 @@ typedef uint32_t u32;
 #define M1_PCD_STAGE		0x1f	/* in place of 0x55 */
 #define M1_PCD_STAGE_PEND	0x1e	/* in place of 0x54 */
 
-/* A power word is off in its power state: its target and its actual state read 0. */
+/* A power word is off and idle: its target and its actual state read 0, and bit 11 is clear. */
 static inline bool pcd_down(u32 v)
 {
-	return !(v & PCD_PS_STATE);
+	return !(v & (PCD_PS_STATE | PCD_BUSY));
 }
 
 /*

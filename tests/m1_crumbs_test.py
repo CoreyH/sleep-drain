@@ -2673,7 +2673,7 @@ int main(void)
 """
 # m1_pcie_down() and the poll it calls, as they stand, against a model of the first power page and the second gate page that logs
 # every read, write and PMU byte. The scenario is argv[1], letters: b APCIE_GP_SYS keeps bit 11 after its 0; l it keeps it for
-# 30 ms; u its actual state stays f; d its actual state takes 50 ms to drop; f it is found with bit 11 set; g it is found gated,
+# 30 ms; L for 130 ms, past its poll; u its actual state stays f; d its actual state takes 50 ms to drop; f it is found with bit 11 set; g it is found gated,
 # as macOS has it; s APCIE_ST_SYS keeps bit 11; t APCIE_ST1_SYS's actual state stays up; p APCIE_GP's actual state stays f; c the
 # gate 0x28e09c34c closes once APCIE_GP_SYS and APCIE_GP read off.
 PCD_FN_PRELUDE = r"""
@@ -2703,6 +2703,8 @@ static u32 ps_read(unsigned long o)
 
 	if (o == 0x320 && gp_sys_written) {
 		if (has('l') && clk < gp_sys_at + 30 * m1_tps / 1000)
+			v |= 0x800;
+		if (has('L') && clk < gp_sys_at + 130 * m1_tps / 1000)
 			v |= 0x800;
 		if (has('d') && clk < gp_sys_at + 50 * m1_tps / 1000)
 			v |= 0xf0;
@@ -2833,14 +2835,14 @@ def pcie_down_tests(g, src):
         return src[at:src.index(end, at) + len(end)]
 
     def byte(found, now, polls, second):
-        down = [not w & 0xff for w in now]
+        down = [not w & 0x8ff for w in now]
         return (0x80 | (1 if found & 0xf0 else 0) | (2 if found & 0x800 else 0) | (4 if polls & 4 else 0) | (8 if down[2] else 0)
                 | (0x10 if polls & 3 == 3 and down[0] and down[1] else 0) | (second & 0x60))
 
     code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
     fns = cut("static bool m1_siod_poll(", "\n}\n") + cut("static u8 m1_pcie_down(void)", "\n}\n")
     init = cut("static int __init m1_pcd_init(void)", "\n}\n")
-    scen = ("", "c", "b", "l", "u", "d", "f", "g", "s", "t", "p", "cb", "cl", "cu", "cd", "cf", "cg", "cs", "cp", "bu", "bsp", "gc", "fb", "lcd", "st")
+    scen = ("", "c", "b", "l", "u", "d", "f", "g", "s", "t", "p", "cb", "cl", "cu", "cd", "cf", "cg", "cs", "cp", "bu", "bsp", "gc", "fb", "lcd", "st", "L", "cL", "Lp")
     with tempfile.TemporaryDirectory() as tmp:
         def build(name, code):
             c = os.path.join(tmp, name + ".c")
@@ -2865,9 +2867,11 @@ def pcie_down_tests(g, src):
         loads = {a: out(ini, *a) for a in (("mm", "0"), ("nm", "0"), ("mn", "0"), ("mm", "28e0802d8"), ("mm", "28e080320"), ("mm", "28e080148"),
                                            ("mm", "28e0802e8"))}
         bad_lists = {}
-        for what, last in (("ps_pmp's word", 0x2d8), ("a word off its place", 0x154), ("a word past the page", 0x4150)):
-            redef = "#undef PCD_OFFS\n#define PCD_OFFS { 0x2e8, 0x2f0, 0x320, 0x148, " + hex(last) + " }\n"
-            bad_lists[what] = out(build("bad" + hex(last), PCD_INIT_PRELUDE + redef + init + PCD_INIT_MAIN), "mm", "0")
+        for what, tail in (("ps_pmp's word", "0x148, 0x2d8"), ("a word off its place", "0x148, 0x154"), ("a word past the page", "0x148, 0x4150"),
+                           ("another power word of the page", "0x148, 0x2e0"), ("the last two the other way round", "0x150, 0x148"),
+                           ("a list one short, which ends in offset 0", "0x148")):
+            redef = "#undef PCD_OFFS\n#define PCD_OFFS { 0x2e8, 0x2f0, 0x320, " + tail + " }\n"
+            bad_lists[what] = out(build("bad" + str(len(bad_lists)), PCD_INIT_PRELUDE + redef + init + PCD_INIT_MAIN), "mm", "0")
 
     # The header against a second writing-out of it.
     consts, bits, stages = hdr[0], hdr[1], hdr[2]
@@ -2901,10 +2905,11 @@ def pcie_down_tests(g, src):
         end = {int(e[1], 16): int(e[2], 16) for e in ev if e[0] == "end"}
         found = 0x1000030f if "g" in a else 0x1f0008ff if "f" in a else 0x1f0000ff
         gp_down = "u" not in a
-        polls = (0 if "s" in a else 1) | 2 | (0 if "b" in a else 4)
-        now1 = [0x800 if "s" in a else 0, 0x40 if "t" in a else 0, (0x800 if "b" in a else 0) | (0xf0 if "u" in a or "d" in a else 0)]
-        now2 = now1[:2] + [(0x800 if "b" in a else 0) | (0 if gp_down else 0xf0)]
+        polls = (0 if "s" in a else 1) | 2 | (0 if "b" in a or "L" in a else 4)
+        now1 = [0x800 if "s" in a else 0, 0x40 if "t" in a else 0, (0x800 if "b" in a or "L" in a else 0) | (0xf0 if "u" in a or "d" in a else 0)]
         closed = "c" in a and gp_down and "p" not in a
+        # L's bit 11 clears 130 ms after the 0: past its own poll, and before the last read only if the gate's poll ran its 100 ms.
+        now2 = now1[:2] + [(0x800 if "b" in a or ("L" in a and closed) else 0) | (0 if gp_down else 0xf0)]
         second = (0 if "p" in a else 0x20) | (0x40 if closed else 0)
         want1, want2 = byte(found, now1, polls, 0), byte(found, now2, polls, second)
         gate = [e for e in acc if e[1] == "B"]
@@ -2922,11 +2927,12 @@ def pcie_down_tests(g, src):
         check(ok, f"m1_pcie_down(), scenario '{a}': APCIE_GP_SYS read as found; 0 to the three _SYS words in B2's order, each polled for bit 11,"
               " and the byte; 0 to APCIE_ST and APCIE_GP, the gate polled, the byte again with its last two bits; five writes, each a 0,"
               " nothing written back, ps_pmp's word untouched", "\n".join(runs[a][:12]) + f"\nwant {want1:x} {want2:x}")
-    check(int(runs[""][-7].split()[1], 16) == 0xbd and int(runs["c"][-7].split()[1], 16) == 0xfd and int(runs["b"][-7].split()[1], 16) == 0xb9 and int(runs["bu"][-7].split()[1], 16) == 0xb1
+    check(int(runs[""][-7].split()[1], 16) == 0xbd and int(runs["c"][-7].split()[1], 16) == 0xfd and int(runs["b"][-7].split()[1], 16) == 0xb1 and int(runs["bu"][-7].split()[1], 16) == 0xb1
+          and int(runs["L"][-7].split()[1], 16) == 0xb9 and [l for l in runs["L"] if l.startswith("k ")][0].split()[3] == "91"
           and int(runs["g"][-7].split()[1], 16) == 0xbc and int(runs["f"][-7].split()[1], 16) == 0xbf and int(runs["u"][-7].split()[1], 16) == 0xb5
           and int(runs["d"][-7].split()[1], 16) == 0xbd and [l for l in runs["d"] if l.startswith("k ")][0].split()[3] == "95",
-          "m1_pcie_down(): 0xbd if the 0 takes with the gate open and 0xfd closed; 0xb9 with bit 11 latched, 0xb1 if the word is up too; 0xb5 with the word up alone;"
-          " a word that drops late is up in the first send and off in the second", str({a: runs[a][-7] for a in ("", "c", "b", "bu", "g", "f", "u", "d")}))
+          "m1_pcie_down(): 0xbd if the 0 takes with the gate open and 0xfd closed; 0xb1 with bit 11 latched; 0xb9 if it clears after the poll and before the last read; 0xb5 with the word up alone;"
+          " a word that drops late is up in the first send and off in the second", str({a: runs[a][-7] for a in ("", "c", "b", "bu", "L", "g", "f", "u", "d")}))
 
     # The source: what the function writes, and nothing else like it.
     body = cut("static u8 m1_pcie_down(void)", "\n}\n")
@@ -2971,7 +2977,10 @@ def pcie_down_tests(g, src):
           and loads[("mm", "28e0802d8")][-1] == "ret 0 reads 6"
           and all(v[-1] == "ret -22 reads 0" and any(r.startswith("err m1: pcie_down:") for r in v) for v in bad_lists.values()),
           "m1_pcd_init(): refuses, reading nothing, if a page isn't mapped, one of the five is on the never-write list, or the list has"
-          " ps_pmp's word, a word off its place or one past the page", str(loads) + str(bad_lists))
+          " ps_pmp's word, a word off its place, one past the page, another power word, two swapped, or is one short", str(loads) + str(bad_lists))
+    check("static_assert(ARRAY_SIZE(((u16[])PCD_OFFS)) == PCD_N && PCD_N == 5" in src
+          and "\tstatic const u16 want[PCD_N] = { 0x2e8, 0x2f0, 0x320, 0x148, 0x150 };\n" in init,
+          "the list's length is pinned at build time, and the load compares it with the five offsets written out a second time")
 
     # m1-crumbs. The run's record at its last stage, all as meant, with its byte at 0x6016.
     with tempfile.TemporaryDirectory() as tmp:
@@ -2989,8 +2998,8 @@ def pcie_down_tests(g, src):
               and "0x6016 = 0xbd: pcie_down=1's byte, in place of the alarm's result:" in out_
               and "  APCIE_GP_SYS (0x28e080320) as found, before any 0: actual state not 0: up, as both looks had it; bit 11 clear\n" in out_
               and "  APCIE_GP_SYS after its 0 (B2's op 143), polled as B2's op 146 polls it: bit 11 read clear within 100 ms\n" in out_
-              and "  APCIE_GP_SYS at this send's last read: target and actual state 0: off\n" in out_
-              and "  APCIE_ST_SYS and APCIE_ST1_SYS (0x28e0802e8, 0x28e0802f0; B2's ops 141, 142, 144, 145): both polls met, both off\n" in out_
+              and "  APCIE_GP_SYS at this send's last read: target 0, actual state 0, bit 11 clear: off and idle\n" in out_
+              and "  APCIE_ST_SYS and APCIE_ST1_SYS (0x28e0802e8, 0x28e0802f0; B2's ops 141, 142, 144, 145): both polls met, both off and idle\n" in out_
               and "  APCIE_ST and APCIE_GP (0x28e080148, 0x28e080150; B2's ops 147, 148) within 100 ms of their 0: both read target 0 and actual state 0\n" in out_
               and "  0x28e09c34c (B2's op 156) within 100 ms after that: bit 30 clear, open" in out_
               and "  so: APCIE_GP_SYS went off cleanly with B2's own 0" in out_ and "nothing records the commit" not in out_
@@ -3012,10 +3021,17 @@ def pcie_down_tests(g, src):
               and "bit 30 SET, closed" in out_ and "  wd1_mark=1's marker: not read. CPU0 had an exception pending" in out_,
               "pcie_down=1's 0x9e: the pending stage, its byte, and no reading of the time", out_ + err)
         rc, out_, err = dec(0x9f, 0xb1, x=90)
-        check(rc == 0 and "bit 11 STAYED SET for 100 ms" in out_ and "target and actual state NOT both 0: NOT OFF" in out_
-              and "  so: THE 0 DIDN'T TAKE CLEANLY ON APCIE_GP_SYS, with the PCIe ports live behind it: bit 11 stayed set, the word didn't read off," in out_
-              and "The ports' stop before the 0" in out_ and "went off cleanly" not in out_,
-              "pcie_down=1's 0xb1: bit 11 latched and the word still up, said as the latch, with the ports' stop as the next build", out_ + err)
+        check(rc == 0 and "bit 11 STAYED SET for 100 ms" in out_ and "last read: NOT OFF AND IDLE" in out_
+              and "  so: A LEAD ON B2's OP 146: APCIE_GP_SYS DIDN'T READ OFF AND IDLE after the 0, with the PCIe ports live behind it, at the last read before the commit; its bit-11 poll wasn't met either." in out_
+              and "It isn't proof that B2 waits there for good" in out_ and "If the restart comes at 90 s, the ports' stop before the 0" in out_
+              and "about 120 s (WD2's bite) in place of 90 s (WD1's marker) means B2 got past its op 224" in out_ and "went off cleanly" not in out_,
+              "pcie_down=1's 0xb1: bit 11 still set at the last read before the commit, said as a lead on op 146 and not as proof, with the"
+              " restart's time still to be read and the ports' stop as the next build at 90 s", out_ + err)
+        rc, out_, err = dec(0x9f, 0xb9, x=120)
+        check(rc == 0 and "bit 11 STAYED SET for 100 ms" in out_ and "last read: target 0, actual state 0, bit 11 clear: off and idle" in out_
+              and "  so: SLOW, NOT STUCK: bit 11 of APCIE_GP_SYS stayed set past the AP's 100 ms, and the word read off and idle at the last read before the commit." in out_
+              and "A LEAD ON" not in out_ and "went off cleanly" not in out_ and "means B2 got past its op 224" in out_,
+              "pcie_down=1's 0xb9: a poll unmet and the word off and idle before the commit, said as slow and not as stuck", out_ + err)
         rc, out_, err = dec(0x9d, 0x9d, x=90, parked=0xfe)
         check(rc == 0 and "so the stage is 0x1d" in out_ and "8 (pcie_down=1): gates_mark=1's 0x4b, with the PCIe power words switched off" in out_
               and "parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out_
@@ -3038,6 +3054,9 @@ def pcie_down_tests(g, src):
             check(rc == 0 and want in out_ and "bit 30" not in out_ and "PCIE_DOWN'S BYTE" not in out_ and "alarm command" not in out_
                   and "APCIE_GP_SYS (0x28e080320) as found" not in out_ and "so: APCIE" not in out_ and "so: THE 0" not in out_,
                   f"stage 0x{stage:02x}, 0x6016 = 0x{gb:02x}{', no outcomes marker' if kw.get('prog') else ''}: pcie_down=1's byte isn't read", out_ + err)
+        rc, out_, err = dec(0x9f, 0xbd, prog=(0xff, 0x00))
+        check(rc == 0 and "The steps' outcomes go out right after stage 0x1d's command" in out_,
+              "pcie_down=1 without the outcomes' marker: fabric_up=1's byte is said to follow stage 0x1d's command, the run's own", out_ + err)
         # Every byte, at each of the run's stages, read independently of the decoder.
         wrong = []
         for s in (0x1d, 0x1e, 0x1f):
@@ -3055,15 +3074,27 @@ def pcie_down_tests(g, src):
                           and ("not 0: up" in lines[1]) == bool(v & 1) and ("ALREADY DOWN OR GATED" in lines[1]) == (not v & 1)
                           and ("BIT 11 ALREADY SET" in lines[1]) == bool(v & 2) and ("bit 11 clear" in lines[1]) == (not v & 2)
                           and ("read clear within 100 ms" in lines[2]) == bool(v & 4) and ("STAYED SET" in lines[2]) == (not v & 4)
-                          and ("0: off" in lines[3]) == bool(v & 8) and ("NOT OFF" in lines[3]) == (not v & 8)
-                          and ("both polls met, both off" in lines[4]) == bool(v & 0x10) and ("A POLL UNMET" in lines[4]) == (not v & 0x10)
+                          and ("bit 11 clear: off and idle" in lines[3]) == bool(v & 8) and ("NOT OFF AND IDLE" in lines[3]) == (not v & 8)
+                          and ("both polls met, both off and idle" in lines[4]) == bool(v & 0x10) and ("A POLL UNMET" in lines[4]) == (not v & 0x10)
                           and ("not in this byte" in text) == first
                           and (first or (("both read target 0 and actual state 0" in lines[5]) == bool(v & 0x20)
                                          and ("SET, closed" in lines[6]) == bool(v & 0x40) and ("clear, open" in lines[6]) == (not v & 0x40)))
                           and ("BEFORE ANYTHING HERE WROTE IT" in so[0]) == bool(v & 2)
-                          and ("DIDN'T TAKE CLEANLY" in so[0]) == (not v & 2 and v & 0xc != 0xc)
-                          and ("one of the two storage words didn't" in so[0]) == (not v & 2 and v & 0xc == 0xc and not v & 0x10)
-                          and ("went off cleanly with B2's own 0" in so[0] and "about 120 s" in so[0]) == (v & 0x1e == 0x1c)
+                          and ("A LEAD ON B2's OP 146" in so[0] and "It isn't proof that B2 waits there for good" in so[0]) == (not v & 2 and not v & 8)
+                          and ("with the PCIe ports live behind it" in so[0]) == (not v & 2 and not v & 8 and bool(v & 1))
+                          and ("found down or gated already" in so[0]) == (not v & 2 and not v & 8 and not v & 1)
+                          and ("its bit-11 poll wasn't met either" in so[0]) == (not v & 2 and not v & 8 and not v & 4)
+                          and ("SLOW, NOT STUCK" in so[0]) == (v & 0xe == 0x8)
+                          and ("INCONCLUSIVE: APCIE_GP_SYS was down or gated before the 0" in so[0]) == (v & 0xf == 0xc)
+                          and ("one of the two storage words didn't" in so[0]) == (v & 0x1f == 0xd)
+                          and ("went off cleanly with B2's own 0" in so[0]) == (v & 0x1f == 0x1d)
+                          and ("B2 was bound" not in text and "says nothing new" not in text and "the commit found" not in text)
+                          and ("about 120 s" in so[0] and "B2 got past" in so[0]) == (s == 0x1f and (bool(v & 2) or not v & 8 or not v & 4 or v & 0x1f == 0x1d))
+                          and ("restart's time isn't read" in so[0]) == (s == 0x1e and (bool(v & 2) or not v & 8 or not v & 4 or v & 0x1f == 0x1d))
+                          and ("at the last read before the commit" in so[0]) == (not v & 2 and (not v & 8 or not v & 4) and not first)
+                          and ("at the first send's read" in so[0]) == (not v & 2 and (not v & 8 or not v & 4) and first)
+                          and ("all five read off before the commit" in so[0]) == (v & 0x3f == 0x3d and not first)
+                          and ("not all five" in so[0]) == (v & 0x3f == 0x1d and not first)
                           and ("nothing records the commit" in text) == (s == 0x1d)
                           and "SIO's firmware isn't shown stopped" not in text)
                 if not ok:
@@ -3076,8 +3107,11 @@ def pcie_down_tests(g, src):
             if "not read" not in g["pcd_lines"](s, bytes(b), False)[0] or len(g["pcd_lines"](s, bytes(b), False)) != 1:
                 wrong.append((hex(s), "no pmp_out=1 bit"))
         check(not wrong, "pcie_down=1: for every byte at each of its stages: each line follows its bit; one verdict, which is the latch if"
-              " bit 11 was set as found, stayed set or the word stayed up, and a clean switch-off only with all three clear of that and"
-              " the storage words off; the first send's last two bits aren't read; nothing is read from a byte without bit 7", str(wrong[:2]))
+              " bit 11 was set as found, a lead and never proof if the word wasn't off and idle at the send's last read, slow if only the"
+              " poll was unmet, inconclusive if the word was found down, and a clean switch-off only with none of those and the storage"
+              " words off; it says all five read off only if the second send says so, speaks of the restart's time only at the clean"
+              " last stage, and never of what the commit found; the first send's last"
+              " two bits aren't read; nothing is read from a byte without bit 7", str(wrong[:2]))
         mr = g["mark_reading"]
         wrong = [(hex(v), x) for v in range(256) for x in (60, 88, 90, 105, 120, 123, 135, 146, 150, 163, 300)
                  if mr(x, 0x1d, v) != mr(x, 0x4b, v).replace("Stage 0x4b", "Stage 0x1d") or mr(x, 0x1e, v) != mr(x, 0x54, v)

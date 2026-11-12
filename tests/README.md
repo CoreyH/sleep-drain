@@ -29,7 +29,7 @@ used to sit in CLAUDE.md, entry for entry):
   it's there, the time against the marker as at fabric_up=1's stages; and `--clear` never takes it for the
   alarm's result. For pcie_down=1 it compiles `pcie_down.h`'s list, stage map and byte against a second
   writing-out of them (1,600 cases), runs `m1_pcie_down()` as it stands against a model of the power page and the
-  gate page in 25 scenarios (bit 11 kept, kept for 30 ms, the word staying up or dropping late, found busy or found
+  gate page in 28 scenarios (bit 11 kept, kept for 30 ms or for 130 ms, the word staying up or dropping late, found busy or found
   gated, a storage word busy or up, a parent staying up, the gate closing or not): five writes, each a 0, in B2's
   order, the byte after the third and after the fifth, nothing written back, `ps_pmp`'s word untouched; the load's
   refusals; the byte through m1-crumbs for every value at each stage; and `--clear`. For sio_down=1 it compiles `sio_down.h`'s list, stage map and byte against a second writing-out

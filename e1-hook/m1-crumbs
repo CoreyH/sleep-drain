@@ -1176,9 +1176,10 @@ def pcd_lines(s, b, pmp):
            + ("; BIT 11 ALREADY SET, before B2's 0 or this one" if v & PCD_FOUND_BUSY else "; bit 11 clear"),
            "  APCIE_GP_SYS after its 0 (B2's op 143), polled as B2's op 146 polls it: bit 11 "
            + ("read clear within 100 ms" if v & PCD_POLL else "STAYED SET for 100 ms"),
-           "  APCIE_GP_SYS at this send's last read: target and actual state " + ("0: off" if v & PCD_DOWN else "NOT both 0: NOT OFF"),
+           "  APCIE_GP_SYS at this send's last read: " + ("target 0, actual state 0, bit 11 clear: off and idle" if v & PCD_DOWN else
+                                                       "NOT OFF AND IDLE (its target, its actual state or bit 11)"),
            "  APCIE_ST_SYS and APCIE_ST1_SYS (0x28e0802e8, 0x28e0802f0; B2's ops 141, 142, 144, 145): "
-           + ("both polls met, both off" if v & PCD_ST_OK else "A POLL UNMET, OR ONE NOT OFF")]
+           + ("both polls met, both off and idle" if v & PCD_ST_OK else "A POLL UNMET, OR ONE NOT OFF AND IDLE")]
     if first:
         out.append("  APCIE_ST, APCIE_GP and the gate 0x28e09c34c: not in this byte. Stage 0x1d with neither of its last two bits is the"
                    " first send, or a second send in which neither came out as meant: this record can't tell which")
@@ -1191,23 +1192,41 @@ def pcd_lines(s, b, pmp):
     if not b[0x12] >> 6 == 3:
         out.append("  (SIO's firmware isn't shown stopped, 0x6012: " + SIO_CODES[b[0x12] >> 6] + ": this run's writes don't depend on"
                    " it, but the recipe's state does)")
+    # What the time can add. Only the clean last stage has it read against the marker (below).
+    time = (" The restart's time, below, says how far B2 got all the same: about 120 s (WD2's bite) in place of 90 s (WD1's marker)"
+            " means B2 got past its op 224" if s == PCD_WD2[1] else
+            " CPU0 had an exception pending after the commit, so the restart's time isn't read (below)" if s == PCD_WD2[0] else "")
     if v & PCD_FOUND_BUSY:
         out.append("  so: BIT 11 WAS SET ON APCIE_GP_SYS BEFORE ANYTHING HERE WROTE IT: the recipe itself leaves the word B2 polls at its"
-                   " op 146 in the state B2 waits on. ps_words=1's write of 0x1000030f is the one write the recipe makes to it (PLAN.md)")
-    elif not v & PCD_POLL or not v & PCD_DOWN:
-        out.append("  so: THE 0 DIDN'T TAKE CLEANLY ON APCIE_GP_SYS, with the PCIe ports live behind it: "
-                   + ("bit 11 stayed set, " if not v & PCD_POLL else "")
-                   + ("the word didn't read off, " if not v & PCD_DOWN else "")
-                   + "which is what B2's own 0 would meet at its ops 143 and 146, where it waits with no way past. The ports' stop"
-                   " before the 0, as T8140's and the M4 Pro's drivers make it, is the next build (PLAN.md). The restart's time says"
-                   " nothing new: B2 was bound to stop there")
+                   " op 146 with the bit B2 waits on set. ps_words=1's write of 0x1000030f is the one write the recipe makes to it"
+                   " (PLAN.md)." + time)
+    elif not v & PCD_DOWN:
+        out.append("  so: A LEAD ON B2's OP 146: APCIE_GP_SYS DIDN'T READ OFF AND IDLE after the 0, "
+                   + ("with the PCIe ports live behind it" if v & PCD_FOUND_UP else "though it was found down or gated already")
+                   + (", at the last read before the commit" if not first else ", at the first send's read")
+                   + ("; its bit-11 poll wasn't met either" if not v & PCD_POLL else "; its bit-11 poll was met, so it is the power"
+                      " state that stayed up, or bit 11 came back")
+                   + ". That is what B2's own 0 would meet at its ops 143 and 146. It isn't proof that B2 waits there for good: the"
+                   " AP gave it 100 ms and a little more, and the engine's wait is its own. If the restart comes at 90 s, the ports'"
+                   " stop before the 0, as T8140's and the M4 Pro's drivers make it, is the next build (PLAN.md)." + time)
+    elif not v & PCD_POLL:
+        out.append("  so: SLOW, NOT STUCK: bit 11 of APCIE_GP_SYS stayed set past the AP's 100 ms, and the word read off and idle"
+                   + (" at the last read before the commit" if not first else " at the first send's read")
+                   + ". Whether B2's own poll at op 146 would have outlasted that isn't known; here B2 meets a word that is"
+                   " already off." + time)
+    elif not v & PCD_FOUND_UP:
+        out.append("  so: INCONCLUSIVE: APCIE_GP_SYS was down or gated before the 0, which no look has seen, so the 0 met no live"
+                   " port and this run doesn't test B2's op 143 against one. Why the word was down there comes first (PLAN.md)")
     elif not v & PCD_ST_OK:
         out.append("  so: APCIE_GP_SYS went off cleanly, but one of the two storage words didn't, which Linux's suspend leaves off"
                    " already: unexpected, and to be read before anything else (PLAN.md)")
     else:
         out.append("  so: APCIE_GP_SYS went off cleanly with B2's own 0, bit 11 clear, in the recipe's state: B2's PCIe step passes as"
-                   " the AP makes it, and B2 found the words already off. The restart's time, below, says whether that was what held"
-                   " B2: about 120 s (WD2's bite) in place of 90 s (WD1's marker) means B2 got past its op 224")
+                   " the AP makes it"
+                   + ("" if first else ", and all five read off before the commit" if v & PCD_PARENTS else
+                      "; APCIE_ST or APCIE_GP didn't read off, which B2 doesn't wait for: the three polled words were off before"
+                      " the commit, not all five")
+                   + "." + time)
     if s == PCD_PRE:
         out.append("  stage 0x1d, so nothing records the commit after this byte (0x1e or 0x1f comes after it): inconclusive about the"
                    " rest of the entry")

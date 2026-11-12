@@ -554,9 +554,11 @@ steps, and restarting the DCP and the PMP afterwards.
       Recorded: APCIE_GP_SYS as found (actual state, bit 11, bits 27:24), each word's bit 11 and
       actual state after its 0, APCIE_GP's actual state, and 0x28e09c34c's bit 30 (expected open
       whatever happens, if the 21 words are its mode). New writes, so one adversarial pass.
-      - **Bit 11 stays set, or APCIE_GP_SYS stays up:** the M4's latch, on this chip, at a word B2
-        polls with no way past it. Then the ports' stop before the 0, as T8140's and the M4 Pro's
-        drivers make it (aurora's `pcie-apple.c` has this chip's port registers), is the build.
+      - **APCIE_GP_SYS not off and idle at the last read before the commit** (bit 11 still set, or
+        its state still up): a lead on B2's op 146, the M4's latch by the look of it, not proof
+        (the AP's 100 ms isn't the engine's wait). With the restart at 90 s, the ports' stop before
+        the 0, as T8140's and the M4 Pro's drivers make it (aurora's `pcie-apple.c` has this chip's
+        port registers), is the build. At 120 s it cleared later and B2 got through all the same.
       - **All off, no bit 11, and the restart at 120 s:** B2 got past op 224 for the first time, and
         PCIe was what held it. WD2 ends the run then, and what's after B2 is next.
       - **All off, no bit 11, and the restart at 90 s:** B2's PCIe step passes as the AP makes it,

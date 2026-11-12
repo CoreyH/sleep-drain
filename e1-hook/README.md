@@ -129,8 +129,8 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   100 ms, sends one byte to 0x6016, writes 0 to APCIE_ST and APCIE_GP (0x28e080148, 0x28e080150; B2's ops 147 and
   148), gives each up to 100 ms to read off, polls the gate 0x28e09c34c (B2's op 156) for bit 30, and sends the
   byte again. Five new writes, each a 0; nothing is written back, and no PCIe register is touched. The byte: bit 0
-  APCIE_GP_SYS found up, bit 1 found with bit 11 set, bit 2 its poll met, bit 3 it read off at the send's last
-  read, bit 4 the two storage words' polls met and both off, bit 5 APCIE_ST and APCIE_GP off, bit 6 the gate
+  APCIE_GP_SYS found up, bit 1 found with bit 11 set, bit 2 its poll met, bit 3 it read off and idle at the send's
+  last read, bit 4 the two storage words' polls met and both off and idle, bit 5 APCIE_ST and APCIE_GP off, bit 6 the gate
   closed, bit 7 always; bits 5 and 6 are never set in the first send. 0xbd is a clean switch-off with the gate
   open, 0xfd with it closed. Stages of its own: 0x1d before the commit, then 0x1f, or 0x1e with an exception
   pending (0x9d, 0x9f, 0x9e under K4's bit). The commit finds the words off, so a restart at about 120 s in place
