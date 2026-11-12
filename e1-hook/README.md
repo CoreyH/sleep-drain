@@ -121,6 +121,22 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   which `m1-crumbs` calls out, and a restart about 10 s later (the SError's panic, if its restart works) or about
   90 s after step 4 (WD1's marker); a byte whose own command failed leaves the same record, and the run then went
   on unrecorded. The rest of the ending reads as `--m1-mark`'s.
+- `sio_steps=1` (`run-floor --m1-sio-steps`, on `gates_mark=1`, never with `sio_down=1`, `pcie_down=1` or
+  `probe=1`; `e1-hook/sio_steps.h` has the words, the order, the byte and the stages) asks what lets the gate
+  0x28e5a0050 (B2's op 140) close, which `sio_down=1`'s switch-off left open twice. In step 8, where
+  `gates_mark=1`'s reads would be, CPU0 makes that switch-off of SIO's 43 words with B2's cycle of GPIO's power
+  word in B2's place (0x28e080120 := 0x8000000f before the first 0, := 0 after the first 38 writes, bit 11 polled),
+  polls the two gates and sends a byte; if all 43 went off and the gate is still open, it writes B2's ops 8 to 29
+  (0x28e03801c := 0x80101100, 1 to 0x28e0a0004-1c, 1 to 0x28e5b0004-38 in B2's order), a byte after each group,
+  reads each back and polls the gate again; then it writes the 43 back as found (up to 100 ms each), polls the gate
+  open, and sends the byte a last time. New writes: two to GPIO's word and the 22, all left as B2 itself writes
+  them. The byte has two layouts, told apart by bit 6. Set, the result: bit 0 the gate closed after the switch-off
+  with GPIO's cycle, bit 1 closed after the 22, bit 2 the subtree off and every poll met, bit 3 GPIO's cycle made
+  (up within 100 ms, then off and idle), bit 4 the 22 read back as written, bit 5 the 43 back and the gate open
+  again. Clear, the pass wasn't through: bits 0, 2 and 3 as above and, in bits 4 and 1, how many of the 22's three
+  groups were written; 0xa0 is a gate that read closed before anything was written. 0xfc is everything made and
+  the gate open throughout; 0xed closed with GPIO's cycle; 0xfe closed once the 22 were in. Stages 0x95, then 0x97
+  or 0x96. It adds up to about 9.5 s before the commit. The rest of the ending reads as `--m1-gates`'.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be

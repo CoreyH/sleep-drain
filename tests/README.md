@@ -32,7 +32,16 @@ used to sit in CLAUDE.md, entry for entry):
   gate page in 28 scenarios (bit 11 kept, kept for 30 ms or for 130 ms, the word staying up or dropping late, found busy or found
   gated, a storage word busy or up, a parent staying up, the gate closing or not): five writes, each a 0, in B2's
   order, the byte after the third and after the fifth, nothing written back, `ps_pmp`'s word untouched; the load's
-  refusals; the byte through m1-crumbs for every value at each stage; and `--clear`. For sio_down=1 it compiles `sio_down.h`'s list, stage map and byte against a second writing-out
+  refusals; the byte through m1-crumbs for every value at each stage; and `--clear`. For sio_steps=1 it compiles
+  `sio_steps.h`'s constants, stage map and both layouts of the byte against a second writing-out of them, runs
+  `m1_sio_steps()` as it stands against a model of its six pages in 26 scenarios (the gate closing with GPIO's
+  cycle, with the 22, before anything, or never; GPIO not coming up or keeping bit 11; a word of the subtree busy or
+  up; a word of the 22 not taking; a word not coming back, or only after 50 ms; a gate that stays closed): every
+  write in B2's order and no other, GPIO's 0 right after the 38th, UART_N never polled, a byte after each group,
+  the 22 only after a switch-off that took with the gate open, the 43 back in reverse, `ps_pmp`'s word untouched;
+  the load's refusals (a page that isn't there, an address on the never-write list, a list out of B2's order or
+  short); the byte through m1-crumbs for every value at each stage, with SIO's firmware stopped and not; and
+  `--clear`. For sio_down=1 it compiles `sio_down.h`'s list, stage map and byte against a second writing-out
   of B2's order and of the byte's two layouts (each place alone and 400 drawn cases), and runs `m1_sio_down()` with
   its poll and write-back functions as they stand against a model of SIO's page and the gate pages in 28 scenarios
   (the gate closing at once, late, never, or staying closed; closed before, when nothing may be written; a poll never

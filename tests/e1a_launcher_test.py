@@ -81,6 +81,8 @@ LAUNCHERS = (
      "floor-m1-sio-down", ("--m1-sio-down",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 gates_mark=1 pcie_down=1",
      "floor-m1-pcie-down", ("--m1-pcie-down",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 gates_mark=1 sio_steps=1",
+     "floor-m1-sio-steps", ("--m1-sio-steps",)),
 )
 
 failed = 0
@@ -94,12 +96,17 @@ def is_m1(launcher):
     """--m1, --m1-observe, --m1-late, --m1-alarm, the two --m1-hold, the two --m1-pmp and --m1-position: all load m1=1."""
     return any(a in ("--m1", "--m1-observe", "--m1-late", "--m1-alarm", "--m1-hold", "--m1-hold-nowatch", "--m1-pmp",
                      "--m1-pmp-idle", "--m1-position", "--m1-sio-pmp", "--m1-disp-off", "--m1-macos-end", "--m1-sio-stop",
-                     "--m1-power-words", "--m1-recfg-bite", "--m1-wd2-bite", "--m1-cluster-ack", "--m1-fabric-up", "--m1-mark", "--m1-gates", "--m1-sio-down", "--m1-pcie-down") for a in launcher[4])
+                     "--m1-power-words", "--m1-recfg-bite", "--m1-wd2-bite", "--m1-cluster-ack", "--m1-fabric-up", "--m1-mark", "--m1-gates", "--m1-sio-down", "--m1-pcie-down", "--m1-sio-steps") for a in launcher[4])
 
 
 def is_siodown(launcher):
     """--m1-sio-down: --m1-gates' run with sio_down=1."""
     return "--m1-sio-down" in launcher[4]
+
+
+def is_siosteps(launcher):
+    """--m1-sio-steps: --m1-gates' run with sio_steps=1."""
+    return "--m1-sio-steps" in launcher[4]
 
 
 def is_pciedown(launcher):
@@ -108,8 +115,8 @@ def is_pciedown(launcher):
 
 
 def is_gates(launcher):
-    """--m1-gates, and --m1-sio-down or --m1-pcie-down on top of it: --m1-mark's run with gates_mark=1."""
-    return "--m1-gates" in launcher[4] or is_siodown(launcher) or is_pciedown(launcher)
+    """--m1-gates, and --m1-sio-down, --m1-pcie-down or --m1-sio-steps on top of it: --m1-mark's run with gates_mark=1."""
+    return "--m1-gates" in launcher[4] or is_siodown(launcher) or is_pciedown(launcher) or is_siosteps(launcher)
 
 
 def is_mark(launcher):
@@ -159,7 +166,7 @@ PARMS = {
              "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
              "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
              "alarm:With m1=1 and pmgr_late=1 (bool)\nhold:With alarm=1 (bool)\nhold_nowatch:With hold=1 only (bool)\n"
-             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\none_commit:With disp_off=1 (bool)\nsmc_idle:With disp_off=1 (bool)\nsio_stop:With disp_off=1 (bool)\nps_words:With sio_stop=1 (bool)\nrecfg_bite:With ps_words=1 (bool)\nwd2_bite:With ps_words=1 (bool)\ncluster_ack:With wd2_bite=1 (bool)\nfabric_up:With cluster_ack=1 (bool)\nwd1_mark:With fabric_up=1 (bool)\ngates_mark:With wd1_mark=1 (bool)\nsio_down:With gates_mark=1 (bool)\npcie_down:With gates_mark=1 (bool)\nreplay:LAB ONLY (uint)\n",
+             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\none_commit:With disp_off=1 (bool)\nsmc_idle:With disp_off=1 (bool)\nsio_stop:With disp_off=1 (bool)\nps_words:With sio_stop=1 (bool)\nrecfg_bite:With ps_words=1 (bool)\nwd2_bite:With ps_words=1 (bool)\ncluster_ack:With wd2_bite=1 (bool)\nfabric_up:With cluster_ack=1 (bool)\nwd1_mark:With fabric_up=1 (bool)\ngates_mark:With wd1_mark=1 (bool)\nsio_down:With gates_mark=1 (bool)\npcie_down:With gates_mark=1 (bool)\nsio_steps:With gates_mark=1 (bool)\nreplay:LAB ONLY (uint)\n",
     "floor-nosiostop": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                        "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
                        "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
@@ -231,6 +238,7 @@ PARMS["floor-nomark"] = PARMS["floor"].replace("wd1_mark:With fabric_up=1 (bool)
 PARMS["floor-nogates"] = PARMS["floor"].replace("gates_mark:With wd1_mark=1 (bool)\n", "")
 PARMS["floor-nosiodown"] = PARMS["floor"].replace("sio_down:With gates_mark=1 (bool)\n", "")
 PARMS["floor-nopciedown"] = PARMS["floor"].replace("pcie_down:With gates_mark=1 (bool)\n", "")
+PARMS["floor-nosiosteps"] = PARMS["floor"].replace("sio_steps:With gates_mark=1 (bool)\n", "")
 
 
 def sysctl(tmp):
@@ -239,7 +247,7 @@ def sysctl(tmp):
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
           takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
-          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, takes_gates=True, takes_siodown=True, takes_pciedown=True, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
+          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, takes_gates=True, takes_siodown=True, takes_pciedown=True, takes_siosteps=True, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -250,7 +258,7 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     # The module's sources beside it, as in the checkout: older than the build ("fresh"), or the named one newer.
     if srcs:
         os.utime(os.path.join(d, "e1_hook.ko"), (2000, 2000))
-        for n in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h", "fabric_up.h", "wd1_mark.h", "gates_mark.h", "sio_down.h", "pcie_down.h", "asc_probe.h", "look.h", "gate_test.h"):
+        for n in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h", "fabric_up.h", "wd1_mark.h", "gates_mark.h", "sio_down.h", "pcie_down.h", "sio_steps.h", "asc_probe.h", "look.h", "gate_test.h"):
             write(os.path.join(d, n), "")
             os.utime(os.path.join(d, n), (3000, 3000) if srcs == n else (1000, 1000))
     if safe:
@@ -304,6 +312,7 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     quiet += f' gates_mark=1) echo Y > {moddir}/parameters/gates_mark ;;' if takes_gates else ""
     quiet += f' sio_down=1) echo Y > {moddir}/parameters/sio_down ;;' if takes_siodown else ""
     quiet += f' pcie_down=1) echo Y > {moddir}/parameters/pcie_down ;;' if takes_pciedown else ""
+    quiet += f' sio_steps=1) echo Y > {moddir}/parameters/sio_steps ;;' if takes_siosteps else ""
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
               f' oneway=1) echo Y > {moddir}/parameters/oneway ;;{quiet} esac; done\n') if takes else ""
     # The rest of the floor's parameters, as before any suspend; cancel is
@@ -605,6 +614,7 @@ def test_floor_refusals(launcher):
     gates = is_gates(launcher)
     siodown = is_siodown(launcher)
     pciedown = is_pciedown(launcher)
+    siosteps = is_siosteps(launcher)
     pwords = "--m1-power-words" in launcher[4] or recfg or wd2
     siostop = "--m1-sio-stop" in launcher[4] or pwords
     macend = "--m1-macos-end" in launcher[4] or siostop
@@ -675,9 +685,11 @@ def test_floor_refusals(launcher):
         cases.append(("a build without sio_down", dict(build="floor-nosiodown"), None, "without sio_down"))
     if pciedown:
         cases.append(("a build without pcie_down", dict(build="floor-nopciedown"), None, "without pcie_down"))
+    if siosteps:
+        cases.append(("a build without sio_steps", dict(build="floor-nosiosteps"), None, "without sio_steps"))
     if plain:
         # The floor's build before quiet still runs the floor itself.
-        usage = "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down]"
+        usage = "usage: run-floor [--quick] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps]"
         cases += [("an unknown argument", {}, ["--loud"], usage),
                   ("a second argument", {}, ["--quiet", "--quiet"], usage),
                   ("--quiet and --m1 together", {}, ["--quiet", "--m1"], usage),
@@ -706,9 +718,11 @@ def test_floor_refusals(launcher):
                   ("--m1-gates and --m1-sio-down together", {}, ["--m1-gates", "--m1-sio-down"], usage),
                   ("--sio-down alone", {}, ["--sio-down"], usage),
                   ("--m1-sio-down and --m1-pcie-down together", {}, ["--m1-sio-down", "--m1-pcie-down"], usage),
-                  ("--pcie-down alone", {}, ["--pcie-down"], usage)]
+                  ("--pcie-down alone", {}, ["--pcie-down"], usage),
+                  ("--m1-sio-down and --m1-sio-steps together", {}, ["--m1-sio-down", "--m1-sio-steps"], usage),
+                  ("--sio-steps alone", {}, ["--sio-steps"], usage)]
     # A build older than one of its sources: another version's, perhaps, whose breadcrumbs this version's m1-crumbs would misread.
-    cases += [(f"a module older than {src}", dict(srcs=src), None, f"e1_hook.ko is older than {src}: make -C") for src in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h", "fabric_up.h", "wd1_mark.h", "gates_mark.h", "sio_down.h", "pcie_down.h", "asc_probe.h", "look.h", "gate_test.h")]
+    cases += [(f"a module older than {src}", dict(srcs=src), None, f"e1_hook.ko is older than {src}: make -C") for src in ("e1_hook.c", "recfg_bite.h", "m1_position.h", "wd2_bite.h", "fabric_up.h", "wd1_mark.h", "gates_mark.h", "sio_down.h", "pcie_down.h", "sio_steps.h", "asc_probe.h", "look.h", "gate_test.h")]
     for what, kw, argv, msg in cases:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)
@@ -769,6 +783,8 @@ def test_floor_refusals(launcher):
         ignored.append(("sio_down", dict(takes_siodown=False)))
     if pciedown:
         ignored.append(("pcie_down", dict(takes_pciedown=False)))
+    if siosteps:
+        ignored.append(("sio_steps", dict(takes_siosteps=False)))
     for what, kw in ignored:
         with tempfile.TemporaryDirectory() as tmp:
             d = setup(tmp, launcher, **kw)

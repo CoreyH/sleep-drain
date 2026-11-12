@@ -4579,6 +4579,86 @@ found the same.
   the 22 words, the PMP's and DWI's switch-off with their gate (the PMP's word is never written
   here), and the clock generators.
 
+### `sio_steps=1` as built: the switch-off with GPIO's cycle inside it, then the 22 words, the gate after each (2026-11-12)
+
+Built, not run. `pkexec e1-hook/run-floor --quick --m1-sio-steps`, on `--m1-gates`' recipe
+(`e1-hook/sio_steps.h` has the words, the order, the byte and the stages). It is the build PLAN.md
+called `pre=1` in stages: one run that asks which of the two things B2 does before its op 140, and
+the AP hasn't, lets 0x28e5a0050 close.
+
+- **What CPU0 does in step 8**, where `--m1-gates` reads the gates, before the commit:
+  1. reads the 43 words of SIO's subtree as found, and the gate once (closed already: nothing is
+     written, byte 0xa0);
+  2. GPIO's power word 0x28e080120 := 0x8000000f (B2's op 47: on, with bit 31, the reset), with SIO
+     still on as in B2, and up to 100 ms for its actual state to read f;
+  3. `sio_down=1`'s switch-off, B2's order and groups, with GPIO := 0 right after the first 38
+     writes and before their polls (B2's op 90), and GPIO's bit 11 polled after them;
+  4. 0x28e5a0064 and 0x28e5a0050 polled for bit 30, up to 100 ms each, and a byte to 0x6016;
+  5. only if all 43 went off (their auto fields as B2's 0 leaves them) and the gate is still open: B2's ops 8 to 29, a byte after each group
+     (0x28e03801c := 0x80101100; 1 to the seven; 1 to the fourteen, in B2's order), each read back,
+     and the gate polled again;
+  6. the byte in its second layout; the 43 written back in reverse, as found, with up to 100 ms
+     each (10 ms wasn't enough for one word in the second `sio_down=1` run); the gate polled to
+     read open; the byte again.
+- **Settled in the build:**
+  - *GPIO's cycle goes inside the switch-off, where B2 has it,* and the switch-off alone isn't
+    made first: GPIO's parents are PMS and SIO, and a raise under an off SIO is the M4's
+    raised-under-an-off-parent class, which would muddy both readings. The switch-off alone has
+    been read twice already (open), so the first reading here is "with GPIO's cycle" against those.
+  - *The 22 go in after the switch-off, not before it as in B2,* so that the gate can be read
+    between the two. If the gate only follows them when they're in place first, this run reads open
+    and can't tell: a second pass in B2's own order is the follow-up then.
+  - *What goes back:* the 43, as before (B2's own raise of SIO_CPU would otherwise wait under an
+    off parent). They go back with the 21 at 1, which the plan worried about; it is the wake
+    sequence's own order (B1 raises its power words first and puts the 21 back near its end), and
+    bit 5 says whether they came. GPIO stays at B2's 0 (Linux's suspend has it off, 0x200, already) and the 22 stay
+    as B2 writes them: B2 writes the same values to the same words first thing, so the commit finds
+    nothing there that B2 wouldn't have put there.
+- **New writes: 24, to 23 words.** Two to GPIO's word, one to 0x28e03801c, 21 ones. Built on Corey's standing
+  go-ahead of 2026-11-10; none outlasts the restart. GPIO's word is in `ps_pmp`'s page: its
+  address is pinned against `ps_pmp`'s at build time, and the load refuses unless each of the 23
+  is the word named (a second writing-out of both lists), none is on the never-write list, and
+  every page is mapped. What the reset does to the pins behind GPIO is what B2 does to them at
+  every macOS sleep; nothing here uses them afterwards (the record goes through nub-spmi0).
+- **The risk the plan named:** some of the 21 may select something a running core needs, and the
+  engine moves them with every core down. A byte after each group names the one a stop falls in;
+  WD1's marker restarts the Mac at 90 s.
+- **The byte** (0x6016, stages 0x95, then 0x97 or 0x96). Second layout (bit 6 set): bit 0 the gate
+  closed after the switch-off with GPIO's cycle; bit 1 closed after the 22; bit 2 the subtree off,
+  every poll met; bit 3 GPIO's cycle made; bit 4 the 22 read back as written; bit 5 the 43 back
+  and the gate open again. 0xfc: all made, the gate open throughout. 0xed: closed with GPIO's
+  cycle. 0xfe: closed once the 22 were in. First layout (bit 6 clear): where a run that stopped
+  had got to.
+- **Reading it** (`m1-crumbs` says the same):
+  - *0xed:* the gate follows GPIO's pass through on-with-reset. B2 makes it itself, so op 140 is
+    cleared as far as the AP can clear it; `a2_pre=1` is next.
+  - *0xfe:* the gate follows the 22, or some of them, or it closes by itself later than the
+    first poll waits (the second comes some hundreds of ms after it, and no run has watched the
+    gate that long with the subtree off). Either way B2's own poll would be met: the same
+    conclusion for op 140.
+  - *0xfc:* neither, as the AP can make them. The lead on op 140 stands: something else behind
+    that gate is still on, or it only closes in B2's own state.
+  - Each is the AP's state before the commit, not B2's at op 140 (Pullfrog on #83).
+- **Checked:** `tests/m1_crumbs_test.py` compiles the header against a second writing-out, and
+  runs `m1_sio_steps()` as it stands against a model of its six pages in 26 scenarios (every write
+  in order and no other, `ps_pmp`'s word untouched), the load's refusals, and the decoder for
+  every byte at each stage; `tests/e1a_launcher_test.py` has the option; 91 new mutants
+  (`tests/mutants.py sst:`), and 28 older ones repaired. One adversarial pass, as for any build
+  that writes.
+- **Pullfrog on #95**, three points, all taken: 0x28e03801c counts as written only once it reads
+  B2's value with bit 30, pending, clear (B1 polls that bit; the first build masked it out); the
+  subtree counts as off only with its auto fields as B2's 0 leaves them, `sio_down=1`'s codes 2
+  and 3 (a leftover auto-enable gave a clean verdict before); and the decoder's baseline claim,
+  below.
+- **The adversarial review of #95** found no path that writes anything but the words meant, and
+  these, all taken: the decoder said the commit found GPIO at 0 and the 22 as B2 writes them on
+  bit 5 alone, whatever bits 3 and 4 said; the 0xfe verdict didn't allow for a gate that closes
+  late by itself; a stop in the 22 and a failed command read as if the restart's time told them
+  apart (it only tells a panic from the rest; and after a failed command the run goes on
+  unrecorded, so that case isn't bound to end at 90 s: Pullfrog's second pass); and the model had no slow register, so none of
+  the new waits, GPIO's two checks apart, the 0x28e5a0064 poll, or the auto-enable's part in
+  "back" was pinned by a test. Ten scenarios and twelve mutants more.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
