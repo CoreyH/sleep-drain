@@ -1,6 +1,6 @@
 # Plan
 
-Last updated 2026-11-11. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-12. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
@@ -524,6 +524,14 @@ steps, and restarting the DCP and the PMP afterwards.
       first, or for not writing the 43 back at all); and the two points below about the write-back.
       The record needs the read-backs of the 22 as well as the gate: 0x28e03801c has a pending bit
       (30) that B1 polls, so the write isn't done until it clears.
+      **From the sweep of 2026-11-12** (RESEARCH.md, "What the other projects have since
+      2026-11-10"), two things for whoever builds next. Never read 0x2925c8000 and up: on T6020 those
+      pages of the same block hang the reader. And a cheap rider for any run or look: T6000's
+      0x2925c0014, 0x2925c0100, 0x2925c4008 and 0x2925c400c at rest (T6020 has 3, 8, 0x00010000 and 0,
+      and they step at the commit), which would say whether DeepIdle's readings carry over to this
+      chip. M4 Pro and Max entries now complete under aura (aurora-silicon/linux#1477, #1664); their
+      drivers' order of steps may name something T6000's recipe lacks, and reading them is Corey's
+      call (as Naeem's driver was).
       The plan for the look as it stood, **built and run.** The run, Corey's: restart into a safe boot (`pkexec
       sleep-drain-safe boot`, then restart), `make -C e1-hook`, `pkexec e1-hook/probe --look`; the charger
       may stay in. It should come back as the first look did: photograph the block, restart normally,
