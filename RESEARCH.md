@@ -4311,13 +4311,13 @@ question for Naeem), commit headlines. No m1n1 or Aura code, no driver source. N
   this Mac doesn't have. Their sources weren't read.
 - **DeepIdle (M2 Pro, T6020) is at the wall we're at,** runs R25 to R38B (2026-11-11). With every
   core asleep and nothing touched after the commit, WD2 (which the commit reloads to 60 s) resets
-  the Mac 61 s later. What they saw with an observer core, all in `MPMGR_AON` (0x29e5c0000, the
-  block whose + 0x4000 is the timer; T6000's is 0x2925c0000):
-  - the system state counter moves from `SYS_AWAKE` to `SYS_SLP_DDR`; the SoC-level state stays
-    `AWAKE`;
-  - five words change within 4 ms of the commit and then nothing moves: + 0x14 3 → 1, + 0x100
+  the Mac 61 s later. What they saw with an observer core:
+  - in the PMGR's state counters (a performance-counter block of their own, 0x29e2c8000 there):
+    the system state moves from `SYS_AWAKE` to `SYS_SLP_DDR`; the SoC-level state stays `AWAKE`;
+  - in `MPMGR_AON` (0x29e5c0000, the block whose + 0x4000 is the timer; T6000's is 0x2925c0000):
+    five words change within 4 ms of the commit and then nothing moves: + 0x14 3 → 1, + 0x100
     8 → 0xa, + 0x4000 1 → 0, + 0x4008 0x00010000 → 1, + 0x400c 0 → 1; none changes without it;
-  - pages 8 to 10 of the block (+ 0x8000 and up) hang whoever reads them, from Linux too;
+  - pages 8 to 10 of that block (+ 0x8000 and up) hang whoever reads them, from Linux too;
   - no change from Naeem's global-sleep order (cores arm deep sleep only after the commit, R38A)
     or from the SPMI interrupt word as macOS leaves it (R38B).
 
