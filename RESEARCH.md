@@ -4381,6 +4381,105 @@ found by reading the engine's program against the state at the commit. The same 
 of B2 hasn't been done here with these classes in hand, nor with the wake-source question. It
 costs no run.
 
+### B2 read against the M4 classes: the order holds, the raises are covered, and the PCIe ports are live at the commit (2026-11-12)
+
+No run. PLAN.md's desk step: B2's ops up to 224 from the local listing (which stays out of the
+repo), against the four classes of the section above, with the two looks, the runs' records, the
+live device tree's parent links and `e1_hook.c`. Aurora's `drivers/pci/controller/pcie-apple.c` was
+read for one fact, and the M4 Pro's driver again for its PCIe and power-gate comments. Nothing
+was posted.
+
+**1. Bit 11 as a latch.** B2 writes 0 to 52 power words and polls 49 of them for bit 11.
+- **B2's order is sound against the device tree:** no word goes off before a child of its own, and
+  no child the tree knows of is left on behind one (GPIO, a child of SIO and PMS, goes off before
+  SIO; the three PCIe `_SYS` words before APCIE_ST and APCIE_GP, and before ANS2).
+- **SIO's 43 are covered:** the AP's own 0 to each, in the recipe's state, met all 42 of their
+  polls (the second `sio_down=1` run).
+- **Of the other seven** (GPIO, the three PCIe words, ANS2, `ps_pmp`, DWI), none has bit 11 set
+  after Linux's noirq, and the recipe writes one of them afterwards: APCIE_GP_SYS, which
+  `ps_words=1` gives macOS's 0x1000030f. No run has read it since.
+- **The PCIe ports are live at the commit, and macOS's aren't** (the first three are on file, the
+  last is judgment):
+  - macOS has APCIE_GP_SYS at 0x1000030f at sleep entry: auto-enable set, actual state 0, so idle
+    and gated by itself (bits 27:24 follow the actual state, "The record laid out again").
+  - Linux has it at 0x1f0000ff awake and after noirq (both looks): the same auto-enable, actual
+    state f. The lane above SIO, in the same mode, did gate itself once SIO's subtree was off (the
+    gate test). So this block isn't idle.
+  - Aurora's PCIe suspend returns at once for a host that isn't tunneled
+    (`apple_pcie_suspend_noirq()`): the internal host's ports (Wi-Fi and Bluetooth, the card
+    reader) keep their link and their clocks through the suspend.
+  - Since run 12 `ps_words=1`'s last group "didn't all read back as written", and the gates read
+    narrowed that to PCIE0_REF, APCIE_GP_SYS or AFNC1_LW2: this block's own chain. A word that
+    can't gate reads f in bits 27:24 where 0 was written.
+  - Both working drivers stop these ports themselves before the commit (T8140's "radio port
+    stop", kept by the M4 Pro's: the link into L2, PERST#, the PHY's clocks and the port's clock
+    off, then `apcie_sys_gp` lowered with its bridge bits cleared), and the M4 Pro's engine sat on
+    a PCIe word until macOS's quiesce was done first. Here B2 writes the 0 itself (op 143), polls
+    bit 11 (op 146) and then the gate 0x28e09c34c (op 156), which read open at the commit. A 0
+    that meets a live port is the latch class, at a word nothing here has tested.
+
+**2. What B2 raises, and under what.**
+
+| raise | parents in the device tree | at the commit |
+|---|---|---|
+| GPIO (op 47, not waited for) | PMS, SIO | PMS always on; SIO raised by `sio_on=1` |
+| SIO_CPU (op 49, actual f) | SIO, UART_P, SPI_P, AUDIO_P | the first three raised by `sio_on=1`; AUDIO_P at target 0, as B1 leaves it; SIO_CPU reads on |
+| ANS2 (op 149, actual f) | AFNC2_LW0 | 0x1f0000ff, never written here; ANS2 came up within 10 ms in the probe |
+| `ps_pmp` (op 157, actual f) | none | on, never written |
+
+  Nothing B2 raises sits under a parent that is off or has gated itself. The M4 Pro's stall (a
+  domain raised under a lane at 0x1000030f with nothing on below) has no counterpart in B2's own
+  raises. The nearest thing on file is ours: the second `sio_down=1` run's write-back raised SIO
+  again under AFNC2_LW1 at 0x1000030f with all of it off, and at least one word wasn't back in
+  10 ms.
+
+**3. The first gate.** Nothing new can be read. With CPU0 up it holds (run 6), which is what the
+M4 Pro's driver says a core does; with CPU0 down nothing can see it, and nothing B2 writes before
+op 224 outlasts the reset. For a pending wake source, what's on file: CPU0 had no exception
+pending before its last WFI in both `sio_down=1` runs (their stages); and the seven words
+inferred to be the AP's wake status (0x292004024, right after the masks, as on T8103 and T6020)
+read 0 awake and showed no new bit after the commit in run 2, the one run that sampled them
+there, with CPU7 up. That address is inferred, not confirmed, and whether those words are what
+the first gate follows isn't known (the M4's are in its AOP's block). So nothing on file points
+at a wake source, and nothing rules one out with every core down.
+
+**4. After B2.** The next sequence waits, with no timeout, for the 16 DCS power words to read
+actual state 0. Linux already has all 16 in auto mode (0x1f0000ff or 0x1f0002ff awake,
+`results/sleep-peek-20261104T120619/`), where the M4's Linux had them fixed on, and that sequence
+itself writes a word with bits 8 and 12 set to each DCS block before it waits. So the M4's
+missing power-gate mode has no counterpart to add here, as far as a listing shows. It is past
+op 224 in any case.
+
+**The six gates, with the M4 Pro's driver beside them.** Each gate word is the first of a
+five-word entry in a table B1 writes whole (42 entries from 0x28e5a0000, 55 from 0x28e09c0e0,
+0x14 apart). The M4 Pro's driver has the same kind of block ("its pwrgate block reports bit 30"
+once every domain behind it is at 0), which is the reading of bit 30 here. The 21 words B0 and
+B2 set to 1 are in the pages right after the two tables. Two of them read 1 awake already and
+ANS2's gate does close under Linux, while SIO's doesn't with its word at 2: that fits the 21
+being the tables' mode, sleep's being 1 (inferred, and which word covers which gate isn't
+known). If so the AP's test of op 140 was bound to read open, and B2 passes it. `pre=1` is still
+the test of that.
+
+**Where B2 can stall before op 224, in its order** (judgment):
+
+| ops | wait | now |
+|---|---|---|
+| 1 to 6 | the first gate | can't be read with every core down |
+| 31 to 34 | the handshake, behind A2's three p-state moves | untried (`a2_pre=1`) |
+| 50, 51 | SIO_CPU up, SIO's word | passed for the AP (the probe) |
+| 91 to 138 | bit 11 of SIO's 43, GPIO's | passed for the AP but GPIO's (second `sio_down=1` run) |
+| 139, 140 | two gates | 0x28e5a0050 open for the AP, with its mode words unmoved |
+| 144 to 146 | bit 11 of the three PCIe words | **untried, with live ports behind APCIE_GP_SYS** |
+| 150 to 156 | ANS2 up and off, three gates | ANS2 passed (the probe); 0x28e09c34c is PCIe's |
+| 158 to 164 | `ps_pmp` up and off, DWI, a gate | the raise passed; the rest can't be made by the AP (`ps_pmp` is never written) |
+| 177 to 192 | eleven clock generators, two words of the engine's page | untried |
+
+**What it picks** (PLAN.md has the order). The PCIe step is the one place where the state at the
+commit is known to differ from macOS's in a way two working drivers had to fix, and one small run
+tests it from the AP with a reading that doesn't depend on a gate: B2's own five PCIe writes made
+before the commit, bit 11 and the actual state recorded, and the words left off so that B2 finds
+them done. A restart at 120 s instead of 90 s would say B2 got through. `pre=1` comes after it.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
