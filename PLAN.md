@@ -88,12 +88,15 @@ the PR with that session's work.
     thing differs from macOS at the commit: the internal PCIe ports are live (Linux's suspend
     leaves them alone), where macOS has APCIE_GP_SYS idle and gated, and B2 switches that word off
     and polls it. Two working drivers stop those ports before the commit.
-  - **Next, a run of Corey's: `pkexec e1-hook/run-floor --quick --m1-pcie-down`**, in a safe boot,
-    on battery (built 2026-11-12; RESEARCH.md, "`pcie_down=1` as built"): B2's five PCIe writes made
-    by the AP right before the commit and left, with bit 11 and the actual state recorded. New in
-    this run: those five power words written 0. Dark for about 90 s or about 120 s, then a restart;
-    which of the two is part of the result. "The order after the look", in Track A below, has the
-    outcomes. Then `pre=1`.
+  - That run (`--m1-pcie-down`, run once, 2026-11-12; RESEARCH.md, "The `pcie_down=1` run"): the
+    byte 0xfd. All five PCIe words went off cleanly with B2's own 0, no bit 11, and their gate,
+    0x28e09c34c, closed within 100 ms; the restart still came at 90 s. So PCIe isn't the stall,
+    and a gate can close for the AP with the 21 words unmoved, which makes 0x28e5a0050 staying
+    open with SIO's subtree off a lead again: B2's op 140.
+  - **Next, a build: `pre=1` on the `sio_down=1` rung, in stages** (not built; "The order after
+    the look", in Track A below): with SIO's subtree off and 0x28e5a0050 read, B2's cycle of GPIO
+    and the gate again, then the 22 words and the gate again, so that one run says which of the
+    two, if either, lets that gate close.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -543,7 +546,11 @@ steps, and restarting the DCP and the PMP afterwards.
       and gated. 2: nothing B2 raises sits under an off or self-gated parent. 3: nothing new can be
       read; the inferred wake-status words (0x292004024) showed no new bit in run 2, and nothing
       rules a wake source out with every core down. 4: no counterpart to add; Linux has the 16 DCS words in auto mode already.
-      **Next, built 2026-11-12 and not yet run: `pcie_down=1` on `--m1-gates`' rung**
+      **Run once, 2026-11-12: `pcie_down=1` on `--m1-gates`' rung** (RESEARCH.md, "The
+      `pcie_down=1` run"; `results/pcie-down-20261112/`): the byte 0xfd, the third outcome below
+      with one thing more: the gate 0x28e09c34c closed within 100 ms, where it was expected open.
+      So a gate closes for the AP with the 21 words unmoved, and 0x28e5a0050's staying open with
+      SIO's subtree off is a lead on op 140 again. As it was planned:
       (`run-floor --m1-pcie-down`; RESEARCH.md, "`pcie_down=1` as built";
       no `sio_down=1` in it, so that the restart's time compares with `--m1-gates`'). In step 8,
       right before the commit, CPU0 makes B2's ops 141 to 148 in B2's order and leaves them:
@@ -567,8 +574,17 @@ steps, and restarting the DCP and the PMP afterwards.
       auto-enable and the bridge bits by hand first); the byte at 0x6016, sent after the three
       `_SYS` words and again after the gate, under stages 0x1d, 0x1f and 0x1e. The sweep's cheap
       rider below isn't in it: it would be four more reads in a block no run here has mapped.
-      After it, **not built: `pre=1` on the `sio_down=1` rung** (the name is the build's to choose). In
-      step 8, before the switch-off, CPU0 makes B2's ops 8 to 29 in B2's order: 0x28e03801c :=
+      **Next, not built: `pre=1` on the `sio_down=1` rung, in stages** (the name is the build's
+      to choose). After the PCIe run the 22 words are no longer the likeliest thing behind
+      0x28e5a0050, and B2's cycle of GPIO (its ops 47 and 90: 0x28e080120 := 0x8000000f, then 0,
+      made inside its switch-off of SIO's subtree; GPIO's parents are PMS and SIO) is the other
+      thing B2 does there that the AP hasn't. One run can ask both, a reading of the gate after
+      each: the subtree off as now and the gate read (open, twice so far); then GPIO's cycle and
+      the gate; then the 22 words and the gate. The first stage at which it reads closed names
+      what it follows. To settle in the build: whether GPIO's cycle has to come before the
+      subtree's 0, where B2 has its raise (then the first stage can't be read apart from it), and
+      what goes back before the commit. The 22 words' part, as it was planned:
+      In step 8, before the switch-off, CPU0 makes B2's ops 8 to 29 in B2's order: 0x28e03801c :=
       0x80101100, 1 to the seven, 1 to the fourteen (B2's order there is 4, c, 10, 14, 8, 18 and on).
       Each read back; then the switch-off and the gate's poll as now. The gate's reading says whether
       those moves are what lets 0x28e5a0050 close.

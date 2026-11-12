@@ -4535,6 +4535,50 @@ the engine's wait, so it's a lead, and the time is still read. With that, bit 3 
 the clean verdict claimed all five off without the second send's bit: the adversarial pass had
 found the same.
 
+### The `pcie_down=1` run: the PCIe words go off cleanly, their gate closes, and the restart still comes at 90 s (2026-11-12)
+
+`pkexec e1-hook/run-floor --quick --m1-pcie-down`, in a safe boot, on battery (764f78f; aurora15;
+`results/pcie-down-20261112/`: the PMU's record, the clear and collect, the load's lines). Dark for
+90 s by Corey's watch, then a restart.
+
+- **The record is whole.** Stage 0x9f, every step's outcome as in the runs before, the marker
+  stood, WD2 armed and counting with the 120 s bite, `PHASE` 4, nothing pending on CPU0, and the
+  restart 88.9 to 90.9 s after the time stamp.
+- **The byte: 0xfd,** every bit as meant and one more:
+
+  | bit | | read |
+  |---|---|---|
+  | 0, 1 | APCIE_GP_SYS as found | up, bit 11 clear |
+  | 2 | its bit-11 poll after the 0 | met |
+  | 3 | at the last read before the commit | off and idle |
+  | 4 | the two storage words | polls met, off and idle |
+  | 5 | APCIE_ST and APCIE_GP | off within 100 ms |
+  | 6 | the gate 0x28e09c34c | **closed** within 100 ms |
+
+- **Awake at the load:** APCIE_ST_SYS and APCIE_ST1_SYS 0x1000030f (gated by themselves),
+  APCIE_GP_SYS 0x1f0000ff, APCIE_ST and APCIE_GP 0xff, the gate 0x8004030e.
+- **What it shows:**
+  - **B2's PCIe step isn't the stall.** Its own 0 takes on APCIE_GP_SYS with the ports live: no
+    latch, bit 11 clear, off within the poll. The M4's class doesn't show on this chip at this
+    word. And with all five left off, so that B2 had nothing to do there, the restart came at
+    90 s all the same: B2 still doesn't reach its op 224. The time compares with `--m1-gates`'
+    (nothing here was written back).
+  - **A gate closes for the AP, in the recipe's state, with the 21 words unmoved.** 0x28e09c34c
+    read open right before the commit in `--m1-gates`' run and closed here within 100 ms of
+    what's behind it going off. So B2's poll at op 156 would be met too, and the desk reading's
+    guess that the 21 words are what lets a gate close is wrong for this one at least (the seven
+    of its page read 2 2 2 2 3 2 2 throughout).
+  - **So 0x28e5a0050 staying open is a lead again.** It stayed open with all 43 words of SIO's
+    subtree off, B2's values, in the same state (the second `sio_down=1` run). "It was bound to
+    read open without the 21 words" no longer excuses that: either something else behind that
+    gate is still on, or its own page's words differ from this page's. That is B2's op 140, before
+    the PCIe step in its order, and the first poll on file that the AP's own switch-off doesn't
+    meet.
+- **Left of B2's power-down that the AP hasn't made:** its cycle of GPIO (0x8000000f, then 0:
+  GPIO's parents are PMS and SIO, and B2 makes the cycle inside its switch-off of SIO's subtree),
+  the 22 words, the PMP's and DWI's switch-off with their gate (the PMP's word is never written
+  here), and the clock generators.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
