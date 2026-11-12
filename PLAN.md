@@ -76,9 +76,15 @@ the PR with that session's work.
     0x28e5b0004 to 0x28e5b0038), read by the look (run once, 2026-11-11; RESEARCH.md, "The second
     look's run"): all as the wake sequence B1 leaves them, awake and after noirq, none at B2's value
     but two. The state B2 starts from is in order there too; the AP's switch-off never had them moved.
-  - **Next, not built: `sio_down=1` with B2's ops 8 to 29 made by the AP before the switch-off.** New
-    writes (22 words, B2's values), so an adversarial pass. "The order after the look", in Track A
-    below, is the place to start.
+  - The M4 Pro's and M4 Max's sleep drivers, read on 2026-11-12 (RESEARCH.md, "The M4 Pro's and M4
+    Max's sleep drivers, read"): the same engine and the same opening as B2. Their stalls were each
+    a word the engine waited on because of what the kernel left around it: bit 11 latched on a
+    power word (a parent off, a bridge armed), a domain the engine raises under a gated parent, a
+    core holding the first gate, then the DCS's power-gate mode. A pending wake source holding that
+    gate is their stated mechanism, not a stall they report.
+  - **Next, a desk step, no build and no run: B2's ops up to 224 read against those four classes,**
+    in the state the recipe leaves at the commit. "The order after the look", in Track A below, has
+    the questions. After it, the run it points to, or `pre=1` as planned.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -505,7 +511,27 @@ steps, and restarting the DCP and the PMP afterwards.
       are selects that B0 and B2 set to 1 and B1 sets back, and Linux leaves them at B1's. So nothing
       is wrong before B2 starts, and the first reading's next step stands, widened from the fourteen
       to all of ops 8 to 29.
-      Next, **not built: `pre=1` on the `sio_down=1` rung** (the name is the build's to choose). In
+      **Next, before any build: the desk step** (2026-11-12, after the M4 drivers; RESEARCH.md, "The
+      M4 Pro's and M4 Max's sleep drivers, read"). From the local B2 listing, the look's two records
+      and the recipe's writes (`e1_hook.c`), with no run:
+      1. Every power word B2 writes before op 224 and polls for bit 11: in the recipe's state at the
+         commit, is its parent on, are its children off, and has the recipe itself written it
+         (`ps_words=1`, `sio_on=1`, the table) in an order that could latch bit 11? On M4 that bit is
+         a latch (parent off, bridge armed), not only "busy".
+      2. Every domain B2 raises and waits for (GPIO first, SIO_CPU, any other): its parent chain at
+         the commit. A parent at 0x1000030f with nothing on below it gates itself (the M4 Pro's
+         ATC stall; AFNC2_LW1 reads that here).
+      3. The first gate (0x2922c0040 bit 1, then 0x2922c0044 bits 2 and 3): on M4 it is the AP
+         partition, held there by a core short of its last WFI. Their driver adds that a pending
+         wake source the masks let through would hold it too (a mechanism it states and checks for,
+         not a stall it reports): the recipe's wake mask and what is pending at the commit, read
+         as a question.
+      4. What comes after B2 if it gets through: the DCS's dynamic power-gate mode (+ 0x20 bits 8
+         and 12), which Linux never sets on M4; whether T6000's DCS has it is a read.
+      Its result is a ranked list and one run: most likely a read-only rider first (bit 11 of every
+      word B2 polls, and the parents of what it raises, read right before the commit and recorded),
+      since that would name a latched word outright.
+      After it, unless the desk step outranks it, **not built: `pre=1` on the `sio_down=1` rung** (the name is the build's to choose). In
       step 8, before the switch-off, CPU0 makes B2's ops 8 to 29 in B2's order: 0x28e03801c :=
       0x80101100, 1 to the seven, 1 to the fourteen (B2's order there is 4, c, 10, 14, 8, 18 and on).
       Each read back; then the switch-off and the gate's poll as now. The gate's reading says whether

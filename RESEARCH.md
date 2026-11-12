@@ -4330,6 +4330,57 @@ question for Naeem), commit headlines. No m1n1 or Aura code, no driver source. N
 - **Diljit Singh (T8140):** the sleep core (#1445) is merged in aurora-silicon; #1658 (merged) makes
   the Neo's wake 0.21 s faster.
 
+### The M4 Pro's and M4 Max's sleep drivers, read (2026-11-12)
+
+Corey's OK of 2026-11-12. Read: `drivers/soc/apple/t6040-sleep.c` in aurora-silicon/linux#1477
+(fbalazsy, at 7aefde062d64) and `t6041-sleep.c` in #1664 (AxxzyWasTaken, at 84f27ca4d316), both
+`GPL-2.0-only OR MIT`, both on Diljit Singh's T8140 work (#1208, #1445). Their comments and
+constants, not every function. Their values come from macOS traced under aura, which wasn't read.
+Nothing was posted. What follows is their authors' findings on M4, with what on T6000 looks like
+the same thing (the mapping is judgment unless a run of ours is cited).
+
+- **It's the same engine, laid out the same way.** They call the entry program A2D (iBoot's
+  reconfig sequence 24) and the next one D2S. A2D there waits on the same words as B2 here: an
+  engine page whose + 0x40 and + 0x44 (bits 2 and 3) are its gates and whose + 0x114 is a
+  progress code (4, 0x10, 5, 7); it powers GPIO on first, polls SIO's coprocessor word for bit 1,
+  writes SIO_CPU := 0x80000000, switches groups of power words off and polls each for bit 11.
+  That is B2's opening, op for op, with T6000's page at 0x2922c0000 (PHASE at + 0x110).
+- **Bit 11 of a power word is a latch, not only "busy"** (their PARENT_OFF or PARENT_MISSING). A
+  block raised under an off parent, lowered before its children, or lowered with its axi2af
+  bridge still armed keeps bit 11, and the engine, which polls it clear after each of its own
+  writes, then waits for good. On the M4 Max six words latched that way from the driver's own
+  teardown, and on a second sleep of a boot two more did; on the M4 Pro the engine sat on the
+  storage PCIe PHY's word (APCIE_PHY_SW) until macOS's PCIe quiesce was done first.
+  - Here: none of the 51 words the look reads has bit 11 set after Linux's own noirq (checked
+    today in `results/look-2-20261111/look.txt`), and the AP's switch-off of SIO's 43 met every
+    poll. Not checked: the words after the recipe's own writes, `ps_words=1`'s above all (its
+    last group "didn't all read back as written" in every run since 12).
+- **The first gate, engine page + 0x40, is "the AP partition that does not power down".** What
+  the M4 Pro's driver records as holding it: cores that hadn't reached their last WFI (the
+  complexes' words never dropped bit 4). It also says a pending wake source that the commit's
+  masks let through would hold it, and reads for one in its dry run; neither driver records that
+  as a stall that happened (Pullfrog on #91), so here it is a question, not a finding.
+- **The engine also raises domains and waits for them, with no timeout.** On the M4 Pro it
+  stalled raising ATC0_COMMON: its parent fabric read 0x1000030f (auto, level 0) and gates itself
+  when nothing below it is on, which was the case after Linux's suspend; macOS has the children
+  on at the commit. The fix was to raise the fabric and the four commons by hand right before
+  the commit. Here AFNC2_LW1 reads the same 0x1000030f, and B2 raises GPIO and SIO_CPU itself.
+- **Cluster words:** the two extra complexes' words (+ 0xc, + 0x10; here the display's) must read 0
+  at the commit, flag included, or the engine has a sequence to wait for. Run 16 did this here.
+- **After A2D, the memory side.** D2S polls the DCS power gates, which close only in dynamic
+  power-gate mode (+ 0x20 bits 8 and 12 on each DCS block), which macOS sets at boot and after
+  each wake and Linux never does; the M4 Max also needed the AMCC error enables off and macOS's
+  cache flush. With the mode on, the M4 Pro's AOP still held a DRAM request.
+- **Cores:** "one left awake keeps the engine waiting until the watchdog resets the SoC", as
+  T8140's author wrote and as every run here assumes.
+
+**What it changes here** (judgment). The AP-side tests of op 140 (the gate test, both
+`sio_down=1` runs) may be testing the wrong thing: on M4 each stall was a word the engine waited
+on because of what the kernel had left around it (an off parent, a latched bit 11, a core),
+found by reading the engine's program against the state at the commit. The same reading
+of B2 hasn't been done here with these classes in hand, nor with the wake-source question. It
+costs no run.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
