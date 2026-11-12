@@ -1530,10 +1530,12 @@ static void e1_after_slpa(void)
  * 0x28e080120 := 0x8000000f before the first 0 (B2's op 47), := 0 after the
  * first group's 38 writes and before their polls (its op 90), its bit 11 polled
  * after them. The two gates are polled as before and sst_going() goes to
- * 0x6016. If all 43 went off and 0x28e5a0050 is still open, CPU0 writes B2's
+ * 0x6016. If all 43 went off, their auto fields as B2's 0 leaves them, and
+ * 0x28e5a0050 is still open, CPU0 writes B2's
  * ops 8 to 29, a byte after each group: 0x28e03801c := 0x80101100, 1 to the
  * seven words 0x28e0a0004 to 0x28e0a001c, 1 to the fourteen 0x28e5b0004 to
- * 0x28e5b0038 in B2's order; each is read back and the gate polled again.
+ * 0x28e5b0038 in B2's order; each is read back (0x28e03801c with up to 100 ms
+ * for bit 30, pending, to clear) and the gate polled again.
  * sst_final() goes out, the 43 are written back as sio_down=1 writes them back
  * but with up to 100 ms each, the gate is polled to read open, and the byte
  * goes out with that. GPIO stays at B2's 0 and the 22 as B2 writes them: B2
@@ -3323,7 +3325,7 @@ static u8 m1_sio_steps(void)
 {
 	static const u16 off[SIOD_N] = SIOD_OFFS;
 	static const u8 grp[] = SIOD_GROUPS, pa[SST_A_N] = SST_A_OFFS, pb[SST_B_N] = SST_B_OFFS;
-	u32 was[SIOD_N];
+	u32 was[SIOD_N], now[SIOD_N];
 	u8 b, res = SST_SUB, back = SIOD_BACK_STATE | SIOD_BACK_EN;
 	unsigned int i, k, at;
 	bool pre;
@@ -3358,9 +3360,13 @@ static u8 m1_sio_steps(void)
 	if (m1_siod_poll(m1_look_ga + GATE_SIO, GATE_CLOSED, GATE_CLOSED))
 		res |= SST_G1;
 	for (i = 0; i < SIOD_N; i++) {
-		if (!siod_down(readl(m1_sio + off[i])))
+		now[i] = readl(m1_sio + off[i]);
+		if (!siod_down(now[i]))
 			res &= ~SST_SUB;
 	}
+	/* And the auto fields as B2's 0 leaves them, sio_down.h's codes 2 and 3: else the subtree isn't shown to be as B2 has it (Pullfrog on #95). */
+	if (siod_auto(off, now) < SIOD_AUTO_F)
+		res &= ~SST_SUB;
 	if (!sst_idle(readl(m1_ps + SST_GPIO)))
 		res &= ~SST_GPIO_OK;
 	dsb(sy);
@@ -3371,7 +3377,8 @@ static u8 m1_sio_steps(void)
 		/* B2's op 8, then its ops 9 to 15 and 16 to 29: a byte after each group, so that a stop in one is named. */
 		writel(SST_CLK_VAL, m1_look_pc + LOOK_PRE_CLK_OFF);
 		dsb(sy);
-		pre = m1_siod_poll(m1_look_pc + LOOK_PRE_CLK_OFF, ~SST_CLK_PENDING, SST_CLK_VAL & ~SST_CLK_PENDING);
+		/* The whole word, so with bit 30, pending, clear: B1 polls that bit after its own write, and the write isn't done until then (Pullfrog on #95). */
+		pre = m1_siod_poll(m1_look_pc + LOOK_PRE_CLK_OFF, ~0U, SST_CLK_VAL);
 		b = sst_going(res, 1);
 		m1_crumb(GATES_AT, &b, 1);
 		for (i = 0; i < SST_A_N; i++)
@@ -3410,9 +3417,9 @@ static u8 m1_sio_steps(void)
 	m1_crumb(GATES_AT, &b, 1);
 	return b;
 }
-/* The 24 new addresses' places, pinned: GPIO's word is in ps_pmp's page, and none of them is on the never-write list. */
+/* The 23 new addresses' places (GPIO's word gets two of the 24 new writes), pinned: GPIO's word is in ps_pmp's page, and none of them is on the never-write list. */
 static_assert(M1_PMGR_PS + SST_GPIO == 0x28e080120ULL && SST_GPIO != M1_PS_PMP_RO && SST_GPIO_UP == 0x8000000fU && SST_CLK_VAL == 0x80101100U &&
-	      SST_CLK_PENDING == BIT(30) && SST_PRE_VAL == 1 && LOOK_PS_PAGE == M1_PMGR_PS && LOOK_PRE_CLK + LOOK_PRE_CLK_OFF == 0x28e03801cULL);
+	      SST_CLK_PENDING == BIT(30) && !(SST_CLK_VAL & SST_CLK_PENDING) && SIOD_AUTO_F == 2 && SIOD_AUTO_ZERO == 3 && SST_PRE_VAL == 1 && LOOK_PS_PAGE == M1_PMGR_PS && LOOK_PRE_CLK + LOOK_PRE_CLK_OFF == 0x28e03801cULL);
 static_assert(ARRAY_SIZE(((u8[])SST_A_OFFS)) == SST_A_N && SST_A_N == 7 && ARRAY_SIZE(((u8[])SST_B_OFFS)) == SST_B_N && SST_B_N == 14 &&
 	      LOOK_PRE_A == 0x28e0a0000ULL && LOOK_PRE_B == 0x28e5b0000ULL && LOOK_PRE_FIRST == 0x04 && LOOK_PRE_A_LAST == 0x1c &&
 	      LOOK_PRE_B_LAST == 0x38);
@@ -4254,7 +4261,6 @@ static int __init m1_probe_init(void)
 
 /* look=1: the clock generators' blocks and the two pages with the gate-status words (m1_look_ga and m1_look_gb, declared with m1_pos for gates_mark=1's step 8); the other words' pages are the recipe's. Only ever read. */
 static void __iomem *m1_look_clk;
-/* And the three pages with the 22 words B2 writes before its first handshake (look.h). Only ever read. */
 static_assert(LOOK_AON_PAGE == M1_POS_PAGE && LOOK_SIO_PAGE == M1_PS_SIO_PAGE && LOOK_PS_PAGE == M1_PMGR_PS);
 static_assert(LOOK_SIO_PAGE + LOOK_SIO_ANS2 == M1_PS_SIO_PAGE + M1_PS_ANS2 && LOOK_SIO_FIRST == M1_PS_SIO && LOOK_SIO_LAST < LOOK_SIO_ANS2);
 
@@ -4683,9 +4689,10 @@ static int __init m1_pcd_init(void)
 }
 
 /*
- * sio_steps=1 at load, after m1_gates_init() and m1_siod_init(), which has checked the 43: the 24 other addresses are
+ * sio_steps=1 at load, after m1_gates_init() and m1_siod_init(), which has checked the 43: the 23 other addresses are
  * exactly the ones named here (a second writing-out of them, as m1_pcd_init() has), none is on the never-write list,
- * the three pages of the 22 are mapped here unless look=1 mapped them, and GPIO's word, the 22 and the gate logged awake.
+ * the three pages of the 22 are mapped here (nothing else maps them in a run that gets here: look=1 needs probe=1, which
+ * sio_steps=1 refuses; the test for a pointer already set only keeps a later change from leaking a mapping), and GPIO's word, the 22 and the gate logged awake.
  * Reads only.
  */
 static int __init m1_sst_init(void)

@@ -36,7 +36,8 @@
  *      GPIO's bit 11 polled after them, each poll up to 100 ms
  *   3. 0x28e5a0064, then 0x28e5a0050, each polled for bit 30 for up to 100 ms;
  *      the 43 and GPIO read again; the byte to 0x6016, in its first layout
- *   4. only if all 43 went off, every poll met, and the gate stayed open:
+ *   4. only if all 43 went off, every poll met, their auto fields as B2's 0
+ *      leaves them, and the gate stayed open:
  *      0x28e03801c := 0x80101100 and the byte; 1 to the seven and the byte;
  *      1 to the fourteen, in B2's order, and the byte; each word read back;
  *      0x28e5a0050 polled once more, up to 100 ms
@@ -49,15 +50,20 @@
  * GPIO stays at B2's 0 and the 22 as B2 writes them: B2 writes the same values
  * to the same words itself, first thing, so the commit finds nothing there
  * that B2 wouldn't have put there. The 43 go back because B2's own raise of
- * SIO_CPU would otherwise wait under an off parent (run 3).
+ * SIO_CPU would otherwise wait under an off parent (run 3). They go back with
+ * the 21 at 1, which is the wake sequence's own order: B1 raises its power
+ * words first and puts the 21 back near its end. Bit 5 says whether they came.
  *
  * The byte, at 0x6016 (gates_mark.h's GATES_AT), under the run's own stages.
  * Bit 7 is always set. Bit 6 tells its two layouts apart.
  *
  * Bit 6 clear: the pass isn't through yet.
  *   bit 0  0x28e5a0050 read closed after the switch-off with GPIO's cycle
- *   bit 2  all 43 read target 0 and actual state 0, and every bit-11 poll of
- *          theirs was met
+ *   bit 2  all 43 read target 0 and actual state 0, every bit-11 poll of
+ *          theirs was met, and their auto fields read as B2's 0 leaves them
+ *          (sio_down.h's codes 2 and 3: no auto-enable left, bits 27:24 0 or,
+ *          in the five that read f after any switch-off, f). sio_down=1's
+ *          byte tells these apart; this one doesn't (Pullfrog on #95)
  *   bit 3  GPIO's cycle was one: its actual state read f within 100 ms of the
  *          raise, its bit-11 poll was met, and it read target 0, actual state
  *          0 and bit 11 clear after the gates' polls
@@ -73,8 +79,9 @@
  *   bit 2  as above
  *   bit 3  as above
  *   bit 4  the 22 were written and every one read back as written
- *          (0x28e03801c but for its bit 30, within 100 ms). Clear with bit 0
- *          set or bit 2 clear: they weren't written
+ *          (0x28e03801c with bit 30, pending, clear, within 100 ms: B1
+ *          polls that bit after its own write). Clear with bit 0 set or bit
+ *          2 clear: they weren't written
  *   bit 5  all 43 read as found in target, actual state and auto-enable, each
  *          within 100 ms of its write-back, and 0x28e5a0050 read open again
  *          within 100 ms after the last. Not set in the first send of this
@@ -86,7 +93,11 @@
  * at its op 140: the cores are up and A2's moves haven't been made (Pullfrog
  * on #83). The 22 are written after the switch-off here and before it in B2;
  * if the gate only follows them when they're in place first, this run reads
- * open and can't tell.
+ * open and can't tell. And the second poll comes some hundreds of ms after the
+ * first: a gate that closes that late by itself, which no run has watched for,
+ * leaves the same byte as one that follows the 22 (the adversarial review of
+ * #95). Bit 5 says the 43 and the gate came back; whether the commit found GPIO
+ * off and the 22 as B2 writes them is bits 3 and 4's to say.
  *
  * The stages are the run's own from step 8's command on, gates_mark=1's with
  * the byte's meaning the one difference (sst_stage()): 0x15 for 0x4b, 0x17 and
@@ -94,8 +105,8 @@
  *
  * What it adds to the time between step 4, where WD1's marker is set, and the
  * commit: a few ms if every poll is met at once, 200 ms for a gate that stays
- * open through both polls, and at worst about 9.5 s (45 polls of 100 ms, three
- * gate polls, 43 waits of 100 ms). The RTC's second is read before it, so a
+ * open through both polls, and at worst a little over 9 s (44 polls of 100 ms, four
+ * gate polls, one of 0x28e03801c, 43 waits of 100 ms). The RTC's second is read before it, so a
  * restart is timed from before it too.
  *
  * A run that stops inside it leaves stage 0x15 with 0x6016 at 0 (in the
@@ -113,7 +124,7 @@
 #define SST_GPIO		0x120
 #define SST_GPIO_UP		0x8000000fU
 
-/* B2's op 8, in look.h's LOOK_PRE_CLK page: the value, and the one bit of the word that isn't compared on the read back. */
+/* B2's op 8, in look.h's LOOK_PRE_CLK page: the value, and the word's pending bit, which B1 polls clear after its own write: the write isn't done while it's set. */
 #define SST_CLK_VAL		0x80101100U
 #define SST_CLK_PENDING		(1U << 30)
 /* B2's ops 9 to 15 and 16 to 29: offsets in look.h's LOOK_PRE_A and LOOK_PRE_B pages, in B2's order; each is written 1. */
@@ -157,10 +168,10 @@ static inline bool sst_second(u8 res)
 	return (res & (SST_SUB | SST_G1)) == SST_SUB;
 }
 
-/* 0x28e03801c reads as B2's op 8 wrote it, its bit 30 aside. */
+/* 0x28e03801c reads as B2's op 8 wrote it, with bit 30, pending, clear: the write is done. */
 static inline bool sst_clk_ok(u32 v)
 {
-	return (v & ~SST_CLK_PENDING) == (SST_CLK_VAL & ~SST_CLK_PENDING);
+	return v == SST_CLK_VAL;
 }
 
 /* The byte's first layout. res: SST_G1, SST_SUB and SST_GPIO_OK as they turned out. groups: how many of the 22's three are written, 0 to 3. */

@@ -2684,8 +2684,12 @@ int main(void)
 # and PMU byte. The scenario is argv[1], letters: c the gate reads closed before anything; g it closes once the subtree is off and
 # GPIO has been up and is off again; h it closes once the subtree is off and all 22 read as B2 writes them; o once closed it stays
 # closed; u GPIO's actual state never comes up; b GPIO keeps bit 11 after its 0; k I2C0 keeps bit 11 after its 0; n SPI_P's actual
-# state stays f after its 0; Q 0x28e03801c doesn't take the write; q it reads with bit 30 set; r 0x28e5b0024 doesn't take its 1; R
-# 0x28e0a0014 doesn't; x SIO_CPU's actual state stays 0 after its write-back; z it comes back after 50 ms.
+# state stays f after its 0; Q 0x28e03801c doesn't take the write; q its bit 30, pending, stays set; W it clears after 30 ms; r
+# 0x28e5b0024 doesn't take its 1; R 0x28e0a0014 doesn't; x SIO_CPU's actual state stays 0 after its write-back; z it comes back
+# after 50 ms; e SIO's auto-enable doesn't come back; a SIO keeps its auto-enable after the 0; A I2C0, not one of the five, reads f
+# in bits 27:24 after it; B GPIO's bit 11 clears 200 ms after its 0, past its poll; U GPIO's actual state stays f after its 0; D
+# GPIO takes 30 ms to come up; G the gate closes 50 ms after what it follows is there; O it opens again 30 ms after that is gone.
+# The five words that read f in bits 27:24 after any switch-off do so here after a 0.
 SST_FN_PRELUDE = r"""
 #include <stdio.h>
 #include <string.h>
@@ -2703,8 +2707,8 @@ static unsigned char pg[6][0x4000];
 static void *m1_sio = pg[0], *m1_ps = pg[1], *m1_look_ga = pg[2], *m1_look_pc = pg[3], *m1_look_pa = pg[4], *m1_look_pb = pg[5];
 static const char names[] = "SPACXY";
 static const char *sc;
-static u64 clk, m1_tps = 24000000, cpu_back_at;
-static int gpio_up, gpio_cycled, latched, cpu_back;
+static u64 clk, m1_tps = 24000000, cpu_back_at, gpio_up_at, gpio_zero_at, clk_at, cond_at, reopen_at;
+static int gpio_up, gpio_zero, gpio_cycled, latched, cpu_back, clk_written, was_closed;
 static u32 w[6][0x400 / 4];
 /* Every look at the clock is 1 ms on. */
 static u64 m1_now(void) { return clk += m1_tps / 1000; }
@@ -2743,15 +2747,40 @@ static u32 readl(const void *p)
 
 	if (k == 0 && o == 0x188 && has('z') && cpu_back && clk < cpu_back_at + 50 * m1_tps / 1000)
 		v &= ~0xf0U;
+	if (k == 1 && o == 0x120) {
+		if (has('D') && gpio_up && !gpio_zero && clk < gpio_up_at + 30 * m1_tps / 1000)
+			v &= ~0xf0U;
+		if (has('B') && gpio_zero && clk < gpio_zero_at + 200 * m1_tps / 1000)
+			v |= 0x800;
+	}
 	if (k == 2) {
-		int closed = o == 0x64 || has('c') || latched || (has('g') && sub_off() && gpio_cycled && !(w[1][0x120 / 4] & 0xff)) ||
-			     (has('h') && sub_off() && pre_done());
+		int cond = (has('g') && sub_off() && gpio_cycled && !(w[1][0x120 / 4] & 0xff)) || (has('h') && sub_off() && pre_done());
+		int closed = cond;
 
-		if (o == 0x50 && closed && has('o'))
-			latched = 1;
+		if (o != 0x50) {
+			closed = o == 0x64;
+		} else {
+			if (has('G')) {
+				if (!cond)
+					cond_at = 0;
+				else if (!cond_at)
+					cond_at = clk;
+				closed = cond && clk >= cond_at + 50 * m1_tps / 1000;
+			}
+			if (has('O') && !cond && was_closed) {
+				if (!reopen_at)
+					reopen_at = clk;
+				closed = clk < reopen_at + 30 * m1_tps / 1000;
+			}
+			if (closed)
+				was_closed = 1;
+			if (closed && has('o'))
+				latched = 1;
+			closed = closed || latched || has('c');
+		}
 		v = 0x80040000 | (closed ? 0x40000000 : 0);
 	}
-	if (k == 3 && has('q'))
+	if (k == 3 && (has('q') || (has('W') && clk_written && clk < clk_at + 30 * m1_tps / 1000)))
 		v |= 0x40000000;
 	printf("r %c %lx %x\n", names[k], o, v);
 	return v;
@@ -2769,6 +2798,14 @@ static void writel(u32 v, void *p)
 	if (k == 0) {
 		/* The settings as written, the actual state following the target, bit 11 clear, the two flags kept. */
 		w[k][o / 4] = (v & 0x1f00000f) | ((v & 0xf) << 4) | (was & 0x300);
+		if (!v && (o == 0x180 || o == 0x188 || o == 0x218 || o == 0x220 || o == 0x228))
+			w[k][o / 4] |= 0x0f000000;
+		if (has('a') && o == 0x180 && !v)
+			w[k][o / 4] |= 0x10000000;
+		if (has('A') && o == 0x1a8 && !v)
+			w[k][o / 4] |= 0x0f000000;
+		if (has('e') && o == 0x180 && v)
+			w[k][o / 4] &= ~0x10000000U;
 		if (has('k') && o == 0x1a8 && !v)
 			w[k][o / 4] |= 0x800;
 		if (has('n') && o == 0x1e8 && !v)
@@ -2782,14 +2819,20 @@ static void writel(u32 v, void *p)
 	} else if (k == 1 && o == 0x120) {
 		if (v & 0xf) {
 			gpio_up = !has('u');
+			gpio_up_at = clk;
 			w[k][o / 4] = v | (gpio_up ? (v & 0xf) << 4 : 0);
 		} else {
 			if (gpio_up)
 				gpio_cycled = 1;
-			w[k][o / 4] = 0x200 | (has('b') ? 0x800 : 0);
+			gpio_zero = 1;
+			gpio_zero_at = clk;
+			w[k][o / 4] = 0x200 | (has('b') ? 0x800 : 0) | (has('U') ? 0xf0 : 0);
 		}
-	} else if (k == 3 && !has('Q')) {
-		w[k][o / 4] = v;
+	} else if (k == 3) {
+		clk_written = 1;
+		clk_at = clk;
+		if (!has('Q'))
+			w[k][o / 4] = v;
 	} else if ((k == 4 && !(has('R') && o == 0x14)) || (k == 5 && !(has('r') && o == 0x24))) {
 		w[k][o / 4] = v;
 	}
@@ -2816,6 +2859,8 @@ int main(int argc, char **argv)
 	w[0][0x1e8 / 4] = 0x000000ff;
 	w[0][0x230 / 4] = 0x000001ff;
 	w[0][0x250 / 4] = 0x00000244;
+	/* SIO_SPMI0-2 read f in bits 27:24 whenever their auto-enable is clear, which it always is. */
+	w[0][0x218 / 4] = w[0][0x220 / 4] = w[0][0x228 / 4] = 0x0f000200;
 	w[1][0x120 / 4] = 0x200;
 	w[1][0x2d8 / 4] = 0x1f0f03ff;
 	w[3][0x1c / 4] = 0x80100100;
@@ -2912,7 +2957,8 @@ def sio_steps_tests(g, src):
     code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
     fns = cut("static bool m1_siod_poll(", "\n}\n") + cut("static u8 m1_siod_back(", "\n}\n") + cut("static u8 m1_sio_steps(void)", "\n}\n")
     init = cut("static int __init m1_sst_init(void)", "\n}\n")
-    scen = ("", "g", "h", "c", "u", "b", "k", "n", "Q", "q", "r", "R", "x", "z", "go", "ho", "gu", "gn", "hr", "hq", "gb", "hx", "ub", "kn", "hQ", "cg")
+    scen = ("", "g", "h", "c", "u", "b", "k", "n", "Q", "q", "r", "R", "x", "z", "go", "ho", "gu", "gn", "hr", "hq", "gb", "hx", "ub", "kn", "hQ", "cg",
+            "a", "A", "B", "U", "e", "D", "W", "gG", "hG", "hW", "gO", "hO", "gD", "gU", "gB", "ga")
     with tempfile.TemporaryDirectory() as tmp:
         def build(name, code):
             c = os.path.join(tmp, name + ".c")
@@ -2960,9 +3006,9 @@ def sio_steps_tests(g, src):
           "sst_final() keeps its six bits and sets bits 6 and 7; sst_second() is true only for a subtree that went off with the gate open;"
           " sst_going() keeps the gate, the subtree and GPIO, puts the count of groups in bits 1 and 4, and never sets bit 5 or 6: 32"
           " bytes, each its own")
-    check(all(wd[v][0] == int(not v & 0x8ff) for v in wd) and all(wd[v][1] == int(v | 0x40000000 == 0xc0101100) for v in wd) and len(wd) == 22
-          and wd[0x80101100] == (1, 1) and wd[0xc0101100] == (1, 1) and wd[0x80100100] == (1, 0) and wd[0x200] == (1, 0) and wd[0x800] == (0, 0) and wd[0xf0] == (0, 0),
-          "sst_idle(): target 0, actual state 0 and bit 11 clear, the was-gated flags aside; sst_clk_ok(): B2's value, bit 30 either way")
+    check(all(wd[v][0] == int(not v & 0x8ff) for v in wd) and all(wd[v][1] == int(v == 0x80101100) for v in wd) and len(wd) == 22
+          and wd[0x80101100] == (1, 1) and wd[0xc0101100] == (1, 0) and wd[0x80100100] == (1, 0) and wd[0x200] == (1, 0) and wd[0x800] == (0, 0) and wd[0xf0] == (0, 0),
+          "sst_idle(): target 0, actual state 0 and bit 11 clear, the was-gated flags aside; sst_clk_ok(): B2's value with bit 30, pending, clear")
     check((g["SST_PRE"], g["SST_WD2"], g["SST_STAGES"]) == (0x15, (0x16, 0x17), (0x15, 0x16, 0x17))
           and tuple(g[n] for n in ("SST_G1", "SST_G2", "SST_SUB", "SST_GPIO_OK", "SST_PRE_OK", "SST_BACK", "SST_FINAL", "SST_MARK", "SST_GO_AT_LO",
                                    "SST_GO_AT_HI", "SST_GO_CLOSED")) == (1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80, 2, 0x10, 0x20)
@@ -2972,7 +3018,7 @@ def sio_steps_tests(g, src):
 
     # m1_sio_steps() in every scenario: the accesses, in order.
     found = {o: 0x200 for o in SIOD_ORDER}
-    found.update({0x180: 0x1f0000ff, 0x188: 0x040002ff, 0x1e8: 0xff, 0x230: 0x1ff, 0x250: 0x244})
+    found.update({0x180: 0x1f0000ff, 0x188: 0x040002ff, 0x1e8: 0xff, 0x230: 0x1ff, 0x250: 0x244, 0x218: 0x0f000200, 0x220: 0x0f000200, 0x228: 0x0f000200})
     rets = {}
     for a in scen:
         ev = [l.split() for l in runs[a]]
@@ -2988,14 +3034,14 @@ def sio_steps_tests(g, src):
             check(ok, f"m1_sio_steps(), scenario '{a}': the gate closed before the first write: the 43 and the gate read, nothing written, 0xa0 sent"
                   " once and returned", "\n".join(runs[a][-12:]))
             continue
-        sub = "k" not in a and "n" not in a
-        g1 = "g" in a and "n" not in a and "u" not in a
-        res = (4 if sub else 0) | (8 if "u" not in a and "b" not in a else 0) | (1 if g1 else 0)
+        sub = not any(c in a for c in "knaA")
+        g1 = "g" in a and not any(c in a for c in "nuU")
+        res = (4 if sub else 0) | (0 if any(c in a for c in "ubBU") else 8) | (1 if g1 else 0)
         second = sub and not g1
-        pre = second and not any(c in a for c in "QrR")
-        g2 = second and pre and "h" in a
+        pre = second and not any(c in a for c in "QrRq")
+        g2 = second and "h" in a and not any(c in a for c in "QrR")  # the model's gate doesn't ask for bit 30
         res2 = res | (0x10 if pre else 0) | (2 if g2 else 0)
-        back = "x" not in a and not ("o" in a and (g1 or g2))
+        back = "x" not in a and "e" not in a and not ("o" in a and (g1 or g2))
         want_k = ([going(res, 0)] + ([going(res, n) for n in (1, 2, 3)] if second else []) + [0xc0 | res2, 0xc0 | res2 | (0x20 if back else 0)])
         want_w = ([("P", 0x120, 0x8000000f)] + [("S", o, 0) for o in SIOD_ORDER[:38]] + [("P", 0x120, 0)] + [("S", o, 0) for o in SIOD_ORDER[38:]]
                   + ([("C", 0x1c, 0x80101100)] + [("X", o, 1) for o in SST_A_ORDER] + [("Y", o, 1) for o in SST_B_ORDER] if second else [])
@@ -3016,23 +3062,31 @@ def sio_steps_tests(g, src):
               and (not second or (wi[45] < ks[1][0] < wi[46] and wi[52] < ks[2][0] < wi[53] and wi[66] < ks[3][0] < ks[4][0] < wi[67]
                                   and [x for x in between(ks[3][0], ks[4][0]) if x[0] == "r"] and all(x == ("r", "A", 0x50) for x in between(ks[3][0], ks[4][0]))))
               and (second or not any(p in "CXY" for i, t, p, o, v in acc))
+              # 0x28e5a0064 is polled before 0x28e5a0050, as in B2; GPIO's bit 11 after the 38's polls, where B2 has it.
+              and [x for x in between(wi[44], ks[0][0]) if x[1] == "A"][0] == ("r", "A", 0x64)
+              and (lambda seg: seg[0] == ("r", "S", SIOD_ORDER[0]) and [j for j, x in enumerate(seg) if x[1] == "P"]
+                   and max(j for j, x in enumerate(seg) if x[1] == "S") < min(j for j, x in enumerate(seg) if x[1] == "P"))(between(wi[39], wi[40]))
               # UART_N is written and never polled, as in B2: read as found and after the polls, and not between.
               and len([1 for i, t, p, o, v in acc if p == "S" and o == 0x238 and t == "r" and i < ks[0][0]]) == 2
               and end[("P", 0x2d8)] == 0x1f0f03ff and not end[("P", 0x120)] & 0x8000000f
-              and all(not (end[("S", o)] ^ found[o]) & 0x1f0000ff for o in SIOD_ORDER if not ("x" in a and o == 0x188))
+              and all(not (end[("S", o)] ^ found[o]) & 0x1f0000ff for o in SIOD_ORDER if not ("x" in a and o == 0x188) and not ("e" in a and o == 0x180) and not ("A" in a and o == 0x1a8))
               and (not pre or (end[("C", 0x1c)] == 0x80101100 and all(end[("X", o)] == 1 for o in SST_A_ORDER) and all(end[("Y", o)] == 1 for o in SST_B_ORDER)))
               and (second or (end[("C", 0x1c)] == 0x80100100 and [end[("X", o)] for o in SST_A_ORDER] == [2, 2, 2, 2, 3, 2, 2])))
         check(ok, f"m1_sio_steps(), scenario '{a}': the 43 and the gate read as found; GPIO raised, B2's 0 to the first 38, GPIO's 0 right after,"
               " the polls, the rest in B2's groups, the gates polled and the byte; the 22 in B2's order with a byte after each group only if the"
               " subtree went off and the gate stayed open; the byte's second layout; the 43 back in reverse as found and the byte again; no"
               " other word of any page touched, ps_pmp's untouched", "\n".join(runs[a][-40:]) + f"\nwant {[hex(b) for b in want_k]}")
-    check(rets == dict(rets, **{"": 0xfc, "g": 0xed, "h": 0xfe, "c": 0xa0, "cg": 0xa0, "u": 0xf4, "b": 0xf4, "k": 0xe8, "n": 0xe8, "Q": 0xec, "q": 0xfc,
-                                "r": 0xec, "R": 0xec, "x": 0xdc, "z": 0xfc, "go": 0xcd, "ho": 0xde, "gu": 0xf4, "gn": 0xe8, "hr": 0xec, "hq": 0xfe,
-                                "gb": 0xe5, "hx": 0xde, "ub": 0xf4, "kn": 0xe8, "hQ": 0xec}),
+    check(rets == dict(rets, **{"": 0xfc, "g": 0xed, "h": 0xfe, "c": 0xa0, "cg": 0xa0, "u": 0xf4, "b": 0xf4, "k": 0xe8, "n": 0xe8, "Q": 0xec, "q": 0xec,
+                                "r": 0xec, "R": 0xec, "x": 0xdc, "z": 0xfc, "go": 0xcd, "ho": 0xde, "gu": 0xf4, "gn": 0xe8, "hr": 0xec, "hq": 0xee,
+                                "gb": 0xe5, "hx": 0xde, "ub": 0xf4, "kn": 0xe8, "hQ": 0xec, "a": 0xe8, "A": 0xe8, "B": 0xf4, "U": 0xf4, "e": 0xdc,
+                                "D": 0xfc, "W": 0xfc, "gG": 0xed, "hG": 0xfe, "hW": 0xfe, "gO": 0xed, "hO": 0xfe, "gD": 0xed, "gU": 0xf4, "gB": 0xe5,
+                                "ga": 0xe9}),
           "m1_sio_steps(): 0xfc with everything made and the gate open throughout; 0xed if it closes with GPIO's cycle and 0xfe once the 22"
           " are in; a GPIO that doesn't come up or keeps bit 11, a word of the subtree that stays up or busy, a word of the 22 that doesn't"
           " take, a word that doesn't come back and a gate that stays closed each clear their own bit; a word back after 50 ms counts as"
-          " back; bit 30 of 0x28e03801c isn't compared", str({a: hex(v) for a, v in rets.items()}))
+          " back; 0x28e03801c counts only with bit 30 clear, within 100 ms; an auto-enable left, or f where no switch-off left it, isn't"
+          " a subtree that's off; an auto-enable that doesn't come back isn't back; GPIO's two checks each count alone; a register that"
+          " takes 30 or 50 ms is waited for", str({a: hex(v) for a, v in rets.items()}))
 
     # The source: what the function writes, and nothing else like it.
     body = cut("static u8 m1_sio_steps(void)", "\n}\n")
@@ -3102,7 +3156,7 @@ def sio_steps_tests(g, src):
         rc, out_, err = dec(0x97, 0xfc, x=90)
         check(rc == 0 and "stage 0x6004 = 0x97 (pmp_out=1: bit 7, so the stage is 0x17) (pmgr_late=1): sio_steps=1: gates_mark=1's 0x55:" in out_
               and "0x6016 = 0xfc: sio_steps=1's byte, in place of the alarm's result:" in out_
-              and "  the 43 words of SIO's subtree after the polls: all read target 0 and actual state 0, and B2's 42 polls for bit 11 clear were all met: the subtree was off\n" in out_
+              and "  the 43 words of SIO's subtree after the polls: all read target 0 and actual state 0, B2's 42 polls for bit 11 clear were all met, and the auto fields read as B2's 0 leaves them: the subtree was off\n" in out_
               and "its bit-11 poll after the 0 was met, and it read off and idle after the gates' polls: the cycle was made\n" in out_
               and "  0x28e5a0050 after that, with up to 100 ms for 0x28e5a0064 and 100 ms more for it: bit 30 clear, OPEN\n" in out_
               and "written after that: all read back as written\n" in out_ and "  0x28e5a0050 after them, with up to 100 ms more: bit 30 clear, OPEN\n" in out_
@@ -3130,6 +3184,12 @@ def sio_steps_tests(g, src):
             rc, out_, err = dec(0x97, gb, x=90)
             check(rc == 0 and want in out_ and out_.count("  so: ") == 1 + out5.count("  so: ") - 1 and "Not read" not in out_.split("0x6016 = ")[1].split("\n0x")[0],
                   f"sio_steps=1's 0x{gb:02x}: {what}, said once", out_ + err)
+        for gb, want in ((0xec, "GPIO at B2's 0 and THE 22 NOT ALL AS B2 WRITES THEM"), (0xf4, "GPIO NOT SHOWN OFF AND IDLE and the 22 as B2 writes them")):
+            rc, out_, err = dec(0x97, gb, x=90)
+            check(rc == 0 and f"  the commit found SIO's subtree as the recipe leaves it, {want}: the restart's time doesn't compare with --m1-gates' cleanly\n" in out_
+                  and "the restart's time is read as --m1-gates' is" not in out_,
+                  f"sio_steps=1's 0x{gb:02x}: the 43 back doesn't make the commit's state B2's own: what bits 3 and 4 don't show isn't claimed (Pullfrog and"
+                  " the adversarial review of #95)", out_ + err)
         rc, out_, err = dec(0x96, 0xdc)
         check(rc == 0 and "so the stage is 0x16" in out_ and "sio_steps=1: gates_mark=1's 0x54:" in out_ and "pending afterwards" in out_
               and "  written back: NOT CONFIRMED" in out_ and "the restart's time doesn't compare with --m1-gates'" in out_
@@ -3141,6 +3201,7 @@ def sio_steps_tests(g, src):
               and "  the 22 words: 1 of their three groups written and read back when the record stops; next was the seven words 0x28e0a0004 to 0x28e0a001c (B2's ops 9 to 15)\n" in out_
               and "  so: THE RUN STOPPED AT the seven words 0x28e0a0004 to 0x28e0a001c (B2's ops 9 to 15): in its writes, its read-back or the byte after it." in out_
               and "Nothing shows the 43 written back" in out_ and "  stage 0x15, so nothing records the commit after this byte" in out_
+              and "both end at WD1's marker (about 90 s after step 4), and this record doesn't tell those two apart" in out_
               and "  wd1_mark=1's marker: not read. Stage 0x15 is the last before the commit" in out_,
               "sio_steps=1's 0x95 with the byte's first layout and one group in: the stage before the commit, the group it stopped at, no reading"
               " of the time", out_ + err)
@@ -3178,7 +3239,8 @@ def sio_steps_tests(g, src):
                     if not v & 0x80:
                         ok = len(lines) == 1 and not so and ("DIDN'T LAND" in text) == (s == 0x15) and ("Not read" in text) == (s != 0x15)
                     elif v == 0xa0:
-                        ok = len(so) == 1 and "NOTHING WAS WRITTEN" in so[0] and "ALREADY CLOSED" in text and len(lines) == 3
+                        ok = (len(so) == 1 and "NOTHING WAS WRITTEN" in so[0] and "ALREADY CLOSED" in text and len(lines) == (4 if s == 0x15 else 3)
+                              and ("nothing records the commit" in text) == (s == 0x15) and "The commit found" not in text)
                     elif not v & 0x40:
                         n = (1 if v & 2 else 0) | (2 if v & 0x10 else 0)
                         if v & 0x20 or s != 0x15 or (n and not second):
@@ -3215,8 +3277,13 @@ def sio_steps_tests(g, src):
                               and ("GPIO's cycle isn't shown made" in so[0] and "stayed OPEN, but" in so[0]) == (live and second and not g2 and not gp)
                               and ("the 22 didn't all read back as written" in so[0]) == (live and second and not g2 and not pr)
                               and ("a2_pre=1 is next" in so[0]) == (live and sub and ((g1 and gp) or g2))
-                              and ("doesn't compare with --m1-gates'" in text) == (not bk) and ("the commit found SIO's subtree as the recipe leaves it" in text) == bk
-                              and ("and the 22 as B2 writes them" in text) == (bk and second)
+                              and ("doesn't compare with --m1-gates'" in text) == (not bk or not gp or (second and not pr))
+                              and ("the restart's time is read as --m1-gates' is" in text) == (bk and gp and (not second or pr))
+                              and ("the commit found SIO's subtree as the recipe leaves it" in text) == bk
+                              and ("and the 22 as B2 writes them" in text) == (bk and second and pr)
+                              and ("THE 22 NOT ALL AS B2 WRITES THEM" in text) == (bk and second and not pr)
+                              and ("GPIO NOT SHOWN OFF AND IDLE" in text) == (bk and not gp) and ("GPIO at B2's 0" in text) == (bk and gp)
+                              and ("or it closes by itself later than the first poll waits" in so[0]) == (live and second and g2)
                               and ("nothing records the commit" in text) == (s == 0x15))
                     if not ok:
                         wrong.append((hex(s), hex(v), hex(stop)))
