@@ -80,7 +80,8 @@ the PR with that session's work.
     Max's sleep drivers, read"): the same engine and the same opening as B2. Their stalls were each
     a word the engine waited on because of what the kernel left around it: bit 11 latched on a
     power word (a parent off, a bridge armed), a domain the engine raises under a gated parent, a
-    core or a wake source holding the first gate, then the DCS's power-gate mode.
+    core holding the first gate, then the DCS's power-gate mode. A pending wake source holding that
+    gate is their stated mechanism, not a stall they report.
   - **Next, a desk step, no build and no run: B2's ops up to 224 read against those four classes,**
     in the state the recipe leaves at the commit. "The order after the look", in Track A below, has
     the questions. After it, the run it points to, or `pre=1` as planned.
@@ -521,8 +522,10 @@ steps, and restarting the DCP and the PMP afterwards.
          the commit. A parent at 0x1000030f with nothing on below it gates itself (the M4 Pro's
          ATC stall; AFNC2_LW1 reads that here).
       3. The first gate (0x2922c0040 bit 1, then 0x2922c0044 bits 2 and 3): on M4 it is the AP
-         partition, held by a core short of its last WFI or by a pending wake source the masks let
-         through. The recipe's wake mask and what is pending at the commit, read against that.
+         partition, held there by a core short of its last WFI. Their driver adds that a pending
+         wake source the masks let through would hold it too (a mechanism it states and checks for,
+         not a stall it reports): the recipe's wake mask and what is pending at the commit, read
+         as a question.
       4. What comes after B2 if it gets through: the DCS's dynamic power-gate mode (+ 0x20 bits 8
          and 12), which Linux never sets on M4; whether T6000's DCS has it is a read.
       Its result is a ranked list and one run: most likely a read-only rider first (bit 11 of every

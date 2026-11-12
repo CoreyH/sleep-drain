@@ -4356,8 +4356,10 @@ the same thing (the mapping is judgment unless a run of ours is cited).
     poll. Not checked: the words after the recipe's own writes, `ps_words=1`'s above all (its
     last group "didn't all read back as written" in every run since 12).
 - **The first gate, engine page + 0x40, is "the AP partition that does not power down".** What
-  held it on M4: a core that hadn't reached its last WFI (the complexes' words never dropped
-  bit 4), and a wake source pending that the commit's masks let through.
+  the M4 Pro's driver records as holding it: cores that hadn't reached their last WFI (the
+  complexes' words never dropped bit 4). It also says a pending wake source that the commit's
+  masks let through would hold it, and reads for one in its dry run; neither driver records that
+  as a stall that happened (Pullfrog on #91), so here it is a question, not a finding.
 - **The engine also raises domains and waits for them, with no timeout.** On the M4 Pro it
   stalled raising ATC0_COMMON: its parent fabric read 0x1000030f (auto, level 0) and gates itself
   when nothing below it is on, which was the case after Linux's suspend; macOS has the children
@@ -4374,9 +4376,10 @@ the same thing (the mapping is judgment unless a run of ours is cited).
 
 **What it changes here** (judgment). The AP-side tests of op 140 (the gate test, both
 `sio_down=1` runs) may be testing the wrong thing: on M4 each stall was a word the engine waited
-on because of what the kernel had left around it (an off parent, a latched bit 11, a core, a wake
-source), found by reading the engine's program against the state at the commit. The same reading
-of B2 hasn't been done here with these four classes in hand. It costs no run.
+on because of what the kernel had left around it (an off parent, a latched bit 11, a core),
+found by reading the engine's program against the state at the commit. The same reading
+of B2 hasn't been done here with these classes in hand, nor with the wake-source question. It
+costs no run.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 
