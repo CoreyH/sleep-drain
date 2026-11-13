@@ -106,8 +106,16 @@ the PR with that session's work.
     since 2026-11-12") put `a2_pre=1` ahead of the test of the engine's two words.
   - **Next, a run of Corey's: `--m1-a2-pre`** ("The order after the look", in Track A below;
     RESEARCH.md, "`a2_pre=1` as built"): the AP makes A2's three moves before the commit, and
-    reads the table's five clock muxes first. After it, not built: what opens the 22 to a write
-    (B2 clears two words of the engine's page right before them).
+    reads the table's five clock muxes first.
+  - **After it, not built: the cluster words last** (RESEARCH.md, "Naeem Malik's second driver,
+    read", 2026-11-13). On T8103 the chip starts its own block at the first cluster power word
+    and the cores have to be in their WFI within tens of ms; our replay writes T6000's three
+    (0x28e098000, + 4, + 8) in step 5 and takes steps 6 to 8 before the commit. The build: those
+    three written last, the time from them to the release recorded. Desk first: how long steps
+    6 to 8 take, and what the table has after entry 54. Then, still not built: what opens the 22
+    to a write (B2 clears two words of the engine's page right before them).
+  - **Open, Corey's:** Naeem Malik's commits cite a working deep sleep on T6000 ("a reference
+    driver for the M1 Pro"). It wasn't found in public. Asking him which it is needs Corey's OK.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.

@@ -153,7 +153,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `drivers/soc/apple/apple-s2r.c` and its deep stop in `smp_apple.c`),
   GPL-2.0-only Linux code whose values come from m1n1 traces, crediting him.
   That isn't m1n1 code; m1n1 itself, its patches and scripts, and DeepIdle's
-  Aura stay off limits. On 2026-11-12 Corey OK'd the same for the M4 sleep
+  Aura stay off limits. On 2026-11-13 Corey OK'd reading his second driver too
+  (`m1power/s2r-rs1`: `drivers/soc/apple/s2r_seq.rs`, `s2r_rs.rs`), credited.
+  It follows the vendor's kernel "as read", not traces: leads to check on
+  this Mac, never values for a patch that goes upstream. On 2026-11-12 Corey OK'd the same for the M4 sleep
   drivers in aurora-silicon/linux#1477 and #1664 (`drivers/soc/apple/t6040-sleep.c`
   by fbalazsy, `t6041-sleep.c` by AxxzyWasTaken; `GPL-2.0-only OR MIT`),
   credited; aura itself, which they run under, stays off limits.

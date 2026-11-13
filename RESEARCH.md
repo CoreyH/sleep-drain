@@ -4937,6 +4937,76 @@ a path that writes anything but the three words, another value or another order.
   condition made the test of the verdicts pass whatever they said; fixed, it then caught a slip
   in the reworded decoder.
 
+### Naeem Malik's second driver, read: a working M1 Pro driver is cited, and a time limit after the cluster words (2026-11-13)
+
+Corey's OK of 2026-11-13. Read: `drivers/soc/apple/s2r_seq.rs` in malik-na/linux-aurora,
+`m1power/s2r-rs1` at ed5e15e8dee4 (Naeem Malik, `GPL-2.0-only OR MIT`), its constants, options and
+last stage, not every function; and the branch's commit messages. T8103, M1. Its order is, in its
+own words, "the last stage of the vendor OS as read from its kernel", with two private files behind
+its tables; that isn't trace-derived, so for anything that goes upstream it's a source of leads to
+check on this Mac, not of values. Nothing was posted. What follows is his, with what on T6000 looks
+like the same thing (the mapping is judgment).
+
+- **He cites a working deep sleep on T6000.** Commit c7737e76ec: "A working deep sleep on t6000 (a
+  reference driver for the M1 Pro, read on 2026-11-12) writes the PMGR's S2R timer as its last
+  register write and lets the parked cores go down only after it." DeepIdle's worklog quotes the
+  same line and adds that this repository isn't that reference. What his commits take from it:
+  - the timer is the last register write of the entry, and the other cores go down only after it;
+  - the display: the firmware is put to sleep through its own protocol in device suspend, RTKit
+    idle at `suspend_late`, woken at `resume_early`;
+  - the boot core's timers are stopped before its final wait;
+  - the wake mask opens every named wake source and masks every source without a name;
+  - the boot core's last routine is assembly, and if the wait falls through it turns the data
+    cache on again and returns.
+  **Which driver that is wasn't found:** not in aurora-silicon/linux's PR titles, branch names or
+  code, not in a GitHub search of commits and code. Naeem would know; asking him is Corey's call.
+- **On T8103 the chip starts its own block at the first cluster power word, and the cores have to
+  be in their wait soon after.** His last stage: the watchdog step, the SEP's domain off, five
+  clock words parked (bits 27:24 := 0 with bit 31, bit 30 polled clear: our muxes), the base
+  class's steps, the gating words; then "No way back from here, and nothing slow: the chip starts
+  its own block at the first cluster word and every core has to be in its wait soon after." The
+  cluster words' low nibbles go to 0 (PMGR + 0x18000 and + 0x18004), three SIO words lose bit 28,
+  the timer is written, the interrupt controller is masked, the PMU's alarm is set, the timer
+  twice more, release, WFI. Every wait after the cluster words is capped, "and the caps together
+  stay far below the 52 ms the chip was shown to allow".
+  **Here:** T6000's cluster words are 0x28e098000, + 4 and + 8, and macOS's table writes them
+  (0, 0x20, 0x20) in step 5, entries 52 to 54 of 74. In our replay the table runs fast, but then
+  come steps 6 to 8 (the other cores' stop requests and holds, the PMU's breadcrumbs, and in
+  `--m1-sio-steps` up to 9.5 s of step 8) before the commit, the alarm's commands and the cores'
+  WFI. If T6000 has a limit like T8103's, every run so far has broken it. This fits what's on
+  file: a CPU complex's down sequence in the SRAM opens with a wait and is "untested where it
+  matters" ("The untimed waits", above). It isn't shown: the 52 ms is his T8103 measurement,
+  where from isn't in what was read, and how long our steps 6 to 8 take isn't recorded.
+- **The wake-status words latch at the first timer write:** "what reads set after it is what stood
+  pending and unmasked at that moment." He reads the five right after it and keeps the count and
+  the first four in the PMU. With his recorded mask five unnamed sources stood there; his newer
+  masks close every unnamed one. Nothing here has read T6000's at the commit.
+- **What the engine's first sequence waits on, on T8103:** 44 power words for bit 11 clear, then
+  five PMGR words for bit 30 set: B2's two kinds of poll here. His run 18 found `ps_fpwm1`
+  reading busy before the sequence starts and never awake; run 20 keeps it on through the sleep.
+  FPWM0 to 2 are in SIO's subtree here, and `--m1-sio-steps` saw all 43 of it off with every
+  poll met.
+- **Smaller things:** his watchdog step also zeroes two words at the watchdog block's + 0x8008
+  and + 0x800c, which our table for T6000 doesn't have; the engine's progress is the top byte
+  of + 0x8028 there (ours: `PHASE`, and 0x2922b801c); the engine arms WD2 "when one of its blocks
+  starts"; the vendor's last stage clears bit 42 of both clusters' perf-state words (run 21).
+- **No commit says an entry completed on this driver** as of run 22.
+
+**What this changes** (judgment):
+
+1. **The time between the cluster words and the cores' WFI is the first thing to test after the
+   `--m1-a2-pre` run.** That run stands as built: what it reads (the muxes, the three moves) is
+   read before the commit and doesn't depend on this. But a restart at 90 s after it would no
+   longer weigh much against A2's waits, since the same limit may end every run.
+2. **The build after it:** the three CPU cluster words taken out of the table's place and written
+   last, with only what T8103's last stage has after them (the timer, the alarm's commands capped,
+   the release, WFI), the time from the first of them to the release kept in the PMU. To settle
+   at the desk first: how long steps 6 to 8 take now, what the table's entries after 54 need
+   (the SIO_CPU write, the muxes, PLL-off: macOS makes them after the cluster words), and whether
+   the cores' holds can be taken before the cluster words.
+3. **Asking Naeem which T6000 driver he read is worth more than either run** if it's public or
+   he'll share it. A draft is Corey's to ask for.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
