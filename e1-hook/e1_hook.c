@@ -98,6 +98,7 @@
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
+ *   pkexec e1-hook/probe --pre                    (--look's and pre_test=1: the 22 words B2 writes first, written, read back and put back)
  */
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
@@ -139,6 +140,7 @@
 #include "asc_probe.h"
 #include "look.h"
 #include "gate_test.h"
+#include "pre_test.h"
 #include "fabric_up.h"
 #include "wd1_mark.h"
 #include "gates_mark.h"
@@ -386,6 +388,10 @@ MODULE_PARM_DESC(look, "With probe=1: none of the probe's steps. It stops no fir
 static bool gate;
 module_param(gate, bool, 0444);
 MODULE_PARM_DESC(gate, "With look=1: after the look that follows noirq, the five UARTs Linux leaves at 4 := 0x200 (0x28e580250-270, ps_words=1's value), up to 100 ms for bit 30 of the gate word 0x28e5a0050, then the fabric lane AFNC2_LW1 := 0x1000030f (0x28e580160, macOS's value, ps_words=1's), read back, and the gate again; then all six words written back as found. Logged in full, a byte at 0x6005, the step at 0x6010 with 0x20 set (gate_test.h)");
+/* look=1's other test with writes: which of the 22 words B2 writes first take its values with the cores up? (PLAN.md, "The order after the look") */
+static bool pre_test;
+module_param(pre_test, bool, 0444);
+MODULE_PARM_DESC(pre_test, "With look=1, never with gate=1: after the look that follows noirq, B2's ops 8 to 29 (0x28e03801c := 0x80101100, up to 100 ms for it to read so; 1 to 0x28e0a0004-1c and to 0x28e5b0004-38, in B2's order), each read back at once and all 22 again 100 ms later; then all 22 written back as found, 0x28e03801c first, and read again. The + 0 words of the last two pages (0x28e0a0000, 0x28e5b0000) are read beside them, and awake at the load. Logged in full; six bytes at 0x6011-0x6016 and a byte at 0x6005, the step at 0x6010 with 0x80 set (pre_test.h)");
 /* m1: the suspending task's CPUs before begin pinned it to CPU0. */
 static struct cpumask m1_saved_mask;
 static bool m1_pinned;
@@ -4530,6 +4536,189 @@ static_assert(LOOK_SIO_PAGE + GATE_LANE == 0x28e580160ULL && LOOK_GATE_A + GATE_
 static_assert(GATE_LANE < LOOK_SIO_FIRST && (LOOK_GATE_A & PAGE_MASK) == LOOK_GATE_A);
 static_assert(LOOK_AT == 0x6010 && GATE_AT_NOT_MADE < LOOK_LOAD && !(GATE_NO_SNAP & (GATE_PASS | LOOK_LOAD | (LOOK_LOAD - 1))));
 
+/* pre_test=1: word i of the 22, as pre_test.h's prt_addr() counts them, in look=1's three mappings. */
+static void __iomem *m1_pre_word(unsigned int i)
+{
+	return !i ? m1_look_pc + LOOK_PRE_CLK_OFF : i < PRT_B_FIRST ? m1_look_pa + LOOK_PRE_FIRST + 4 * (i - PRT_A_FIRST) :
+	       m1_look_pb + LOOK_PRE_FIRST + 4 * (i - PRT_B_FIRST);
+}
+
+/* pre_test=1: the 22, on one line. */
+static void m1_pre_log(const char *when, const u32 *v)
+{
+	char a[SST_A_N * 9 + 1], b[SST_B_N * 9 + 1];
+	unsigned int i, n;
+
+	for (n = 0, i = PRT_A_FIRST; i < PRT_B_FIRST; i++)
+		n += scnprintf(a + n, sizeof(a) - n, " %08x", v[i]);
+	for (n = 0, i = PRT_B_FIRST; i < PRT_N; i++)
+		n += scnprintf(b + n, sizeof(b) - n, " %08x", v[i]);
+	pr_info("look: pre: %s: 0x28e03801c %08x; from 0x28e0a0004:%s; from 0x28e5b0004:%s\n", when, v[0], a, b);
+}
+
+/* pre_test=1: the + 0 words of the two pages, which B0 and B1 write 0x2000000, and the six gate words. Reads only. */
+static void m1_pre_beside(const char *when, bool gates)
+{
+	static const u16 ga[] = LOOK_GATE_A_OFFS, gb[] = LOOK_GATE_B_OFFS;
+	unsigned int i;
+	u32 z[2], v[6];
+
+	z[0] = readl(m1_look_pa);
+	z[1] = readl(m1_look_pb);
+	pr_info("look: pre: %s: 0x28e0a0000 %08x, 0x28e5b0000 %08x\n", when, z[0], z[1]);
+	if (!gates)
+		return;
+	for (i = 0; i < ARRAY_SIZE(ga); i++)
+		v[i] = readl(m1_look_ga + ga[i]);
+	for (i = 0; i < ARRAY_SIZE(gb); i++)
+		v[3 + i] = readl(m1_look_gb + gb[i]);
+	pr_info("look: pre: %s: gates 0x28e5a0000: +050 %08x +064 %08x +30c %08x; 0x28e09c000: +310 %08x +338 %08x +34c %08x\n", when, v[0],
+		v[1], v[2], v[3], v[4], v[5]);
+}
+
+/*
+ * pre_test=1, right after the look that follows noirq (pre_test.h has the steps, why, and what it risks): B2's ops 8
+ * to 29 with nothing stopped, every read-back logged and packed for the PMU, and all 22 written back as found, in
+ * B1's order. Each step's mark first. The writes: 22 out and 22 back, to the 22 words and no other.
+ */
+static void m1_pre_test(void)
+{
+	static const u8 pa[SST_A_N] = SST_A_OFFS, pb[SST_B_N] = SST_B_OFFS;
+	static const u8 zero, zero6[PRT_PACK_N];
+	u32 was[PRT_N], first[PRT_N], later[PRT_N], back[PRT_N], clk_poll;
+	u8 res, rec[1 + PRT_PACK_N], snap_bit, at = PRT_PASS | PRT_AT_CLK;
+	unsigned int i, n, took = 0, already = 0;
+	int z5, z6, snap, kw;
+	u64 t0;
+
+	/*
+	 * A byte left at 0x6005 from before would read as this test's, written after its last step: zeroed before the
+	 * first mark, and the test isn't made if that isn't acked, which leaves the look's own record (Pullfrog on #97).
+	 */
+	z5 = m1_kwrite(0x6005, &zero, 1);
+	if (z5) {
+		pr_info("look: pre: SUMMARY: NOT MADE: the PMU's 0x6005 couldn't be zeroed (%d), so an old byte there could be read as this test's; nothing was written\n",
+			z5);
+		return;
+	}
+	m1_look_at(PRT_PASS | PRT_AT_ZERO);
+	z6 = m1_kwrite(0x6011, zero6, sizeof(zero6));
+	pr_info("look: pre: the PMU's 0x6005 and 0x6011-0x6016 zeroed first: %d %d\n", z5, z6);
+	m1_pre_beside("as found", false);
+	m1_look_at(PRT_PASS | PRT_AT_READ);
+	for (i = 0; i < PRT_N; i++)
+		was[i] = readl(m1_pre_word(i));
+	m1_pre_log("as found", was);
+	m1_pre_beside("as found", true);
+
+	/*
+	 * Nothing is written unless the PMU took this mark (the adversarial review of #97): with its path dead, a test
+	 * that didn't come back would leave a plain look's record, which says no register was written.
+	 */
+	kw = m1_kwrite(LOOK_AT, &at, 1);
+	if (kw) {
+		pr_info("look: pre: SUMMARY: NOT MADE: the PMU didn't take the mark of the first write (%d), so a test that didn't come back would leave no record; nothing was written\n",
+			kw);
+		return;
+	}
+	writel(SST_CLK_VAL, m1_pre_word(0));
+	dsb(sy);
+	first[0] = clk_poll = readl(m1_pre_word(0));
+	t0 = m1_now();
+	while (!sst_clk_ok(clk_poll) && m1_now() - t0 < m1_tps / 10) {
+		cpu_relax();
+		clk_poll = readl(m1_pre_word(0));
+	}
+	pr_info("look: pre: 0x28e03801c found %08x, := %08x: it read %08x at once and reads %08x after %llu ms: %s\n", was[0], SST_CLK_VAL,
+		first[0], clk_poll, div64_u64((m1_now() - t0) * 1000, m1_tps),
+		sst_clk_ok(clk_poll) ? "as written, bit 30 clear" : clk_poll & SST_CLK_PENDING ? "NOT as written: bit 30, pending, still SET" :
+		"NOT as written");
+
+	m1_look_at(PRT_PASS | PRT_AT_A);
+	for (i = 0; i < SST_A_N; i++)
+		writel(SST_PRE_VAL, m1_look_pa + pa[i]);
+	dsb(sy);
+	for (i = PRT_A_FIRST; i < PRT_B_FIRST; i++)
+		first[i] = readl(m1_pre_word(i));
+	m1_look_at(PRT_PASS | PRT_AT_B);
+	for (i = 0; i < SST_B_N; i++)
+		writel(SST_PRE_VAL, m1_look_pb + pb[i]);
+	dsb(sy);
+	for (i = PRT_B_FIRST; i < PRT_N; i++)
+		first[i] = readl(m1_pre_word(i));
+	m1_pre_log("right after the writes of 1 (0x28e03801c: right after its own)", first);
+
+	m1_look_at(PRT_PASS | PRT_AT_WAIT);
+	t0 = m1_now();
+	while (m1_now() - t0 < m1_tps / 10)
+		cpu_relax();
+	for (i = 0; i < PRT_N; i++)
+		later[i] = readl(m1_pre_word(i));
+	m1_pre_log("100 ms after the writes", later);
+	m1_pre_beside("100 ms after the writes", true);
+	/*
+	 * The reads to the PMU before anything is written back: if the resume doesn't come, they're what's left. In one
+	 * command with the next step's mark, so that the mark says the bytes are this test's; if that command isn't
+	 * acked, the mark goes out alone and every mark after it says so (the gate test's way: Pullfrog on #80).
+	 */
+	rec[0] = PRT_PASS | PRT_AT_BACK;
+	prt_pack(was, first, later, clk_poll, rec + 1);
+	snap = m1_kwrite(LOOK_AT, rec, sizeof(rec));
+	snap_bit = snap ? PRT_NO_SNAP : 0;
+	if (snap)
+		m1_look_at(PRT_PASS | PRT_NO_SNAP | PRT_AT_BACK);
+	pr_info("look: pre: the reads, with the next step's mark, to the PMU's 0x6010-0x6016 in one command: %d\n", snap);
+
+	/* Back as found, in B1's order: 0x28e03801c first, waited for as B1 waits for it, then the 21 by address. */
+	writel(prt_back_val(0, was[0]), m1_pre_word(0));
+	dsb(sy);
+	t0 = m1_now();
+	while (readl(m1_pre_word(0)) != prt_back_val(0, was[0]) && m1_now() - t0 < m1_tps / 10)
+		cpu_relax();
+	m1_look_at(PRT_PASS | snap_bit | PRT_AT_BACK_A);
+	for (i = PRT_A_FIRST; i < PRT_B_FIRST; i++)
+		writel(prt_back_val(i, was[i]), m1_pre_word(i));
+	dsb(sy);
+	m1_look_at(PRT_PASS | snap_bit | PRT_AT_BACK_B);
+	for (i = PRT_B_FIRST; i < PRT_N; i++)
+		writel(prt_back_val(i, was[i]), m1_pre_word(i));
+	dsb(sy);
+	t0 = m1_now();
+	do {
+		for (n = 0, i = 1; i < PRT_N; i++) {
+			back[i] = readl(m1_pre_word(i));
+			if (back[i] != was[i])
+				n++;
+		}
+		cpu_relax();
+	} while (n && m1_now() - t0 < m1_tps / 10);
+	/* 0x28e03801c is judged last, with everything back, and given 100 ms more for its bit 30. */
+	t0 = m1_now();
+	while ((back[0] = readl(m1_pre_word(0))) != prt_back_val(0, was[0]) && m1_now() - t0 < m1_tps / 10)
+		cpu_relax();
+	m1_look_at(PRT_PASS | snap_bit | PRT_AT_DONE);
+	m1_pre_log("with all 22 written back", back);
+	m1_pre_beside("with all 22 written back", true);
+	res = prt_byte(was, back);
+	kw = m1_kwrite(0x6005, &res, 1);
+	/* A select found at 1 reads as written whatever its write did (the review): counted apart. */
+	for (i = 1; i < PRT_N; i++) {
+		if (later[i] == prt_val(i))
+			took++;
+		if (was[i] == prt_val(i))
+			already++;
+	}
+	pr_info("look: pre: SUMMARY: 0x28e03801c %s; %u of the 21 read 1, as B2 writes them, 100 ms after their writes (%u were found at 1, and show nothing); put back: 0x28e03801c %s, the 21 %s; byte %02x, written to the PMU: %d\n",
+		sst_clk_ok(later[0]) ? (sst_clk_ok(clk_poll) ? "took B2's value, bit 30 clear within 100 ms" :
+					"read as B2 writes it only after its 100 ms, by the read 100 ms after the 21 were written (later, or once they were in)") :
+		later[0] & SST_CLK_PENDING ? "did NOT finish taking B2's value: bit 30, pending, still SET" : "did NOT hold B2's value",
+		took, already, res & PRT_CLK_BACK ? "as found" : "NOT as found", res & (PRT_MORE | 0x1f) ? "NOT all as found" : "as found", res, kw);
+}
+static_assert(PRT_N == 1 + SST_A_N + SST_B_N && PRT_B_FIRST == PRT_A_FIRST + SST_A_N && PRT_SEL_N == PRT_N - 1 && PRT_SEL_N <= 0x1f);
+static_assert(LOOK_PRE_FIRST + 4 * (SST_A_N - 1) == LOOK_PRE_A_LAST && LOOK_PRE_FIRST + 4 * (SST_B_N - 1) == LOOK_PRE_B_LAST);
+static_assert(!(PRT_PASS & (GATE_PASS | GATE_NO_SNAP | LOOK_LOAD | (LOOK_LOAD - 1))) && PRT_NO_SNAP == GATE_NO_SNAP && PRT_AT_DONE < LOOK_LOAD &&
+	      PRT_PACK_N * 8 >= 2 * PRT_SEL_N + 6);
+
 /*
  * look=1 at load, the last of m1_init()'s steps: its six mappings, the engine's page if nothing has mapped it yet,
  * and the look awake. It refuses unless every page m1_look() reads through is there: the first build looked before
@@ -4571,7 +4760,25 @@ static int __init m1_look_init(void)
 			return -EPERM;
 		}
 	}
+	/* pre_test=1: the 22 words it writes, off the never-write list. */
+	if (pre_test) {
+		unsigned int i;
+
+		for (i = 0; i < PRT_N; i++) {
+			if (m1_never(prt_addr(i), 1))
+				break;
+		}
+		if (i < PRT_N) {
+			pr_err("m1: pre_test: one of its 22 words is on the never-write list; refusing\n");
+			return -EPERM;
+		}
+	}
 	m1_look("awake, at load", LOOK_LOAD);
+	/* pre_test=1: the two + 0 words, never read here before, first read awake, under a mark of their own. */
+	if (pre_test) {
+		m1_look_at(PRT_PASS | LOOK_LOAD | PRT_AT_ZERO);
+		m1_pre_beside("awake, at load", false);
+	}
 	m1_look_at(LOOK_AT_NONE);
 	m1_kwrite(0x6004, &zero, 1);
 	return 0;
@@ -5293,6 +5500,8 @@ static int e1_prepare_late(void)
 			m1_look("after noirq", 0);
 			if (gate)
 				m1_gate_test();
+			if (pre_test)
+				m1_pre_test();
 		} else if (!look && same) {
 			m1_probe_late();
 		}
@@ -5566,6 +5775,10 @@ static int __init e1_check_params(void)
 		pr_err("gate=1 only adds to look=1\n");
 		return -EINVAL;
 	}
+	if (pre_test && (!look || gate)) {
+		pr_err("pre_test=1 only adds to look=1, and never with gate=1\n");
+		return -EINVAL;
+	}
 	if (probe && (!wd1_mark || !pmp_stop)) {
 		pr_err("probe=1 needs wd1_mark=1 and no pmp_stop=0 (it takes the latest recipe's steps on SIO and the PMP, with everything that recipe maps and checks at load)\n");
 		return -EINVAL;
@@ -5775,7 +5988,8 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
+		gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;
 
