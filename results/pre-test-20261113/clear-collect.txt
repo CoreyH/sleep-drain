@@ -1,0 +1,8 @@
+  each of the 21 read the same right after its group's writes as 100 ms later
+  so: NOT ALL OF THE 21 READ 1 after the AP's write, with the cores up: the words named above. Why, this doesn't say; a poll that waits on them may not be one the AP can clear
+0x6005 = 0xc0: with everything written back: 0x28e03801c read as found; all 21 read as found within 100 ms
+cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros
+saved paths from 20261113T141449 are in /var/log/sleep-drain/safe-saved-20261113T141449/
+collected 20261113T141449
+saved paths from 20261113T141451 are in /var/log/sleep-drain/safe-saved-20261113T141451/
+collected 20261113T141451

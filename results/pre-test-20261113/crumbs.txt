@@ -1,0 +1,11 @@
+0x6000: 00 30 00 00 0f c0 00 00  00 00 00 00 00 00 00 00
+0x6010: 8a aa aa aa aa 6a 69 00  00 00 00 00 00 00 00 00
+stage 0x6004 = 0x0f: probe=1 look=1 (e1-hook/probe --look), not a run: nothing replayed, nothing was committed, nothing was stopped and the looks wrote no register; pre_test=1's test, after them, writes the 22 words B2 writes first and writes them back (--pre): how far it got is below. What it read is in the kernel log it saved, if the Mac was up to save it
+0x6010 = 0x8a: the 22 words' test, after both looks: every step taken: the byte written
+0x6011-0x6016: the 22 after B2's writes, before anything was written back:
+  0x28e03801c, written 0x80101100: bit 30 clear at the read right after the write; at the end of up to 100 ms it read as found: the write didn't take; 100 ms after the last write it read as found: the write didn't take
+  of the 21 written 1, 100 ms after: 2 read as written
+  of the 21 written 1, 100 ms after: 19 read as found: the write didn't take: 0x28e0a0004 0x28e0a0008 0x28e0a000c 0x28e0a0010 0x28e0a0014 0x28e0a0018 0x28e0a001c 0x28e5b0004 0x28e5b0008 0x28e5b000c 0x28e5b0010 0x28e5b0014 0x28e5b0018 0x28e5b001c 0x28e5b0020 0x28e5b0024 0x28e5b0028 0x28e5b002c 0x28e5b0030
+  each of the 21 read the same right after its group's writes as 100 ms later
+  so: NOT ALL OF THE 21 READ 1 after the AP's write, with the cores up: the words named above. Why, this doesn't say; a poll that waits on them may not be one the AP can clear
+0x6005 = 0xc0: with everything written back: 0x28e03801c read as found; all 21 read as found within 100 ms

@@ -94,8 +94,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   `probe --look` adds `look=1`, which stops nothing and writes no register, only reads; `probe --gate`
   adds one test to the look that changes six power words and writes them back (it didn't come back
   either: treat it as one-way; the PMU carries its result); `probe --pre` adds another, which writes the
-  22 clock words the engine's entry writes first, records every read-back and writes them back (treat
-  it as one-way too). The rest are one-purpose tools for single reads and
+  22 clock words the engine's entry writes first, records every read-back and writes them back (it
+  came back, and none of the 22 took the write). The rest are one-purpose tools for single reads and
   writes (`recfg-peek`, `recfg-bite`, `wd2-bite`). **`e1-hook/README.md` says what every parameter, option
   and tool does: read it before working here.** What always holds: a one-way run loads only in a
   safe boot and with `oneway=1`; the module won't build or load if a write would touch the

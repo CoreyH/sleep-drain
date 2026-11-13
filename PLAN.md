@@ -98,9 +98,12 @@ the PR with that session's work.
     cycle isn't what it follows. The 22 were written and didn't all read back as B2 writes them
     (which isn't recorded), so the gate staying open after them says nothing yet. The 43 aren't
     shown back, with 100 ms each. Restart at 90 s.
-  - **Next, Corey's to run: `pkexec e1-hook/probe --pre`**, the 22 by themselves, in the look's
-    state, every read-back recorded (built 2026-11-13, not run; "The order after the look", in
-    Track A below; RESEARCH.md, "`pre_test=1` as built"). Treat it as one-way.
+  - `pkexec e1-hook/probe --pre`, run once, 2026-11-13 (RESEARCH.md, "The `pre_test=1` run"): the
+    Mac came back, and not one of the 22 took the AP's write (0x28e03801c read as found, no bit
+    30; the 21 read as found). So the AP hasn't made B2's ops 8 to 29 in any run, and
+    `sio_steps=1`'s gate reading "after the 22" was without them.
+  - **Next, a build, nothing to run yet: what opens the 22 to a write** ("The order after the
+    look", in Track A below): B2 clears two words of the engine's page right before them.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -578,7 +581,25 @@ steps, and restarting the DCP and the PMP afterwards.
       auto-enable and the bridge bits by hand first); the byte at 0x6016, sent after the three
       `_SYS` words and again after the gate, under stages 0x1d, 0x1f and 0x1e. The sweep's cheap
       rider below isn't in it: it would be four more reads in a block no run here has mapped.
-      **Next, built and not run: the 22 by themselves, `pkexec e1-hook/probe --pre`**
+      **Next, not built: the 22 again on `probe --pre`, after B2's two writes before them.** The
+      `pre_test=1` run (2026-11-13) found all 22 closed to the AP's write in Linux's state. In
+      b2.lst (local), B2's ops before op 8 are: poll 0x2922c0044 bit 2 set, a delay, poll bit 3
+      clear, **0x2922c0008 := 0 and 0x2922c0040 := 0**, poll 0x2922c0040 bit 1 clear, a delay;
+      then the 22. B1's last write is 0x2922c0008 := 1. The looks read 0x2922c0008 = 1,
+      0x2922c0040 = 3, 0x2922c0044 = 8. So the build: after the look, read those three; write
+      0x2922c0008 := 0, read the 22's writability (one select, written and read back, is enough
+      to tell); if still closed, 0x2922c0040 := 0 as well and again; then the 22 as `pre_test=1`
+      has them; everything back in reverse (the 22, 0x2922c0040, 0x2922c0008 := 1 last, as B1).
+      New writes: two words of the engine's own page, which no run has written, in a state meant
+      to come back: one adversarial pass, and one-way all the same. To settle in the build: what
+      0x2922c0040's bits are (a gate word the position runs read; B2 opens on 0x2922c0044), and
+      whether writing them with the cores up is something to try at all before `a2_pre=1`; if
+      the desk says no, `a2_pre=1` (below) is next instead.
+      - **The 22 take once one of the two is 0:** then `sio_steps=1` again with that write (and
+        its write-back) around the 22, and its gate reading means what it was built to mean.
+      - **Still closed:** the 22 can't be made from the AP; op 140 can't be asked there. Then
+        `a2_pre=1`.
+      **Built and run: the 22 by themselves, `pkexec e1-hook/probe --pre`**
       (`pre_test=1`; `e1-hook/pre_test.h`; RESEARCH.md, "`pre_test=1` as built", which has what
       the build settled: the gate words and both pages' + 0 words are read beside the 22, the
       write-back is in B1's order, the record is two bits a word). After the run,
