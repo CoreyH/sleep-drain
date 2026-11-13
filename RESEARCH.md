@@ -4986,8 +4986,9 @@ like the same thing (the mapping is judgment).
   reading busy before the sequence starts and never awake; run 20 keeps it on through the sleep.
   FPWM0 to 2 are in SIO's subtree here, and `--m1-sio-steps` saw all 43 of it off with every
   poll met.
-- **Smaller things:** his watchdog step also zeroes two words at the watchdog block's + 0x8008
-  and + 0x800c, which our table for T6000 doesn't have; the engine's progress is the top byte
+- **Smaller things:** his watchdog step also zeroes the word at the watchdog block's + 0x8008
+  and clears the low byte of the one at + 0x800c, keeping its upper bits; our table for T6000 has
+  neither; the engine's progress is the top byte
   of + 0x8028 there (ours: `PHASE`, and 0x2922b801c); the engine arms WD2 "when one of its blocks
   starts"; the vendor's last stage clears bit 42 of both clusters' perf-state words (run 21).
 - **No commit says an entry completed on this driver** as of run 22.
