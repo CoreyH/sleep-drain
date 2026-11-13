@@ -4708,6 +4708,37 @@ lines). Dark for about 90 s by Corey's reckoning (they missed the start), then a
   themselves, in the look's state, with the whole read-back in the log and in the PMU: which of
   them take B2's values with the cores up, and whether bit 30 clears.
 
+### `pre_test=1` as built: the 22 words by themselves, after the look, every read-back recorded (2026-11-13)
+
+Built on Corey's standing go-ahead of 2026-11-10 and "take the next step" of 2026-11-13; not run.
+`pkexec e1-hook/probe --pre` loads the look's parameters and `pre_test=1` (`e1-hook/pre_test.h`).
+
+- **What it asks.** The `sio_steps=1` run's bit 4 said the 22 words B2 writes first didn't all read
+  back as written, in the recipe's state. Which, and what they read, with nothing of the recipe
+  done: after the look that follows noirq, cores up, no firmware stopped.
+- **The writes: 44, to the 22 words and no other; none outlasts the restart.** B2's own values
+  (0x28e03801c := 0x80101100; 1 to 0x28e0a0004-1c and 0x28e5b0004-38, B2's order), which
+  `sio_steps=1` wrote once already; and, new, each written back as found (0x28e03801c first, less
+  bit 30, which is a status bit; then the 21 by address: B1's order, b1.lst and b1b.lst). New too
+  is the state: the kernel is running, and is meant to resume. These are clock words B2 writes
+  with every core down, so the run is handed over as one-way.
+- **The reads beside them.** The six gate words three times. And the + 0 word of the two select
+  pages, 0x28e0a0000 and 0x28e5b0000, which B0 and B1 write 0x2000000 and nothing here had read:
+  first awake at the load, under a mark of their own (0x91), then four times in the test. Only
+  read.
+- **The record.** The log has every word at every step. The PMU, for a run that doesn't come back:
+  the step at 0x6010 (0x80 set); six bytes at 0x6011-0x6016, sent in one command with the
+  write-back's first mark, before anything is written back: two bits for each of the 21 (as
+  written, as found, as written with more bits set, something else) from the read 100 ms after the
+  writes, the same for 0x28e03801c at the end of its 100 ms poll and again 100 ms on, whether the
+  21 read the same at once as later, and whether bit 30 was seen set right after the write; and a
+  byte at 0x6005 after the write-back: 0x28e03801c back, and the first select that isn't.
+- **Checks.** `tests/m1_crumbs_test.py`: the header against a second writing-out; `m1_pre_test()`
+  as it stands against a model of the 22 in 18 scenarios (bit 30 clearing at once, late, later
+  than the poll, never; the word not taking; a select stuck, slow, or reading with more bits; words
+  not coming back; PMU writes not acked; old bytes left); the load; the decoder. 71 mutants, all
+  caught. `tests/e1_hook_probe_test.py` for `--pre`.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

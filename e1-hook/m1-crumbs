@@ -751,6 +751,99 @@ def gate_lines(at, v, pack):
     return out
 
 
+# pre_test=1 (e1-hook/probe --pre): its steps, by the number it leaves at 0x6010 with PRT_PASS set (pre_test.h's enum
+# prt_at), its six bytes at 0x6011-0x6016 (prt_pack()) and its byte at 0x6005 (prt_byte()).
+PRT_PASS = 0x80
+PRT_NO_SNAP = 0x40  # in a mark from step 7 on: the write that carries the six bytes wasn't acked
+PRT_MARK, PRT_CLK_BACK, PRT_MORE = 0x80, 0x40, 0x20
+PRT_AT = ("nothing marked",
+          "the + 0 words of the two pages (0x28e0a0000, 0x28e5b0000) read",
+          "the 22 and the gates read as found",
+          "0x28e03801c written 0x80101100",
+          "the seven from 0x28e0a0004 written 1",
+          "the fourteen from 0x28e5b0004 written 1",
+          "100 ms waited, and everything read again",
+          "0x28e03801c written back as found",
+          "the seven written back as found",
+          "the fourteen written back as found",
+          "every step taken: the byte written")
+PRT_BACK, PRT_DONE = 7, 10
+PRT_WORDS = (0x28e03801c,) + tuple(0x28e0a0004 + 4 * i for i in range(7)) + tuple(0x28e5b0004 + 4 * i for i in range(14))
+PRT_CODE = ("something else: neither as written nor as found", "as written", "as found: the write didn't take",
+            "as written with more bits set")
+
+
+def prt_lines(at, v, pack):
+    """pre_test=1's record: the step it was about to take when it last wrote 0x6010, what the 22 read after B2's
+    writes (0x6011-0x6016, if the mark says they're this test's), and what came back (0x6005). The kernel log
+    e1-hook/probe saves has every word in full."""
+    load, n = bool(at & LOOK_LOAD), at & ~(PRT_PASS | PRT_NO_SNAP | LOOK_LOAD)
+    step = PRT_AT[n] if n <= PRT_DONE else "not a step's number"
+    if load:
+        return [f"0x6010 = 0x{at:02x}: the 22 words' test, at the module's load: {step}. That read, awake, is all it does there, and"
+                " its mark is zeroed after it: the Mac went down in that read or before the zeroing, or the zeroing didn't land."
+                " Nothing was written"]
+    if n == PRT_DONE:
+        out = [f"0x6010 = 0x{at:02x}: the 22 words' test, after both looks: {step}"]
+    elif v & PRT_MARK:
+        out = [f"0x6010 = 0x{at:02x}: the 22 words' test, after both looks. The last step it marked: {step}; but its byte landed, and that"
+               " is written after the last step, so the test reached its end and a later mark didn't land"]
+    else:
+        out = [f"0x6010 = 0x{at:02x}: THE 22 WORDS' TEST BEGAN AND DIDN'T FINISH, after both looks. The last step it marked: {step}."
+               " The Mac went down in that step, or after it and before the next mark"
+               + (". From step 3 to step 9 a word it had changed may not have been written back: the restart since has put"
+                  " every one back where the boot leaves it" if 3 <= n <= 9 else "")]
+    if not (PRT_BACK <= n <= PRT_DONE and not at & PRT_NO_SNAP):
+        why = ("the mark says the write that carries them wasn't acked" if PRT_BACK <= n <= PRT_DONE else
+               "the last mark that landed is from before their write" if n < PRT_BACK else "the mark isn't a step's")
+        out.append((f"0x6011-0x6016 hold {bytes(pack).hex(' ')}: NOT this test's reads ({why}): nothing is read from them" if any(pack)
+                    else f"0x6011-0x6016 read 0: the test's reads weren't written ({why})"))
+    elif not any(pack):
+        out.append("0x6011-0x6016 read 0 though the mark says their write was acked: the write didn't land, or not one of the 22 read"
+                   " as written or as found. Nothing is read from them; the kernel log, if it was saved, has the words")
+    else:
+        bits = int.from_bytes(bytes(pack), "little")
+        code = [None] + [bits >> 2 * i & 3 for i in range(21)]
+        poll, late, same, pend = bits >> 42 & 3, bits >> 44 & 3, bits >> 46 & 1, bits >> 47 & 1
+        clk = ("as written, bit 30 clear" if poll == 1 else "as written but with bit 30, pending, still SET" if poll == 3 else PRT_CODE[poll])
+        clk2 = ("as written, bit 30 clear" if late == 1 else "as written but with bit 30, pending, still SET" if late == 3 else PRT_CODE[late])
+        out += ["0x6011-0x6016: the 22 after B2's writes, before anything was written back:",
+                f"  0x28e03801c, written 0x80101100: bit 30 {'SET' if pend else 'clear'} at the read right after the write; at the end of"
+                f" up to 100 ms it read {clk}; 100 ms after the last write it read {clk2}"]
+        for c in (1, 2, 3, 0):
+            words = [f"0x{PRT_WORDS[i]:x}" for i in range(1, 22) if code[i] == c]
+            if words:
+                out.append(f"  of the 21 written 1, 100 ms after: {len(words)} read {PRT_CODE[c]}" + ("" if c == 1 else ": " + " ".join(words)))
+        out.append("  each of the 21 read the same right after its group's writes as 100 ms later" if same else
+                   "  NOT every one of the 21 read the same right after its group's writes as 100 ms later: the kernel log has both")
+        ok21 = all(c == 1 for c in code[1:])
+        if late == 1 and ok21:
+            out.append("  so: ALL 22 TAKE B2's values in Linux's state after noirq, with every core up" + ("" if poll == 1 else
+                       " (0x28e03801c only after more than 100 ms)")
+                       + ". In the sio_steps=1 run it was then the recipe's state, or that run's order, that kept them from reading"
+                       " back: that run again, with a record that names the word")
+        elif ok21 and 3 in (poll, late):
+            out.append("  so: the 21 take 1; 0x28e03801c takes B2's value but its bit 30, pending, "
+                       + ("was still set 100 ms after the last write" if late == 3 else "wasn't clear within its 100 ms")
+                       + ": that word's write doesn't finish with a core up as it does for B1. sio_steps=1's bit 4 would read no"
+                       " for this alone")
+        elif ok21:
+            out.append("  so: the 21 take 1; 0x28e03801c did NOT take B2's value: the 21 alone are what the AP can make")
+        else:
+            out.append("  so: NOT ALL OF THE 21 TAKE 1 with the cores up: the words named above are settings the AP can't make as B2"
+                       " makes them, and a poll that waits on them can't be asked from the AP")
+    if not v & PRT_MARK:
+        return out + [f"0x6005 = 0x{v:02x}: the test's byte didn't land (bit 7 clear), or the test stopped before it: whether the 22 were"
+                      " put back isn't recorded"]
+    bad = v & 0x1f
+    out.append(f"0x6005 = 0x{v:02x}: with everything written back: 0x28e03801c "
+               + ("read as found" if v & PRT_CLK_BACK else "did NOT read as found")
+               + ("; all 21 read as found within 100 ms" if not bad and not v & PRT_MORE else
+                  f"; 0x{PRT_WORDS[bad]:x} did NOT read as found within 100 ms" + (", and it isn't the only one" if v & PRT_MORE else "")
+                  if 1 <= bad <= 21 else "; the byte's low bits aren't a word's number: nothing is read from them"))
+    return out
+
+
 def look_lines(at):
     """look=1's record: which of its two looks, and the group it was about to read when it last wrote 0x6010. Its
     words are in the kernel log e1-hook/probe saves; the PMU has only how far it got."""
@@ -1518,10 +1611,13 @@ def decode(b, rtc, cnt=None, alarm=None):
                 f"0x6010: {b[0x10:0x18].hex(' ')}  {b[0x18:0x20].hex(' ')}",
                 f"stage 0x6004 = 0x{b[4]:02x}: probe=1 look=1 (e1-hook/probe --look), not a run: nothing replayed, nothing was"
                 " committed, nothing was stopped and "
-                + ("the looks wrote no register; gate=1's test, after them, changes six power words and writes them back (--gate): how"
+                + ("the looks wrote no register; pre_test=1's test, after them, writes the 22 words B2 writes first and writes them"
+                   " back (--pre): how far it got is below" if b[0x10] & PRT_PASS else
+                   "the looks wrote no register; gate=1's test, after them, changes six power words and writes them back (--gate): how"
                    " far it got is below" if b[0x10] & GATE_PASS else "no register was written")
                 + ". What it read is in the kernel log it saved, if the Mac was up to save it"
-                ] + (gate_lines(b[0x10], b[5], b[0x11:0x17]) if b[0x10] & GATE_PASS else look_lines(b[0x10]))
+                ] + (prt_lines(b[0x10], b[5], b[0x11:0x17]) if b[0x10] & PRT_PASS else
+                     gate_lines(b[0x10], b[5], b[0x11:0x17]) if b[0x10] & GATE_PASS else look_lines(b[0x10]))
     if b[4] == PROBE_STAGE:
         # Not a run: no commit, no alarm, no restart to time.
         return [f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",

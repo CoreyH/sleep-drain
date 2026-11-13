@@ -98,8 +98,9 @@ the PR with that session's work.
     cycle isn't what it follows. The 22 were written and didn't all read back as B2 writes them
     (which isn't recorded), so the gate staying open after them says nothing yet. The 43 aren't
     shown back, with 100 ms each. Restart at 90 s.
-  - **Next, a build, nothing to run yet: the 22 by themselves, in the look's state, every
-    read-back recorded** (not built; "The order after the look", in Track A below).
+  - **Next, Corey's to run: `pkexec e1-hook/probe --pre`**, the 22 by themselves, in the look's
+    state, every read-back recorded (built 2026-11-13, not run; "The order after the look", in
+    Track A below; RESEARCH.md, "`pre_test=1` as built"). Treat it as one-way.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -577,8 +578,12 @@ steps, and restarting the DCP and the PMP afterwards.
       auto-enable and the bridge bits by hand first); the byte at 0x6016, sent after the three
       `_SYS` words and again after the gate, under stages 0x1d, 0x1f and 0x1e. The sweep's cheap
       rider below isn't in it: it would be four more reads in a block no run here has mapped.
-      **Next, not built: the 22 by themselves, on `probe --look`** (the name is the build's to
-      choose). The `sio_steps=1` run (below; byte 0xcc) left two "which word" questions its one
+      **Next, built and not run: the 22 by themselves, `pkexec e1-hook/probe --pre`**
+      (`pre_test=1`; `e1-hook/pre_test.h`; RESEARCH.md, "`pre_test=1` as built", which has what
+      the build settled: the gate words and both pages' + 0 words are read beside the 22, the
+      write-back is in B1's order, the record is two bits a word). After the run,
+      `pkexec e1-hook/m1-crumbs` reads the record whether or not the Mac came back; the outcomes
+      below are its "so:" lines. As planned: the `sio_steps=1` run (below; byte 0xcc) left two "which word" questions its one
       byte couldn't hold. This asks the first where the record has room: after the look that
       follows noirq, with nothing stopped, CPU0 writes B2's ops 8 to 29 (0x28e03801c :=
       0x80101100; 1 to the seven; 1 to the fourteen, B2's order), reads each back at once and

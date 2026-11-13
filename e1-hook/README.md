@@ -256,7 +256,24 @@ reads it back, waits for the gate again, and writes all six words back as found,
 kernel never writes back. Each word goes out once and back once, through one function, and the load
 refuses if one of them is on the never-write list.
 
-**It doesn't come back.** Run once, it went dark and restarted by itself at about 30 s though the gate
+`probe=1 look=1 pre_test=1` (`pkexec e1-hook/probe --pre`; `pre_test.h`; never with `gate=1`) is the
+look and another test with writes: the 22 clock words B2 writes first (its ops 8 to 29), by themselves,
+with nothing stopped. After the look that follows noirq it reads the two pages' + 0 words (0x28e0a0000
+and 0x28e5b0000, also read awake at the load), the 22 and the six gate words as found; writes
+0x28e03801c := 0x80101100 and gives it up to 100 ms to read so, bit 30 clear; writes 1 to the seven
+from 0x28e0a0004 and the fourteen from 0x28e5b0004, in B2's order, reading each back; reads everything
+again 100 ms later; then writes all 22 back as found (0x28e03801c first and less its bit 30, the 21 by
+address: B1's order) and reads them again. 44 writes, to the 22 words and no other, and the load
+refuses if one is on the never-write list. Every word is logged in full. The PMU keeps the step at
+0x6010 with 0x80 set, six bytes at 0x6011-0x6016 sent before anything is written back (two bits a
+select: as written, as found, as written with more bits set, or something else; the same for
+0x28e03801c at the end of its poll and 100 ms on; whether bit 30 was seen set), and a byte at 0x6005
+after the write-back (bit 7 always, bit 6 0x28e03801c back, bits 4:0 the first select that isn't back,
+bit 5 more than one; 0xc0 is all back). **Not run yet; treat it as one-way**: these are clock words
+B2 writes with every core down, and whether the kernel keeps running across them and resumes hasn't
+been tried. `m1-crumbs` reads the record either way.
+
+**The gate test doesn't come back.** Run once, it went dark and restarted by itself at about 30 s though the gate
 never read closed (RESEARCH.md, "The gate test's run"): treat it as one-way. The reason given when it
 was built, which still holds if the gate does close: if the gate closes, SIO's island loses power with SIO's firmware running, and
 the kernel can't restart that firmware: the screen may stay dark, as after the probe (the launcher says

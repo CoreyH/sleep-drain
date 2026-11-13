@@ -68,7 +68,13 @@ used to sit in CLAUDE.md, entry for entry):
   value, each step after its mark, the lane's three reads in the PMU with their mark before anything is
   put back, and an earlier test's bytes never read as this one's, whether or not the PMU acks; the load's
   never-write check; the decoder's verdict for every byte, each bit read in its own line; and `--clear`
-  with either of its writes failing, which leaves the stage.
+  with either of its writes failing, which leaves the stage. For pre_test=1 it compiles `pre_test.h`
+  against a second writing-out, and runs `m1_pre_test()` as it stands against a model of the 22 words in
+  18 scenarios (bit 30 clearing at once, late or never; a word not taking, slow, or reading with more
+  bits; words not coming back; PMU writes not acked; old bytes left): 44 writes and no other, B2's order
+  out and B1's back, each step after its mark, the six bytes in the PMU before anything is put back, the
+  log's rows as the model has them; the load's never-write check and its read of the two + 0 words; and
+  the decoder's reading of every case.
 - `tests/e1_hook_probe_test.py` runs `e1-hook/probe` as uid 0 in a bubblewrap user namespace against stub
   `insmod`, `rmmod`, `modinfo`, `dmesg`, `sleep`, `m1-crumbs` and `sleep-drain-safe`: the parameters it
   loads, that a module which doesn't read `probe=Y` has its replay called off and is unloaded with no
