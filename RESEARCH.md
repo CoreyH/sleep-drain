@@ -4776,6 +4776,96 @@ Built on Corey's standing go-ahead of 2026-11-10 and "take the next step" of 202
 - **Next** (PLAN.md): either that question, on this launcher (the two engine-page words written
   as B2 writes them, then the 22, everything put back), or `a2_pre=1`. Not built.
 
+### What the other projects have since 2026-11-12 (sweep of 2026-11-13)
+
+Read on GitHub at Corey's request, before the next build: PR and issue threads, commit headlines and
+messages, DeepIdle's `docs/` (worklog and status: their findings, as in the last sweep), and the three
+sleep drivers already read with Corey's OK, at their heads of today and only by search for the clock and
+engine steps: `sleep.c` on aurora-silicon's `integration/aurora` (the T8140 driver, renamed),
+`sleep-t6040.c` in #1477 at 04027a015ce2, `t6041-sleep.c` in #1664 at f3fcc17b7c64. No m1n1 or Aura
+code. Of Naeem Malik's new branch, the commit messages only. Nothing posted.
+
+- **Our own items: nothing waits on us.** omacom/linux-aurora#351 is open and mergeable, with no
+  review and no `ci:build` yet; #454 (the M2 alarm on top of it) was answered on 2026-11-12. #290
+  (the drain issue) has no comment since 2026-10-30. Near our work: #456 (an opt-in s2idle wake on
+  charger plug and unplug), and #334 with #441 (a GPU vote to the PMP on t600x, on by default on
+  T6001), which change `pmp-report`, the driver `pmp-sleep-release` takes its lock from: look at
+  them before the next PMP night. Upstream of aurora, aurora-silicon/linux#1687 (merged) reads
+  T6000's SPMI monitor counters and takes the monitor out of the primary PMIC node's interrupt
+  parent.
+- **Nobody has an M1 Pro or M2 Pro entry that completes, and DeepIdle has tried to replay everything
+  it traced macOS's AP writing.** T6020, runs R39A to R47A (2026-11-12), every one "no change": the commit is
+  taken, the engine parks, WD2 resets. On the way they traced macOS and found: its AP writes the
+  S2R timer twice and touches nothing else in the always-on block that holds it (T6000's
+  0x2925c0000; not the engine's page at 0x2922c0000, which that trace didn't cover), never the five
+  words that step at the commit; it sends stop requests to the secondaries while they're awake, switches
+  both PCPMs off through the PMP, then the timer, then each core writes its own two override
+  registers; it halts the GPU's, ANS's, SIO's and the PMP's firmware before the commit; 59 power
+  words were in another state than macOS's (SIO_CPU, SIO_SPMI, FPWM0 to 2, I2C5 to 7, SPI, UART,
+  audio, ANS2 and PCIe among them; the memory controllers matched). They then tried each in turn:
+  the stop requests with a late release, two timer writes, the halts, 50 power words forced to
+  macOS's, 417 memory-controller writes (R46A), 484 device writes in all (R47A). The last two
+  left no marker that the replay ran, so they're attempts with the same ending, not confirmed
+  replays. Their close: every write the hypervisor sees between `slpw` and the sleep is
+  reproduced and the engine still parks; "what
+  remains is invisible to the HV: the cores' real deep WFI (the HV masks it), anything on the
+  cores/PCPM side that macOS does inside the guest kernel's own idle path, and unreadable
+  blocks." They've armed nothing further and wait for Naeem's result.
+- **Naeem Malik (T8103) has a second driver and is asking the engine's waits, as we are.** Branch
+  `m1power/s2r-rs1` (2026-11-12 and 13, head ed5e15e8de): the entry again in Rust, beside
+  `apple-s2r.c`, runs 16 to 22. From the commit messages:
+  - `gate_record` reads, just before the release, the 49 words "sequence 0 waits on (44 device
+    power-state words, bit 11 must be 0; five power-manager words, bit 30 must be 1; addresses and
+    masks from the sleep engine's program as read live on this M1)", and records how many aren't
+    as needed and which come first. That's our looks' method: the engine's polls, asked from the AP.
+  - Run 18: `ps_fpwm1`, the sequence's second wait, "reads busy (bit 11) before sequence 0 starts,
+    never while awake". Run 19 waits up to 50 ms for it; run 20 keeps `ps_fpwm1` on through the
+    sleep. Run 21 clears bit 42 of both clusters' perf-state words; run 22 puts the last steps in
+    another order (perf requests, throttlers, four words each polled, APSC last).
+  - No message says an entry completed on this driver; the 0.05 W result was the older one's.
+  - **Its source wasn't opened.** Its first commit calls it "the vendor OS's last stage as read",
+    and later ones cite "the vendor kernel's last stage": that isn't the trace-derived driver
+    Corey's OK of 2026-11-07 names. Whether to read it is Corey's call, and for a fix that goes
+    upstream it's a different question than values from traces.
+- **M4.** aurora-silicon/linux#1769 (merged today) gives `sleep.c` per-SoC data and operations, for
+  SoCs that differ by "clock parks that wait for a done bit, a cache flush and DRAM access off
+  ..., CYC_OVRD for the cores' deep WFI, and an AIC2 instead of an AIC3". AIC2 and CYC_OVRD are
+  the M1 and M2 generations'; no such SoC is matched yet and no PR for one was found. #1477
+  (M4 Pro): 25 of 25 on a second J616s, about 0.34 W over a 603 s sleep; and a warning: on that
+  SMC `MBSE = slpw` can't be taken back, and a suspend called off after it leaves both fans at
+  0 rpm until a completed sleep or a restart. (Nothing of `probe`'s writes to the SMC here;
+  `e1_hook.c` says so at the probe's branch.) #1664 (M4 Max): the full part reset after a clean
+  commit record where the binned one wakes; today's finding is eight memory channels the binned
+  part lacks, never flushed, their power words on, holding a fabric domain on. They found
+  it with a bitmap of every power word that reads on at the commit, kept in the PMU and compared
+  with the machine that wakes. There's no waking T6000 to compare ours with.
+- **In the drivers, two things for T6000.**
+  - The clock park is the recipe's. T8140 writes 0x80100000 to three mux words ("The SoC refuses
+    the first, on macOS too"); the M4 Pro gives four ClkGen words at + 0x38050 and on [27:24] := 0
+    with bit 31, each polled until bit 30 clears. T6000's table writes 0x80100000 to the muxes at
+    0x28e038164 and on, and wait 62 polls their bit 30. Those sit in 0x28e03801c's page.
+  - The M4 Pro has "the hardware S2R-lo entry counter: bits 31:3 of MiniPMGR + 0x70970", which
+    "tells 'the SoC entered S2R' from 'the engine never finished'". Whether T6000 has one, and
+    where, isn't known; nothing here has looked.
+
+**What this changes for the next step** (PLAN.md, the 22 after B2's two writes; judgment):
+
+1. **Whether the clock word's page takes the AP's writes isn't known.** The recipe parks five
+   muxes in 0x28e03801c's page, but its waits there only poll bit 30 clear, which those words
+   already read awake: a write that was dropped passes them too, and no record has a mux's value
+   after its write (Pullfrog on #99). So the clock word's refusal on `probe --pre` may be the
+   word's, the value's or the page's. A read of the five after the table would say, and costs a
+   one-way run nothing: the next run carries it.
+2. **DeepIdle's "nothing but the timer" is about another block.** Their trace covers the
+   always-on block with the timer, T6000's 0x2925c0000, not the engine's page that 0x2922c0008
+   and 0x2922c0040 are in (Pullfrog on #99). Whether macOS's AP writes those two isn't known
+   from anything read here.
+3. **Toward the cores, as a judgment and not a deduction.** DeepIdle's replays of the AP's writes
+   changed nothing as far as they're confirmed, and the M4 drivers say the engine waits for every
+   other core in its last WFI and for a held CPU to stop. `a2_pre=1` asks three of A2's waits in
+   one run; the two engine words would take two runs to ask one of B2's polls. So `a2_pre=1`
+   goes first, and the two engine words stay on the list.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
