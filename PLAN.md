@@ -102,8 +102,12 @@ the PR with that session's work.
     Mac came back, and not one of the 22 took the AP's write (0x28e03801c read as found, no bit
     30; the 21 read as found). So the AP hasn't made B2's ops 8 to 29 in any run, and
     `sio_steps=1`'s gate reading "after the 22" was without them.
-  - **Next, a build, nothing to run yet: what opens the 22 to a write** ("The order after the
-    look", in Track A below): B2 clears two words of the engine's page right before them.
+  - The sweep of the other projects on 2026-11-13 (RESEARCH.md, "What the other projects have
+    since 2026-11-12") put `a2_pre=1` ahead of the test of the engine's two words.
+  - **Next, a run of Corey's: `--m1-a2-pre`** ("The order after the look", in Track A below;
+    RESEARCH.md, "`a2_pre=1` as built"): the AP makes A2's three moves before the commit, and
+    reads the table's five clock muxes first. After it, not built: what opens the 22 to a write
+    (B2 clears two words of the engine's page right before them).
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
@@ -775,7 +779,31 @@ steps, and restarting the DCP and the PMP afterwards.
       byte is free. No register is written, so it needs Pullfrog and no adversarial pass. If
       0x28e5a0050 reads open there too, B2's op 140 is the stall's likeliest place and what holds
       that gate is the question; if it reads closed, this poll is cleared and `a2_pre=1` is next.
-      After it, **not built: `a2_pre=1`, A2's three moves made by the AP.** On `--m1-mark`'s recipe,
+      **Built, to run: `a2_pre=1`** (`--m1-a2-pre`; `e1-hook/a2_pre.h`; RESEARCH.md, "`a2_pre=1` as
+      built"). The run, Corey's: restart into a safe boot (`pkexec sleep-drain-safe boot`, then
+      restart), on battery, `make -C e1-hook`, `pkexec e1-hook/run-floor --quick --m1-a2-pre`.
+      New in this run: right before the commit CPU0 reads the five clock muxes the table parked
+      and then writes three p-state words as the engine's A2 would (DCS := 2, the fabric := 2,
+      0x28e20c400 := 0), leaving them. It should end as the last runs did, dark and then a
+      restart at about 90 s; a restart at about 120 s would be the finding. If the screen freezes
+      or the restart comes within about 10 s, a move didn't go through, and the record says which.
+      After the restart: `e1-hook/m1-crumbs`, `pkexec e1-hook/m1-crumbs --clear`, `pkexec
+      sleep-drain-safe collect`. What the byte at 0x6016 then says:
+      - **0xfe, restart at 90 s:** all three took and settled and the pair still stops: A2's own
+        waits are less likely. Next the engine's two words (above), or the heavier instruments
+        below.
+      - **A restart at about 120 s:** B2 got past its op 224 with A2's moves made first: the
+        bigger finding, and which of the three did it is the next run.
+      - **A move took and didn't settle:** a candidate for where A2 waits; next that word alone,
+        with a longer bound, and what holds it (the PMP for DCS).
+      - **None took (0x80), or bit 0 set (the muxes didn't all read parked):** the AP's writes
+        don't all land there in the recipe's state. The bit doesn't say which mux or what it
+        read (T8140's SoC refuses one of its three, on macOS too), so the next run reads them
+        out before anything is concluded about the recipe.
+      - **The byte stops short at stage 0x99:** CPU0 didn't come through the next move with a
+        core running, or one of the byte's own commands failed and the run went on unrecorded;
+        the restart's time doesn't tell them apart. A second run with that move left out does.
+      As planned, before the build: On `--m1-mark`'s recipe,
       after macOS's table and before the commit, CPU0 does what A2 does inside the first handshake, in
       A2's order: DCS := 2 (0x28e20c800, from the 5 the table leaves) and a bounded wait for it to
       settle; the fabric := 2 (0x28e20c000, from 3); 0x28e20c400 := 0 (from 0x222). A mark before each
