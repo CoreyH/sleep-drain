@@ -596,14 +596,15 @@ steps, and restarting the DCP and the PMP afterwards.
       whether writing them with the cores up is something to try at all before `a2_pre=1`; if
       the desk says no, `a2_pre=1` (below) is next instead.
       **From the sweep of 2026-11-13** (RESEARCH.md, "What the other projects have since
-      2026-11-12"), three things for that desk check. The recipe's own mux parks are in
-      0x28e03801c's page (0x28e038164 and on, wait 62): if the runs' records show them taking,
-      the clock word's refusal isn't a closed page and the two engine words are less likely to
-      open it; the 21 selects stay an open question. On T6020 macOS's AP writes nothing of the
-      engine's page but the timer (DeepIdle's trace), so this test can only localize, never be
-      the fix. And DeepIdle has replayed every write macOS's AP makes with no change, while the
-      M4 drivers say the engine waits on the other cores' last WFI: that argues for `a2_pre=1`
-      first.
+      2026-11-12"), for that desk check. Whether the clock word's page takes the AP's writes
+      isn't known: the recipe's mux parks there are only waited on for bit 30 clear, which they
+      read awake, so no record shows one taking; the next one-way run reads the five after the
+      table. DeepIdle's trace of macOS writing "nothing but the timer" is of another block
+      (T6000's 0x2925c0000), so it doesn't say whether macOS's AP writes these two words. And as
+      a judgment: DeepIdle's replays of the AP's writes changed nothing as far as they're
+      confirmed (the last two aren't), and the M4 drivers say the engine waits on the other
+      cores' last WFI, so `a2_pre=1`, three of A2's waits in one run, goes before this, which
+      needs two runs for one of B2's polls.
       - **The 22 take once one of the two is 0:** then `sio_steps=1` again with that write (and
         its write-back) around the 22, and its gate reading means what it was built to mean.
       - **Still closed:** the 22 can't be made from the AP; op 140 can't be asked there. Then

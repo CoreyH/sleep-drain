@@ -4793,22 +4793,24 @@ code. Of Naeem Malik's new branch, the commit messages only. Nothing posted.
   them before the next PMP night. Upstream of aurora, aurora-silicon/linux#1687 (merged) reads
   T6000's SPMI monitor counters and takes the monitor out of the primary PMIC node's interrupt
   parent.
-- **Nobody has an M1 Pro or M2 Pro entry that completes, and DeepIdle has now replayed everything
-  macOS's AP writes.** T6020, runs R39A to R47A (2026-11-12), every one "no change": the commit is
+- **Nobody has an M1 Pro or M2 Pro entry that completes, and DeepIdle has tried to replay everything
+  it traced macOS's AP writing.** T6020, runs R39A to R47A (2026-11-12), every one "no change": the commit is
   taken, the engine parks, WD2 resets. On the way they traced macOS and found: its AP writes the
-  S2R timer twice and touches nothing else in the engine's always-on block, never the five words
-  that step at the commit; it sends stop requests to the secondaries while they're awake, switches
+  S2R timer twice and touches nothing else in the always-on block that holds it (T6000's
+  0x2925c0000; not the engine's page at 0x2922c0000, which that trace didn't cover), never the five
+  words that step at the commit; it sends stop requests to the secondaries while they're awake, switches
   both PCPMs off through the PMP, then the timer, then each core writes its own two override
   registers; it halts the GPU's, ANS's, SIO's and the PMP's firmware before the commit; 59 power
   words were in another state than macOS's (SIO_CPU, SIO_SPMI, FPWM0 to 2, I2C5 to 7, SPI, UART,
-  audio, ANS2 and PCIe among them; the memory controllers matched). They then made all of it:
+  audio, ANS2 and PCIe among them; the memory controllers matched). They then tried each in turn:
   the stop requests with a late release, two timer writes, the halts, 50 power words forced to
-  macOS's, 417 memory-controller writes, 484 device writes in all. Their close: every write the
-  hypervisor sees between `slpw` and the sleep is reproduced and the engine still parks; "what
+  macOS's, 417 memory-controller writes (R46A), 484 device writes in all (R47A). The last two
+  left no marker that the replay ran, so they're attempts with the same ending, not confirmed
+  replays. Their close: every write the hypervisor sees between `slpw` and the sleep is
+  reproduced and the engine still parks; "what
   remains is invisible to the HV: the cores' real deep WFI (the HV masks it), anything on the
   cores/PCPM side that macOS does inside the guest kernel's own idle path, and unreadable
-  blocks." They've armed nothing further and wait for Naeem's result. (Their last run's own
-  marker didn't land, so they don't count its replay as confirmed.)
+  blocks." They've armed nothing further and wait for Naeem's result.
 - **Naeem Malik (T8103) has a second driver and is asking the engine's waits, as we are.** Branch
   `m1power/s2r-rs1` (2026-11-12 and 13, head ed5e15e8de): the entry again in Rust, beside
   `apple-s2r.c`, runs 16 to 22. From the commit messages:
@@ -4848,18 +4850,21 @@ code. Of Naeem Malik's new branch, the commit messages only. Nothing posted.
 
 **What this changes for the next step** (PLAN.md, the 22 after B2's two writes; judgment):
 
-1. **The clock word's page isn't closed to the AP as a page**, if a run's record shows the recipe's
-   mux parks taking (to check at the desk: wait 62 in the runs' records). Then 0x28e03801c's
-   refusal on `probe --pre` is that word's or that value's, as T8140's first mux is refused, and
-   clearing the engine's two words is less likely to open it. For the 21 selects, in pages
-   nothing else writes, this says nothing.
-2. **macOS's AP never writes the engine's page but for the timer** (T6020, traced). So
-   0x2922c0008 and 0x2922c0040 written from the AP can only ever be a way to ask where B2
-   stalls, never part of a fix; that test has to earn its run on what it would localize.
-3. **Weight moves toward the cores.** With every AP write reproduced on T6020 and no change, and
-   the M4 drivers saying the engine waits for every other core in its last WFI and for a held CPU
-   to stop, what the AP hasn't written is a weaker suspect than how the cores go down. Of our
-   open tests that's `a2_pre=1`'s side, not the 22's.
+1. **Whether the clock word's page takes the AP's writes isn't known.** The recipe parks five
+   muxes in 0x28e03801c's page, but its waits there only poll bit 30 clear, which those words
+   already read awake: a write that was dropped passes them too, and no record has a mux's value
+   after its write (Pullfrog on #99). So the clock word's refusal on `probe --pre` may be the
+   word's, the value's or the page's. A read of the five after the table would say, and costs a
+   one-way run nothing: the next run carries it.
+2. **DeepIdle's "nothing but the timer" is about another block.** Their trace covers the
+   always-on block with the timer, T6000's 0x2925c0000, not the engine's page that 0x2922c0008
+   and 0x2922c0040 are in (Pullfrog on #99). Whether macOS's AP writes those two isn't known
+   from anything read here.
+3. **Toward the cores, as a judgment and not a deduction.** DeepIdle's replays of the AP's writes
+   changed nothing as far as they're confirmed, and the M4 drivers say the engine waits for every
+   other core in its last WFI and for a held CPU to stop. `a2_pre=1` asks three of A2's waits in
+   one run; the two engine words would take two runs to ask one of B2's polls. So `a2_pre=1`
+   goes first, and the two engine words stay on the list.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 
