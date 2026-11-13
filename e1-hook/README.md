@@ -147,9 +147,11 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   with values no run has written. The byte: bit 0 NOT all five muxes read 0x80100000; bits 1 and 2 DCS's word read
   asked for 2, and as A2 waits for it; bits 3 and 4 the same for the fabric; bits 5 and 6 for the third word (asked
   for 0); bit 7 always. A move's bits are 0 before it's made and are read anew for every later send. 0xfe is all
-  three taken and settled with the muxes parked; 0x80, none taken. Stages 0x99, then 0x9b or 0x9a. A byte that stops
-  short at stage 0x99 names the move CPU0 didn't come through. It adds at most about 0.3 s before the commit. The
-  rest of the ending reads as `--m1-gates`'. Not run yet.
+  three taken and settled with the muxes parked; 0x80, none read as written or as A2 waits for it (what they did
+  read isn't in the byte). Stages 0x99, then 0x9b or 0x9a. A byte that stops short at stage 0x99 is the last thing
+  recorded, not a proven stop: CPU0 didn't come through the next move, or a send failed and the run went on
+  unrecorded. It adds at most about 0.3 s before the commit. The rest of the ending reads as `--m1-gates`'. Not run
+  yet.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be

@@ -796,11 +796,13 @@ steps, and restarting the DCP and the PMP afterwards.
         bigger finding, and which of the three did it is the next run.
       - **A move took and didn't settle:** a candidate for where A2 waits; next that word alone,
         with a longer bound, and what holds it (the PMP for DCS).
-      - **None took (0x80), or bit 0 set (the muxes didn't read parked):** the AP's writes don't
-        land there in the recipe's state. For the muxes that changes the recipe's own premise
-        (macOS parks them before the commit), and why they don't take comes before anything else.
-      - **The byte stops short at stage 0x99:** CPU0 didn't come through that move with a core
-        running; it's left out of a second run.
+      - **None took (0x80), or bit 0 set (the muxes didn't all read parked):** the AP's writes
+        don't all land there in the recipe's state. The bit doesn't say which mux or what it
+        read (T8140's SoC refuses one of its three, on macOS too), so the next run reads them
+        out before anything is concluded about the recipe.
+      - **The byte stops short at stage 0x99:** CPU0 didn't come through the next move with a
+        core running, or one of the byte's own commands failed and the run went on unrecorded;
+        the restart's time doesn't tell them apart. A second run with that move left out does.
       As planned, before the build: On `--m1-mark`'s recipe,
       after macOS's table and before the commit, CPU0 does what A2 does inside the first handshake, in
       A2's order: DCS := 2 (0x28e20c800, from the 5 the table leaves) and a bounded wait for it to

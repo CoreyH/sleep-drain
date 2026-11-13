@@ -1464,56 +1464,64 @@ def a2p_lines(s, b, pmp):
            " A2's three moves in step 8, as A2 makes them at its ops 11 to 16, each with up to 100 ms for A2's condition, and"
            " leave them for the commit:",
            "  the five ClkGen muxes the table parked (0x28e03815c to 0x28e038170), read after the table for the first time: "
-           + ("NOT ALL FIVE READ 0x80100000, the table's value: a park didn't take, or didn't stay" if v & A2P_MUX_BAD else
+           + ("NOT ALL FIVE READ 0x80100000, the table's value: a park didn't take, or didn't stay (which, how many, and what"
+              " they read, isn't in the bit)" if v & A2P_MUX_BAD else
               "all five read 0x80100000, as the table wrote them: the AP's writes take in that page, in the recipe's state")]
     for i, (what, asked, cond) in enumerate(A2P_MOVES):
         if last or took[i] or settled[i] or any(took[i + 1:]) or any(settled[i + 1:]):
             out.append(f"  {what}: " + (f"read {asked}" if took[i] else f"DIDN'T READ {asked.upper()}") + "; "
                        + (f"read as A2 waits for it ({cond})" if settled[i] else f"NOT AS A2 WAITS FOR IT ({cond})")
-                       + (", at the last read before the commit" if last else ", at the last send's read of it"))
+                       + (", at the last read before the commit" if last else ", at the last send's read of it")
+                       + (" (what it read before the write isn't recorded in this run: 0x222 awake and after noirq)" if i == 2 and took[i] else ""))
         else:
             out.append(f"  {what}: neither of its bits is set, and none of a later move's: not made by this send, or made and"
                        " neither read")
+    out.append("  (fabric_up=1's lines above are about step 5: this run then asks the fabric, and DCS, down to 2 before the commit)")
     if not b[0x12] >> 6 == 3:
         out.append("  (SIO's firmware isn't shown stopped, 0x6012: " + SIO_CODES[b[0x12] >> 6] + ": this run's writes don't depend on"
                    " it, but the recipe's state does)")
     if not last:
         n = max([i + 1 for i in range(3) if took[i] or settled[i]], default=0)
         out.append("  stage 0x19, so nothing records the commit after this byte (0x1a or 0x1b comes after it): "
-                   + ("the byte has no move's bits, which is one of two things this record can't tell apart: CPU0 stopped in DCS's"
-                      " move (the write, its wait or the read after it), or no write took and the commit's stage didn't land"
+                   + ("the byte has no move's bits, which is one of three things this record can't tell apart: CPU0 stopped in"
+                      " DCS's move (the write, its wait or the read after it); the send after it failed, after which the run"
+                      " went on with nothing more recorded; or no write took and the commit's stage didn't land"
                       if not n else
                       "all three moves show in it, so the run stopped at or after the last send, or a later command failed"
                       if n == 3 else
                       f"the last move that shows is {A2P_MOVES[n - 1][0]}, so CPU0 stopped in the move after it ({A2P_MOVES[n][0]}),"
-                      " or that move and any after it neither took nor settled and the commit's stage didn't land")
-                   + ". A move CPU0 doesn't come through can't be made with a core running, and says no more than that."
-                   " Inconclusive about the rest of the entry")
+                      " or the send after that move failed and the run went on unrecorded, or that move and any after it neither"
+                      " took nor settled and the commit's stage didn't land")
+                   + ". A move CPU0 doesn't come through can't be made with a core running, and says no more than that; this"
+                   " record alone doesn't show that it was one. Inconclusive about the rest of the entry")
         return out
     # What the time can add. Only the clean last stage has it read against the marker (below).
-    time = (" The restart's time, below, says how far B2 got: about 120 s (WD2's bite) in place of 90 s (WD1's marker) means B2"
-            " got past its op 224" if s == A2P_WD2[1] else
+    time = (" The restart's time is read below, against WD1's marker, as far as the marker and WD2's sample bear a reading out:"
+            " about 120 s (WD2's bite) in place of 90 s is what B2 getting past its op 224 would give" if s == A2P_WD2[1] else
             " CPU0 had an exception pending after the commit, so the restart's time isn't read (below)")
     if all(took) and all(settled):
         out.append("  so: ALL THREE MOVES TOOK AND SETTLED before the commit, with CPU0 up: the engine finds A2's own steps made. If"
                    " the restart still comes at 90 s, A2's three waits are less likely to be where the pair stops (not excluded:"
-                   " A2 makes them later, with every core down)." + time)
+                   " A2 makes them later, with every core down, between its own writes to PHASE and 0x2925c4004)." + time)
     elif not any(took) and not any(settled):
-        out.append("  so: NONE OF THE THREE TOOK: the words didn't read as written or as A2 waits for them. The AP's writes were"
-                   " refused or changed back in the recipe's state (the PMP owns DCS under Linux), which says nothing about A2's"
-                   " own. The commit found the words as the recipe leaves them, so this run is --m1-gates' again in that"
-                   " respect." + time)
+        out.append("  so: NONE OF THE THREE READ AS WRITTEN OR AS A2 WAITS FOR IT. What they did read isn't in the byte: the AP's"
+                   " writes were refused, changed back or taken as another value in the recipe's state (the PMP owns DCS under"
+                   " Linux), and that says nothing about A2's own." + time)
     else:
         for i, (what, asked, cond) in enumerate(A2P_MOVES):
             if took[i] and not settled[i]:
                 out.append(f"  so: A CANDIDATE: {what} TOOK AND DIDN'T SETTLE: the word read {asked} and not {cond} at the last read"
                            " before the commit. That is what A2's own write would meet, and A2 waits on it with no bound. It"
                            " isn't proof that A2 waits there for ever: the AP gave it 100 ms and a little more, with the cores"
-                           " as the recipe leaves them, and A2 makes the move with every core down.")
+                           " as the recipe leaves them, and A2 makes the move with every core down, inside its own handshake.")
+            elif not took[i] and settled[i]:
+                out.append(f"  so: {what}: THE VALUE DIDN'T READ BACK (not {asked}), though the word read as A2 waits for it"
+                           f" ({cond}): the write did something, and the byte doesn't say what bits 3:0 read. A2's own wait"
+                           " would be met by a word that reads so.")
             elif not took[i]:
-                out.append(f"  so: {what} DIDN'T TAKE (it didn't read {asked}"
-                           + (", though it read as A2 waits for it" if settled[i] else "")
-                           + "): the AP's write was refused or changed back, which says nothing about A2's own.")
+                out.append(f"  so: {what} DIDN'T TAKE (it read neither {asked} nor as A2 waits for it): the AP's write was"
+                           " refused, changed back or taken as another value, and the byte doesn't say which. That says"
+                           " nothing about A2's own.")
         out[-1] += time
     return out
 

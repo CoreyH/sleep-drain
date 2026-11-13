@@ -5041,7 +5041,8 @@ static int __init m1_sst_init(void)
 /*
  * a2_pre=1 at load, after m1_gates_init(): the three words are exactly the ones named here, with A2's values (a second
  * writing-out of them, as m1_pcd_init() has), none is on the never-write list, the table has exactly five waits in the
- * muxes' page and each is on a row that writes A2P_MUX_VAL to that address, and the eight words logged awake. Reads only.
+ * muxes' page and each is on a mapped row that writes A2P_MUX_VAL (e1_check_params() has matched every wait's row to its
+ * address and width), and the eight words logged awake. Nothing is read before all of that holds. Reads only.
  */
 static int __init m1_a2p_init(void)
 {
@@ -5049,7 +5050,7 @@ static int __init m1_a2p_init(void)
 	static const u32 val[A2P_N] = A2P_VALS;
 	static const u16 want_off[A2P_N] = { 0x800, 0x000, 0x400 };
 	static const u32 want_val[A2P_N] = { 2, 2, 0 };
-	u32 mux[A2P_MUX_N] = { 0 };
+	u32 mux[A2P_MUX_N] = { 0 }, v[A2P_N];
 	unsigned int i, k, n = 0;
 
 	for (i = 0; i < A2P_N; i++) {
@@ -5064,19 +5065,23 @@ static int __init m1_a2p_init(void)
 
 		if ((w->addr & PAGE_MASK) != A2P_MUX_PAGE)
 			continue;
-		if (n == A2P_MUX_N || w->idx >= ARRAY_SIZE(e1_post_slpa) || e1_post_slpa[w->idx].addr != w->addr ||
-		    e1_post_slpa[w->idx].width != 4 || e1_post_slpa[w->idx].val != A2P_MUX_VAL || !post_map[w->idx]) {
+		if (e1_post_slpa[w->idx].val != A2P_MUX_VAL || !post_map[w->idx]) {
 			pr_err("m1: a2_pre: the table's mux rows aren't the five meant (0x%llx); refusing\n", w->addr);
 			return -EINVAL;
 		}
-		mux[n++] = readl(post_map[w->idx]);
+		n++;
 	}
 	if (n != A2P_MUX_N) {
 		pr_err("m1: a2_pre: %u waits in the ClkGen muxes' page, not %u; refusing\n", n, A2P_MUX_N);
 		return -EINVAL;
 	}
+	for (k = 0, n = 0; k < ARRAY_SIZE(m1_waits); k++)
+		if ((m1_waits[k].addr & PAGE_MASK) == A2P_MUX_PAGE)
+			mux[n++] = readl(post_map[m1_waits[k].idx]);
+	for (i = 0; i < A2P_N; i++)
+		v[i] = readl(m1_fab() + off[i]);
 	pr_info("m1: a2_pre: awake: DCS 0x28e20c800 %08x; fabric 0x28e20c000 %08x; 0x28e20c400 %08x; the muxes, in the table's order: %08x %08x %08x %08x %08x. Step 8 reads the muxes, then writes 2, 2 and 0 to the three, right before the commit, and leaves them\n",
-		readl(m1_fab() + A2P_DCS), readl(m1_fab() + A2P_FAB), readl(m1_fab() + A2P_THIRD), mux[0], mux[1], mux[2], mux[3], mux[4]);
+		v[0], v[1], v[2], mux[0], mux[1], mux[2], mux[3], mux[4]);
 	return 0;
 }
 

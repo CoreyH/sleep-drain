@@ -4910,6 +4910,32 @@ waits.
 - **Also fixed:** `run-floor`'s check for a module older than its sources didn't list
   `pre_test.h`, and `probe`'s didn't list `pcie_down.h`.
 
+**What the reviews changed** (#100: one adversarial pass by a subagent, and Pullfrog). Neither found
+a path that writes anything but the three words, another value or another order.
+- **A byte that stops short isn't a move that stopped** (both). A PMU command that fails stops
+  every one after it and the run goes on, so stage 0x99 with DCS's bits alone is also what a
+  failed send before a clean run leaves. `m1-crumbs`, the header and PLAN.md now say "the last
+  thing recorded", with the three things it can be; a test makes the PMU refuse the third send
+  and sees all three writes made.
+- **0x80 doesn't say the words were unchanged** (both). It says none read as written or as A2
+  waits for it; a word taken as another value gives the same byte. The verdict no longer says the
+  commit found the recipe's state. A word that reads as A2 waits for it without its value reading
+  back gets its own line ("the write did something"), not "refused".
+- **The restart's time** is no longer read in this byte's verdict as "B2 got past its op 224":
+  that reading is `mark_reading()`'s, with its conditions (the adversarial pass).
+- **Said in the verdicts now:** A2 makes its moves between its own writes to PHASE and
+  0x2925c4004, not only with every core down; this run leaves the fabric asked down to 2 at the
+  commit, where `fabric_up=1`'s lines speak of 3; the mux bit doesn't say which mux or what it
+  read; what the third word read before its write isn't recorded.
+- **At the load:** the three words are read in separate statements (Pullfrog: the order of
+  arguments' evaluation isn't the compiler's to keep, and the test failed under GCC 15), nothing
+  is read before every check has passed, and two checks `e1_check_params()` already makes are gone.
+- **Test holes closed** (the adversarial pass, each shown by a change the tests let through): a
+  wait that ignores bit 31 (the model now has a word that reads its value with bit 31 set); the
+  barrier between a write and its wait. And one of mine, found by the mutants: a misplaced
+  condition made the test of the verdicts pass whatever they said; fixed, it then caught a slip
+  in the reworded decoder.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

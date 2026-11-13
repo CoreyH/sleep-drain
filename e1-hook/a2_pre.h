@@ -73,10 +73,18 @@
  *
  * A run that stops inside it leaves stage 0x19 with 0x6016 at 0 (before the
  * first send) or short of the move it stopped in, and restarts by the panic
- * (about 10 s) or by WD1's marker (about 90 s after step 4). Stage 0x19 with a
- * byte that has no move's bits is one of two things the record can't tell
- * apart: stopped in DCS's move, or no write took and the commit's stage didn't
- * land.
+ * (about 10 s) or by WD1's marker (about 90 s after step 4). So does a run in
+ * which one of the byte's own commands failed: a command that fails stops every
+ * one after it, and the run goes on to the commit unrecorded (the adversarial
+ * review of #100). Stage 0x19 with a byte that stops short is therefore one of
+ * three things the record can't tell apart: CPU0 stopped in the next move; the
+ * send after it failed; or the remaining moves neither took nor settled and the
+ * commit's stage didn't land.
+ *
+ * What the byte can't say: what a word read before its write (DCS's and the
+ * fabric's are in the same record, the table's wait and fabric_up=1's byte; the
+ * third word's isn't, and reads 0x222 awake and after noirq), what a word that
+ * didn't take did read, and which mux wasn't as written.
  */
 #ifndef A2_PRE_H
 #define A2_PRE_H

@@ -3824,7 +3824,8 @@ int main(void)
 # p-state page and the ClkGen muxes' page that logs every read, write and PMU byte. The scenario is argv[1], letters: x, y, z the
 # write to DCS's word, the fabric's, the third is dropped; d, f, t that word settles 30 ms after its write; D, F, T it never
 # settles (the value asked for reads back, the other copies stay, bit 31 set); r DCS's word goes back to what it was when the
-# third word is written; m one mux reads unparked; p one reads with bit 30 set.
+# third word is written; B DCS's word reads the value in every field and keeps bit 31; m one mux reads unparked; p one reads
+# with bit 30 set; K the PMU stops taking the byte at its third send, and the function goes on.
 A2P_FN_PRELUDE = r"""
 #include <stdio.h>
 #include <string.h>
@@ -3856,6 +3857,8 @@ static u32 pst_read(unsigned int w)
 
 	if (written[w] && (has(never[w]) || (has(slow[w]) && clk < at[w] + 30 * m1_tps / 1000)))
 		return 0x80000000U | (was[w] & 0xff0) | (word[w] & 0xf);
+	if (written[w] && w == 2 && has('B'))
+		return 0x80000000U | word[w];
 	return word[w];
 }
 static u32 readl(const void *p)
@@ -3902,8 +3905,17 @@ static void writel(u32 v, void *p)
 	written[w] = 1;
 	at[w] = clk;
 }
+/* As e1_hook.c's: a command that fails stops every one after it, and the caller goes on. K: the third one fails. */
 static void m1_crumb(unsigned int addr, const u8 *b, unsigned int n)
 {
+	static unsigned int sent;
+	static int dead;
+
+	if (dead || (has('K') && sent == 2)) {
+		dead = 1;
+		return;
+	}
+	sent++;
 	printf("k %x %u %x\n", addr, n, b[0]);
 }
 """
@@ -3999,7 +4011,7 @@ def a2_pre_tests(g, src):
     table = cut("static const struct e1_mmio_write {", "\n};\n")
     fns = cut("static bool m1_siod_poll(", "\n}\n") + cut("static bool m1_a2p_mux_ok(void)", "\n}\n") + cut("static u8 m1_a2_pre(void)", "\n}\n")
     init = cut("static int __init m1_a2p_init(void)", "\n}\n")
-    scen = ("", "x", "y", "z", "xyz", "d", "f", "t", "D", "F", "T", "DFT", "dft", "r", "m", "p", "mp", "mx", "pD", "xF", "rT", "yz", "Dz", "mDFT", "rm")
+    scen = ("", "x", "y", "z", "xyz", "d", "f", "t", "D", "F", "T", "DFT", "dft", "r", "m", "p", "mp", "mx", "pD", "xF", "rT", "yz", "Dz", "mDFT", "rm", "B", "Bm")
     with tempfile.TemporaryDirectory() as tmp:
         def build(name, code):
             c = os.path.join(tmp, name + ".c")
@@ -4021,6 +4033,7 @@ def a2_pre_tests(g, src):
         hdr = [l.split() for l in subprocess.run([build("hdr", A2P_HDR)], input=feed, capture_output=True, text=True, check=True).stdout.splitlines()]
         fn = build("fn", A2P_FN_PRELUDE + waits + fns + A2P_FN_MAIN)
         runs = {a: out(fn, a) for a in scen}
+        out_k = out(fn, "K")
         ini_src = A2P_INIT_PRELUDE + table + "static void *post_map[ARRAY_SIZE(e1_post_slpa)];\n" + waits
         ini = build("ini", ini_src + init + A2P_INIT_MAIN)
         loads = {a: out(ini, *a) for a in (("0", "0"), ("28e20c800", "0"), ("28e20c000", "0"), ("28e20c400", "0"), ("28e0802d8", "0"), ("28e038164", "0"),
@@ -4052,6 +4065,9 @@ def a2_pre_tests(g, src):
           f"a2p_byte() in {len(cases)} cases: bit 0 set when the muxes aren't all as written, each move's two bits from its own word (the"
           " value asked for in bits 3:0, A2's condition), none for a move not made yet however its word reads, never more than three"
           " moves, and bit 7 always; every byte it can make is made", str(wrong[:3]))
+    check(byte(True, [0x555, 0x333, 0x222], 3) == 0x80 == byte(True, [0x444, 0x111, 0x111], 3) == byte(True, [0x80000225, 0x333, 0x322], 3),
+          "0x80 is the byte for the words as the recipe leaves them and for others that are neither as written nor as A2 waits for"
+          " them: it doesn't say the words were unchanged")
     check((g["A2P_PRE"], g["A2P_WD2"], g["A2P_STAGES"]) == (0x19, (0x1a, 0x1b), (0x19, 0x1a, 0x1b)) and (g["A2P_MUX_BAD"], g["A2P_MARK"]) == (1, 0x80)
           and len(g["A2P_MOVES"]) == 3
           and not set(g["A2P_STAGES"]) & (set(g["GATES_STAGES"]) | set(g["SIOD_STAGES"]) | set(g["SIOD1_STAGES"]) | set(g["PCD_STAGES"])
@@ -4067,7 +4083,7 @@ def a2_pre_tests(g, src):
         ret = int([e for e in ev if e[0] == "ret"][0][1], 16)
         mux_ok = "m" not in a and "p" not in a
         took = ["x" not in a, "y" not in a, "z" not in a]
-        settled = [took[0] and "D" not in a, took[1] and "F" not in a, took[2] and "T" not in a]
+        settled = [took[0] and "D" not in a and "B" not in a, took[1] and "F" not in a, took[2] and "T" not in a]
         want = [0x80 | (0 if mux_ok else 1)]
         for n in (1, 2, 3):
             t, sd = took[:], settled[:]
@@ -4091,7 +4107,13 @@ def a2_pre_tests(g, src):
               " every word written so far and the byte; three writes, each a whole word, none to the muxes' page, nothing written back",
               "\n".join(runs[a][:14]) + f"\nwant {[hex(w) for w in want]}")
     last = {a: int([l for l in runs[a] if l.startswith("ret ")][0].split()[1], 16) for a in scen}
-    check((last[""], last["xyz"], last["m"], last["D"], last["d"], last["r"], last["z"], last["DFT"], last["mDFT"]) == (0xfe, 0x80, 0xff, 0xfa, 0xfe, 0xf8, 0x9e, 0xaa, 0xab)
+    lost = [l.split() for l in out_k]
+    check([(e[1], e[2], e[3]) for e in lost if e[0] == "w"] == [("S", f"{o:x}", f"{v:x}") for o, v, _, _ in A2P_ORDER]
+          and [e[3] for e in lost if e[0] == "k"] == ["80", "86"] and [e for e in lost if e[0] == "ret"] == [["ret", "fe"]]
+          and out_k[-1] == "end 222 222 0",
+          "m1_a2_pre() with the PMU refusing the byte from its third send on: the last byte recorded is DCS's, and all three moves are"
+          " made all the same, so a byte that stops short doesn't show a move that stopped", "\n".join(out_k))
+    check((last[""], last["xyz"], last["m"], last["D"], last["d"], last["r"], last["z"], last["DFT"], last["mDFT"], last["B"]) == (0xfe, 0x80, 0xff, 0xfa, 0xfe, 0xf8, 0x9e, 0xaa, 0xab, 0xfa)
           and [l.split()[3] for l in runs["r"] if l.startswith("k ")] == ["80", "86", "9e", "f8"]
           and runs[""][-1] == "end 222 222 0" and runs["xyz"][-1] == "end 555 333 222",
           "m1_a2_pre(): 0xfe if all three take and settle, 0x80 if none takes, 0xff only with a mux not as written; a word that takes"
@@ -4104,6 +4126,7 @@ def a2_pre_tests(g, src):
     wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
     check(re.findall(wr + r"[^;]*;", body) == ["writel(val[i], ps + off[i]);"] and not re.search(wr, init) and not re.search(wr, mux_body)
           and len(re.findall(r"\bm1_a2_pre\(", code_only)) == 2 and len(re.findall(r"\bm1_a2p_mux_ok\(", code_only)) == 2
+          and "\t\twritel(val[i], ps + off[i]);\n\t\tdsb(sy);\n\t\tm1_siod_poll(ps + off[i], mask[i], want[i]);\n" in body
           and "void __iomem *ps = m1_fab();" in body and "static const u16 off[A2P_N] = A2P_OFFS;" in body
           and "static const u32 val[A2P_N] = A2P_VALS, mask[A2P_N] = A2P_MASKS, want[A2P_N] = A2P_WANTS;" in body
           and not re.search(r"\bm1_(ps|sio|look_\w+)\b", body),
@@ -4142,11 +4165,10 @@ def a2_pre_tests(g, src):
           "m1_a2p_init(): the five muxes read through the table's rows 62 to 66 and the three words, once each, and logged", "\n".join(ok))
     check(all(loads[(n, "0")][-1] == "ret -22 reads 0" for n in ("28e20c800", "28e20c000", "28e20c400"))
           and loads[("28e0802d8", "0")][-1] == "ret 0 reads 8" and loads[("28e038164", "0")][-1] == "ret 0 reads 8"
-          and loads[("0", "62")][-1] == "ret -22 reads 0" and loads[("0", "66")][-1] == "ret -22 reads 4" and loads[("0", "49")][-1] == "ret 0 reads 8"
-          and all(v[-1].startswith("ret -22 reads ") and any(r.startswith("err m1: a2_pre:") for r in v) and not any(r.startswith("info") for r in v)
-                  for v in bad_lists.values())
-          and all(bad_lists[w][-1] == "ret -22 reads 0" for w in bad_lists if "mux" not in w and "PLL" not in w),
-          "m1_a2p_init(): refuses if one of the three is on the never-write list, a mux row isn't mapped, the three aren't in A2's"
+          and loads[("0", "62")][-1] == "ret -22 reads 0" and loads[("0", "66")][-1] == "ret -22 reads 0" and loads[("0", "49")][-1] == "ret 0 reads 8"
+          and all(v[-1] == "ret -22 reads 0" and any(r.startswith("err m1: a2_pre:") for r in v) and not any(r.startswith("info") for r in v)
+                  for v in bad_lists.values()),
+          "m1_a2p_init(): refuses, reading nothing, if one of the three is on the never-write list, a mux row isn't mapped, the three aren't in A2's"
           " order at A2's offsets with A2's values, or the table's waits in the muxes' page aren't five rows that write the value"
           " meant; a mux's own address on that list doesn't stop it, since the muxes are only read", str(loads) + str(bad_lists))
 
@@ -4161,14 +4183,16 @@ def a2_pre_tests(g, src):
             r = run(path, cnt="960000000 24000000")
             return r.returncode, r.stdout, r.stderr
 
-        a2_so = ("so: ALL THREE", "so: A CANDIDATE", "so: NONE OF THE THREE", "DIDN'T TAKE")
+        a2_so = ("so: ALL THREE", "so: A CANDIDATE", "so: NONE OF THE THREE", "DIDN'T TAKE", "DIDN'T READ BACK")
         rc, out_, err = dec(0x9b, 0xfe, x=90)
         check(rc == 0 and "stage 0x6004 = 0x9b (pmp_out=1: bit 7, so the stage is 0x1b) (pmgr_late=1): a2_pre=1: gates_mark=1's 0x55:" in out_
               and "0x6016 = 0xfe: a2_pre=1's byte, in place of the alarm's result:" in out_
               and "  the five ClkGen muxes the table parked (0x28e03815c to 0x28e038170), read after the table for the first time: all five read 0x80100000" in out_
               and "  DCS's p-state word (0x28e20c800) := 2: read asked for 2; read as A2 waits for it (bits 11:8 at 2 with bit 31 clear), at the last read before the commit\n" in out_
               and "  the fabric's (0x28e20c000) := 2: read asked for 2; read as A2 waits for it (bits 11:8 at 2 with bit 31 clear), at the last read before the commit\n" in out_
-              and "  0x28e20c400 := 0: read asked for 0; read as A2 waits for it (bits 10:8 at 0 with bit 31 clear), at the last read before the commit\n" in out_
+              and "  0x28e20c400 := 0: read asked for 0; read as A2 waits for it (bits 10:8 at 0 with bit 31 clear), at the last read before the commit"
+                  " (what it read before the write isn't recorded in this run: 0x222 awake and after noirq)\n" in out_
+              and "  (fabric_up=1's lines above are about step 5: this run then asks the fabric, and DCS, down to 2 before the commit)\n" in out_
               and "  so: ALL THREE MOVES TOOK AND SETTLED before the commit" in out_ and "nothing records the commit" not in out_
               and "alarm command" not in out_ and "gates_mark=1's byte" not in out_ and "pcie_down=1's byte" not in out_
               and "0x6007 = 0xf5: fabric_up=1's byte, in place of the cores that held:\n" in out_ and "WD1 stood as the marker" in out_
@@ -4194,7 +4218,8 @@ def a2_pre_tests(g, src):
               and "parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out_
               and "  the fabric's (0x28e20c000) := 2: neither of its bits is set, and none of a later move's" in out_
               and "  stage 0x19, so nothing records the commit after this byte (0x1a or 0x1b comes after it): the last move that shows is DCS's p-state word"
-                  " (0x28e20c800) := 2, so CPU0 stopped in the move after it (the fabric's (0x28e20c000) := 2)" in out_
+                  " (0x28e20c800) := 2, so CPU0 stopped in the move after it (the fabric's (0x28e20c000) := 2), or the send after that move failed and the"
+                  " run went on unrecorded" in out_ and "this record alone doesn't show that it was one" in out_
               and not any(t in out_ for t in a2_so) and "  wd1_mark=1's marker: not read. Stage 0x19 is the last before the commit" in out_,
               "a2_pre=1's 0x99 with DCS's send: the stage before the commit, the move it stopped in named, no verdict and no reading of the"
               " time", out_ + err)
@@ -4212,6 +4237,9 @@ def a2_pre_tests(g, src):
             check(rc == 0 and want in out_ and "A2_PRE'S BYTE" not in out_ and "alarm command" not in out_
                   and "the five ClkGen muxes the table parked" not in out_ and not any(t in out_ for t in a2_so),
                   f"stage 0x{stage:02x}, 0x6016 = 0x{gb:02x}{', no outcomes marker' if kw.get('prog') else ''}: a2_pre=1's byte isn't read", out_ + err)
+        rc, out_, err = dec(0x9b, 0xfe, prog=(0xff, 0x00))
+        check(rc == 0 and "The steps' outcomes go out right after stage 0x19's command" in out_,
+              "a2_pre=1 without the outcomes' marker: fabric_up=1's byte is said to follow stage 0x19's command, the run's own", out_ + err)
         # Every byte, at each of the run's stages, read independently of the decoder.
         wrong = []
         for s in (0x19, 0x1a, 0x1b):
@@ -4237,21 +4265,28 @@ def a2_pre_tests(g, src):
                           and "SIO's firmware isn't shown stopped" not in text)
                     if ok and s != 0x19:
                         n_cand = sum(took[i] and not settled[i] for i in range(3))
-                        n_not = sum(not took[i] for i in range(3))
+                        n_not = sum(not took[i] and not settled[i] for i in range(3))
+                        n_back = sum(not took[i] and settled[i] for i in range(3))
                         every, none = all(took) and all(settled), not any(took) and not any(settled)
-                        ok = (("ALL THREE MOVES TOOK AND SETTLED" in text) == every and ("NONE OF THE THREE TOOK" in text) == none
-                              and len(so) == (1 if every or none else n_cand + n_not)
-                              and (every or none or (sum("A CANDIDATE" in l for l in so) == n_cand and sum("DIDN'T TAKE" in l for l in so) == n_not))
+                        ok = (("ALL THREE MOVES TOOK AND SETTLED" in text) == every and ("NONE OF THE THREE READ AS WRITTEN OR AS A2 WAITS FOR IT" in text) == none
+                              and len(so) == (1 if every or none else n_cand + n_not + n_back)
+                              and (every or none or (sum("A CANDIDATE" in l for l in so) == n_cand and sum("DIDN'T TAKE" in l for l in so) == n_not
+                                                     and sum("THE VALUE DIDN'T READ BACK" in l and "the write did something" in l for l in so) == n_back))
+                              and "found the words as the recipe leaves them" not in text and "--m1-gates' again" not in text
                               and all("It isn't proof that A2 waits there for ever" in l for l in so if "A CANDIDATE" in l)
                               and all("says nothing about A2's own" in l for l in so if "DIDN'T TAKE" in l or "NONE OF THE THREE" in l)
-                              and ("less likely" in text) == every and "not excluded" in text if every else True)
-                        ok = ok and (("about 120 s" in so[-1] and "B2 got past its op 224" in so[-1]) == (s == 0x1b)
+                              and ("less likely" in text) == every and (not every or "not excluded" in text))
+                        ok = ok and (("about 120 s" in so[-1] and "is what B2 getting past its op 224 would give" in so[-1]
+                                      and "as far as the marker and WD2's sample bear a reading out" in so[-1]) == (s == 0x1b)
+                                     and "means B2" not in text
                                      and ("restart's time isn't read" in so[-1]) == (s == 0x1a)
                                      and not any("about 120 s" in l or "restart's time isn't read" in l for l in so[:-1]))
                     if ok and s == 0x19:
                         n = max([i + 1 for i in range(3) if took[i] or settled[i]], default=0)
                         last_line = lines[-1]
-                        ok = (("one of two things this record can't tell apart" in last_line) == (n == 0)
+                        ok = (("one of three things this record can't tell apart" in last_line and "the send after it failed" in last_line) == (n == 0)
+                              and ("or the send after that move failed and the run went on unrecorded" in last_line) == (n in (1, 2))
+                              and ("or a later command failed" in last_line) == (n == 3)
                               and ("all three moves show in it" in last_line) == (n == 3)
                               and ("so CPU0 stopped in the move after it" in last_line) == (n in (1, 2))
                               and (n not in (1, 2) or (g["A2P_MOVES"][n - 1][0] in last_line and g["A2P_MOVES"][n][0] in last_line))
