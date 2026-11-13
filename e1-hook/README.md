@@ -270,9 +270,10 @@ the mark of the first write. Every word is logged in full. The PMU keeps the ste
 select: as written, as found, as written with more bits set, or something else; the same for
 0x28e03801c at the end of its poll and 100 ms on; whether bit 30 was seen set), and a byte at 0x6005
 after the write-back (bit 7 always, bit 6 0x28e03801c back, bits 4:0 the first select that isn't back,
-bit 5 more than one; 0xc0 is all back). **Not run yet; treat it as one-way**: these are clock words
-B2 writes with every core down, and whether the kernel keeps running across them and resumes hasn't
-been tried. `m1-crumbs` reads the record either way.
+bit 5 more than one; 0xc0 is all back). `m1-crumbs` reads the record whether or not the Mac came
+back. **Run once (2026-11-13): it came back, and not one of the 22 took the write** (RESEARCH.md, "The
+`pre_test=1` run"). A run in which they did take would be a different one: these are clock words B2
+writes with every core down, so that one is still to be treated as one-way.
 
 **The gate test doesn't come back.** Run once, it went dark and restarted by itself at about 30 s though the gate
 never read closed (RESEARCH.md, "The gate test's run"): treat it as one-way. The reason given when it

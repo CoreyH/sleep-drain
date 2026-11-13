@@ -4748,6 +4748,34 @@ Built on Corey's standing go-ahead of 2026-11-10 and "take the next step" of 202
   not coming back; PMU writes not acked; old bytes left; a word that goes back); the load; the decoder. 78 mutants, all
   caught. `tests/e1_hook_probe_test.py` for `--pre`.
 
+### The `pre_test=1` run: none of the 22 takes the AP's write; the Mac comes back (2026-11-13)
+
+`pkexec e1-hook/probe --pre`, run once by Corey in a safe boot, module of c4e923e
+(results/pre-test-20261113/: the saved log, the load's look, the PMU record).
+
+- **It came back**: the screen went black for a second or two, the suspend failed as meant, the
+  log was saved. PMU record 0x8a at 0x6010, `aa aa aa aa 6a 69` at 0x6011-0x6016, 0xc0 at 0x6005.
+- **Not one of the 22 changed.** 0x28e03801c, written 0x80101100, read 0x80100100 at once, through
+  its 100 ms and 100 ms after: no bit 30, no change. The 21 read 2 2 2 2 3 2 2 and
+  2 2 2 2 2 2 2 2 0 0 2 2 1 1 before the writes of 1, right after them, and 100 ms on: the same
+  row three times. The two that count as "as written" are the two found at 1. Written back as
+  found, all 22 read as found.
+- **Beside them:** the six gate words didn't move (0x28e5a0050 open, 0x8004030f, as in every look).
+  0x28e0a0000 and 0x28e5b0000, read for the first time, both read 0x02000000, the value B0 and B1
+  write there, awake and after noirq.
+- **What it says.** In Linux's state after noirq, with the cores up, the AP's writes to these 22
+  words are dropped: the words are read-only to it there, or locked. So `sio_steps=1`'s "the 22
+  didn't all read back" was most likely this, all 22 of them, and not the recipe's state; and
+  that run's gate reading after "the 22" was a reading without them. It also means that run did
+  not leave the 22 as B2 writes them (its bit 4 said as much).
+- **What it doesn't say:** why. One thing the desk shows (b2.lst, local): right before its op 8,
+  B2 writes 0 to two words of the engine's own page, 0x2922c0008 and 0x2922c0040, and waits for
+  bit 1 of the second to clear; B1's last write puts 0x2922c0008 back to 1. Both looks today read
+  0x2922c0008 = 1 and 0x2922c0040 = 3. So those two may be what opens the 22 to a write. That's a
+  reading of the order, not something a run has shown.
+- **Next** (PLAN.md): either that question, on this launcher (the two engine-page words written
+  as B2 writes them, then the 22, everything put back), or `a2_pre=1`. Not built.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

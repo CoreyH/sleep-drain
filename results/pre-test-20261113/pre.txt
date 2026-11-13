@@ -1,0 +1,101 @@
+2026-11-13 14:14:49 loading e1_hook with replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 probe=1 look=1 pre_test=1
+kernel log, the look awake, at the load:
+  [  145.184695] e1_hook: look: awake, at load: p-states 0x28e20c000: fabric 00000333 +400 00000222 DCS 00000666
+  [  145.184736] e1_hook: look: awake, at load: AON 0x2922c0000: +038 00000000 +03c 00000100 +040 00000003 +044 00000008 +10c 80000000 +110 00000000
+  [  145.184791] e1_hook: look: awake, at load: power 0x28e580180, 8 apart: 1f0000ff 1400024f 000000ff 00000200
+  [  145.184797] e1_hook: look: awake, at load: power 0x28e5801a0, 8 apart: 00000200 000000ff 000000ff 000000ff
+  [  145.184802] e1_hook: look: awake, at load: power 0x28e5801c0, 8 apart: 000000ff 00000200 00000200 00000200
+  [  145.184806] e1_hook: look: awake, at load: power 0x28e5801e0, 8 apart: 00000200 000000ff 00000200 00000200
+  [  145.184810] e1_hook: look: awake, at load: power 0x28e580200, 8 apart: 00000200 00000200 00000200 0f000200
+  [  145.184814] e1_hook: look: awake, at load: power 0x28e580220, 8 apart: 0f000200 0f000200 000000ff 00000200
+  [  145.184818] e1_hook: look: awake, at load: power 0x28e580240, 8 apart: 00000200 00000200 00000244 00000244
+  [  145.184822] e1_hook: look: awake, at load: power 0x28e580260, 8 apart: 00000244 00000244 00000244 000002ff
+  [  145.184826] e1_hook: look: awake, at load: power 0x28e580280, 8 apart: 000002ff 00000200 00000200 000002ff
+  [  145.184830] e1_hook: look: awake, at load: power 0x28e5802a0, 8 apart: 00000200 00000200 00000200 00000200
+  [  145.184834] e1_hook: look: awake, at load: power 0x28e5802c0, 8 apart: 00000200 00000200 00000300
+  [  145.184840] e1_hook: look: awake, at load: power 0x28e5803b8 (ANS2) 1f0003ff; 0x28e080000: +108 000000ff +110 000000ff +120 000000ff +2d8 1f0f03ff +2e8 1000030f +2f0 1000030f +320 1f0000ff
+  [  145.184881] e1_hook: look: awake, at load: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c 80040308; 0x28e09c000: +310 8004031d +338 c004030f +34c 8004030e
+  [  145.184918] e1_hook: look: awake, at load: clkgen 0x28e000000: +0 00000001 +4 00000004
+  [  145.184922] e1_hook: look: awake, at load: clkgen 0x28e002000: +0 00000001 +4 00000002
+  [  145.184925] e1_hook: look: awake, at load: clkgen 0x28e004000: +0 00000001 +4 00000004
+  [  145.184928] e1_hook: look: awake, at load: clkgen 0x28e006000: +0 00000001 +4 00000004
+  [  145.184931] e1_hook: look: awake, at load: clkgen 0x28e008000: +0 00000001 +4 00000004
+  [  145.184934] e1_hook: look: awake, at load: clkgen 0x28e00a000: +0 00000001 +4 00000004
+  [  145.184937] e1_hook: look: awake, at load: clkgen 0x28e00c000: +0 00000001 +4 00000004
+  [  145.184940] e1_hook: look: awake, at load: clkgen 0x28e00e000: +0 00000001 +4 00000004
+  [  145.184943] e1_hook: look: awake, at load: clkgen 0x28e010000: +0 00000001 +4 00000004
+  [  145.184946] e1_hook: look: awake, at load: clkgen 0x28e012000: +0 00000001 +4 00000004
+  [  145.184949] e1_hook: look: awake, at load: clkgen 0x28e014000: +0 00000001 +4 00000004
+  [  145.184952] e1_hook: look: awake, at load: clkgen 0x28e016000: +0 00000001 +4 00000005
+  [  145.184955] e1_hook: look: awake, at load: clkgen 0x28e018000: +0 00000001 +4 00000001
+  [  145.184959] e1_hook: look: awake, at load: clkgen 0x28e01a000: +0 00000001 +4 00000004
+  [  145.184962] e1_hook: look: awake, at load: clkgen 0x28e01c000: +0 00000001 +4 00000004
+  [  145.184996] e1_hook: look: awake, at load: AON 0x2922c0000, written by the engine and never read by it: +008 00000001 +024 00000000
+  [  145.185025] e1_hook: look: awake, at load: pre 0x28e03801c (B2's op 8 writes 80101100): 80100100
+  [  145.185057] e1_hook: look: awake, at load: pre 0x28e0a0004 to 0x28e0a001c, 4 apart (B2's ops 9 to 15 write 1): 00000002 00000002 00000002 00000002 00000003 00000002 00000002
+  [  145.185101] e1_hook: look: awake, at load: pre 0x28e5b0004 to 0x28e5b0038, 4 apart (B2's ops 16 to 29 write 1): 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000000 00000000 00000002 00000002 00000001 00000001
+  [  145.185134] e1_hook: look: awake, at load: done
+  [  145.185164] e1_hook: look: pre: awake, at load: 0x28e0a0000 02000000, 0x28e5b0000 02000000
+(saved: the look at the load is on the boot partition)
+THIS TEST MAY NOT COME BACK. If the screen goes dark or freezes and is still so after a minute, hold the power key until the Mac restarts, log in, and tell Claude: its result is then in the PMU.
+2026-11-13 14:14:50 asking for the suspend (1 of 3 at most). HANDS OFF the keyboard and trackpad until the photo block. The screen may flicker; the Mac does not sleep: the module fails the suspend when it's done
+kernel log, the look after noirq, which came before the 22 words' test:
+  [  146.217837] e1_hook: look: after noirq: p-states 0x28e20c000: fabric 00000111 +400 00000222 DCS 00000555
+  [  146.217916] e1_hook: look: after noirq: AON 0x2922c0000: +038 00000000 +03c 00000100 +040 00000003 +044 00000008 +10c 80000000 +110 00000000
+  [  146.217986] e1_hook: look: after noirq: power 0x28e580180, 8 apart: 0f000200 0f000200 00000200 00000200
+  [  146.218002] e1_hook: look: after noirq: power 0x28e5801a0, 8 apart: 00000200 00000200 00000200 00000200
+  [  146.218019] e1_hook: look: after noirq: power 0x28e5801c0, 8 apart: 00000200 00000200 00000200 00000200
+  [  146.218034] e1_hook: look: after noirq: power 0x28e5801e0, 8 apart: 00000200 00000200 00000200 00000200
+  [  146.218051] e1_hook: look: after noirq: power 0x28e580200, 8 apart: 00000200 00000200 00000200 0f000200
+  [  146.218067] e1_hook: look: after noirq: power 0x28e580220, 8 apart: 0f000200 0f000200 00000200 00000200
+  [  146.218080] e1_hook: look: after noirq: power 0x28e580240, 8 apart: 00000200 00000200 00000244 00000244
+  [  146.218093] e1_hook: look: after noirq: power 0x28e580260, 8 apart: 00000244 00000244 00000244 00000200
+  [  146.218106] e1_hook: look: after noirq: power 0x28e580280, 8 apart: 00000200 00000200 00000200 00000200
+  [  146.218118] e1_hook: look: after noirq: power 0x28e5802a0, 8 apart: 00000200 00000200 00000200 00000200
+  [  146.218133] e1_hook: look: after noirq: power 0x28e5802c0, 8 apart: 00000200 00000200 00000300
+  [  146.218151] e1_hook: look: after noirq: power 0x28e5803b8 (ANS2) 0f000300; 0x28e080000: +108 000000ff +110 000000ff +120 00000200 +2d8 1f0f03ff +2e8 0f000300 +2f0 0f000300 +320 1f0000ff
+  [  146.218221] e1_hook: look: after noirq: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c c0040308; 0x28e09c000: +310 8004031d +338 c004030f +34c 8004030e
+  [  146.218281] e1_hook: look: after noirq: clkgen 0x28e000000: +0 00000001 +4 00000004
+  [  146.218293] e1_hook: look: after noirq: clkgen 0x28e002000: +0 00000001 +4 00000002
+  [  146.218305] e1_hook: look: after noirq: clkgen 0x28e004000: +0 00000001 +4 00000004
+  [  146.218317] e1_hook: look: after noirq: clkgen 0x28e006000: +0 00000001 +4 00000004
+  [  146.218325] e1_hook: look: after noirq: clkgen 0x28e008000: +0 00000001 +4 00000004
+  [  146.218351] e1_hook: look: after noirq: clkgen 0x28e00a000: +0 00000001 +4 00000004
+  [  146.218359] e1_hook: look: after noirq: clkgen 0x28e00c000: +0 00000001 +4 00000004
+  [  146.218367] e1_hook: look: after noirq: clkgen 0x28e00e000: +0 00000001 +4 00000004
+  [  146.218375] e1_hook: look: after noirq: clkgen 0x28e010000: +0 00000001 +4 00000004
+  [  146.218383] e1_hook: look: after noirq: clkgen 0x28e012000: +0 00000001 +4 00000004
+  [  146.218391] e1_hook: look: after noirq: clkgen 0x28e014000: +0 00000001 +4 00000004
+  [  146.218399] e1_hook: look: after noirq: clkgen 0x28e016000: +0 00000001 +4 00000005
+  [  146.218407] e1_hook: look: after noirq: clkgen 0x28e018000: +0 00000001 +4 00000001
+  [  146.218415] e1_hook: look: after noirq: clkgen 0x28e01a000: +0 00000001 +4 00000004
+  [  146.218423] e1_hook: look: after noirq: clkgen 0x28e01c000: +0 00000001 +4 00000004
+  [  146.218484] e1_hook: look: after noirq: AON 0x2922c0000, written by the engine and never read by it: +008 00000001 +024 00000000
+  [  146.218553] e1_hook: look: after noirq: pre 0x28e03801c (B2's op 8 writes 80101100): 80100100
+  [  146.218622] e1_hook: look: after noirq: pre 0x28e0a0004 to 0x28e0a001c, 4 apart (B2's ops 9 to 15 write 1): 00000002 00000002 00000002 00000002 00000003 00000002 00000002
+  [  146.218706] e1_hook: look: after noirq: pre 0x28e5b0004 to 0x28e5b0038, 4 apart (B2's ops 16 to 29 write 1): 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000000 00000000 00000002 00000002 00000001 00000001
+  [  146.218760] e1_hook: look: after noirq: done
+
+==================== TAKE A PHOTO OF THIS SCREEN ====================
+2026-11-13 14:14:51 back; this script's last suspend returned 1 (non-zero is right: the module fails it; none: another suspend got there first)
+replay_done=0 (0 is right: nothing replayed) prepare_calls=1 prepare_late_calls=1
+kernel log, the 22 words' test (the SUMMARY line is the result; both looks are above, and in the saved file):
+  [  145.185164] e1_hook: look: pre: awake, at load: 0x28e0a0000 02000000, 0x28e5b0000 02000000
+  [  146.218918] e1_hook: look: pre: the PMU's 0x6005 and 0x6011-0x6016 zeroed first: 0 0
+  [  146.218928] e1_hook: look: pre: as found: 0x28e0a0000 02000000, 0x28e5b0000 02000000
+  [  146.219034] e1_hook: look: pre: as found: 0x28e03801c 80100100; from 0x28e0a0004: 00000002 00000002 00000002 00000002 00000003 00000002 00000002; from 0x28e5b0004: 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000000 00000000 00000002 00000002 00000001 00000001
+  [  146.219046] e1_hook: look: pre: as found: 0x28e0a0000 02000000, 0x28e5b0000 02000000
+  [  146.219065] e1_hook: look: pre: as found: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c c0040308; 0x28e09c000: +310 8004031d +338 c004030f +34c 8004030e
+  [  146.319132] e1_hook: look: pre: 0x28e03801c found 80100100, := 80101100: it read 80100100 at once and reads 80100100 after 100 ms: NOT as written
+  [  146.319301] e1_hook: look: pre: right after the writes of 1 (0x28e03801c: right after its own): 0x28e03801c 80100100; from 0x28e0a0004: 00000002 00000002 00000002 00000002 00000003 00000002 00000002; from 0x28e5b0004: 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000000 00000000 00000002 00000002 00000001 00000001
+  [  146.419409] e1_hook: look: pre: 100 ms after the writes: 0x28e03801c 80100100; from 0x28e0a0004: 00000002 00000002 00000002 00000002 00000003 00000002 00000002; from 0x28e5b0004: 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000000 00000000 00000002 00000002 00000001 00000001
+  [  146.419423] e1_hook: look: pre: 100 ms after the writes: 0x28e0a0000 02000000, 0x28e5b0000 02000000
+  [  146.419442] e1_hook: look: pre: 100 ms after the writes: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c c0040308; 0x28e09c000: +310 8004031d +338 c004030f +34c 8004030e
+  [  146.419508] e1_hook: look: pre: the reads, with the next step's mark, to the PMU's 0x6010-0x6016 in one command: 0
+  [  146.419753] e1_hook: look: pre: with all 22 written back: 0x28e03801c 80100100; from 0x28e0a0004: 00000002 00000002 00000002 00000002 00000003 00000002 00000002; from 0x28e5b0004: 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000002 00000000 00000000 00000002 00000002 00000001 00000001
+  [  146.419762] e1_hook: look: pre: with all 22 written back: 0x28e0a0000 02000000, 0x28e5b0000 02000000
+  [  146.419782] e1_hook: look: pre: with all 22 written back: gates 0x28e5a0000: +050 8004030f +064 c0040302 +30c c0040308; 0x28e09c000: +310 8004031d +338 c004030f +34c 8004030e
+  [  146.419839] e1_hook: look: pre: SUMMARY: 0x28e03801c did NOT hold B2's value; 2 of the 21 read 1, as B2 writes them, 100 ms after their writes (2 were found at 1, and show nothing); put back: 0x28e03801c as found, the 21 as found; byte c0, written to the PMU: 0
+=====================================================================
+
+Saving to the boot partition. If nothing more appears within a minute, the photo is the result: restart the Mac.
