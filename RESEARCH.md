@@ -4920,7 +4920,8 @@ a path that writes anything but the three words, another value or another order.
 - **0x80 doesn't say the words were unchanged** (both). It says none read as written or as A2
   waits for it; a word taken as another value gives the same byte. The verdict no longer says the
   commit found the recipe's state. A word that reads as A2 waits for it without its value reading
-  back gets its own line ("the write did something"), not "refused".
+  back gets its own line, which says only that: whether the write changed anything isn't in the
+  byte, since nothing reads the word just before it (Pullfrog's second pass).
 - **The restart's time** is no longer read in this byte's verdict as "B2 got past its op 224":
   that reading is `mark_reading()`'s, with its conditions (the adversarial pass).
 - **Said in the verdicts now:** A2 makes its moves between its own writes to PHASE and

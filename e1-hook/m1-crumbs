@@ -1516,8 +1516,8 @@ def a2p_lines(s, b, pmp):
                            " as the recipe leaves them, and A2 makes the move with every core down, inside its own handshake.")
             elif not took[i] and settled[i]:
                 out.append(f"  so: {what}: THE VALUE DIDN'T READ BACK (not {asked}), though the word read as A2 waits for it"
-                           f" ({cond}): the write did something, and the byte doesn't say what bits 3:0 read. A2's own wait"
-                           " would be met by a word that reads so.")
+                           f" ({cond}). The byte doesn't say what bits 3:0 read, nor whether the write changed anything: what"
+                           " the word read just before it isn't recorded. A2's own wait would be met by a word that reads so.")
             elif not took[i]:
                 out.append(f"  so: {what} DIDN'T TAKE (it read neither {asked} nor as A2 waits for it): the AP's write was"
                            " refused, changed back or taken as another value, and the byte doesn't say which. That says"

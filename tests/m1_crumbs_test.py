@@ -3825,7 +3825,8 @@ int main(void)
 # write to DCS's word, the fabric's, the third is dropped; d, f, t that word settles 30 ms after its write; D, F, T it never
 # settles (the value asked for reads back, the other copies stay, bit 31 set); r DCS's word goes back to what it was when the
 # third word is written; B DCS's word reads the value in every field and keeps bit 31; m one mux reads unparked; p one reads
-# with bit 30 set; K the PMU stops taking the byte at its third send, and the function goes on.
+# with bit 30 set; i the third word reads 0x12 before anything, which is how A2 waits for it; K the PMU stops taking the byte at
+# its third send, and the function goes on.
 A2P_FN_PRELUDE = r"""
 #include <stdio.h>
 #include <string.h>
@@ -3927,6 +3928,8 @@ int main(int argc, char **argv)
 
 	(void)argc;
 	sc = argv[1];
+	if (has('i'))
+		word[1] = 0x12;
 	for (k = 0; k < ARRAY_SIZE(m1_waits); k++)
 		if ((m1_waits[k].addr & PAGE_MASK) == A2P_MUX_PAGE)
 			post_map[m1_waits[k].idx] = clk_page + (m1_waits[k].addr & 0x3fff);
@@ -4011,7 +4014,7 @@ def a2_pre_tests(g, src):
     table = cut("static const struct e1_mmio_write {", "\n};\n")
     fns = cut("static bool m1_siod_poll(", "\n}\n") + cut("static bool m1_a2p_mux_ok(void)", "\n}\n") + cut("static u8 m1_a2_pre(void)", "\n}\n")
     init = cut("static int __init m1_a2p_init(void)", "\n}\n")
-    scen = ("", "x", "y", "z", "xyz", "d", "f", "t", "D", "F", "T", "DFT", "dft", "r", "m", "p", "mp", "mx", "pD", "xF", "rT", "yz", "Dz", "mDFT", "rm", "B", "Bm")
+    scen = ("", "x", "y", "z", "xyz", "d", "f", "t", "D", "F", "T", "DFT", "dft", "r", "m", "p", "mp", "mx", "pD", "xF", "rT", "yz", "Dz", "mDFT", "rm", "B", "Bm", "i", "iz")
     with tempfile.TemporaryDirectory() as tmp:
         def build(name, code):
             c = os.path.join(tmp, name + ".c")
@@ -4083,7 +4086,8 @@ def a2_pre_tests(g, src):
         ret = int([e for e in ev if e[0] == "ret"][0][1], 16)
         mux_ok = "m" not in a and "p" not in a
         took = ["x" not in a, "y" not in a, "z" not in a]
-        settled = [took[0] and "D" not in a and "B" not in a, took[1] and "F" not in a, took[2] and "T" not in a]
+        # A third word that already reads as A2 waits for it does so with its write dropped too.
+        settled = [took[0] and "D" not in a and "B" not in a, took[1] and "F" not in a, (took[2] and "T" not in a) or ("i" in a and "z" in a)]
         want = [0x80 | (0 if mux_ok else 1)]
         for n in (1, 2, 3):
             t, sd = took[:], settled[:]
@@ -4113,12 +4117,14 @@ def a2_pre_tests(g, src):
           and out_k[-1] == "end 222 222 0",
           "m1_a2_pre() with the PMU refusing the byte from its third send on: the last byte recorded is DCS's, and all three moves are"
           " made all the same, so a byte that stops short doesn't show a move that stopped", "\n".join(out_k))
-    check((last[""], last["xyz"], last["m"], last["D"], last["d"], last["r"], last["z"], last["DFT"], last["mDFT"], last["B"]) == (0xfe, 0x80, 0xff, 0xfa, 0xfe, 0xf8, 0x9e, 0xaa, 0xab, 0xfa)
+    check((last[""], last["xyz"], last["m"], last["D"], last["d"], last["r"], last["z"], last["DFT"], last["mDFT"], last["B"], last["i"], last["iz"]) == (0xfe, 0x80, 0xff, 0xfa, 0xfe, 0xf8, 0x9e, 0xaa, 0xab, 0xfa, 0xfe, 0xde)
+          and runs["iz"][-1] == "end 222 222 12"
           and [l.split()[3] for l in runs["r"] if l.startswith("k ")] == ["80", "86", "9e", "f8"]
           and runs[""][-1] == "end 222 222 0" and runs["xyz"][-1] == "end 555 333 222",
           "m1_a2_pre(): 0xfe if all three take and settle, 0x80 if none takes, 0xff only with a mux not as written; a word that takes"
           " and doesn't settle has its first bit alone; one that settles late is settled; one put back after its send loses both bits"
-          " in the last send", str(last))
+          " in the last send; a third word that read as A2 waits for it before a write that was dropped has its second bit alone, so that"
+          " bit by itself doesn't show a write that changed anything", str(last))
 
     # The source: what the function writes, and nothing else like it.
     body = cut("static u8 m1_a2_pre(void)", "\n}\n")
@@ -4271,7 +4277,8 @@ def a2_pre_tests(g, src):
                         ok = (("ALL THREE MOVES TOOK AND SETTLED" in text) == every and ("NONE OF THE THREE READ AS WRITTEN OR AS A2 WAITS FOR IT" in text) == none
                               and len(so) == (1 if every or none else n_cand + n_not + n_back)
                               and (every or none or (sum("A CANDIDATE" in l for l in so) == n_cand and sum("DIDN'T TAKE" in l for l in so) == n_not
-                                                     and sum("THE VALUE DIDN'T READ BACK" in l and "the write did something" in l for l in so) == n_back))
+                                                     and sum("THE VALUE DIDN'T READ BACK" in l and "nor whether the write changed anything" in l for l in so) == n_back))
+                              and "the write did something" not in text
                               and "found the words as the recipe leaves them" not in text and "--m1-gates' again" not in text
                               and all("It isn't proof that A2 waits there for ever" in l for l in so if "A CANDIDATE" in l)
                               and all("says nothing about A2's own" in l for l in so if "DIDN'T TAKE" in l or "NONE OF THE THREE" in l)
