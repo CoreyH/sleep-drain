@@ -137,6 +137,19 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   groups were written; 0xa0 is a gate that read closed before anything was written. 0xfc is everything made and
   the gate open throughout; 0xed closed with GPIO's cycle; 0xfe closed once the 22 were in. Stages 0x95, then 0x97
   or 0x96. It adds up to about 9.5 s before the commit. The rest of the ending reads as `--m1-gates`'.
+- `a2_pre=1` (`run-floor --m1-a2-pre`, on `gates_mark=1`, never with `sio_down=1`, `pcie_down=1`, `sio_steps=1`
+  or `probe=1`; `e1-hook/a2_pre.h` has the words, the values, the waits, the byte and the stages) makes from the AP
+  the three moves A2 makes by itself after its first handshake, and leaves them. In step 8, where `gates_mark=1`'s
+  reads would be, CPU0 first reads the five ClkGen muxes the table parked in step 5 (a rider: nothing had read them
+  after their write) and sends a byte, then writes 2 to DCS's p-state word (0x28e20c800), 2 to the fabric's
+  (0x28e20c000) and 0 to 0x28e20c400, A2's ops 11, 13 and 15, each the whole word, each followed by up to 100 ms
+  for the condition A2 waits on with no bound and by the byte. Nothing is written back. New writes: those three,
+  with values no run has written. The byte: bit 0 NOT all five muxes read 0x80100000; bits 1 and 2 DCS's word read
+  asked for 2, and as A2 waits for it; bits 3 and 4 the same for the fabric; bits 5 and 6 for the third word (asked
+  for 0); bit 7 always. A move's bits are 0 before it's made and are read anew for every later send. 0xfe is all
+  three taken and settled with the muxes parked; 0x80, none taken. Stages 0x99, then 0x9b or 0x9a. A byte that stops
+  short at stage 0x99 names the move CPU0 didn't come through. It adds at most about 0.3 s before the commit. The
+  rest of the ending reads as `--m1-gates`'. Not run yet.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be

@@ -4866,6 +4866,50 @@ code. Of Naeem Malik's new branch, the commit messages only. Nothing posted.
    one run; the two engine words would take two runs to ask one of B2's polls. So `a2_pre=1`
    goes first, and the two engine words stay on the list.
 
+### `a2_pre=1` as built: A2's three moves made by the AP, and the table's muxes read (2026-11-13)
+
+Built, not run. `pkexec e1-hook/run-floor --quick --m1-a2-pre`, on `--m1-gates`' recipe
+(`e1-hook/a2_pre.h` has the words, the values, the waits, the byte and the stages). It goes before
+the test of the engine's two words for the reasons in the sweep above: one run for three of A2's
+waits.
+
+- **What A2 does there** (the local listing, a2.ops; it stays off the repository). After B2's first
+  handshake: op 11 writes 2 to DCS's p-state word 0x28e20c800, the whole word, and op 12 waits with
+  no timeout for bits 11:8 to read 2 with bit 31 clear; ops 13 and 14 the same for the fabric's word
+  0x28e20c000; op 15 writes 0 to 0x28e20c400 and op 16 waits for bits 10:8 to read 0 with bit 31
+  clear. None of the three moves has been seen on this Mac: the recipe leaves DCS asked down to 5,
+  `fabric_up=1` leaves the fabric at 3, and the third word reads 0x222 awake and after noirq.
+- **What CPU0 does in step 8**, where `--m1-gates` reads the gates, before the commit:
+  1. reads the five ClkGen muxes the table parked in step 5 (0x28e038164, 16c, 168, 15c, 170, written
+     0x80100000) and sends a byte to 0x6016 with one bit for them. The rider from the sweep: the
+     recipe's waits there only poll bit 30 clear, so nothing shows the parks taking;
+  2. writes 2 to DCS's word, waits up to 100 ms for A2's condition, reads the word, sends the byte;
+  3. the same for the fabric's word, with DCS's read again for the byte;
+  4. writes 0 to the third word, the same, all three read again: the last read before the commit.
+  Nothing is written back: A2 writes the same values to the same words.
+- **New writes: three**, each with a value no run has written (the fabric's 2 where `fabric_up=1`
+  writes 3). Built on Corey's standing go-ahead of 2026-11-10; none outlasts the restart. What isn't
+  known is whether CPU0 runs on with DCS at 2: if it doesn't, WD1's marker restarts the Mac about
+  90 s after step 4 and the byte stops short of that move.
+- **The byte**, under the run's own stages (0x99 before the commit, then 0x9b, or 0x9a with
+  something pending): bit 0 NOT all five muxes read 0x80100000 (set is the bad case, so that a
+  clean byte isn't 0xff); bits 1 and 2 DCS's word read asked for 2, and read as A2 waits for it;
+  bits 3 and 4 the fabric's; bits 5 and 6 the third word's; bit 7 always. A move's bits are 0
+  before it's made and come from a new read in every later send. 0xfe: all three took and settled,
+  muxes parked. 0x80 or 0x81 after the commit: none took.
+- **What it can say.** All three taken and settled and the restart still at 90 s: A2's own waits
+  are less likely to be where the pair stops, since the engine finds them made (not excluded: A2
+  makes them later, with every core down). A move that takes and doesn't settle in the AP's
+  100 ms: a candidate, not proof (Pullfrog on #79). A move that doesn't read back: the AP's write
+  was refused or changed back (the PMP owns DCS under Linux), which says nothing about A2. The mux
+  bit says by itself whether the AP's writes take in the clock word's page in the recipe's state,
+  which `probe --pre` left open for 0x28e03801c.
+- **At the load** `m1_a2p_init()` refuses unless the three words and values are the ones named
+  (written out a second time), none is on the never-write list, and the table's waits in the
+  muxes' page are five rows that write 0x80100000; it logs the eight words awake. Reads only.
+- **Also fixed:** `run-floor`'s check for a module older than its sources didn't list
+  `pre_test.h`, and `probe`'s didn't list `pcie_down.h`.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

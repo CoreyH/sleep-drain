@@ -117,7 +117,7 @@ count=prepare_calls
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already: restart into a fresh safe boot"
 [[ -f $ko ]] || die "no $ko: make -C $here"
 [[ $(modinfo -F vermagic "$ko" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] || die "$ko isn't built for $(uname -r): make -C $here"
-for src in e1_hook.c asc_probe.h look.h gate_test.h pre_test.h sio_steps.h sio_down.h gates_mark.h fabric_up.h wd1_mark.h wd2_bite.h recfg_bite.h m1_position.h; do
+for src in e1_hook.c asc_probe.h look.h gate_test.h pre_test.h sio_steps.h sio_down.h pcie_down.h a2_pre.h gates_mark.h fabric_up.h wd1_mark.h wd2_bite.h recfg_bite.h m1_position.h; do
   [[ $ko -nt $here/$src ]] || die "e1_hook.ko is older than $src: make -C $here"
 done
 [[ $(modinfo -p "$ko" 2> /dev/null) == *$'\n'probe:* || $(modinfo -p "$ko" 2> /dev/null) == probe:* ]] ||

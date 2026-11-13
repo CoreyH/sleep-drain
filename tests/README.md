@@ -41,7 +41,15 @@ used to sit in CLAUDE.md, entry for entry):
   the 22 only after a switch-off that took with the gate open, the 43 back in reverse, `ps_pmp`'s word untouched;
   the load's refusals (a page that isn't there, an address on the never-write list, a list out of B2's order or
   short); the byte through m1-crumbs for every value at each stage, with SIO's firmware stopped and not; and
-  `--clear`. For sio_down=1 it compiles `sio_down.h`'s list, stage map and byte against a second writing-out
+  `--clear`. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
+  writing-out of A2's ops 11 to 16 (every pairing of each word's two bits at every count of moves made, and 400
+  drawn cases), and runs `m1_a2_pre()` with the module's own table of waits against a model of the p-state page
+  and the muxes' page in 25 scenarios (a write dropped, a word that settles late or never, DCS put back after its
+  send, a mux unparked or pending): the five muxes read and a byte before any write, three writes in A2's order,
+  each a whole word, a byte after each with every earlier word read anew, nothing written back and nothing written
+  to the muxes' page; the load's refusals (a word on the never-write list, the three out of order or with other
+  values, mux rows that aren't the five the table parks); the byte through m1-crumbs for every value at each stage;
+  and `--clear`. For sio_down=1 it compiles `sio_down.h`'s list, stage map and byte against a second writing-out
   of B2's order and of the byte's two layouts (each place alone and 400 drawn cases), and runs `m1_sio_down()` with
   its poll and write-back functions as they stand against a model of SIO's page and the gate pages in 28 scenarios
   (the gate closing at once, late, never, or staying closed; closed before, when nothing may be written; a poll never
