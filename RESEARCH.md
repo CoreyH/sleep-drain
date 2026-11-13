@@ -4733,10 +4733,19 @@ Built on Corey's standing go-ahead of 2026-11-10 and "take the next step" of 202
   writes, the same for 0x28e03801c at the end of its 100 ms poll and again 100 ms on, whether the
   21 read the same at once as later, and whether bit 30 was seen set right after the write; and a
   byte at 0x6005 after the write-back: 0x28e03801c back, and the first select that isn't.
+- **What the reviews changed** (the adversarial pass and Pullfrog on #97; neither found a write
+  to anything but the 22, or a word not written back). The decoder named the recipe's state
+  whenever all 22 read as written 100 ms on; `sio_steps=1` judged the 21 at once and 0x28e03801c
+  within 100 ms, before the 21, so now only a record that passes those same reads does, and one
+  that passes only later says that run's "no" may be this alone. A clock word that went back
+  isn't said to hold B2's value. 0x28e5b0034 and 0x28e5b0038 are found at 1 and show nothing:
+  19 of the 21 are shown. The test isn't made, and nothing is written, if the PMU doesn't take
+  the zeroing of 0x6005 (an old byte there would read as this test's end) or the first write's
+  mark (a test that didn't come back would leave a plain look's record).
 - **Checks.** `tests/m1_crumbs_test.py`: the header against a second writing-out; `m1_pre_test()`
-  as it stands against a model of the 22 in 18 scenarios (bit 30 clearing at once, late, later
+  as it stands against a model of the 22 in 21 scenarios (bit 30 clearing at once, late, later
   than the poll, never; the word not taking; a select stuck, slow, or reading with more bits; words
-  not coming back; PMU writes not acked; old bytes left); the load; the decoder. 71 mutants, all
+  not coming back; PMU writes not acked; old bytes left; a word that goes back); the load; the decoder. 78 mutants, all
   caught. `tests/e1_hook_probe_test.py` for `--pre`.
 
 ### Before the feasibility run: what the desk says (2026-11-09)

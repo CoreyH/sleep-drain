@@ -817,21 +817,32 @@ def prt_lines(at, v, pack):
         out.append("  each of the 21 read the same right after its group's writes as 100 ms later" if same else
                    "  NOT every one of the 21 read the same right after its group's writes as 100 ms later: the kernel log has both")
         ok21 = all(c == 1 for c in code[1:])
-        if late == 1 and ok21:
-            out.append("  so: ALL 22 TAKE B2's values in Linux's state after noirq, with every core up" + ("" if poll == 1 else
-                       " (0x28e03801c only after more than 100 ms)")
-                       + ". In the sio_steps=1 run it was then the recipe's state, or that run's order, that kept them from reading"
-                       " back: that run again, with a record that names the word")
-        elif ok21 and 3 in (poll, late):
-            out.append("  so: the 21 take 1; 0x28e03801c takes B2's value but its bit 30, pending, "
-                       + ("was still set 100 ms after the last write" if late == 3 else "wasn't clear within its 100 ms")
-                       + ": that word's write doesn't finish with a core up as it does for B1. sio_steps=1's bit 4 would read no"
+        # What sio_steps=1 judged: the 21 at once, 0x28e03801c within 100 ms and before the 21 were written. Only a record
+        # that passes the same reads puts that run's "no" down to the recipe's state (the adversarial review of #97).
+        if not ok21:
+            out.append("  so: NOT ALL OF THE 21 READ 1 after the AP's write, with the cores up: the words named above. Why, this doesn't"
+                       " say; a poll that waits on them may not be one the AP can clear")
+        elif late == 1 and poll == 1 and same:
+            out.append("  so: ALL 22 READ AS B2 WRITES THEM in Linux's state after noirq, with every core up, at once and 100 ms on"
+                       " (0x28e5b0034 and 0x28e5b0038 read 1 before any write in both looks, and show nothing: 19 of the 21 are shown)."
+                       " In the sio_steps=1 run it was then the recipe's state, or that run's order, that kept them from reading back:"
+                       " that run again, with a record that names the word")
+        elif late == 1:
+            why = ([] if poll == 1 else ["0x28e03801c didn't read as written, bit 30 clear, by the end of its 100 ms, which ended before"
+                                         " the 21 were written (it came later, or once they were in: this can't tell)"]) \
+                + ([] if same else ["a select read otherwise right after its group's writes"])
+            out.append("  so: all 22 read as B2 writes them 100 ms after the last write, but NOT AT FIRST: " + "; ".join(why)
+                       + ". sio_steps=1 read the 21 at once and gave 0x28e03801c 100 ms before them, so this alone may be that run's"
+                       " 'no': that run again with its reads after a wait, before the recipe's state is blamed")
+        elif late == 3:
+            out.append("  so: the 21 read 1; 0x28e03801c has B2's value but its bit 30, pending, was still set 100 ms after the last"
+                       " write: that word's write doesn't finish with a core up as it does for B1. sio_steps=1's bit 4 would read no"
                        " for this alone")
-        elif ok21:
-            out.append("  so: the 21 take 1; 0x28e03801c did NOT take B2's value: the 21 alone are what the AP can make")
         else:
-            out.append("  so: NOT ALL OF THE 21 TAKE 1 with the cores up: the words named above are settings the AP can't make as B2"
-                       " makes them, and a poll that waits on them can't be asked from the AP")
+            out.append("  so: the 21 read 1; 0x28e03801c did NOT hold B2's value 100 ms after the last write"
+                       + (", though it read as written at the end of its own 100 ms: it changed once the 21 were written" if poll == 1 else
+                          ", and read as written with bit 30 set at the end of its own 100 ms" if poll == 3 else "")
+                       + ": the 21 alone are what the AP is shown to make")
     if not v & PRT_MARK:
         return out + [f"0x6005 = 0x{v:02x}: the test's byte didn't land (bit 7 clear), or the test stopped before it: whether the 22 were"
                       " put back isn't recorded"]

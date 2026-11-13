@@ -22,8 +22,9 @@
  *      B1 write 0x2000000 and nothing here had read (read awake at the load
  *      first, under this step's mark with LOOK_LOAD set), then
  *   2. the 22 read as found, and the six gate words;
- *   3. 0x28e03801c := 0x80101100, read at once and for up to 100 ms, until the
- *      whole word reads as written;
+ *   3. 0x28e03801c := 0x80101100, but only if the PMU took this step's mark (or a
+ *      test that didn't come back would leave a plain look's record), read at
+ *      once and for up to 100 ms, until the whole word reads as written;
  *   4. 1 to the seven, in B2's order, and each read back;
  *   5. 1 to the fourteen, in B2's order, and each read back;
  *   6. 100 ms, then all 22, the two + 0 words and the six gates read again;
@@ -40,7 +41,12 @@
  * nothing of the recipe done, and what the others read. All take, bit 30
  * clears: in the sio_steps=1 run it was the recipe's state that differed. Bit
  * 30 stays set: that word's write doesn't finish with a core up. Some of the
- * 21 don't read 1: which, and what instead. What it can't: why.
+ * 21 don't read 1: which, and what instead. What it can't: why. Nor anything
+ * of 0x28e5b0034 and 0x28e5b0038, which read 1 before any write. And the
+ * sio_steps=1 run judged the 21 at once and 0x28e03801c within 100 ms, before
+ * the 21 were written: only words that read as written at once here, and bit
+ * 30 clear within step 3's poll, put that run's "no" down to the recipe's
+ * state (the adversarial review of #97).
  *
  * What it risks: the 22 are clock words (0x28e03801c is in the page of the
  * clock generators' muxes; the 21 sit beside per-device clock entries), and
@@ -51,7 +57,9 @@
  * in the PMU is made to stand without the kernel log:
  *   - the look's stage, 0x0f, with the step about to be taken at 0x6010,
  *     PRT_PASS set in it;
- *   - 0x6005 and 0x6011-0x6016 zeroed at the start;
+ *   - 0x6005 zeroed before the first mark, and the test not made if the PMU
+ *     doesn't ack that (Pullfrog on #97: an old byte there would read as this
+ *     test's end); 0x6011-0x6016 zeroed after it;
  *   - six bytes at 0x6011-0x6016, prt_pack(), before anything is written
  *     back, in one command with the mark of the step that follows,
  *     PRT_AT_BACK. That mark, or a later one without PRT_NO_SNAP, is what says

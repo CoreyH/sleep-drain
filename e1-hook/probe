@@ -207,8 +207,8 @@ if ((gate)) && [[ $(get "$MODDIR/parameters/gate") != Y ]]; then
 fi
 # And for pre_test=1, the same.
 if ((pre)) && [[ $(get "$MODDIR/parameters/pre_test") != Y ]]; then
-  rmmod e1_hook 2> /dev/null && die "e1_hook didn't take pre_test=1, and was unloaded: nothing was read. make -C $here"
-  die "e1_hook didn't take pre_test=1 and DID NOT UNLOAD: restart the Mac now, and don't let it suspend first. Nothing was read"
+  rmmod e1_hook 2> /dev/null && die "e1_hook didn't take pre_test=1, and was unloaded: the test wasn't run. make -C $here"
+  die "e1_hook didn't take pre_test=1 and DID NOT UNLOAD: restart the Mac now, and don't let it suspend first. The test wasn't run"
 fi
 # Into memory now, for after the probe: the pipeline klog runs, on the kernel log as it is, and sleep.
 dmesg 2>&1 | grep -F -- "e1_hook: probe:" > /dev/null; sleep 0

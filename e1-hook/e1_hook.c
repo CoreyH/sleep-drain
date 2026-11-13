@@ -4586,14 +4586,22 @@ static void m1_pre_test(void)
 	static const u8 pa[SST_A_N] = SST_A_OFFS, pb[SST_B_N] = SST_B_OFFS;
 	static const u8 zero, zero6[PRT_PACK_N];
 	u32 was[PRT_N], first[PRT_N], later[PRT_N], back[PRT_N], clk_poll;
-	u8 res, rec[1 + PRT_PACK_N], snap_bit;
-	unsigned int i, n, took = 0;
+	u8 res, rec[1 + PRT_PACK_N], snap_bit, at = PRT_PASS | PRT_AT_CLK;
+	unsigned int i, n, took = 0, already = 0;
 	int z5, z6, snap, kw;
 	u64 t0;
 
-	m1_look_at(PRT_PASS | PRT_AT_ZERO);
-	/* Bytes left there from before would read as this test's: zeroed first, as the gate test does. */
+	/*
+	 * A byte left at 0x6005 from before would read as this test's, written after its last step: zeroed before the
+	 * first mark, and the test isn't made if that isn't acked, which leaves the look's own record (Pullfrog on #97).
+	 */
 	z5 = m1_kwrite(0x6005, &zero, 1);
+	if (z5) {
+		pr_info("look: pre: SUMMARY: NOT MADE: the PMU's 0x6005 couldn't be zeroed (%d), so an old byte there could be read as this test's; nothing was written\n",
+			z5);
+		return;
+	}
+	m1_look_at(PRT_PASS | PRT_AT_ZERO);
 	z6 = m1_kwrite(0x6011, zero6, sizeof(zero6));
 	pr_info("look: pre: the PMU's 0x6005 and 0x6011-0x6016 zeroed first: %d %d\n", z5, z6);
 	m1_pre_beside("as found", false);
@@ -4603,7 +4611,16 @@ static void m1_pre_test(void)
 	m1_pre_log("as found", was);
 	m1_pre_beside("as found", true);
 
-	m1_look_at(PRT_PASS | PRT_AT_CLK);
+	/*
+	 * Nothing is written unless the PMU took this mark (the adversarial review of #97): with its path dead, a test
+	 * that didn't come back would leave a plain look's record, which says no register was written.
+	 */
+	kw = m1_kwrite(LOOK_AT, &at, 1);
+	if (kw) {
+		pr_info("look: pre: SUMMARY: NOT MADE: the PMU didn't take the mark of the first write (%d), so a test that didn't come back would leave no record; nothing was written\n",
+			kw);
+		return;
+	}
 	writel(SST_CLK_VAL, m1_pre_word(0));
 	dsb(sy);
 	first[0] = clk_poll = readl(m1_pre_word(0));
@@ -4684,14 +4701,18 @@ static void m1_pre_test(void)
 	m1_pre_beside("with all 22 written back", true);
 	res = prt_byte(was, back);
 	kw = m1_kwrite(0x6005, &res, 1);
+	/* A select found at 1 reads as written whatever its write did (the review): counted apart. */
 	for (i = 1; i < PRT_N; i++) {
 		if (later[i] == prt_val(i))
 			took++;
+		if (was[i] == prt_val(i))
+			already++;
 	}
-	pr_info("look: pre: SUMMARY: 0x28e03801c %s; %u of the 21 read 1, as B2 writes them, 100 ms after their writes; put back: 0x28e03801c %s, the 21 %s; byte %02x, written to the PMU: %d\n",
-		sst_clk_ok(later[0]) ? (sst_clk_ok(clk_poll) ? "took B2's value, bit 30 clear within 100 ms" : "took B2's value, bit 30 clear only after more than 100 ms") :
-		later[0] & SST_CLK_PENDING ? "did NOT finish taking B2's value: bit 30, pending, still SET" : "did NOT take B2's value",
-		took, res & PRT_CLK_BACK ? "as found" : "NOT as found", res & (PRT_MORE | 0x1f) ? "NOT all as found" : "as found", res, kw);
+	pr_info("look: pre: SUMMARY: 0x28e03801c %s; %u of the 21 read 1, as B2 writes them, 100 ms after their writes (%u were found at 1, and show nothing); put back: 0x28e03801c %s, the 21 %s; byte %02x, written to the PMU: %d\n",
+		sst_clk_ok(later[0]) ? (sst_clk_ok(clk_poll) ? "took B2's value, bit 30 clear within 100 ms" :
+					"read as B2 writes it only after its 100 ms, by the read 100 ms after the 21 were written (later, or once they were in)") :
+		later[0] & SST_CLK_PENDING ? "did NOT finish taking B2's value: bit 30, pending, still SET" : "did NOT hold B2's value",
+		took, already, res & PRT_CLK_BACK ? "as found" : "NOT as found", res & (PRT_MORE | 0x1f) ? "NOT all as found" : "as found", res, kw);
 }
 static_assert(PRT_N == 1 + SST_A_N + SST_B_N && PRT_B_FIRST == PRT_A_FIRST + SST_A_N && PRT_SEL_N == PRT_N - 1 && PRT_SEL_N <= 0x1f);
 static_assert(LOOK_PRE_FIRST + 4 * (SST_A_N - 1) == LOOK_PRE_A_LAST && LOOK_PRE_FIRST + 4 * (SST_B_N - 1) == LOOK_PRE_B_LAST);

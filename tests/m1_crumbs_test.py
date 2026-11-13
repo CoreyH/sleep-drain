@@ -5393,8 +5393,9 @@ static struct scenario {
 	unsigned int late;
 	int stuck, more, slow;	/* a select's number, 1 to 21, or 0: it keeps what it had; reads 1 with bit 31 set; shows a write `late` ticks on */
 	int back_clk, back1, back2;	/* on the way back: 0x28e03801c doesn't take its value; these two selects don't */
-	int kfail;		/* not acked, and nothing written: 1 the zeroing of 0x6011-0x6016, 2 the command that carries the reads */
+	int kfail;		/* not acked, and nothing written: 1 the zeroing of 0x6011-0x6016, 2 the command that carries the reads, 4 the first write's mark, 8 the zeroing of 0x6005 */
 	int stale;		/* an earlier test's bytes are still in the PMU */
+	int reverts;		/* 0x28e03801c reads as found again once a select is written 1 */
 	u32 found0;		/* 0x28e03801c as found, if not 0x80100100 */
 } sc;
 static int restoring;
@@ -5464,10 +5465,13 @@ static void writel(u32 v, void *p)
 	reg[r] = v;
 	wrote_at[r] = fake_now;
 	written[r] = 1;
+	if (r && !restoring && sc.reverts)
+		reg[0] = sc.found0 ? sc.found0 : 0x80100100;
 }
 static int m1_kwrite(unsigned int addr, const u8 *b, unsigned int n)
 {
-	int fail = (addr == 0x6011 && (sc.kfail & 1)) || (addr == LOOK_AT && n > 1 && (sc.kfail & 2));
+	int fail = (addr == 0x6011 && (sc.kfail & 1)) || (addr == LOOK_AT && n > 1 && (sc.kfail & 2)) ||
+		   (addr == LOOK_AT && n == 1 && b[0] == 0x83 && (sc.kfail & 4)) || (addr == 0x6005 && !b[0] && (sc.kfail & 8));
 	unsigned int i;
 
 	if (!m1_pmu_ok(true, addr, b, n) || addr < 0x6000 || addr + n > 0x6020) {
@@ -5478,7 +5482,7 @@ static int m1_kwrite(unsigned int addr, const u8 *b, unsigned int n)
 	if (addr == LOOK_AT)
 		restoring = (b[0] & 0xf) >= 7;
 	if (addr == LOOK_AT && n == 1) {
-		printf("at %02x\n", b[0]);
+		printf("at %02x%s\n", b[0], fail ? " FAILED" : "");
 	} else {
 		printf("k %x", addr);
 		for (i = 0; i < n; i++)
@@ -5522,7 +5526,7 @@ static void run(unsigned int n, const struct scenario *s)
 
 int main(void)
 {
-	struct scenario s[18];
+	struct scenario s[21];
 	unsigned int i;
 
 	memset(s, 0, sizeof(s));
@@ -5543,6 +5547,9 @@ int main(void)
 	s[15].found0 = 0xc0100100;		/* found with bit 30 set: written back without it */
 	s[16].stuck = 16;			/* 0x28e5b0024, found 0, keeps it */
 	s[17].stuck = 20;			/* 0x28e5b0034, found 1: B2's value already */
+	s[18].kfail = 4;			/* the PMU doesn't take the first write's mark: nothing is written */
+	s[19].reverts = 1;			/* 0x28e03801c takes its value, and reads as found again once the 21 are written */
+	s[20].kfail = 8; s[20].stale = 1;	/* an old byte at 0x6005 that can't be zeroed: no mark, nothing written (Pullfrog on #97) */
 	for (i = 0; i < ARRAY_SIZE(s); i++)
 		run(i, &s[i]);
 	return 0;
@@ -5650,7 +5657,7 @@ def pre_tests(g, src):
           " the 21 read the same at once as later, and bit 30 right after the write; the byte names the first select that isn't back,"
           " says if there are more, and judges 0x28e03801c against its found value less bit 30", str(bad[:2]))
 
-    # m1_pre_test() as it stands, eighteen scenarios.
+    # m1_pre_test() as it stands, twenty-one scenarios.
     cases, cur = [], None
     for line in ran:
         if line.startswith("case "):
@@ -5661,12 +5668,13 @@ def pre_tests(g, src):
     F = [0x80100100, 2, 2, 2, 2, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 2, 2, 1, 1]
     a_order = [0x04, 0x08, 0x0c, 0x10, 0x14, 0x18, 0x1c]
     b_order = [0x04, 0x0c, 0x10, 0x14, 0x08, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c, 0x30, 0x34, 0x38]
-    sc = [dict() for _ in range(18)]
+    sc = [dict() for _ in range(21)]
     sc[1], sc[2], sc[3], sc[4] = dict(clk=1, late=30), dict(clk=1, late=150), dict(clk=2), dict(clk=3)
     sc[5], sc[6], sc[7] = dict(stuck=9), dict(more=3), dict(slow=12)
     sc[8], sc[9], sc[10] = dict(back_clk=1), dict(back=[5]), dict(back=[5, 19])
     sc[11], sc[12], sc[13], sc[14] = dict(kfail=1, stale=1), dict(kfail=2), dict(kfail=3, stale=1), dict(stale=1)
     sc[15], sc[16], sc[17] = dict(found0=0xc0100100), dict(stuck=16), dict(stuck=20)
+    sc[18], sc[19], sc[20] = dict(kfail=4), dict(reverts=1), dict(kfail=8, stale=1)
 
     def row(c, when):
         """The 22 words of the log line that starts with when."""
@@ -5681,6 +5689,8 @@ def pre_tests(g, src):
         first = [{0: 0x80101100, 1: 0xc0101100, 2: 0xc0101100, 3: found[0]}[clk]] + [1] * 21
         later = [{0: 0x80101100, 1: 0x80101100, 2: 0xc0101100, 3: found[0]}[clk]] + [1] * 21
         poll = 0xc0101100 if clk == 2 or (clk == 1 and s["late"] > 100) else later[0]
+        if s.get("reverts"):
+            later[0] = found[0]
         if "stuck" in s:
             first[s["stuck"]] = later[s["stuck"]] = found[s["stuck"]]
         if "more" in s:
@@ -5700,11 +5710,25 @@ def pre_tests(g, src):
         snap = 0x40 if kfail & 2 else 0
         pk, by = pack(found, first, later, poll), byte(found, back)
         ev = [x for x in c if x[:2] in ("w ", "at", "k ")]
-        want = (["at 81", "k 6005 00", "k 6011 00 00 00 00 00 00" + (" FAILED" if kfail & 1 else ""), "at 82", "at 83", "w 28e03801c 80101100", "at 84"]
+        if kfail & 8:
+            # 0x6005 couldn't be zeroed: no mark of the test's, no register write, the old bytes as they were.
+            if ([x for x in c if x[:2] in ("w ", "at", "k ")] != ["k 6005 00 FAILED"] or "pmu fd 00 ee 1e 0e 10 0e 10" not in c
+                    or c[-1] != "end " + " ".join(f"{x:08x}" for x in found) or any("STRAY" in x or x.startswith("log look: pre: as found") for x in c)
+                    or not [x for x in c if x.startswith("log look: pre: SUMMARY: NOT MADE: the PMU's 0x6005 couldn't be zeroed (-5)")]):
+                bad.append((n, c))
+            continue
+        want = (["k 6005 00", "at 81", "k 6011 00 00 00 00 00 00" + (" FAILED" if kfail & 1 else ""), "at 82", "at 83", "w 28e03801c 80101100", "at 84"]
                 + [f"w {0x28e0a0000 + o:x} 00000001" for o in a_order] + ["at 85"] + [f"w {0x28e5b0000 + o:x} 00000001" for o in b_order] + ["at 86"]
                 + ["k 6010 87 " + " ".join(f"{x:02x}" for x in pk) + (" FAILED" if snap else "")] + (["at c7"] if snap else [])
                 + [f"w 28e03801c {found[0] & ~0x40000000:08x}", f"at {0x88 | snap:02x}"] + [f"w {words[i]:x} {found[i]:08x}" for i in range(1, 8)]
                 + [f"at {0x89 | snap:02x}"] + [f"w {words[i]:x} {found[i]:08x}" for i in range(8, 22)] + [f"at {0x8a | snap:02x}", f"k 6005 {by:02x}"])
+        if kfail & 4:
+            # The PMU didn't take the first write's mark: no register write, no later mark, and the SUMMARY says so.
+            if ([x for x in c if x[:2] in ("w ", "at", "k ")] != want[:4] + ["at 83 FAILED"] or row(c, "as found") != found
+                    or "pmu 00 82 00 00 00 00 00 00" not in c or c[-1] != "end " + " ".join(f"{x:08x}" for x in found) or any("STRAY" in x for x in c)
+                    or not [x for x in c if x.startswith("log look: pre: SUMMARY: NOT MADE: the PMU didn't take the mark of the first write (-5)")]):
+                bad.append((n, c))
+            continue
         old = [0xee, 0x1e, 0x0e, 0x10, 0x0e, 0x10]
         left = (old if stale and kfail == 3 else [0] * 6) if snap else pk
         pmu = "pmu " + " ".join(f"{x:02x}" for x in [by, 0x8a | snap] + left)
@@ -5713,20 +5737,21 @@ def pre_tests(g, src):
         if (ev != want or got != (found, first, later, back) or pmu not in c or c[-1] != "end " + " ".join(f"{x:08x}" for x in [back[0] & ~0x40000000] + back[1:])
                 or any("STRAY" in x for x in c)):
             bad.append((n, [x for x in zip(ev, want) if x[0] != x[1]][:3], pmu, c[-2:]))
-    check(len(cases) == 18 and not bad,
-          "m1_pre_test() in eighteen scenarios: 44 writes and no other, B2's values to the 22 in B2's order, then each as found (0x28e03801c"
+    check(len(cases) == 21 and not bad,
+          "m1_pre_test() in twenty-one scenarios: 44 writes and no other, or none at all if the PMU doesn't take the zeroing of 0x6005 (and then no mark either) or the first write's mark, B2's values to the 22 in B2's order, then each as found (0x28e03801c"
           " first and less its bit 30, the 21 by address), every mark before its step, the six bytes in one command with the next step's"
           " mark before anything is written back, the log's four rows of 22 as the model has them, and the byte last", str(bad[:2]))
 
     def logs(n, what):
         return [x for x in cases[n] if x.startswith("log look: pre: " + what)]
 
-    summ = [logs(n, "SUMMARY")[0] for n in range(18)]
-    check(all("0x28e03801c took B2's value, bit 30 clear within 100 ms; 21 of the 21 read 1" in summ[n] and summ[n].endswith("put back: 0x28e03801c as found, the 21 as found; byte c0, written to the PMU: 0")
+    summ = [logs(n, "SUMMARY")[0] for n in range(21)]
+    check(all("0x28e03801c took B2's value, bit 30 clear within 100 ms; 21 of the 21 read 1, as B2 writes them, 100 ms after their writes (2 were found at 1, and show nothing);" in summ[n] and summ[n].endswith("put back: 0x28e03801c as found, the 21 as found; byte c0, written to the PMU: 0")
               for n in (0, 1, 11, 12, 13, 14, 15))
-          and "took B2's value, bit 30 clear only after more than 100 ms; 21 of the 21" in summ[2]
+          and "0x28e03801c read as B2 writes it only after its 100 ms, by the read 100 ms after the 21 were written (later, or once they were in); 21 of the 21" in summ[2]
+          and "0x28e03801c did NOT hold B2's value; 21 of the 21" in summ[19] and "byte c0" in summ[19]
           and "did NOT finish taking B2's value: bit 30, pending, still SET; 21 of the 21" in summ[3] and "put back: 0x28e03801c NOT as found, the 21 as found; byte 80" in summ[3]
-          and "0x28e03801c did NOT take B2's value; 21 of the 21" in summ[4] and "byte c0" in summ[4]
+          and "0x28e03801c did NOT hold B2's value; 21 of the 21" in summ[4] and "byte c0" in summ[4]
           and all("; 20 of the 21 read 1" in summ[n] for n in (5, 6, 16)) and "; 21 of the 21 read 1" in summ[7] and "; 21 of the 21 read 1" in summ[17]
           and "put back: 0x28e03801c NOT as found, the 21 as found; byte 80" in summ[8]
           and "put back: 0x28e03801c as found, the 21 NOT all as found; byte c5" in summ[9] and "the 21 NOT all as found; byte e5" in summ[10]
@@ -5735,7 +5760,7 @@ def pre_tests(g, src):
           and "reads 80100100 after 101 ms: NOT as written\n" in logs(4, "0x28e03801c found")[0] + "\n"
           and all(logs(n, "as found: 0x28e0a0000 02000000, 0x28e5b0000 02000001") and len(logs(n, "as found: gates 0x28e5a0000: +050 8004030f +064 c0040302")) == 1
                   and len([x for x in cases[n] if "0x28e0a0000 02000000, 0x28e5b0000 02000001" in x]) == 4
-                  and len([x for x in cases[n] if ": gates 0x28e5a0000: +050 8004030f" in x]) == 3 for n in range(18)),
+                  and len([x for x in cases[n] if ": gates 0x28e5a0000: +050 8004030f" in x]) == 3 for n in range(20) if n != 18) and not logs(20, "as found"),
           "m1_pre_test()'s log: the SUMMARY says what 0x28e03801c did, how many of the 21 read 1, and what came back; the poll of bit 30"
           " ends when the word reads as written and waits 100 ms and no longer (101 here: the model's clock ticks at each look); the two"
           " + 0 words are read four times, once before anything else, and the six gates three times", summ[2])
@@ -5794,26 +5819,31 @@ def pre_tests(g, src):
         b = [int(x, 16) for x in [x for x in cases[n] if x.startswith("pmu ")][0].split()[1:]]
         return "\n".join(g["prt_lines"](b[1], b[0], bytes(b[2:])))
 
-    out = [pl(n) for n in range(18)]
+    out = [pl(n) for n in range(20)]
     check("0x6010 = 0x8a: the 22 words' test, after both looks: every step taken" in out[0] and "at the read right after the write; at the end of up to 100 ms it read as written, bit 30 clear; 100 ms after the last write it read as written, bit 30 clear" in out[0]
           and "bit 30 clear at the read" in out[0] and "bit 30 SET at the read" in out[1]
-          and "21 read as written\n" in out[0] and "each of the 21 read the same" in out[0] and "so: ALL 22 TAKE B2's values in Linux's state after noirq, with every core up." in out[0]
+          and "21 read as written\n" in out[0] and "each of the 21 read the same" in out[0] and "so: ALL 22 READ AS B2 WRITES THEM in Linux's state after noirq, with every core up, at once and 100 ms on (0x28e5b0034 and 0x28e5b0038 read 1 before any write in both looks, and show nothing: 19 of the 21 are shown). In the sio_steps=1 run it was then the recipe's state" in out[0]
           and "0x6005 = 0xc0: with everything written back: 0x28e03801c read as found; all 21 read as found within 100 ms" in out[0]
-          and "so: ALL 22 TAKE" in out[1] and "so: ALL 22 TAKE B2's values in Linux's state after noirq, with every core up (0x28e03801c only after more than 100 ms)" in out[2]
+          and "so: ALL 22 READ" in out[1]
+          and "so: all 22 read as B2 writes them 100 ms after the last write, but NOT AT FIRST: 0x28e03801c didn't read as written, bit 30 clear, by the end of its 100 ms, which ended before the 21 were written (it came later, or once they were in: this can't tell). sio_steps=1 read the 21 at once" in out[2]
+          and "recipe's state is blamed" in out[2] and "ALL 22 READ" not in out[2]
           and "it read as written but with bit 30, pending, still SET; 100 ms after the last write it read as written, bit 30 clear" in out[2]
-          and "so: the 21 take 1; 0x28e03801c takes B2's value but its bit 30, pending, was still set 100 ms after the last write" in out[3]
+          and "so: the 21 read 1; 0x28e03801c has B2's value but its bit 30, pending, was still set 100 ms after the last write" in out[3]
           and "0x6005 = 0x80: with everything written back: 0x28e03801c did NOT read as found; all 21" in out[3]
-          and "it read as found: the write didn't take; 100 ms after" in out[4] and "so: the 21 take 1; 0x28e03801c did NOT take B2's value" in out[4]
-          and "20 read as written\n" in out[5] and "1 read as found: the write didn't take: 0x28e5b0008\n" in out[5] and "so: NOT ALL OF THE 21 TAKE 1" in out[5]
+          and "it read as found: the write didn't take; 100 ms after" in out[4] and "so: the 21 read 1; 0x28e03801c did NOT hold B2's value 100 ms after the last write: the 21 alone" in out[4]
+          and "so: the 21 read 1; 0x28e03801c did NOT hold B2's value 100 ms after the last write, though it read as written at the end of its own 100 ms: it changed once the 21 were written: the 21 alone" in out[19]
+          and "20 read as written\n" in out[5] and "1 read as found: the write didn't take: 0x28e5b0008\n" in out[5] and "so: NOT ALL OF THE 21 READ 1 after the AP's write, with the cores up: the words named above. Why, this doesn't say" in out[5]
           and "1 read as written with more bits set: 0x28e0a000c\n" in out[6] and "so: NOT ALL OF THE 21" in out[6]
-          and "NOT every one of the 21 read the same right after" in out[7] and "so: ALL 22 TAKE" in out[7]
-          and "1 read as found: the write didn't take: 0x28e5b0024\n" in out[16] and "so: ALL 22 TAKE" in out[17],
+          and "NOT every one of the 21 read the same right after" in out[7] and "ALL 22 READ" not in out[7]
+          and "but NOT AT FIRST: a select read otherwise right after its group's writes. sio_steps=1 read the 21 at once" in out[7]
+          and "1 read as found: the write didn't take: 0x28e5b0024\n" in out[16] and "so: NOT ALL OF THE 21" in out[16] and "so: ALL 22 READ" in out[17]
+          and "0x6010 = 0x82: THE 22 WORDS' TEST BEGAN AND DIDN'T FINISH" in out[18] and "so:" not in out[18],
           "m1-crumbs reads the six bytes: what 0x28e03801c read and whether bit 30 cleared, which of the 21 read 1 and what the others read,"
           " and what that says", out[5])
     check("0x6005 = 0x80: with everything written back: 0x28e03801c did NOT read as found; all 21 read as found" in out[8]
           and "0x6005 = 0xc5: with everything written back: 0x28e03801c read as found; 0x28e0a0014 did NOT read as found within 100 ms\n" in out[9] + "\n"
           and "0x6005 = 0xe5: with everything written back: 0x28e03801c read as found; 0x28e0a0014 did NOT read as found within 100 ms, and it isn't the only one" in out[10]
-          and "so: ALL 22 TAKE" in out[11] and "so: ALL 22 TAKE" in out[14]
+          and "so: ALL 22 READ" in out[11] and "so: ALL 22 READ" in out[14]
           and "0x6010 = 0xca: the 22 words' test, after both looks: every step taken" in out[12]
           and "0x6011-0x6016 read 0: the test's reads weren't written (the mark says the write that carries them wasn't acked)" in out[12] and "so:" not in out[12]
           and "0x6011-0x6016 hold ee 1e 0e 10 0e 10: NOT this test's reads (the mark says the write that carries them wasn't acked): nothing is read from them" in out[13]
@@ -5826,7 +5856,7 @@ def pre_tests(g, src):
     check(all("THE 22 WORDS' TEST BEGAN AND DIDN'T FINISH" in m and g["PRT_AT"][n + 1] in m for n, m in enumerate(mid))
           and all(("a word it had changed may not have been written back" in m) == (3 <= n + 1 <= 9) for n, m in enumerate(mid))
           and all("NOT this test's reads (the last mark that landed is from before their write)" in m and "so:" not in m for m in mid[:6])
-          and all("so: ALL 22 TAKE" in m for m in mid[6:]) and all("0x6005 = 0x00: the test's byte didn't land" in m for m in mid)
+          and all("so: ALL 22 READ" in m for m in mid[6:]) and all("0x6005 = 0x00: the test's byte didn't land" in m for m in mid)
           and "its byte landed, and that is written after the last step" in "\n".join(pr(0x86, 0xc0, bytes(6)))
           and "0x6011-0x6016 read 0: the test's reads weren't written (the last mark that landed is from before their write)" in "\n".join(pr(0x83, 0, bytes(6)))
           and "read 0 though the mark says their write was acked" in "\n".join(pr(0x8a, 0xc0, bytes(6)))
@@ -5835,13 +5865,31 @@ def pre_tests(g, src):
           and "at the module's load: the + 0 words of the two pages" in "\n".join(pr(0x91, 0, bytes(6))) and len(pr(0x91, 0, bytes(6))) == 1,
           "m1-crumbs on a test that stopped: the step it marked last; the six bytes are read only under a mark from the write-back on;"
           " a byte with an earlier mark means a lost mark; the load's mark is told apart", mid[2])
+    def verdict(poll, late, same=True, pend=False):
+        bits = int.from_bytes(full, "little") & ~(0x3f << 42) | poll << 42 | late << 44 | same << 46 | pend << 47
+        return [x for x in pr(0x8a, 0xc0, bits.to_bytes(6, "little")) if x.startswith("  so:")]
+
+    v = {(p_, l_): verdict(p_, l_) for p_ in range(4) for l_ in range(4)}
+    check(all(len(x) == 1 for x in v.values()) and "ALL 22 READ" in v[1, 1][0]
+          and all("NOT AT FIRST: 0x28e03801c didn't read as written" in v[p_, 1][0] and "ALL 22" not in v[p_, 1][0] for p_ in (0, 2, 3))
+          and all("has B2's value but its bit 30, pending, was still set 100 ms after the last write" in v[p_, 3][0] for p_ in range(4))
+          and all("did NOT hold B2's value 100 ms after the last write" in v[p_, l_][0] for p_ in range(4) for l_ in (0, 2))
+          and all("though it read as written at the end of its own 100 ms" in v[1, l_][0]
+                  and "and read as written with bit 30 set at the end of its own 100 ms" in v[3, l_][0]
+                  and "100 ms after the last write: the 21 alone" in v[0, l_][0] and "100 ms after the last write: the 21 alone" in v[2, l_][0] for l_ in (0, 2))
+          and "NOT AT FIRST: a select read otherwise right after its group's writes. sio" in verdict(1, 1, same=False)[0]
+          and "by the end of its 100 ms, which ended before the 21 were written (it came later, or once they were in: this can't tell); a select read otherwise" in verdict(3, 1, same=False)[0]
+          and "ALL 22 READ" in verdict(1, 1, pend=True)[0],
+          "m1-crumbs' verdict on 0x28e03801c for each pair of its two codes: the recipe's state is named only if every word read as"
+          " written at once and bit 30 cleared within the poll, which is what sio_steps=1 judged; a word that went back isn't said to"
+          " hold B2's value", str(v[3, 2]))
     b = bytearray(32)
     b[4], b[5], b[0x10] = 0x0f, 0xc0, 0x8a
     b[0x11:0x17] = full
     dec = "\n".join(g["decode"](bytes(b), bytes(6)))
     b[0x10] = 0x28
     decg = "\n".join(g["decode"](bytes(b), bytes(6)))
-    check("pre_test=1's test, after them, writes the 22 words B2 writes first and writes them back (--pre)" in dec and "so: ALL 22 TAKE" in dec
+    check("pre_test=1's test, after them, writes the 22 words B2 writes first and writes them back (--pre)" in dec and "so: ALL 22 READ" in dec
           and "the gate test" not in dec and "the gate test" in decg and "22 words" not in decg,
           "m1-crumbs tells the 22 words' test from the gate test and the plain look by the mark's bit 7", dec)
 

@@ -264,7 +264,8 @@ and 0x28e5b0000, also read awake at the load), the 22 and the six gate words as 
 from 0x28e0a0004 and the fourteen from 0x28e5b0004, in B2's order, reading each back; reads everything
 again 100 ms later; then writes all 22 back as found (0x28e03801c first and less its bit 30, the 21 by
 address: B1's order) and reads them again. 44 writes, to the 22 words and no other, and the load
-refuses if one is on the never-write list. Every word is logged in full. The PMU keeps the step at
+refuses if one is on the never-write list; none is made if the PMU doesn't ack the zeroing of 0x6005 or
+the mark of the first write. Every word is logged in full. The PMU keeps the step at
 0x6010 with 0x80 set, six bytes at 0x6011-0x6016 sent before anything is written back (two bits a
 select: as written, as found, as written with more bits set, or something else; the same for
 0x28e03801c at the end of its poll and 100 ms on; whether bit 30 was seen set), and a byte at 0x6005
