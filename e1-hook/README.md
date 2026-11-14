@@ -169,7 +169,8 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   never went down and the limit isn't tested. Why: on T8103
   the chip starts its own block at the first cluster word and every core has to be in its wait within tens of ms
   (Naeem Malik's second driver); nothing shows T6000 has such a limit. The rest of the ending reads as
-  `--m1-gates`'. Not run yet.
+  `--m1-gates`'. Run once, 2026-11-14: the byte 0x20 (under 5 ms; none of the five muxes read parked), restart
+  at 90 s.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be

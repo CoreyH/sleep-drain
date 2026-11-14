@@ -5093,6 +5093,46 @@ The build PLAN.md had next. `run-floor --m1-acc-last` is `--m1-gates`' recipe wi
   against a model that logs every access), `tests/e1a_launcher_test.py` (2,042),
   `tests/e1_hook_probe_test.py` (79), `tests/mutants.py` (928 mutants, 89 of them this rung's).
 
+### The `acc_last=1` run: the cluster words last, under 5 ms to the last stage, still 90 s; none of the five muxes parked (2026-11-14)
+
+Corey's run, in a safe boot on battery: `pkexec e1-hook/run-floor --quick --m1-acc-last`, module
+built from main at 5dfe5de. The record, the load log and the clear and collect are in
+`results/acc-last-20261114/`.
+
+- **Stage 0x93**, the clean last stage; every earlier byte as in the `a2_pre=1` run (0x6012 0xff,
+  0x6013 0xdf, 0x6014 0x90, 0x6015 0x8e, 0x6007 0xf5, 0x6005 0x7d with PHASE at 0x4). **0x6006 =
+  0:** every wait of step 5 was met with the three cluster words not yet written, so the table's
+  later entries don't mind the new order.
+- **0x6016 = 0x20.** The time's code is 1: under 5 ms from before the first cluster word to after
+  the last stage went out. That span holds the commit, the alarm's commands, the release, WD2's
+  arming (so the engine armed WD2 within those 5 ms) and the stage's command. Not in it: the
+  byte's own command (answered, since the byte landed), the acks and CPU0's WFI; and nothing
+  records that the other cores left their hold.
+- **Bits 4:0 are 0: none of the five muxes read 0x80100000 after the table.** Awake they read
+  85100000 85100000 85100000 87100000 85100000 (the load log). What they read in step 8 isn't in
+  the byte.
+- **The restart: 90 s after the commit** (88.7 to 90.7 s), WD1's marker again.
+
+What it says:
+
+1. **A limit of T8103's size between the cluster words and the cores' wait is unlikely to be what
+   ends the runs.** The three were written last, the run was at its last stage within 5 ms, and
+   the pair stopped where it always has. Unlikely, not shown: the tail isn't timed, a shorter
+   limit on T6000 isn't excluded, and the other cores' leaving isn't recorded.
+2. **None of the five muxes read the table's value in step 8.** That is all the bits say: not
+   whether the writes were refused, or took and were changed afterwards (PLL-off and the power
+   words come between the park and the read), or took and read back otherwise than as written
+   (bit 31 may not read back as set after a park). What the muxes did read isn't recorded.
+   A hypothesis, not a finding: the ClkGen page is closed to the AP's writes in the state the
+   replay reaches, as `probe --pre` found for 0x28e03801c in the same page (another word, in
+   another state: awake after noirq, nothing stopped). If so, something in macOS's state opens
+   those words that ours lacks, and B2 clearing two words of the engine's page right before its
+   22 writes is a lead on what; or the park is refused under macOS too and its polls pass as ours
+   do (T8140's driver says so of one of its three).
+
+Next (PLAN.md): the muxes' values read out, before and after the park, which tells those cases
+apart; then, if they were refused, what opens them and the 22 to a write (Pullfrog on #105).
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
