@@ -5019,7 +5019,9 @@ load log and the clear and collect are in `results/a2-pre-20261114/`.
   0xff, 0x6013 0xdf, 0x6014 0x90, 0x6015 0x8e, 0x6007 0xf5, 0x6005 0x7d with PHASE at 0x4).
 - **0x6016 = 0xff.** DCS's word read asked for 2 and as A2 waits for it; so did the fabric's; the
   third word read asked for 0 and as A2 waits for it; all at the last read before the commit. No
-  move stopped CPU0 and none was left unsettled within its 100 ms.
+  move stopped CPU0. Whether each settled within its own 100 ms isn't in the record: the last
+  byte is from reads made after the third move's wait, and the earlier sends are overwritten
+  (Pullfrog on #103).
 - **Bit 0 is set: the five ClkGen muxes didn't all read 0x80100000 after the table.** The first
   read of them after their write in any run. The bit doesn't say which, how many or what they
   read. Awake they read 85100000 85100000 85100000 87100000 85100000 (the load log, in the
