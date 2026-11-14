@@ -150,8 +150,8 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   three taken and settled with the muxes parked; 0x80, none read as written or as A2 waits for it (what they did
   read isn't in the byte). Stages 0x99, then 0x9b or 0x9a. A byte that stops short at stage 0x99 is the last thing
   recorded, not a proven stop: CPU0 didn't come through the next move, or a send failed and the run went on
-  unrecorded. It adds at most about 0.3 s before the commit. The rest of the ending reads as `--m1-gates`'. Not run
-  yet.
+  unrecorded. It adds at most about 0.3 s before the commit. The rest of the ending reads as `--m1-gates`'. Run once,
+  2026-11-14: the byte 0xff (all three took and settled; the muxes didn't all read parked), restart at 91 s.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be
