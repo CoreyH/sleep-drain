@@ -115,7 +115,7 @@ the PR with that session's work.
     run's last stage recorded and the five muxes read out one by one. Why: on T8103 the chip
     starts its own block at the first cluster word and the cores have to be in their WFI within
     tens of ms (RESEARCH.md, "Naeem Malik's second driver, read").
-  - **After it, not built:** if the time's code is 5 or 6, the wait for WD2's arming cut from
+  - **After it, not built:** if the time's code is 4, 5 or 6, the wait for WD2's arming cut from
     CPU0's way to its WFI; then what opens the 22, and the muxes, to a write (B2 clears two words
     of the engine's page right before the 22).
   - **Asked, waiting:** Naeem Malik's commits cite a working deep sleep on T6000 ("a reference
@@ -806,10 +806,16 @@ steps, and restarting the DCP and the PMP afterwards.
       --clear`, `pkexec sleep-drain-safe collect`. What the record then says:
       - **A restart at about 120 s, at 150 s or more, or none:** B2 got past its op 224: the
         place of the cluster words is what the runs lacked. The finding; the wake is next.
-      - **90 s, the time's code 1 to 4:** written under 50 ms before the run's last stage, and
-        the pair still stops: a limit of T8103's size isn't it. Next what opens the 22.
-      - **90 s, the code 5 or 6:** the run wasn't under T8103's 52 ms, so the limit is untested:
-        the wait for WD2's arming is cut from CPU0's way to its WFI, and the run made again.
+      - **90 s, the time's code 1 to 3:** written under 20 ms before the run's last stage, and
+        the pair still stops: a limit of T8103's size is unlikely to be it. Next what opens the 22.
+      - **90 s, the code 4, 5 or 6, or stage 0x92:** the run wasn't shown under T8103's 52 ms (4,
+        under 50 ms, is too close: the tail after the last stage isn't timed), or CPU0 didn't go
+        down: the limit is untested. The wait for WD2's arming is cut from CPU0's way to its WFI,
+        and the run made again. This is a real possibility: how fast the engine arms WD2 isn't
+        known beyond the 300 ms bound.
+      - **An ending that changes** shows the three writes' place matters, not yet that it's the
+        time: they now also follow the table's later entries, the power words and the stop
+        requests. Splitting the two is the run after.
       - **A wait unmet in step 5 (0x6006 not 0), or a stop before stage 0x91:** the table's later
         entries mind the cluster words not having been written: the order matters on T6000, and
         the three go back to their place with only the steps after them shortened.

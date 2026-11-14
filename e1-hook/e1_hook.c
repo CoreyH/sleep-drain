@@ -3458,8 +3458,9 @@ static u8 m1_acl_pre(void)
 
 /*
  * acc_last=1, step 9, right before the commit's write: the three soc-cluster words step 5 left out, the table's values
- * in the table's order, as step 5 writes an entry. The run's only writes that aren't where the recipe has them. Returns
- * the clock as read before the first.
+ * in the table's order, as step 5 writes an entry, then a barrier. The run's only writes that aren't where the recipe has
+ * them, and its only ones made under step 9's mask besides the commit: one that faulted would leave an SError pending
+ * and show as stage 0x12, not as a panic. Returns the clock as read before the first.
  */
 static u64 m1_acl_write(void)
 {
@@ -3468,6 +3469,7 @@ static u64 m1_acl_write(void)
 
 	for (i = ACL_FIRST; i < ACL_FIRST + ACL_N; i++)
 		writel_relaxed(m1_post_val(i), post_map[i]);
+	dsb(sy);	/* the commit is in another page: the three are out before it, as step 5's entries were */
 	return t;
 }
 

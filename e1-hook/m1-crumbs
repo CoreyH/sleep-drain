@@ -325,8 +325,9 @@ HOLD_TEXT = {
           " unrecorded",
     0x12: "acc_last=1: gates_mark=1's 0x54: the three cluster words, the commit, the alarm and the release are done, and CPU0"
           " wrote WD2's bite, if WD2 was armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending"
-          " afterwards: that would end its deep WFI, so it likely never went down (a write or a read that faulted after the"
-          " commit would leave an SError pending, masked). The byte with the time's code (0x6016) follows this stage too",
+          " afterwards: that would end its deep WFI, so it likely never went down (a write or a read that faulted from the"
+          " three cluster words on, which this run writes under step 9's mask, would leave an SError pending, masked, and"
+          " show only as this stage). The byte with the time's code (0x6016) follows this stage too",
     0x4f: "sio_stop=1: the commit and the alarm are done, the run's last breadcrumb by design: CPU0 then released the others"
           " and took its deep WFI at once, unrecorded",
     0x40: "position=1: the release went out and CPU0's watch ended (0x6005 = the cores it read off); CPU0 stays up,"
@@ -1454,7 +1455,8 @@ def sst_lines(s, b, pmp):
 ACL_MUXES = ("0x28e038164", "0x28e03816c", "0x28e038168", "0x28e03815c", "0x28e038170")
 ACL_T_PRE, ACL_T_LATE = 7, 6
 ACL_T_MS = (5, 10, 20, 50, 100)  # codes 1 to 5: under each
-ACL_T8103_MS = 52  # the span T8103 was shown to allow (Naeem Malik's second driver); codes 1 to 4 are under it
+ACL_T8103_MS = 52  # the span T8103 was shown to allow (Naeem Malik's second driver)
+ACL_UNDER_MS = 20  # a span under this is called under that figure: the span leaves out the byte's own command, the acks and CPU0's WFI
 
 
 def acl_lines(s, b, pmp):
@@ -1479,10 +1481,10 @@ def acl_lines(s, b, pmp):
         return [f"0x6016 = 0x{v:02x}: bits 7:5 are 0, so acc_last=1's byte didn't survive the reset, or isn't the one sent: stage"
                 f" 0x{s:02x} went out after it, and a command that fails stops every one after it. Not read"]
     parked = [bool(v >> i & 1) for i in range(5)]
-    out = [f"0x6016 = 0x{v:02x}: acc_last=1's byte, in place of the alarm's result: step 5 left the three CPU complexes' cluster"
-           " words out, CPU0 read the five ClkGen muxes in step 8, wrote the three (0x28e098000 := 0, 0x28e098004 := 0x20,"
-           " 0x28e098008 := 0x20) right before the commit, and timed the run from before the first of them to after its last"
-           " stage:",
+    out = [f"0x6016 = 0x{v:02x}: acc_last=1's byte, in place of the alarm's result: step 5 was to leave the three CPU complexes'"
+           " cluster words out, and CPU0 to read the five ClkGen muxes in step 8, write the three (0x28e098000 := 0,"
+           " 0x28e098004 := 0x20, 0x28e098008 := 0x20) right before the commit, and time the run from before the first of"
+           " them to after its last stage:",
            "  the five ClkGen muxes the table parked, each read once after the table: "
            + ("all five read 0x80100000, as the table wrote them" if all(parked) else
               "NONE OF THE FIVE READ 0x80100000, the table's value: the park didn't take, or didn't stay, on any of them" if not any(parked) else
@@ -1508,17 +1510,30 @@ def acl_lines(s, b, pmp):
             f"{ACL_T_MS[-1]} ms OR MORE")
     out.append(f"  the time, code {code}: {span} from CPU0's read of the clock before the first cluster word to its read after"
                " this stage went out: the three writes, the commit, the alarm's commands, the release of the other cores, the"
-               " wait for WD2 to be armed, the bite's write and the stage's command. Not in it: this byte's own command, the"
-               " acks and CPU0's WFI")
-    # What the time can add. Only the clean last stage has the restart read against the marker (below).
+               " waits for WD2 to be armed, for its count to move and for PHASE, the bite's write and the stage's command. Not"
+               " in it: this byte's own command, the acks and CPU0's WFI. Nothing records that the other cores left their hold"
+               " (hold_nowatch=1): the span bounds their way to their WFI only if they did")
+    if s == ACL_WD2[0]:
+        out.append("  so: NOT A TEST OF THE LIMIT, whatever the span: CPU0 had an exception pending after the commit and likely"
+                   " never went down, so every core wasn't in its wait. The restart's time isn't read (below)")
+        return out
+    # Only the clean last stage gets here, and has the restart read against the marker (below).
     time = (" The restart's time is read below, against WD1's marker, as far as the marker and WD2's sample bear a reading out:"
-            " about 120 s (WD2's bite) in place of 90 s, or 150 s or more, is what B2 getting past its op 224 would give"
-            if s == ACL_WD2[1] else " CPU0 had an exception pending after the commit, so the restart's time isn't read (below)")
-    if code < ACL_T_LATE and ACL_T_MS[code - 1] <= ACL_T8103_MS:
-        out.append(f"  so: THE CLUSTER WORDS WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT {span.upper()} AFTER THEM: under the"
-                   f" {ACL_T8103_MS} ms T8103 was shown to allow between its first cluster word and every core's wait, as far as"
-                   " the span covers it. If the restart still comes at 90 s, a limit of that size isn't what ends the runs (a"
-                   " shorter one on T6000 isn't excluded, nor is the tail the span leaves out)." + time)
+            " about 120 s (WD2's bite) in place of 90 s, or 150 s or more, is what B2 getting past its op 224 would give")
+    if code < ACL_T_LATE and ACL_T_MS[code - 1] <= ACL_UNDER_MS:
+        out.append(f"  so: THE CLUSTER WORDS WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT {span.upper()} AFTER THEM: well under"
+                   f" the {ACL_T8103_MS} ms T8103 was shown to allow between its first cluster word and every core's wait, as far"
+                   " as the span covers it. The tail it leaves out isn't timed: this byte's own command, which was answered, since"
+                   " the byte is here (the same command, the alarm's last, is inside the span), the acks and CPU0's WFI. If the"
+                   " restart still comes at 90 s, a limit of that size is unlikely to be what ends the runs; that isn't shown,"
+                   " and a shorter one on T6000 isn't excluded. An ending that"
+                   " changes says the three writes' place matters, not yet that it's the time: they now also come after the"
+                   " table's later entries, the power words and the stop requests." + time)
+    elif code < ACL_T_LATE and ACL_T_MS[code - 1] <= ACL_T8103_MS:
+        out.append(f"  so: THE CLUSTER WORDS WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT {span.upper()} AFTER THEM: TOO CLOSE TO"
+                   f" CALL against the {ACL_T8103_MS} ms T8103 was shown to allow: the span leaves out this byte's own command, the"
+                   " acks and CPU0's WFI, which aren't timed. A restart at 90 s after this neither tests that limit nor clears"
+                   " it." + time)
     else:
         out.append(f"  so: THE CLUSTER WORDS WERE WRITTEN LAST, BUT THE RUN TOOK {span.upper()} FROM THEM TO ITS LAST STAGE: not under"
                    f" the {ACL_T8103_MS} ms T8103 was shown to allow. A restart at 90 s after this doesn't test that limit: what"

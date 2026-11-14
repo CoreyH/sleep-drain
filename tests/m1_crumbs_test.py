@@ -4586,6 +4586,9 @@ def acc_last_tests(g, src):
             bad_lists[what] = out(build("bad" + str(len(bad_lists)), ini_head + waits + redef + postval + init + ACL_INIT_MAIN), "0", "0")
         moved = waits.replace("{ 55, M1_W_CLUSTER, BIT(2), M1_ACK_BUSY,   0x28e09800cULL }", "{ 54, M1_W_CLUSTER, BIT(2), M1_ACK_BUSY,   0x28e098008ULL }")
         bad_wait = out(build("badw", ini_head + moved + postval + init + ACL_INIT_MAIN), "0", "0") if moved != waits else []
+        wide = table.replace("{ 0x28e098004ULL, 4, 0x20ULL }", "{ 0x28e098004ULL, 8, 0x20ULL }")
+        bad_width = (out(build("badx", ACL_INIT_PRELUDE + ackdefs + wide + "static void *post_map[ARRAY_SIZE(e1_post_slpa)];\n" + waits + postval + init
+                               + ACL_INIT_MAIN), "0", "0") if wide != table else [])
 
     # The header against a second writing-out of it.
     consts, stages = hdr[0], hdr[1]
@@ -4610,7 +4613,7 @@ def acc_last_tests(g, src):
           f"acl_code() for {len(times)} spans, the bounds and a tick either side of each among them: 1 to 5 under 5, 10, 20, 50 and 100 ms,"
           " 6 from there on, and never 0 or 7", str([(t, c, w) for t, c, w in zip(times, codes, want_codes) if c != w][:3]))
     check((g["ACL_PRE"], g["ACL_WD2"], g["ACL_STAGES"]) == (0x11, (0x12, 0x13), (0x11, 0x12, 0x13)) and (g["ACL_T_PRE"], g["ACL_T_LATE"]) == (7, 6)
-          and g["ACL_T_MS"] == tuple(lim // 1000 for lim, _ in ACL_UNDER_US) and g["ACL_T8103_MS"] == 52
+          and g["ACL_T_MS"] == tuple(lim // 1000 for lim, _ in ACL_UNDER_US) and g["ACL_T8103_MS"] == 52 and g["ACL_UNDER_MS"] == 20
           and g["ACL_MUXES"] == tuple(f"0x28e038{o:03x}" for o in A2P_MUXES)
           and not set(g["ACL_STAGES"]) & (set(g["GATES_STAGES"]) | set(g["SIOD_STAGES"]) | set(g["SIOD1_STAGES"]) | set(g["PCD_STAGES"])
                                           | set(g["SST_STAGES"]) | set(g["A2P_STAGES"]) | set(g["POSITION"]) | set(g["ACK_EARLY"]) | {0x0e, 0x0f, 0x10}),
@@ -4638,13 +4641,15 @@ def acc_last_tests(g, src):
     wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
     check(not re.search(wr, pre_fn) and not re.search(wr, init)
           and re.findall(wr + r"[^;]*;", write_fn) == ["writel_relaxed(m1_post_val(i), post_map[i]);"]
-          and "\tu64 t = m1_now();\n" in write_fn and "\tfor (i = ACL_FIRST; i < ACL_FIRST + ACL_N; i++)\n\t\twritel_relaxed(m1_post_val(i), post_map[i]);\n\treturn t;\n" in write_fn
+          and "\tu64 t = m1_now();\n" in write_fn and "\tfor (i = ACL_FIRST; i < ACL_FIRST + ACL_N; i++)\n\t\twritel_relaxed(m1_post_val(i), post_map[i]);\n\tdsb(sy);" in write_fn and write_fn.rstrip().endswith("\treturn t;\n}")
+          and write_fn.count("dsb(sy);") == 1 and "isb" not in write_fn
           and re.findall(wr + r"[^;]*;", out_fn) == ["writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));"]
           and "\tb = acl_byte(pre, acl_code(m1_now() - t, m1_tps));\n\tm1_crumb(GATES_AT, &b, 1);\n" in out_fn
-          and "\tb = acl_byte(mux, ACL_T_PRE);\n\tm1_crumb(GATES_AT, &b, 1);\n\treturn b;\n" in pre_fn
+          and "\t}\n\tdsb(sy);\n\tisb();\n\tb = acl_byte(mux, ACL_T_PRE);\n\tm1_crumb(GATES_AT, &b, 1);\n\treturn b;\n" in pre_fn
           and all(len(re.findall(r"\b%s\(" % f, code_only)) == 2 for f in ("m1_acl_pre", "m1_acl_write", "m1_acl_out", "m1_acl_init", "acl_stage", "acl_entry")),
-          "m1_acl_write() has one write, the table's own value to the table's own row for entries 52 to 54, after its read of the clock;"
-          " m1_acl_out()'s only writes are the acks; the mux read and the load write nothing; each is called once")
+          "m1_acl_write() has one write, the table's own value to the table's own row for entries 52 to 54, after its read of the clock"
+          " and before a barrier; m1_acl_out()'s only writes are the acks; the mux read, which ends with a barrier before its byte, and"
+          " the load write nothing; each is called once")
     check(all(t in src for t in ("ACL_N == 3 && ACL_FIRST == 52", "ACL_PAGE == 0x28e098000ULL && ACL_PAGE == M1_SOC_CLUSTERS", "ACL_MUX_N == A2P_MUX_N",
                                  "ACL_T_SHIFT == ACL_MUX_N && ACL_T_PRE == 7", "M1_ACL_STAGE_PRE == 0x11 && M1_ACL_STAGE == 0x13 && M1_ACL_STAGE_PEND == 0x12"))
           and "\tstatic const u64 want_addr[ACL_N] = { 0x28e098000ULL, 0x28e098004ULL, 0x28e098008ULL };\n\tstatic const u32 want_val[ACL_N] = { 0x0, 0x20, 0x20 };\n" in init,
@@ -4687,9 +4692,10 @@ def acc_last_tests(g, src):
           and all(loads[("0", n)][-1] == "ret -22 reads 0" for n in ("52", "53", "54", "62", "66")) and loads[("0", "49")][-1] == "ret 0 reads 8"
           and all(v[-1] == "ret -22 reads 0" and any(r.startswith("err m1: acc_last:") for r in v) and not any(r.startswith("info") for r in v)
                   for v in bad_lists.values())
-          and bad_wait and bad_wait[-1] == "ret -22 reads 0" and any("a wait is on entry 54" in r for r in bad_wait),
+          and bad_wait and bad_wait[-1] == "ret -22 reads 0" and any("a wait is on entry 54" in r for r in bad_wait)
+          and bad_width and bad_width[-1] == "ret -22 reads 0" and any(r.startswith("err m1: acc_last: entry 53") for r in bad_width),
           "m1_acl_init(): refuses, reading nothing, if one of the three is on the never-write list, one of their rows or a mux's isn't"
-          " mapped, the entries aren't the three cluster words with the table's values (cluster_ack=1's among them), a wait is on one"
+          " mapped, the entries aren't the three cluster words, four bytes wide, with the table's values (cluster_ack=1's among them), a wait is on one"
           " of them, or the table's waits in the muxes' page aren't five rows that write the value meant", str(loads) + str(bad_lists) + str(bad_wait))
 
     # m1-crumbs. The run's record at its last stage, all as meant, with its byte at 0x6016.
@@ -4709,7 +4715,8 @@ def acc_last_tests(g, src):
               and "0x6016 = 0x60: acc_last=1's byte, in place of the alarm's result:" in out_
               and "  the five ClkGen muxes the table parked, each read once after the table: NONE OF THE FIVE READ 0x80100000" in out_
               and "  the time, code 3: under 20 ms (10 ms or more) from CPU0's read of the clock before the first cluster word" in out_
-              and "  so: THE CLUSTER WORDS WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT UNDER 20 MS (10 MS OR MORE) AFTER THEM: under the 52 ms T8103" in out_
+              and "  so: THE CLUSTER WORDS WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT UNDER 20 MS (10 MS OR MORE) AFTER THEM: well under the 52 ms T8103" in out_
+              and "0x6016 = 0x60: acc_last=1's byte, in place of the alarm's result: step 5 was to leave the three" in out_
               and "alarm command" not in out_ and "gates_mark=1's byte" not in out_ and "a2_pre=1's byte" not in out_
               and "0x6007 = 0xf5: fabric_up=1's byte, in place of the cores that held:\n" in out_ and "WD1 stood as the marker" in out_
               and "0x6005 = 0x7d: wd2_bite=1, after the commit, the alarm and the release:\n" in out_
@@ -4730,10 +4737,14 @@ def acc_last_tests(g, src):
         rc, out_, err = dec(0x92, 0xc5)
         check(rc == 0 and "so the stage is 0x12" in out_ and "acc_last=1: gates_mark=1's 0x54:" in out_ and "pending afterwards" in out_
               and "read 0x80100000, the table's value: 0x28e038164, 0x28e038168; DIDN'T: 0x28e03816c, 0x28e03815c, 0x28e038170" in out_
-              and "  so: THE CLUSTER WORDS WERE WRITTEN LAST, BUT THE RUN TOOK 100 MS OR MORE FROM THEM TO ITS LAST STAGE: not under the 52 ms" in out_
+              and "  so: NOT A TEST OF THE LIMIT, whatever the span: CPU0 had an exception pending after the commit" in out_
+              and "THE CLUSTER WORDS WERE WRITTEN LAST" not in out_ and "from the three cluster words on, which this run writes under step 9's mask" in out_
               and "restart's time isn't read" in out_ and "  wd1_mark=1's marker: not read. CPU0 had an exception pending" in out_,
-              "acc_last=1's 0x92: the pending stage, the muxes named one by one, a span over T8103's figure said not to test it, and no"
-              " reading of the time", out_ + err)
+              "acc_last=1's 0x92: the pending stage, which names the three writes made under the mask; the muxes named one by one; no"
+              " verdict on the limit whatever the span, and no reading of the time", out_ + err)
+        rc, out_, err = dec(0x93, 0xc5, x=90)
+        check(rc == 0 and "  so: THE CLUSTER WORDS WERE WRITTEN LAST, BUT THE RUN TOOK 100 MS OR MORE FROM THEM TO ITS LAST STAGE: not under the 52 ms" in out_,
+              "acc_last=1's 0x93 with a span of 100 ms or more: said not to test T8103's figure", out_ + err)
         rc, out_, err = dec(0x93, 0xe3, x=90)
         check(rc == 0 and "  the time: NOT RECORDED. The code is still 7" in out_ and "  so: " not in "\n".join(l for l in out_.splitlines() if "CLUSTER WORDS" in l)
               and "THE CLUSTER WORDS WERE WRITTEN LAST" not in out_,
@@ -4794,13 +4805,19 @@ def acc_last_tests(g, src):
                     else:
                         ok = (ok and len(lines) == 4 and len(so) == 1 and lines[3] == so[0]
                               and lines[2].startswith(f"  the time, code {code}: {ACL_SPAN[code]} from CPU0's read of the clock before the first cluster word")
-                              and ("WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT " + ACL_SPAN[code].upper() + " AFTER THEM: under the 52 ms" in so[0]) == (code <= 4)
-                              and ("isn't what ends the runs" in so[0] and "isn't excluded" in so[0]) == (code <= 4)
-                              and ("WERE WRITTEN LAST, BUT THE RUN TOOK " + ACL_SPAN[code].upper() + " FROM THEM TO ITS LAST STAGE: not under the 52 ms" in so[0]) == (code >= 5)
-                              and ("doesn't test that limit" in so[0]) == (code >= 5)
+                              and "Nothing records that the other cores left their hold" in lines[2]
+                              and "means B2" not in text and "proves" not in text and "isn't what ends the runs" not in text)
+                        clean = s == 0x13
+                        ok = (ok and ("NOT A TEST OF THE LIMIT, whatever the span" in so[0] and "restart's time isn't read" in so[0]) == (not clean)
+                              and ("THE CLUSTER WORDS WERE WRITTEN LAST" in so[0]) == clean
+                              and ("WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT " + ACL_SPAN[code].upper() + " AFTER THEM: well under the 52 ms" in so[0]) == (clean and code <= 3)
+                              and ("is unlikely to be what ends the runs" in so[0] and "isn't excluded" in so[0] and "not yet that it's the time" in so[0]) == (clean and code <= 3)
+                              and ("WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT " + ACL_SPAN[code].upper() + " AFTER THEM: TOO CLOSE TO CALL against the 52 ms" in so[0]
+                                   and "neither tests that limit nor clears it" in so[0]) == (clean and code == 4)
+                              and ("WERE WRITTEN LAST, BUT THE RUN TOOK " + ACL_SPAN[code].upper() + " FROM THEM TO ITS LAST STAGE: not under the 52 ms" in so[0]
+                                   and "doesn't test that limit" in so[0]) == (clean and code >= 5)
                               and ("about 120 s" in so[0] and "is what B2 getting past its op 224 would give" in so[0]
-                                   and "as far as the marker and WD2's sample bear a reading out" in so[0]) == (s == 0x13)
-                              and ("restart's time isn't read" in so[0]) == (s == 0x12) and "means B2" not in text and "proves" not in text)
+                                   and "as far as the marker and WD2's sample bear a reading out" in so[0]) == clean)
                 if not ok:
                     wrong.append((hex(s), hex(v), lines))
             b = bytearray(0x20)
@@ -4812,8 +4829,9 @@ def acc_last_tests(g, src):
                 wrong.append((hex(s), "no pmp_out=1 bit"))
         check(not wrong, "acc_last=1: for every byte at each of its stages: the muxes' line names each mux by its bit; before the commit the"
               " code is 7 or the byte isn't read as a time, and there's no verdict; after it a code of 7 is a time that wasn't recorded,"
-              " a code of 1 to 4 a span under T8103's figure and 5 or 6 one that doesn't test it; the restart's time is spoken of once, at"
-              " the last stages; nothing is read from a byte whose code is 0", str(wrong[:2]))
+              " a code of 1 to 3 a span well under T8103's figure, 4 too close to call and 5 or 6 one that doesn't test it, and only at"
+              " the clean last stage: at the pending one no verdict on the limit; the restart's time is spoken of once; nothing is"
+              " read from a byte whose code is 0", str(wrong[:2]))
         mr = g["mark_reading"]
         wrong = [(hex(v), x) for v in range(256) for x in (60, 88, 90, 105, 120, 123, 135, 146, 150, 163, 300)
                  if mr(x, 0x11, v) != mr(x, 0x4b, v).replace("Stage 0x4b", "Stage 0x11") or mr(x, 0x12, v) != mr(x, 0x54, v)

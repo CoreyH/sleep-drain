@@ -50,22 +50,34 @@
  * word to its read after wd2_bite=1's stage went out. Inside it: the three
  * writes, the commit, the alarm's commands, the release of the other cores
  * (so it bounds their way to their WFI from above, less their own last few
- * instructions), up to 300 ms for the engine to arm WD2, the bite's write and
- * the stage's command. Not in it: this byte's own command, the acks and CPU0's
- * WFI after them.
+ * instructions, and only if they left their hold, which hold_nowatch=1 doesn't
+ * record), up to 300 ms for the engine to arm WD2, up to 1 ms for its count
+ * to move and up to 10 ms for PHASE, the bite's write and the stage's command.
+ * Each PMU command is itself bounded at 50 ms. Not in it: this byte's own
+ * command, the acks and CPU0's WFI after them.
  *
  * Bits 4:0: mux n, in the table's order (0x28e038164, 16c, 168, 15c, 170), read
  * 0x80100000 at step 8. A bit that is clear doesn't say what the mux read; the
  * load logs all five awake.
  *
- * What it can say. The restart at about 120 s, or none: B2 got past its op 224
- * with nothing else changed, and the place of those three writes is what the
- * runs lacked. The restart still at 90 s with a code of 4 or less: the three
- * were written under 50 ms before CPU0's last record and the pair still
- * stopped, so a limit of T8103's size isn't what ends the runs (a shorter one
- * on T6000 isn't excluded, nor the unrecorded tail). With a code of 5 or 6 the
- * run didn't get under T8103's figure and doesn't test it: what took the time
- * (WD2's arming is the long bound) is trimmed next.
+ * What it can say. The restart at about 120 s, or none: B2 got past its op 224,
+ * and the place of those three writes is what the runs lacked. That is place,
+ * not yet time: the three now also come after the table's entries 55 to 72,
+ * the 20 power words and the stop requests. The restart still at 90 s with a
+ * code of 3 or less: the three were written under 20 ms before CPU0's last
+ * record and the pair still stopped, so a limit of T8103's size is unlikely to
+ * be what ends the runs. Unlikely, not shown: the tail isn't timed. What bounds
+ * it loosely is that the byte landed, so its command was answered, and that the
+ * same command, the alarm's last, is inside the span; a command that failed
+ * (up to 50 ms) leaves the code at 7. A shorter limit on T6000 isn't excluded. A code of 4, under 50 ms, is too close to T8103's 52 ms to
+ * call, since the tail isn't timed. With a code of 5 or 6 the run didn't get
+ * under T8103's figure and doesn't test it: what took the time (WD2's arming
+ * is the long bound) is trimmed next. At the pending stage, 0x12, CPU0 likely
+ * never went down, and the run tests nothing about the limit whatever the code.
+ *
+ * The three writes are made under step 9's mask, where the recipe never wrote
+ * them: a write that faulted there wouldn't panic; it would leave an SError
+ * pending and show as stage 0x12.
  *
  * The stages are the run's own from step 8's command on, gates_mark=1's with
  * the byte's meaning the one difference (acl_stage()): 0x11 for 0x4b, 0x13 and

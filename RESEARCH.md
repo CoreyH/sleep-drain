@@ -5079,12 +5079,19 @@ The build PLAN.md had next. `run-floor --m1-acc-last` is `--m1-gates`' recipe wi
   the commit, the alarm, the release of the other cores and CPU0's wait for WD2. It bounds the other
   cores' way to their WFI from above. It leaves out the byte's own command, the acks and CPU0's WFI.
 - **What it can say.** A restart at about 120 s, at 150 s or more, or none: B2 got past its op 224,
-  and the place of these writes is what the runs lacked. A restart at 90 s with a code of 4 or less:
-  a limit of T8103's size isn't what ends the runs (a shorter one isn't excluded). With a code of 5
-  or 6 the run didn't get under 52 ms and the limit is untested: the wait for WD2 is cut next.
-- **Checked:** `tests/m1_crumbs_test.py` (1,076 checks; the three functions compiled as they stand
+  and the place of these writes is what the runs lacked (place, not yet time: they now also follow
+  the power words and the stop requests). A restart at 90 s with a code of 3 or less: a limit of
+  T8103's size is unlikely to be what ends the runs (a shorter one isn't excluded). A code of 4 is
+  too close to 52 ms to call, since the tail isn't timed; with 5 or 6, or at the pending stage
+  0x92, the limit is untested, and the wait for WD2 is cut next.
+- **What the reviews changed** (the adversarial pass found the write path sound): the verdict is
+  given for codes 1 to 3 only and never at the pending stage; the decoder's opening line says what
+  the run was to do, not what it did; stage 0x12's text names the three writes, which are now made
+  under the mask, so that a fault there shows as that stage and not as a panic; a barrier after
+  the three writes; and the tests now have the row's width, the barriers and the stage's gating.
+- **Checked:** `tests/m1_crumbs_test.py` (1,077 checks; the three functions compiled as they stand
   against a model that logs every access), `tests/e1a_launcher_test.py` (2,042),
-  `tests/e1_hook_probe_test.py` (79), `tests/mutants.py` (923 mutants, 84 of them this rung's).
+  `tests/e1_hook_probe_test.py` (79), `tests/mutants.py` (928 mutants, 89 of them this rung's).
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

@@ -164,7 +164,9 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   0x80100000; bits 7:5 the time's code: 0 never, 1 to 5 under 5, 10, 20, 50 and 100 ms, 6 that or more, 7 "not
   yet" (the send before the cluster words). The span runs to CPU0's read of the clock after the last stage went
   out: it covers the commit, the alarm's commands, the release, the wait for WD2's arming (up to 300 ms) and the
-  stage's command, and not the byte's own command or CPU0's WFI. Stages 0x91, then 0x93 or 0x92. Why: on T8103
+  stage's command, and not the byte's own command or CPU0's WFI, so only a code of 3 or less (under 20 ms) is
+  read as under T8103's 52 ms, and 4 as too close to call. Stages 0x91, then 0x93 or 0x92; at 0x92 CPU0 likely
+  never went down and the limit isn't tested. Why: on T8103
   the chip starts its own block at the first cluster word and every core has to be in its wait within tens of ms
   (Naeem Malik's second driver); nothing shows T6000 has such a limit. The rest of the ending reads as
   `--m1-gates`'. Not run yet.
