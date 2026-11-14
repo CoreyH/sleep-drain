@@ -104,11 +104,15 @@ the PR with that session's work.
     `sio_steps=1`'s gate reading "after the 22" was without them.
   - The sweep of the other projects on 2026-11-13 (RESEARCH.md, "What the other projects have
     since 2026-11-12") put `a2_pre=1` ahead of the test of the engine's two words.
-  - **Next, a run of Corey's: `--m1-a2-pre`** ("The order after the look", in Track A below;
-    RESEARCH.md, "`a2_pre=1` as built"): the AP makes A2's three moves before the commit, and
-    reads the table's five clock muxes first.
-  - **After it, not built: the cluster words last** (RESEARCH.md, "Naeem Malik's second driver,
-    read", 2026-11-13). On T8103 the chip starts its own block at the first cluster power word
+  - `--m1-a2-pre`, run once, 2026-11-14 (RESEARCH.md, "The `a2_pre=1` run";
+    `results/a2-pre-20261114/`): the byte 0xff under stage 0x9b, restart at 91 s. All three of
+    A2's moves took and settled before the commit, and the ending didn't change; and the five
+    clock muxes the table parks didn't all read 0x80100000 (which, and what they read, isn't in
+    the bit).
+  - **Next, not built: the cluster words last, with the muxes read out one by one as its rider**
+    (reads only: which of the five read 0x80100000 after the table, and whether the rest read as
+    found). The cluster words: RESEARCH.md, "Naeem Malik's second driver, read", 2026-11-13.
+    On T8103 the chip starts its own block at the first cluster power word
     and the cores have to be in their WFI within tens of ms; our replay writes T6000's three
     (0x28e098000, + 4, + 8) in step 5 and takes steps 6 to 8 before the commit. The build: those
     three written last, the time from them to the release recorded. Desk first: how long steps
@@ -790,8 +794,10 @@ steps, and restarting the DCP and the PMP afterwards.
       byte is free. No register is written, so it needs Pullfrog and no adversarial pass. If
       0x28e5a0050 reads open there too, B2's op 140 is the stall's likeliest place and what holds
       that gate is the question; if it reads closed, this poll is cleared and `a2_pre=1` is next.
-      **Built, to run: `a2_pre=1`** (`--m1-a2-pre`; `e1-hook/a2_pre.h`; RESEARCH.md, "`a2_pre=1` as
-      built"). The run, Corey's: restart into a safe boot (`pkexec sleep-drain-safe boot`, then
+      **Run once, 2026-11-14: `a2_pre=1`** (RESEARCH.md, "The `a2_pre=1` run";
+      `results/a2-pre-20261114/`): the byte 0xff, restart at 91 s: the first and the fourth
+      outcome below at once (all three took and settled; bit 0 set). As it was handed over
+      (`--m1-a2-pre`; `e1-hook/a2_pre.h`; RESEARCH.md, "`a2_pre=1` as built"). The run, Corey's: restart into a safe boot (`pkexec sleep-drain-safe boot`, then
       restart), on battery, `make -C e1-hook`, `pkexec e1-hook/run-floor --quick --m1-a2-pre`.
       New in this run: right before the commit CPU0 reads the five clock muxes the table parked
       and then writes three p-state words as the engine's A2 would (DCS := 2, the fabric := 2,

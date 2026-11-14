@@ -5009,6 +5009,41 @@ like the same thing (the mapping is judgment).
    he'll share it. A draft is Corey's to ask for. (Asked on 2026-11-14, with Corey's OK:
    malik-na/linux-aurora#77.)
 
+### The `a2_pre=1` run: all three moves took and settled, the restart still at 91 s, and the muxes didn't all read parked (2026-11-14)
+
+Corey's run, in a safe boot on battery: `pkexec e1-hook/run-floor --quick --m1-a2-pre`, module
+built from main at 0b5cebb. Dark, then a restart "just about 90 seconds" later. The record, the
+load log and the clear and collect are in `results/a2-pre-20261114/`.
+
+- **Stage 0x9b**, the run's last by design; every earlier byte as in the `pcie_down=1` run (0x6012
+  0xff, 0x6013 0xdf, 0x6014 0x90, 0x6015 0x8e, 0x6007 0xf5, 0x6005 0x7d with PHASE at 0x4).
+- **0x6016 = 0xff.** DCS's word read asked for 2 and as A2 waits for it; so did the fabric's; the
+  third word read asked for 0 and as A2 waits for it; all at the last read before the commit. No
+  move stopped CPU0 and none was left unsettled within its 100 ms.
+- **Bit 0 is set: the five ClkGen muxes didn't all read 0x80100000 after the table.** The first
+  read of them after their write in any run. The bit doesn't say which, how many or what they
+  read. Awake they read 85100000 85100000 85100000 87100000 85100000 (the load log, in the
+  table's order), so "read as found" is one of the cases. `probe --pre` had 0x28e03801c, in the
+  same page, read as found after the AP's write.
+- **The restart: 91 s after the commit** (89.6 to 91.6 s), WD1's marker again.
+
+What it says:
+
+1. **A2's three moves can be made by the AP with a core up, and the engine finding them made
+   doesn't change the ending.** By the outcomes written down before the run, A2's own waits are
+   less likely to be where the pair stops. Not excluded, and worth less than it was when the run
+   was built: if T6000 has T8103's time limit after the cluster words (the section above), every
+   run ends at 90 s whatever the engine finds.
+2. **The recipe's clock park hasn't been shown to take in any run, and here it's shown not to
+   have, in whole or in part.** The table's waits on those rows pass on a write that was dropped.
+   macOS makes these writes from the AP, so either something in macOS's state lets them land that
+   ours lacks, or they don't all land there either (T8140's driver says its SoC refuses one of
+   three, on macOS too). Which muxes, and what they read, is the next read-out; nothing is
+   concluded about the recipe from one bit.
+
+Next (PLAN.md): the cluster words written last, with the time from them to the release recorded,
+and the muxes read out one by one as that run's rider. Desk first, as listed in the section above.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
