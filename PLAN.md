@@ -109,15 +109,16 @@ the PR with that session's work.
     A2's moves took and settled before the commit, and the ending didn't change; and the five
     clock muxes the table parks didn't all read 0x80100000 (which, and what they read, isn't in
     the bit).
-  - **Next, a run of Corey's: `--m1-acc-last`** ("The order after the look", in Track A below;
-    RESEARCH.md, "`acc_last=1` as built"): the three CPU complexes' cluster words (0x28e098000,
-    + 4, + 8) written right before the commit, not mid-table, with the time from them to the
-    run's last stage recorded and the five muxes read out one by one. Why: on T8103 the chip
-    starts its own block at the first cluster word and the cores have to be in their WFI within
-    tens of ms (RESEARCH.md, "Naeem Malik's second driver, read").
-  - **After it, not built:** if the time's code is 4, 5 or 6, the wait for WD2's arming cut from
-    CPU0's way to its WFI; then what opens the 22, and the muxes, to a write (B2 clears two words
-    of the engine's page right before the 22).
+  - `--m1-acc-last`, run once, 2026-11-14 (RESEARCH.md, "The `acc_last=1` run";
+    `results/acc-last-20261114/`): the byte 0x20 under stage 0x93, restart at 90 s. The three CPU
+    complexes' cluster words written last, the run at its last stage under 5 ms later, and the
+    ending unchanged: a limit of T8103's size is unlikely to be it. None of the five muxes read
+    parked: with `probe --pre`, the ClkGen page is closed to the AP's writes in the replay's state.
+  - **Next, not built: what opens the 22, and the muxes, to a write.** B2 clears two words of the
+    engine's page right before its 22 writes (the test of the engine's two words, in Track A
+    below; the sweep's notes on it apply). Desk first: which two words, what the sweep says
+    about writing them from the AP, and whether a `probe --pre`-style test that comes back can
+    carry it (write the two, then the 22 and the muxes, record every read-back, write all back).
   - **Asked, waiting:** Naeem Malik's commits cite a working deep sleep on T6000 ("a reference
     driver for the M1 Pro"). It wasn't found in public. Corey had the question posted on
     2026-11-14: malik-na/linux-aurora#77 (which driver, whether it wakes again, whether the
@@ -794,8 +795,10 @@ steps, and restarting the DCP and the PMP afterwards.
       byte is free. No register is written, so it needs Pullfrog and no adversarial pass. If
       0x28e5a0050 reads open there too, B2's op 140 is the stall's likeliest place and what holds
       that gate is the question; if it reads closed, this poll is cleared and `a2_pre=1` is next.
-      **Built, to run: `acc_last=1`** (`--m1-acc-last`; `e1-hook/acc_last.h`; RESEARCH.md,
-      "`acc_last=1` as built"). The run, Corey's: restart into a safe boot (`pkexec
+      **Run once, 2026-11-14: `acc_last=1`** (RESEARCH.md, "The `acc_last=1` run";
+      `results/acc-last-20261114/`): the byte 0x20, restart at 90 s: the second outcome below
+      (code 1), and none of the muxes' bits. As it was handed over (`--m1-acc-last`;
+      `e1-hook/acc_last.h`; RESEARCH.md, "`acc_last=1` as built"). The run, Corey's: restart into a safe boot (`pkexec
       sleep-drain-safe boot`, then restart), on battery, `make -C e1-hook`, `pkexec
       e1-hook/run-floor --quick --m1-acc-last`. New in this run: three of the recipe's writes (the
       CPU clusters' power words) move from the middle of the sequence to right before the commit,
