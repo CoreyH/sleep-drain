@@ -113,12 +113,18 @@ the PR with that session's work.
     `results/acc-last-20261114/`): the byte 0x20 under stage 0x93, restart at 90 s. The three CPU
     complexes' cluster words written last, the run at its last stage under 5 ms later, and the
     ending unchanged: a limit of T8103's size is unlikely to be it. None of the five muxes read
-    parked: with `probe --pre`, the ClkGen page is closed to the AP's writes in the replay's state.
-  - **Next, not built: what opens the 22, and the muxes, to a write.** B2 clears two words of the
-    engine's page right before its 22 writes (the test of the engine's two words, in Track A
-    below; the sweep's notes on it apply). Desk first: which two words, what the sweep says
-    about writing them from the AP, and whether a `probe --pre`-style test that comes back can
-    carry it (write the two, then the 22 and the muxes, record every read-back, write all back).
+    0x80100000 in step 8; whether their writes were refused, or took and changed, or read back
+    otherwise, isn't recorded.
+  - **Next, not built: the muxes' values.** Reads only: each mux's top byte (bits 31:24, where
+    the park's field and its two flags are) right after its own write and wait in step 5, and
+    again in step 8, in the PMU's bytes. Refused, changed later, or read back otherwise: one run
+    says which. Desk first: which bytes of the record are free for ten values, or which of the
+    five can stand for the rest.
+  - **After it, if they were refused: what opens the 22, and the muxes, to a write.** A
+    hypothesis until then. B2 clears two words of the engine's page right before its 22 writes
+    (the test of the engine's two words, in Track A below; the sweep's notes on it apply): which
+    two words, what the sweep says about writing them from the AP, and whether a `probe
+    --pre`-style test that comes back can carry it.
   - **Asked, waiting:** Naeem Malik's commits cite a working deep sleep on T6000 ("a reference
     driver for the M1 Pro"). It wasn't found in public. Corey had the question posted on
     2026-11-14: malik-na/linux-aurora#77 (which driver, whether it wakes again, whether the

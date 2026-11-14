@@ -5119,15 +5119,19 @@ What it says:
    ends the runs.** The three were written last, the run was at its last stage within 5 ms, and
    the pair stopped where it always has. Unlikely, not shown: the tail isn't timed, a shorter
    limit on T6000 isn't excluded, and the other cores' leaving isn't recorded.
-2. **The recipe's clock park doesn't take on any of the five muxes.** With `probe --pre` (the AP's
-   write to 0x28e03801c and to 19 of the 21 others read as found) that makes the ClkGen page, and
-   most of what B2 writes first, closed to the AP in the state the replay reaches. macOS makes
-   the park from the AP and its polls pass, so something in macOS's state opens those words that
-   ours lacks; or the park is refused there too and its polls pass as ours do (T8140's driver says
-   so of one of its three). The first is the lead: B2 itself clears two words of the engine's
-   page right before its 22 writes.
+2. **None of the five muxes read the table's value in step 8.** That is all the bits say: not
+   whether the writes were refused, or took and were changed afterwards (PLL-off and the power
+   words come between the park and the read), or took and read back otherwise than as written
+   (bit 31 may not read back as set after a park). What the muxes did read isn't recorded.
+   A hypothesis, not a finding: the ClkGen page is closed to the AP's writes in the state the
+   replay reaches, as `probe --pre` found for 0x28e03801c in the same page (another word, in
+   another state: awake after noirq, nothing stopped). If so, something in macOS's state opens
+   those words that ours lacks, and B2 clearing two words of the engine's page right before its
+   22 writes is a lead on what; or the park is refused under macOS too and its polls pass as ours
+   do (T8140's driver says so of one of its three).
 
-Next (PLAN.md): what opens the 22 and the muxes to a write.
+Next (PLAN.md): the muxes' values read out, before and after the park, which tells those cases
+apart; then, if they were refused, what opens them and the 22 to a write (Pullfrog on #105).
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 
