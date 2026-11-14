@@ -2,9 +2,9 @@
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
 --m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words,
---m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark, --m1-gates, --m1-sio-down, --m1-pcie-down, --m1-sio-steps or --m1-a2-pre; e1_hook m1=1, observe=1, pmgr_late=1,
+--m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark, --m1-gates, --m1-sio-down, --m1-pcie-down, --m1-sio-steps, --m1-a2-pre or --m1-acc-last; e1_hook m1=1, observe=1, pmgr_late=1,
 alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1, one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1,
-wd2_bite=1, cluster_ack=1, fabric_up=1, wd1_mark=1, gates_mark=1, sio_down=1, pcie_down=1, sio_steps=1, a2_pre=1) leaves in the PMU, read and decoded, and cleared again. And the
+wd2_bite=1, cluster_ack=1, fabric_up=1, wd1_mark=1, gates_mark=1, sio_down=1, pcie_down=1, sio_steps=1, a2_pre=1, acc_last=1) leaves in the PMU, read and decoded, and cleared again. And the
 three bytes e1-hook/probe (probe=1) leaves, which isn't a run: stage 0x0e.
 
   e1-hook/m1-crumbs               read them (no root needed)
@@ -100,11 +100,18 @@ SST_STAGES = (SST_PRE,) + SST_WD2
 A2P_PRE = 0x19
 A2P_WD2 = (0x1a, 0x1b)
 A2P_STAGES = (A2P_PRE,) + A2P_WD2
-PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE)  # the last stage before the commit, from fabric_up=1 on
-FAB_STAGES = (FAB_PRE,) + FAB_WD2 + GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES
+# acc_last=1 (run-floor --m1-acc-last; e1-hook/acc_last.h has the entries, the time's code, the byte and the stages):
+# gates_mark=1's run with the three CPU complexes' cluster words left out of step 5 and written right before the commit, a
+# read of the five ClkGen muxes where the gate words' reads were, and the time from the cluster words to the run's last stage
+# sent after it. 0x6016 is its own byte, so its stages are its own: 0x11 for 0x4b, and 0x12 and 0x13 for 0x54 and 0x55.
+ACL_PRE = 0x11
+ACL_WD2 = (0x12, 0x13)
+ACL_STAGES = (ACL_PRE,) + ACL_WD2
+PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE)  # the last stage before the commit, from fabric_up=1 on
+FAB_STAGES = (FAB_PRE,) + FAB_WD2 + GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES
 # wd2_bite=1, the same way: 0x6005 is its own sample (e1_hook's M1_WD2_STAGE_PEND and M1_WD2_STAGE)
-WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2 + SST_WD2 + A2P_WD2
-WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0])  # CPU0 had an exception pending after its reads
+WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2 + SST_WD2 + A2P_WD2 + ACL_WD2
+WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])  # CPU0 had an exception pending after its reads
 SAMPLE_STAGES = RECFG_STAGES + WD2_STAGES  # 0x6005 isn't the parked cores
 SIO_STOP_STAGES = (0x4e, 0x4f) + PRE_STAGES + SAMPLE_STAGES  # sio_stop=1, in place of 0x5a and 0x5b: 0x6012 has the K steps' outcomes
 # alarm=1 (0x59, 0x5f), hold=1 (0x5a-0x5e) and position=1: 0x6016 is the alarm's byte, and the alarm may be armed
@@ -307,6 +314,20 @@ HOLD_TEXT = {
           " armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards: that would end its deep"
           " WFI, so it likely never went down (a write or a read that faulted after the commit would leave an SError pending,"
           " masked)",
+    0x11: "8 (acc_last=1): gates_mark=1's 0x4b, in a run whose step 5 left the three CPU complexes' cluster words out: the"
+          " steps' outcomes (0x6012) follow it, then CPU0 read the five ClkGen muxes and sent its byte (0x6016), the last SPMI"
+          " command before the commit; next came nub-spmi0's acks, the three cluster words (0x28e098000 := 0, 0x28e098004 :="
+          " 0x20, 0x28e098008 := 0x20), the first commit right after them, the alarm's commands (the byte again the last of"
+          " them), the release and stage 0x12 or 0x13",
+    0x13: "acc_last=1: gates_mark=1's 0x55: the three cluster words, the commit, the alarm and the release are done, and CPU0"
+          " wrote WD2's bite, if WD2 was armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards. One more"
+          " command follows this stage in that run, the byte with the time's code (0x6016); then CPU0 took its deep WFI,"
+          " unrecorded",
+    0x12: "acc_last=1: gates_mark=1's 0x54: the three cluster words, the commit, the alarm and the release are done, and CPU0"
+          " wrote WD2's bite, if WD2 was armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending"
+          " afterwards: that would end its deep WFI, so it likely never went down (a write or a read that faulted from the"
+          " three cluster words on, which this run writes under step 9's mask, would leave an SError pending, masked, and"
+          " show only as this stage). The byte with the time's code (0x6016) follows this stage too",
     0x4f: "sio_stop=1: the commit and the alarm are done, the run's last breadcrumb by design: CPU0 then released the others"
           " and took its deep WFI at once, unrecorded",
     0x40: "position=1: the release went out and CPU0's watch ended (0x6005 = the cores it read off); CPU0 stays up,"
@@ -1116,8 +1137,8 @@ GATES_LANE, GATES_MARK = 0x40, 0x80
 
 
 def alarm_res(b, s):
-    """0x6016 as the alarm's result, or None at gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's and a2_pre=1's stages, whose byte it is there instead."""
-    return None if s in GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES else b[0x16]
+    """0x6016 as the alarm's result, or None at gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's, a2_pre=1's and acc_last=1's stages, whose byte it is there instead."""
+    return None if s in GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]
 
 
 def gates_lines(s, b, pmp):
@@ -1430,6 +1451,97 @@ def sst_lines(s, b, pmp):
                    " rest of the entry")
     return out
 
+# acc_last=1's byte, acc_last.h's: bits 4:0 the muxes, in the table's order; bits 7:5 the time's code.
+ACL_MUXES = ("0x28e038164", "0x28e03816c", "0x28e038168", "0x28e03815c", "0x28e038170")
+ACL_T_PRE, ACL_T_LATE = 7, 6
+ACL_T_MS = (5, 10, 20, 50, 100)  # codes 1 to 5: under each
+ACL_T8103_MS = 52  # the span T8103 was shown to allow (Naeem Malik's second driver)
+ACL_UNDER_MS = 20  # a span under this is called under that figure: the span leaves out the byte's own command, the acks and CPU0's WFI
+
+
+def acl_lines(s, b, pmp):
+    """acc_last=1: 0x6016 at the run's stages (e1-hook/acc_last.h has the layout), read only where the record says it's that
+    byte: the stage has pmp_out=1's bit 7, the steps' outcomes, sent just before it, landed, and its code isn't 0."""
+    v = b[0x16]
+    code = v >> 5
+    if not pmp:
+        return [f"0x6016 = 0x{v:02x}: not read. An acc_last=1 run's stages always carry pmp_out=1's bit 7, and this one doesn't: not"
+                " a record that run leaves"]
+    if not fab_landed(b):
+        return [f"0x6016 = 0x{v:02x}: not read. acc_last=1's byte goes out after the steps' outcomes, and only if their command"
+                " didn't fail, and their marker isn't at 0x6013: the byte isn't shown to have been sent"]
+    if not code and s == ACL_PRE:
+        return [f"0x6016 = 0x{v:02x}: ACC_LAST'S BYTE DIDN'T LAND (bits 7:5 are 0), though stage 0x11 and the steps' outcomes did:"
+                " CPU0 was reading the five ClkGen muxes or sending the byte when the record stopped, before the cluster words"
+                " and the commit. A read that faulted (its SError panics the kernel: a restart about 10 s later, if the panic's"
+                " restart works), one that never returned (WD1's marker: a restart about 90 s after step 4), or the byte's own"
+                " command failing, after which the run went on with nothing more recorded: this record doesn't tell them"
+                " apart, and the restart's time, below, only in part"]
+    if not code:
+        return [f"0x6016 = 0x{v:02x}: bits 7:5 are 0, so acc_last=1's byte didn't survive the reset, or isn't the one sent: stage"
+                f" 0x{s:02x} went out after it, and a command that fails stops every one after it. Not read"]
+    parked = [bool(v >> i & 1) for i in range(5)]
+    out = [f"0x6016 = 0x{v:02x}: acc_last=1's byte, in place of the alarm's result: step 5 was to leave the three CPU complexes'"
+           " cluster words out, and CPU0 to read the five ClkGen muxes in step 8, write the three (0x28e098000 := 0,"
+           " 0x28e098004 := 0x20, 0x28e098008 := 0x20) right before the commit, and time the run from before the first of"
+           " them to after its last stage:",
+           "  the five ClkGen muxes the table parked, each read once after the table: "
+           + ("all five read 0x80100000, as the table wrote them" if all(parked) else
+              "NONE OF THE FIVE READ 0x80100000, the table's value: the park didn't take, or didn't stay, on any of them" if not any(parked) else
+              "read 0x80100000, the table's value: " + ", ".join(m for m, p_ in zip(ACL_MUXES, parked) if p_)
+              + "; DIDN'T: " + ", ".join(m for m, p_ in zip(ACL_MUXES, parked) if not p_))
+           + ("" if all(parked) else " (what a mux that didn't read it did read isn't in the byte: the load's log has all five awake)")]
+    if not b[0x12] >> 6 == 3:
+        out.append("  (SIO's firmware isn't shown stopped, 0x6012: " + SIO_CODES[b[0x12] >> 6] + ": this run's writes don't depend on"
+                   " it, but the recipe's state does)")
+    if s == ACL_PRE:
+        out.append("  stage 0x11, so nothing records the cluster words or the commit after this byte (0x12 or 0x13 comes after"
+                   " them): " + ("the time's code is 7, \"not yet\", as that send has it" if code == ACL_T_PRE else
+                                f"the time's code is {code}, which only the send after stage 0x12 or 0x13 carries: that stage's"
+                                " command didn't land though a later one did, which this run's commands can't do. Not read as a time")
+                   + ". Inconclusive about the rest of the entry")
+        return out
+    if code == ACL_T_PRE:
+        out.append("  the time: NOT RECORDED. The code is still 7, \"not yet\": the stage went out and the command after it,"
+                   " with the time, didn't land, or CPU0 stopped between the two. The cluster words were written right before"
+                   " the commit all the same (the stage is sent after both); how long the run took from them isn't known")
+        return out
+    span = (f"under {ACL_T_MS[code - 1]} ms" + (f" ({ACL_T_MS[code - 2]} ms or more)" if code > 1 else "") if code < ACL_T_LATE else
+            f"{ACL_T_MS[-1]} ms OR MORE")
+    out.append(f"  the time, code {code}: {span} from CPU0's read of the clock before the first cluster word to its read after"
+               " this stage went out: the three writes, the commit, the alarm's commands, the release of the other cores, the"
+               " waits for WD2 to be armed, for its count to move and for PHASE, the bite's write and the stage's command. Not"
+               " in it: this byte's own command, the acks and CPU0's WFI. Nothing records that the other cores left their hold"
+               " (hold_nowatch=1): the span bounds their way to their WFI only if they did")
+    if s == ACL_WD2[0]:
+        out.append("  so: NOT A TEST OF THE LIMIT, whatever the span: CPU0 had an exception pending after the commit and likely"
+                   " never went down, so every core wasn't in its wait. The restart's time isn't read (below)")
+        return out
+    # Only the clean last stage gets here, and has the restart read against the marker (below).
+    time = (" The restart's time is read below, against WD1's marker, as far as the marker and WD2's sample bear a reading out:"
+            " about 120 s (WD2's bite) in place of 90 s, or 150 s or more, is what B2 getting past its op 224 would give")
+    if code < ACL_T_LATE and ACL_T_MS[code - 1] <= ACL_UNDER_MS:
+        out.append(f"  so: THE CLUSTER WORDS WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT {span.upper()} AFTER THEM: well under"
+                   f" the {ACL_T8103_MS} ms T8103 was shown to allow between its first cluster word and every core's wait, as far"
+                   " as the span covers it. The tail it leaves out isn't timed: this byte's own command, which was answered, since"
+                   " the byte is here (the same command, the alarm's last, is inside the span), the acks and CPU0's WFI. If the"
+                   " restart still comes at 90 s, a limit of that size is unlikely to be what ends the runs; that isn't shown,"
+                   " and a shorter one on T6000 isn't excluded. An ending that"
+                   " changes says the three writes' place matters, not yet that it's the time: they now also come after the"
+                   " table's later entries, the power words and the stop requests." + time)
+    elif code < ACL_T_LATE and ACL_T_MS[code - 1] <= ACL_T8103_MS:
+        out.append(f"  so: THE CLUSTER WORDS WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT {span.upper()} AFTER THEM: TOO CLOSE TO"
+                   f" CALL against the {ACL_T8103_MS} ms T8103 was shown to allow: the span leaves out this byte's own command, the"
+                   " acks and CPU0's WFI, which aren't timed. A restart at 90 s after this neither tests that limit nor clears"
+                   " it." + time)
+    else:
+        out.append(f"  so: THE CLUSTER WORDS WERE WRITTEN LAST, BUT THE RUN TOOK {span.upper()} FROM THEM TO ITS LAST STAGE: not under"
+                   f" the {ACL_T8103_MS} ms T8103 was shown to allow. A restart at 90 s after this doesn't test that limit: what"
+                   " took the time (the wait for WD2's arming is the long bound, up to 300 ms) is to be cut first. The other"
+                   " cores were released inside the span, earlier than its end; how much earlier isn't recorded." + time)
+    return out
+
+
 # a2_pre=1's byte, a2_pre.h's.
 A2P_MUX_BAD, A2P_MARK = 0x01, 0x80
 A2P_MOVES = (("DCS's p-state word (0x28e20c800) := 2", "asked for 2", "bits 11:8 at 2 with bit 31 clear"),
@@ -1690,7 +1802,7 @@ def alarm_lines(s, commit, alarm, now, res):
     right = commit is not None and when == commit + ALARM_SECS
     recorded, acked = res is not None and bool(res & 0x80), res in ALARM_ACKED
     # gates_mark=1: the alarm's commands ran as ever, but their result isn't recorded.
-    nores = "this run records no result for the alarm's commands (gates_mark=1's byte, or sio_down=1's, pcie_down=1's, sio_steps=1's or a2_pre=1's, has 0x6016)"
+    nores = "this run records no result for the alarm's commands (gates_mark=1's byte, or sio_down=1's, pcie_down=1's, sio_steps=1's, a2_pre=1's or acc_last=1's, has 0x6016)"
     if commit is None:
         out.append("  the commit's second isn't known, so 0x140c can't be checked")
     elif right:
@@ -1776,7 +1888,7 @@ def decode(b, rtc, cnt=None, alarm=None):
         ack = bool(b[0x14] & F_ACK) if b[0x14] & 0x80 else None
     else:
         ack = None if pmp and s in ACK_EARLY else False
-    pre = A2P_PRE if s in A2P_STAGES else SST_PRE if s in SST_STAGES else PCD_PRE if s in PCD_STAGES else SIOD_PRE if s in SIOD_STAGES else GATES_PRE if s in GATES_STAGES else FAB_PRE  # the run's stage before the commit, for fabric_up=1's byte
+    pre = ACL_PRE if s in ACL_STAGES else A2P_PRE if s in A2P_STAGES else SST_PRE if s in SST_STAGES else PCD_PRE if s in PCD_STAGES else SIOD_PRE if s in SIOD_STAGES else GATES_PRE if s in GATES_STAGES else FAB_PRE  # the run's stage before the commit, for fabric_up=1's byte
     ares = alarm_res(b, s)  # 0x6016 as the alarm's result, or None
     out = [
         f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
@@ -1826,7 +1938,7 @@ def decode(b, rtc, cnt=None, alarm=None):
             out.append(f"0x6006 = {qto(b[6], bool(ack))}")
             if ack is None:
                 out.append("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before"
-                           " stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1, 0x3d with sio_down=1, 0x1d with pcie_down=1, 0x15 with sio_steps=1, 0x19 with a2_pre=1)" + (", and that byte didn't survive" if s in ACK_MARKED else "") + ". In one, bits 2-5 are"
+                           " stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1, 0x3d with sio_down=1, 0x1d with pcie_down=1, 0x15 with sio_steps=1, 0x19 with a2_pre=1, 0x11 with acc_last=1)" + (", and that byte didn't survive" if s in ACK_MARKED else "") + ". In one, bits 2-5 are"
                            " the cluster words whose flag stayed, not the waits on bit 4 that timed out)")
         if base >= 0x30:
             if not late:
@@ -1897,7 +2009,7 @@ def decode(b, rtc, cnt=None, alarm=None):
                 out += ack_lines(f, b[6], b[7])
             elif s in SIO_STOP_STAGES and f & (F_ACK | F_ACK_REST):
                 out.append("  0x6014's bits 4 and 5 are cluster_ack=1's alone in a sio_stop=1 run: bit 5 only with bit 4, and only at"
-                           " that run's stages (0x4e, 0x56, 0x57, or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, or sio_down=1's 0x3d, 0x3e, 0x3f, or pcie_down=1's 0x1d, 0x1e, 0x1f, or sio_steps=1's 0x15, 0x16, 0x17, or a2_pre=1's 0x19, 0x1a, 0x1b, with pmp_out=1's bit 7). Here they aren't"
+                           " that run's stages (0x4e, 0x56, 0x57, or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, or sio_down=1's 0x3d, 0x3e, 0x3f, or pcie_down=1's 0x1d, 0x1e, 0x1f, or sio_steps=1's 0x15, 0x16, 0x17, or a2_pre=1's 0x19, 0x1a, 0x1b, or acc_last=1's 0x11, 0x12, 0x13, with pmp_out=1's bit 7). Here they aren't"
                            " that: don't read them")
         else:
             cmd = ("its own one-byte command" if s in POSITION else
@@ -1992,6 +2104,8 @@ def decode(b, rtc, cnt=None, alarm=None):
             out += sst_lines(s, b, pmp)
         elif s in A2P_STAGES:
             out += a2p_lines(s, b, pmp)
+        elif s in ACL_STAGES:
+            out += acl_lines(s, b, pmp)
         elif s in ALARM_STAGES:
             out.append(alarm_byte(b[0x16]))
             if s in (0x59, 0x5a, 0x4e, FAB_PRE) and b[0x16] in ALARM_ACKED:
@@ -2058,7 +2172,7 @@ def main():
             elif st in ALARM_STAGES and not secs and alarm[0] & 0x40:
                 die(f"0x1401 reads armed (0x{alarm[0]:02x}) after an alarm stage, but the commit's second was lost and"
                     " 0x6016 doesn't say 0x1401's write was acked"
-                    + (" (after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's and a2_pre=1's stages it never does: it's that run's byte)" if res is None else "")
+                    + (" (after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's, a2_pre=1's and acc_last=1's stages it never does: it's that run's byte)" if res is None else "")
                     + ", so whose alarm this is can't be told. Nothing is"
                     " written: the breadcrumbs stay, and clearing it needs Corey's word")
             elif alarm[0] & 0x40:

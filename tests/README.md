@@ -41,7 +41,13 @@ used to sit in CLAUDE.md, entry for entry):
   the 22 only after a switch-off that took with the gate open, the 43 back in reverse, `ps_pmp`'s word untouched;
   the load's refusals (a page that isn't there, an address on the never-write list, a list out of B2's order or
   short); the byte through m1-crumbs for every value at each stage, with SIO's firmware stopped and not; and
-  `--clear`. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
+  `--clear`. For acc_last=1 it compiles `acc_last.h`'s entries, code, byte and stage map against a second
+  writing-out (every byte, every stage, the code's bounds and a tick either side of each), runs `m1_acl_pre()`,
+  `m1_acl_write()` and `m1_acl_out()` with the module's own table, waits and `m1_post_val()` against a model that
+  logs every read, write, clock read and PMU byte (30 pairings of which muxes read parked and how long the run
+  took, and once with the PMU refusing the second send: five reads and a byte before any write, the clock, the
+  three cluster words and nothing else, the clock, the byte, the acks), `m1_acl_init()`'s refusals, where
+  `e1_hook.c` calls each, and the byte through m1-crumbs for every value at each stage. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
   writing-out of A2's ops 11 to 16 (every pairing of each word's two bits at every count of moves made, and 400
   drawn cases), and runs `m1_a2_pre()` with the module's own table of waits against a model of the p-state page
   and the muxes' page in 29 scenarios (a write dropped, a word that settles late or never or keeps bit 31, DCS put

@@ -96,6 +96,7 @@
  *   pkexec e1-hook/run-floor --m1-pcie-down       (--m1-gates' and pcie_down=1: the same)
  *   pkexec e1-hook/run-floor --m1-sio-steps       (--m1-gates' and sio_steps=1: the same)
  *   pkexec e1-hook/run-floor --m1-a2-pre          (--m1-gates' and a2_pre=1: the same)
+ *   pkexec e1-hook/run-floor --m1-acc-last        (--m1-gates' and acc_last=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -148,6 +149,7 @@
 #include "sio_down.h"
 #include "pcie_down.h"
 #include "a2_pre.h"
+#include "acc_last.h"
 #include "sio_steps.h"
 #include "wd2_bite.h"
 
@@ -381,6 +383,9 @@ MODULE_PARM_DESC(sio_steps, "With gates_mark=1, never with sio_down=1, pcie_down
 static bool a2_pre;
 module_param(a2_pre, bool, 0444);
 MODULE_PARM_DESC(a2_pre, "With gates_mark=1, never with sio_down=1, pcie_down=1, sio_steps=1 or probe=1: in step 8, in place of gates_mark=1's reads and right before the commit, CPU0 makes the three moves A2 makes by itself after its first handshake, each with up to 100 ms for A2's own condition: 0x28e20c800 (DCS) := 2, 0x28e20c000 (the fabric) := 2, 0x28e20c400 := 0; nothing is written back. Before them it reads the five ClkGen muxes the table parked. Its byte goes to 0x6016 under its own stages (a2_pre.h)");
+static bool acc_last;
+module_param(acc_last, bool, 0444);
+MODULE_PARM_DESC(acc_last, "With gates_mark=1, never with sio_down=1, pcie_down=1, sio_steps=1, a2_pre=1, observe=1 or probe=1: step 5 leaves out the table's entries 52 to 54, the soc-cluster words of EACC, PACC0 and PACC1 (0x28e098000 := 0, 0x28e098004 := 0x20, 0x28e098008 := 0x20), and step 9 writes them, the same values in the same order, right before the commit; the time from before the first of them to after wd2_bite=1's stage goes to the PMU's 0x6016 as a code in bits 7:5, in the run's last command. Before that, in step 8 and in place of gates_mark=1's reads, the five ClkGen muxes the table parked are read, one bit each in bits 4:0 (set: read 0x80100000). No new address or value. Its stages from step 8 on are its own (0x11, then 0x13 or 0x12) (acc_last.h)");
 /* Not a run: the three coprocessor words B2 polls, read in the recipe's state, and the suspend failed (PLAN.md, "The order after run 17"). */
 static bool probe;
 module_param(probe, bool, 0444);
@@ -1576,6 +1581,27 @@ static void e1_after_slpa(void)
  * never-write list and the table's five mux rows are where a2_pre.h says, and
  * logs the eight words awake. The stages are a2p_stage()'s: 0x19, then 0x1b
  * or 0x1a after the release. It adds at most about 0.3 s before the commit.
+ *
+ * acc_last=1 (run-floor --m1-acc-last; with gates_mark=1, never with
+ * sio_down=1, pcie_down=1, sio_steps=1, a2_pre=1, observe=1 or probe=1) moves
+ * the three CPU complexes' soc-cluster words to the end and times what comes
+ * after them (PLAN.md, "The order after the look"; acc_last.h has the entries,
+ * the time's code, the byte and the stages). Step 5 leaves the table's entries
+ * 52 to 54 out (EACC := 0, PACC0 := 0x20, PACC1 := 0x20; no wait of macOS's is
+ * on them). In step 8, where gates_mark=1's reads would be, m1_acl_pre() reads
+ * the five ClkGen muxes the table parked and sends the byte with a bit for
+ * each and the time's code at 7. In step 9, under the mask and right before
+ * the commit's write, CPU0 reads the clock and writes the three, the table's
+ * values in the table's order, with nothing between them and the commit.
+ * After the release and wd2_bite=1's stage, m1_acl_out() reads the clock again
+ * and sends the byte with the span's code: the run's last command. No address
+ * or value is new: the same three writes, later, and after the table's
+ * entries 55 to 72 where macOS has them before (T8103's order as Naeem Malik's
+ * second driver has it; nothing shows T6000 needs it). At the load,
+ * m1_acl_init() refuses unless the three entries are the words and values
+ * named, none is on the never-write list, no wait is on them and the table's
+ * five mux rows are where a2_pre.h says, and logs the eight words awake. The
+ * stages are acl_stage()'s: 0x11, then 0x13 or 0x12 after the release.
  *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
@@ -3174,6 +3200,8 @@ static void m1_wd2_out(void)
 		b[0] = sst_stage(b[0]);
 	if (a2_pre)
 		b[0] = a2p_stage(b[0]);
+	if (acc_last)
+		b[0] = acl_stage(b[0]);
 	b[1] = m1_wd2_sample(pre, m1_wd2_bite_awake, ctl, post, after, c0, c1, phase);
 	m1_crumb(0x6004, b, 2);
 	for (i = 0; i < M1_SPMI_WORDS; i++)
@@ -3404,6 +3432,71 @@ static_assert(FAB_PS + A2P_DCS == 0x28e20c800ULL && FAB_PS + A2P_FAB == 0x28e20c
 	      !(A2P_MUX_BAD & A2P_MARK) && A2P_TOOK(0) == BIT(1) && A2P_SETTLED(2) == BIT(6) && GATES_AT == 0x6016);
 
 /*
+ * acc_last=1, step 8 (the m1 comment; acc_last.h has the byte): the five ClkGen-SOC muxes, through the table's own rows
+ * as m1_a2p_mux_ok() reads them (m1_acl_init() has checked that there are five), one bit each in the table's order, set
+ * if the mux read A2P_MUX_VAL; then the byte, with the time's code at "not yet". Reads only. Returns the byte, for the
+ * alarm's last command and for m1_acl_out().
+ */
+static u8 m1_acl_pre(void)
+{
+	unsigned int k, n = 0;
+	u8 mux = 0, b;
+
+	for (k = 0; k < ARRAY_SIZE(m1_waits); k++) {
+		if ((m1_waits[k].addr & PAGE_MASK) != A2P_MUX_PAGE)
+			continue;
+		if (readl(post_map[m1_waits[k].idx]) == A2P_MUX_VAL)
+			mux |= BIT(n);
+		n++;
+	}
+	dsb(sy);
+	isb();
+	b = acl_byte(mux, ACL_T_PRE);
+	m1_crumb(GATES_AT, &b, 1);
+	return b;
+}
+
+/*
+ * acc_last=1, step 9, right before the commit's write: the three soc-cluster words step 5 left out, the table's values
+ * in the table's order, as step 5 writes an entry, then a barrier. The run's only writes that aren't where the recipe has
+ * them, and its only ones made under step 9's mask besides the commit: one that faulted would leave an SError pending
+ * and show as stage 0x12, not as a panic. Returns the clock as read before the first.
+ */
+static u64 m1_acl_write(void)
+{
+	u64 t = m1_now();
+	unsigned int i;
+
+	for (i = ACL_FIRST; i < ACL_FIRST + ACL_N; i++)
+		writel_relaxed(m1_post_val(i), post_map[i]);
+	dsb(sy);	/* the commit is in another page: the three are out before it, as step 5's entries were */
+	return t;
+}
+
+/*
+ * acc_last=1, after the release and wd2_bite=1's stage: the span from t, m1_acl_write()'s clock, as acc_last.h's code,
+ * with pre's mux bits, to 0x6016: the run's last command, then the acks every command needs before the WFI.
+ */
+static void m1_acl_out(u8 pre, u64 t)
+{
+	unsigned int i;
+	u8 b;
+
+	b = acl_byte(pre, acl_code(m1_now() - t, m1_tps));
+	m1_crumb(GATES_AT, &b, 1);
+	for (i = 0; i < M1_SPMI_WORDS; i++)
+		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
+	dsb(sy);
+	isb();
+}
+/* The three entries are the CPU complexes' words with the table's values, the muxes are a2_pre.h's five, and the byte has room for both. */
+static_assert(ARRAY_SIZE(((u16[])ACL_OFFS)) == ACL_N && ARRAY_SIZE(((u32[])ACL_VALS)) == ACL_N && ACL_N == 3 && ACL_FIRST == 52 &&
+	      ACL_FIRST + ACL_N < ARRAY_SIZE(e1_post_slpa) - 1 && ACL_PAGE == 0x28e098000ULL && ACL_PAGE == M1_SOC_CLUSTERS);
+static_assert(ACL_MUX_N == A2P_MUX_N && ACL_MUX_MASK == BIT(ACL_MUX_N) - 1 && ACL_T_SHIFT == ACL_MUX_N && ACL_T_PRE == 7 &&
+	      ACL_T_LATE == ARRAY_SIZE(((u16[])ACL_T_MS)) + 1 && ACL_T_LATE < ACL_T_PRE && GATES_AT == 0x6016 &&
+	      M1_ACL_STAGE_PRE == 0x11 && M1_ACL_STAGE == 0x13 && M1_ACL_STAGE_PEND == 0x12);
+
+/*
  * sio_steps=1, step 8, right before the commit (the m1 comment; sio_steps.h has the steps and the byte): sio_down=1's
  * switch-off with B2's cycle of GPIO's power word in B2's place, the gate polled; then, if all 43 went off and the gate
  * is still open, B2's ops 8 to 29 and the gate polled again; then the 43 written back as found. The writes: two to
@@ -3528,7 +3621,7 @@ static void __noreturn m1_after_slpa(void)
 	unsigned int i, k, cpu, drained = 0;
 	u32 v, dcs = 0, pacc0 = 0, sram = 0;
 	bool obs;
-	u64 t0;
+	u64 t0, t_acl = 0;
 
 	/* K3 */
 	if (m1_kwrite(0x6004, &two, 1))
@@ -3589,6 +3682,9 @@ static void __noreturn m1_after_slpa(void)
 		const struct e1_mmio_write *w = &e1_post_slpa[i];
 
 		if (e1_post_early(w))
+			continue;
+		/* acc_last=1: the three CPU complexes' cluster words wait for step 9 (acc_last.h). */
+		if (acc_last && acl_entry(i))
 			continue;
 		if (sio_on && i == M1_SIO_ENTRY && m1_sio_raise())
 			held |= BIT(0);	/* 0x6007's bit 0, unused by the cores: CPU0 never holds */
@@ -3695,6 +3791,8 @@ static void __noreturn m1_after_slpa(void)
 			b[0] = sst_stage(b[0]);
 		if (a2_pre)
 			b[0] = a2p_stage(b[0]);
+		if (acc_last)
+			b[0] = acl_stage(b[0]);
 		b[1] = parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
 		b[3] = fabric_up ? m1_fab_byte(held, fab_pre, fab_set, fab_end, wd1) : hold ? held : down;
@@ -3713,7 +3811,7 @@ static void __noreturn m1_after_slpa(void)
 	 * that say where the run is; SError still unmasked, so that a read that faulted panics here, then their byte (the
 	 * m1 comment; gates_mark.h).
 	 */
-	if (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre) {
+	if (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre && !acc_last) {
 		u32 g[GATES_N], lane;
 
 		m1_gates_read(g, &lane);
@@ -3737,6 +3835,9 @@ static void __noreturn m1_after_slpa(void)
 	/* a2_pre=1, in their place: the table's muxes read, A2's three moves, each waited for, and the byte; nothing written back (a2_pre.h). */
 	if (a2_pre)
 		m1_gates = m1_a2_pre();
+	/* acc_last=1, in their place: the table's muxes read, one bit each, and the byte with the time's code at "not yet" (acc_last.h). */
+	if (acc_last)
+		m1_gates = m1_acl_pre();
 	/* recfg_bite=1: A2's bite word once more, SError still unmasked: a read that faulted panics here, before the commit, not under step 9's mask (the m1 comment). */
 	if (recfg_bite) {
 		sram = readl(m1_recfg + RECFG_BITE);
@@ -3763,6 +3864,9 @@ static void __noreturn m1_after_slpa(void)
 	}
 	if (position)
 		m1_t_first = m1_now();
+	/* acc_last=1: the three cluster words step 5 left out, last before the commit, and the clock from before them. */
+	if (acc_last)
+		t_acl = m1_acl_write();
 	writel_relaxed(1, commit);
 	if (alarm) {
 		dsb(sy);
@@ -3796,6 +3900,9 @@ static void __noreturn m1_after_slpa(void)
 		m1_recfg_out(sram);
 	if (wd2_bite)
 		m1_wd2_out();
+	/* acc_last=1: the span since the cluster words, the run's last command (acc_last.h). */
+	if (acc_last)
+		m1_acl_out(m1_gates, t_acl);
 	if (obs) {
 		o->raw = m1_raw;
 		o->down = down;
@@ -5085,6 +5192,62 @@ static int __init m1_a2p_init(void)
 	return 0;
 }
 
+/*
+ * acc_last=1 at load, after m1_gates_init(): the table's entries 52 to 54 are the three soc-cluster words with the
+ * values meant (a second writing-out of them, as m1_a2p_init() has), each mapped and none on the never-write list; no
+ * wait of macOS's is on any of them (step 5 skips the entry, and would skip its waits' turn with it); the table has
+ * exactly five waits in the muxes' page, each on a mapped row that writes A2P_MUX_VAL; and the eight words logged awake.
+ * Nothing is read before all of that holds. Reads only.
+ */
+static int __init m1_acl_init(void)
+{
+	static const u16 off[ACL_N] = ACL_OFFS;
+	static const u32 val[ACL_N] = ACL_VALS;
+	static const u64 want_addr[ACL_N] = { 0x28e098000ULL, 0x28e098004ULL, 0x28e098008ULL };
+	static const u32 want_val[ACL_N] = { 0x0, 0x20, 0x20 };
+	u32 mux[ACL_MUX_N] = { 0 }, v[ACL_N];
+	unsigned int i, k, n = 0;
+
+	for (i = 0; i < ACL_N; i++) {
+		const struct e1_mmio_write *w = &e1_post_slpa[ACL_FIRST + i];
+
+		if (w->addr != want_addr[i] || w->addr != ACL_PAGE + off[i] || w->width != 4 || w->val != want_val[i] ||
+		    val[i] != want_val[i] || m1_post_val(ACL_FIRST + i) != want_val[i] || !post_map[ACL_FIRST + i] ||
+		    e1_never_write(w->addr)) {
+			pr_err("m1: acc_last: entry %u of the post-slpa table (0x%llx := 0x%llx) isn't the cluster word meant at its place, or it's on the never-write list; refusing\n",
+			       ACL_FIRST + i, w->addr, w->val);
+			return -EINVAL;
+		}
+	}
+	for (k = 0; k < ARRAY_SIZE(m1_waits); k++) {
+		const struct m1_wait *w = &m1_waits[k];
+
+		if (acl_entry(w->idx)) {
+			pr_err("m1: acc_last: a wait is on entry %u, which step 5 leaves out; refusing\n", w->idx);
+			return -EINVAL;
+		}
+		if ((w->addr & PAGE_MASK) != A2P_MUX_PAGE)
+			continue;
+		n++;
+		if (!post_map[w->idx] || e1_post_slpa[w->idx].val != A2P_MUX_VAL) {
+			pr_err("m1: acc_last: the table's mux rows aren't the five meant (0x%llx); refusing\n", w->addr);
+			return -EINVAL;
+		}
+	}
+	if (n != ACL_MUX_N) {
+		pr_err("m1: acc_last: %u waits in the ClkGen muxes' page, not %u; refusing\n", n, ACL_MUX_N);
+		return -EINVAL;
+	}
+	for (k = 0, n = 0; k < ARRAY_SIZE(m1_waits); k++)
+		if ((m1_waits[k].addr & PAGE_MASK) == A2P_MUX_PAGE)
+			mux[n++] = readl(post_map[m1_waits[k].idx]);
+	for (i = 0; i < ACL_N; i++)
+		v[i] = readl(post_map[ACL_FIRST + i]);
+	pr_info("m1: acc_last: awake: EACC 0x28e098000 %08x; PACC0 0x28e098004 %08x; PACC1 0x28e098008 %08x; the muxes, in the table's order: %08x %08x %08x %08x %08x. Step 5 leaves the three out; step 9 writes 0, 0x20 and 0x20 to them right before the commit, and the time from there to the run's last record goes to 0x6016\n",
+		v[0], v[1], v[2], mux[0], mux[1], mux[2], mux[3], mux[4]);
+	return 0;
+}
+
 /* fabric_up=1 at load: the word off the never-write list and as it is awake, 0x333, so that 3 is its awake value. Reads only. */
 static int __init m1_fab_init(void)
 {
@@ -5397,6 +5560,12 @@ static int __init m1_init(void)
 	}
 	if (a2_pre) {
 		int ret = m1_a2p_init();
+
+		if (ret)
+			return ret;
+	}
+	if (acc_last) {
+		int ret = m1_acl_init();
 
 		if (ret)
 			return ret;
@@ -5953,6 +6122,10 @@ static int __init e1_check_params(void)
 		pr_err("a2_pre=1 needs gates_mark=1 and none of sio_down=1, pcie_down=1, sio_steps=1 and probe=1 (it's that run with A2's three moves made in step 8 and left, and its byte is at 0x6016 under its own stages)\n");
 		return -EINVAL;
 	}
+	if (acc_last && (!gates_mark || sio_down || pcie_down || sio_steps || a2_pre || observe || probe)) {
+		pr_err("acc_last=1 needs gates_mark=1 and none of sio_down=1, pcie_down=1, sio_steps=1, a2_pre=1, observe=1 and probe=1 (it's that run with the three CPU complexes' cluster words written right before the commit, and its byte is at 0x6016 under its own stages)\n");
+		return -EINVAL;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -6126,7 +6299,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -6134,7 +6307,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
 		gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;

@@ -109,15 +109,15 @@ the PR with that session's work.
     A2's moves took and settled before the commit, and the ending didn't change; and the five
     clock muxes the table parks didn't all read 0x80100000 (which, and what they read, isn't in
     the bit).
-  - **Next, not built: the cluster words last, with the muxes read out one by one as its rider**
-    (reads only: which of the five read 0x80100000 after the table, and whether the rest read as
-    found). The cluster words: RESEARCH.md, "Naeem Malik's second driver, read", 2026-11-13.
-    On T8103 the chip starts its own block at the first cluster power word
-    and the cores have to be in their WFI within tens of ms; our replay writes T6000's three
-    (0x28e098000, + 4, + 8) in step 5 and takes steps 6 to 8 before the commit. The build: those
-    three written last, the time from them to the release recorded. Desk first: how long steps
-    6 to 8 take, and what the table has after entry 54. Then, still not built: what opens the 22
-    to a write (B2 clears two words of the engine's page right before them).
+  - **Next, a run of Corey's: `--m1-acc-last`** ("The order after the look", in Track A below;
+    RESEARCH.md, "`acc_last=1` as built"): the three CPU complexes' cluster words (0x28e098000,
+    + 4, + 8) written right before the commit, not mid-table, with the time from them to the
+    run's last stage recorded and the five muxes read out one by one. Why: on T8103 the chip
+    starts its own block at the first cluster word and the cores have to be in their WFI within
+    tens of ms (RESEARCH.md, "Naeem Malik's second driver, read").
+  - **After it, not built:** if the time's code is 4, 5 or 6, the wait for WD2's arming cut from
+    CPU0's way to its WFI; then what opens the 22, and the muxes, to a write (B2 clears two words
+    of the engine's page right before the 22).
   - **Asked, waiting:** Naeem Malik's commits cite a working deep sleep on T6000 ("a reference
     driver for the M1 Pro"). It wasn't found in public. Corey had the question posted on
     2026-11-14: malik-na/linux-aurora#77 (which driver, whether it wakes again, whether the
@@ -794,6 +794,33 @@ steps, and restarting the DCP and the PMP afterwards.
       byte is free. No register is written, so it needs Pullfrog and no adversarial pass. If
       0x28e5a0050 reads open there too, B2's op 140 is the stall's likeliest place and what holds
       that gate is the question; if it reads closed, this poll is cleared and `a2_pre=1` is next.
+      **Built, to run: `acc_last=1`** (`--m1-acc-last`; `e1-hook/acc_last.h`; RESEARCH.md,
+      "`acc_last=1` as built"). The run, Corey's: restart into a safe boot (`pkexec
+      sleep-drain-safe boot`, then restart), on battery, `make -C e1-hook`, `pkexec
+      e1-hook/run-floor --quick --m1-acc-last`. New in this run: three of the recipe's writes (the
+      CPU clusters' power words) move from the middle of the sequence to right before the commit,
+      and the run times itself from there; before that it reads the five clock muxes one by one.
+      No new register and no new value. It should go dark and then restart: at about 90 s as
+      before, or at about 120 s, or at 150 s or more, or not at all (give it five minutes, then
+      hold the power key). After the restart: `e1-hook/m1-crumbs`, `pkexec e1-hook/m1-crumbs
+      --clear`, `pkexec sleep-drain-safe collect`. What the record then says:
+      - **A restart at about 120 s, at 150 s or more, or none:** B2 got past its op 224: the
+        place of the cluster words is what the runs lacked. The finding; the wake is next.
+      - **90 s, the time's code 1 to 3:** written under 20 ms before the run's last stage, and
+        the pair still stops: a limit of T8103's size is unlikely to be it. Next what opens the 22.
+      - **90 s, the code 4, 5 or 6, or stage 0x92:** the run wasn't shown under T8103's 52 ms (4,
+        under 50 ms, is too close: the tail after the last stage isn't timed), or CPU0 didn't go
+        down: the limit is untested. The wait for WD2's arming is cut from CPU0's way to its WFI,
+        and the run made again. This is a real possibility: how fast the engine arms WD2 isn't
+        known beyond the 300 ms bound.
+      - **An ending that changes** shows the three writes' place matters, not yet that it's the
+        time: they now also follow the table's later entries, the power words and the stop
+        requests. Splitting the two is the run after.
+      - **A wait unmet in step 5 (0x6006 not 0), or a stop before stage 0x91:** the table's later
+        entries mind the cluster words not having been written: the order matters on T6000, and
+        the three go back to their place with only the steps after them shortened.
+      - **The muxes' five bits:** which parks took. None: the page refuses the AP in the recipe's
+        state, as 0x28e03801c did, and what opens it is the question the 22 already ask.
       **Run once, 2026-11-14: `a2_pre=1`** (RESEARCH.md, "The `a2_pre=1` run";
       `results/a2-pre-20261114/`): the byte 0xff, restart at 91 s: the first and the fourth
       outcome below at once (all three took and settled; bit 0 set). As it was handed over

@@ -1123,7 +1123,7 @@ def main():
     check(defs.get("M1_PMU_ALARM_CTRL") == g["ALARM_CTRL"] and defs.get("M1_PMU_ALARM") == g["ALARM"]
           and defs.get("M1_PMU_ALARM_EVENT") == g["ALARM_EVENT"] and defs.get("M1_PMU_ALARM_MASK") == g["ALARM_MASK"]
           and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"]
-          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x15, 0x19, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b)
+          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x15, 0x19, 0x11, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b, 0x12, 0x13)
           and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src and "hold ? 0x5a : alarm ? 0x59 : 0x58" in src
           and "m1_stage(sio_stop ? 0x4f : 0x5b)" in src and "b[0] = 0x5c" in src and "? 0x5d : 0x5e" in src and "hold ? 0x39 :" in src
           and "hold ? 0x31 :" in src,
@@ -1142,6 +1142,7 @@ def main():
     sio_down_tests(g, src)
     pcie_down_tests(g, src)
     a2_pre_tests(g, src)
+    acc_last_tests(g, src)
     sio_steps_tests(g, src)
     with tempfile.TemporaryDirectory() as tmp:
         ppath = os.path.join(tmp, "nvmem")
@@ -1328,13 +1329,19 @@ def cluster_ack_tests(g, src):
           and step5.count("qto") == 1 and step5.count("flags") == 1,
           "step 5 hands every unmet wait, with its last read, to m1_wait_unmet(), and touches qto and the flags nowhere else", step5)
     # The three values go out in step 5 and nowhere else: M1_ACK_VAL is m1_post_val()'s alone, m1_post_val() is called by step 5, by the
-    # load's count of changed values and by its log, and the load's own function writes nothing.
+    # load's count of changed values and by its log, and the load's own function writes nothing. Since acc_last=1 two more calls:
+    # m1_acl_write(), step 9's write of the three entries step 5 left out (never M1_ACK_VAL's: acc_last_tests() has which), and
+    # m1_acl_init()'s check of them, which writes nothing.
     code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))  # no comments, no strings' text
     init = cut("static void __init m1_ack_init(void)", "\n}\n")
     check(len(re.findall(r"\bM1_ACK_VAL\b", code_only)) == 3 and "\t\treturn M1_ACK_VAL;\n" in cut("static u64 m1_post_val(", "\n}\n")
           and "static_assert(M1_ACK_VAL == M1_ACK_FLAG);" in src
-          and len(re.findall(r"\bm1_post_val\(", code_only)) == 5 and init.count("m1_post_val(") == 1 and not re.search(r"write\w*\(", init),
-          "0x20 is m1_post_val()'s alone, and nothing but step 5 writes what it returns: the load only counts and logs", init)
+          and len(re.findall(r"\bm1_post_val\(", code_only)) == 7 and init.count("m1_post_val(") == 1 and not re.search(r"write\w*\(", init)
+          and cut("static u64 m1_acl_write(void)", "\n}\n").count("m1_post_val(") == 1
+          and cut("static int __init m1_acl_init(void)", "\n}\n").count("m1_post_val(") == 1
+          and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\(", cut("static int __init m1_acl_init(void)", "\n}\n")),
+          "0x20 is m1_post_val()'s alone, and nothing but step 5, and acc_last=1's step 9 for its three entries, writes what it returns:"
+          " the loads only count, check and log", init)
     # The mark is set before the table goes out and reaches 0x6014 with step 8's command; nothing else in the run sets the two bits.
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
     sets = re.findall(r"flags \|= ([^;]+);", after)
@@ -1360,7 +1367,7 @@ def cluster_ack_tests(g, src):
     # 0x31-0x37 and 0x39 for hold=1's stop requests, 0x4e before the commit, wd2_bite=1's two after it; and fabric_up=1's and
     # gates_mark=1's in place of those three.
     check(g["ACK_EARLY"] == (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39)
-          and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53, 0x4b, 0x54, 0x55, 0x3d, 0x3e, 0x3f, 0x1d, 0x1e, 0x1f, 0x15, 0x16, 0x17, 0x19, 0x1a, 0x1b)
+          and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53, 0x4b, 0x54, 0x55, 0x3d, 0x3e, 0x3f, 0x1d, 0x1e, 0x1f, 0x15, 0x16, 0x17, 0x19, 0x1a, 0x1b, 0x11, 0x12, 0x13)
           and "b[0] = 0x28;" in after and "m1_stage((hold ? 0x31 : pmgr_late ? 0x29 : 0x21) + i);" in after
           and "b[0] = hold ? 0x39 : pmgr_late ? 0x38 : 0x30;" in after and "b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;" in after
           and "else if (!recfg_bite && !wd2_bite)\n\t\t\tm1_stage(sio_stop ? 0x4f : 0x5b);" in after
@@ -1615,8 +1622,9 @@ def mark_tests(g, src):
     # 48 since the probe (probe_tests() has its six: SIO_CPU's table word twice, SIO's RUN, ANS2 up and back, the PMP's RUN).
     # 53 since pcie_down=1 (pcie_down_tests() has its two: the three _SYS words' 0, and APCIE_ST's and APCIE_GP's).
     # 59 since sio_steps=1 (sio_steps_tests() has its six: GPIO's raise and its 0, the 43's 0, 0x28e03801c, the seven, the fourteen).
-    check(len(re.findall(wr, code_only)) == 66 and len(re.findall(wr, after_code)) == 11,
-          "e1_hook.c makes 66 MMIO write calls, 11 of them in m1_after_slpa() itself: none has been added without this count",
+    # 68 since acc_last=1 (acc_last_tests() has its two: the three cluster words' own write, moved, and the acks after its last command).
+    check(len(re.findall(wr, code_only)) == 68 and len(re.findall(wr, after_code)) == 11,
+          "e1_hook.c makes 68 MMIO write calls, 11 of them in m1_after_slpa() itself: none has been added without this count",
           f"{len(re.findall(wr, code_only))} {len(re.findall(wr, after_code))}")
     check("\tif (!m1_fab_awake(v)) {\n\t\tpr_err(" in cut("static int __init m1_fab_init(void)", "\n}\n")
           and "if (e1_never_write(FAB_PS)) {" in src and "m1_never(WD1_WDT + WD1_COUNT, 1) || m1_never(WD1_WDT + WD1_BITE, 1) || m1_never(WD1_WDT + WD1_CTRL, 1)" in src,
@@ -1807,20 +1815,20 @@ def gates_mark_tests(g, src):
     # Step 8: after stage 0x4b's command and the outcomes, the reads, dsb and isb, then the byte, all before step 9's mask and the commit.
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
     check(in_order_of(after, ["\t\tb[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;\n"
-                              "\t\tif (gates_mark)\n\t\t\tb[0] = gates_stage(b[0]);\n\t\tif (sio_down)\n\t\t\tb[0] = siod_stage(b[0]);\n\t\tif (pcie_down)\n\t\t\tb[0] = pcd_stage(b[0]);\n\t\tif (sio_steps)\n\t\t\tb[0] = sst_stage(b[0]);\n\t\tif (a2_pre)\n\t\t\tb[0] = a2p_stage(b[0]);\n\t\tb[1] = parked",
+                              "\t\tif (gates_mark)\n\t\t\tb[0] = gates_stage(b[0]);\n\t\tif (sio_down)\n\t\t\tb[0] = siod_stage(b[0]);\n\t\tif (pcie_down)\n\t\t\tb[0] = pcd_stage(b[0]);\n\t\tif (sio_steps)\n\t\t\tb[0] = sst_stage(b[0]);\n\t\tif (a2_pre)\n\t\t\tb[0] = a2p_stage(b[0]);\n\t\tif (acc_last)\n\t\t\tb[0] = acl_stage(b[0]);\n\t\tb[1] = parked",
                               "\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n",
-                              "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre) {\n\t\tu32 g[GATES_N], lane;\n\n\t\tm1_gates_read(g, &lane);\n\t\tdsb(sy);\n\t\tisb();\n"
+                              "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre && !acc_last) {\n\t\tu32 g[GATES_N], lane;\n\n\t\tm1_gates_read(g, &lane);\n\t\tdsb(sy);\n\t\tisb();\n"
                               "\t\tm1_gates = gates_byte(g, lane);\n\t\tm1_crumb(GATES_AT, &m1_gates, 1);\n\t}\n",
                               "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_gates_read(") == 1 and len(re.findall(r"\bm1_gates_read\(", code_only)) == 4
-          and re.findall(r"\bm1_gates\s*=[^=;]*;", code_only) == ["m1_gates = gates_byte(g, lane);", "m1_gates = m1_sio_down();", "m1_gates = m1_pcie_down();", "m1_gates = m1_sio_steps();", "m1_gates = m1_a2_pre();"] and len(re.findall(r"\bgates_stage\(", code_only)) == 2,
+          and re.findall(r"\bm1_gates\s*=[^=;]*;", code_only) == ["m1_gates = gates_byte(g, lane);", "m1_gates = m1_sio_down();", "m1_gates = m1_pcie_down();", "m1_gates = m1_sio_steps();", "m1_gates = m1_a2_pre();", "m1_gates = m1_acl_pre();"] and len(re.findall(r"\bgates_stage\(", code_only)) == 2,
           "step 8 sends stage 0x4b in 0x52's place, then the outcomes, then reads the seven words and sends their byte, SError still unmasked,"
           " before the commit, and not with sio_down=1, pcie_down=1 or sio_steps=1, whose own bytes are the only other things that set it; the stage is mapped in two places", after[-4000:])
     alarm_fn = cut("static void m1_alarm_arm(const u8 *rtc)", "\n}\n")
     wout = cut("static void m1_wd2_out(void)", "\n}\n")
     check("done:\n\tm1_crumb(0x6016, gates_mark ? &m1_gates : &res, 1);\n}" in alarm_fn and alarm_fn.count("m1_crumb(") == 1
           and in_order_of(wout, ["\telse\n\t\tb[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;\n",
-                                 "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tb[1] = m1_wd2_sample("]),
+                                 "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tb[1] = m1_wd2_sample("]),
           "after the commit: the alarm's one command to the PMU sends the gate byte in its result's place, and the last stage is the run's own",
           alarm_fn + wout)
     # No register written: no MMIO write names the gate pages, and the count of MMIO writes is mark_tests()' as it was.
@@ -1962,7 +1970,7 @@ def gates_mark_tests(g, src):
         before = fake(path, scratch(0xd5, **lost), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
         check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
-              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's and a2_pre=1's stages it never does: it's that run's byte" in r.stderr,
+              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's, a2_pre=1's and acc_last=1's stages it never does: it's that run's byte" in r.stderr,
               "--clear after 0xd5 with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
         before = fake(path, scratch(0xd3, **lost), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
@@ -2450,11 +2458,11 @@ def sio_down_tests(g, src):
           "m1_sio_down() writes 0 to the listed words in one place, the write-back is one function called from one place (and from sio_steps=1's), and the poll and"
           " the load write nothing")
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
-    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre) {\n",
+    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre && !acc_last) {\n",
                               "\tif (sio_down)\n\t\tm1_gates = m1_sio_down();\n", "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();",
                               "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_sio_down(") == 1 and len(re.findall(r"\bsiod_stage\(", code_only)) == 2
-          and "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tb[1] = m1_wd2_sample(" in src,
+          and "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tb[1] = m1_wd2_sample(" in src,
           "step 8: after the stage and the outcomes, in place of gates_mark=1's reads and before step 9's mask and the commit; its byte is"
           " what the alarm's last command sends; the stage is mapped in two places", after[-4500:])
     params = cut("static int __init e1_check_params(void)", "\n}\n")
@@ -2648,7 +2656,7 @@ def sio_down_tests(g, src):
         before = fake(path, scratch(0xbf, **dict(rec, secs=0, drained=0xbd)), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
         check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
-              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's and a2_pre=1's stages it never does: it's that run's byte" in r.stderr,
+              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's, a2_pre=1's and acc_last=1's stages it never does: it's that run's byte" in r.stderr,
               "--clear after 0xbf with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
 
 
@@ -3110,7 +3118,7 @@ def sio_steps_tests(g, src):
           "the 24 new addresses and the two values are pinned at build time, GPIO's offset against ps_pmp's, the lists' lengths too, and the"
           " load compares the two lists with a second writing-out of them")
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
-    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre) {\n",
+    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre && !acc_last) {\n",
                               "\tif (pcie_down)\n\t\tm1_gates = m1_pcie_down();\n", "\tif (sio_steps)\n\t\tm1_gates = m1_sio_steps();\n",
                               "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_sio_steps(") == 1 and len(re.findall(r"\bsst_stage\(", code_only)) == 2,
@@ -3305,7 +3313,7 @@ def sio_steps_tests(g, src):
         before = fake(path, scratch(0x97, **lost), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
         check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
-              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's and a2_pre=1's stages it never does: it's that run's byte" in r.stderr,
+              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's, a2_pre=1's and acc_last=1's stages it never does: it's that run's byte" in r.stderr,
               "--clear after 0x97 with the second lost and 0xfc at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
 
 
@@ -3610,7 +3618,7 @@ def pcie_down_tests(g, src):
           and "#define PCD_OFFS\t\t{ PCD_ST_SYS, PCD_ST1_SYS, PCD_GP_SYS_OFF, PCD_ST, PCD_GP }\n" in open(os.path.join(os.path.dirname(HOOK), "pcie_down.h")).read(),
           "the five addresses and the gate's are pinned at build time, each word's offset against ps_pmp's, and the list is made of those five names")
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
-    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre) {\n",
+    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre && !acc_last) {\n",
                               "\tif (sio_down)\n\t\tm1_gates = m1_sio_down();\n", "\tif (pcie_down)\n\t\tm1_gates = m1_pcie_down();\n",
                               "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_pcie_down(") == 1 and len(re.findall(r"\bpcd_stage\(", code_only)) == 2,
@@ -3791,7 +3799,7 @@ def pcie_down_tests(g, src):
         before = fake(path, scratch(0x9f, **dict(rec, secs=0, drained=0xbd)), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
         check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
-              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's and a2_pre=1's stages it never does: it's that run's byte" in r.stderr,
+              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's, a2_pre=1's and acc_last=1's stages it never does: it's that run's byte" in r.stderr,
               "--clear after 0x9f with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
 
 
@@ -4145,7 +4153,7 @@ def a2_pre_tests(g, src):
           "the three addresses, the muxes' page and value and the lists' lengths are pinned at build time, and the load compares the"
           " offsets and values with a second writing-out of them")
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
-    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre) {\n",
+    check(in_order_of(after, ["\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n", "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre && !acc_last) {\n",
                               "\tif (sio_steps)\n\t\tm1_gates = m1_sio_steps();\n", "\tif (a2_pre)\n\t\tm1_gates = m1_a2_pre();\n",
                               "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_a2_pre(") == 1 and len(re.findall(r"\ba2p_stage\(", code_only)) == 2,
@@ -4331,8 +4339,520 @@ def a2_pre_tests(g, src):
         before = fake(path, scratch(0x9b, **dict(rec, secs=0, drained=0xbd)), rtc_secs=121761, alarm=alarm)
         r = run(path, "--clear", cnt="4800000000 24000000")
         check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
-              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's and a2_pre=1's stages it never does: it's that run's byte" in r.stderr,
+              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's, a2_pre=1's and acc_last=1's stages it never does: it's that run's byte" in r.stderr,
               "--clear after 0x9b with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
+
+
+ACL_HDR = r"""
+#include <stdio.h>
+#include "acc_last.h"
+int main(void)
+{
+	static const u16 off[] = ACL_OFFS, ms[] = ACL_T_MS;
+	static const u32 val[] = ACL_VALS;
+	unsigned long long dt, tps;
+	unsigned int i, s, m, c;
+
+	printf("consts %d %d %d %d %llx %d %x %d %d %d %d %x", ACL_FIRST, ACL_N, (int)(sizeof(off) / sizeof(off[0])), (int)(sizeof(val) / sizeof(val[0])),
+	       (unsigned long long)ACL_PAGE, ACL_MUX_N, ACL_MUX_MASK, ACL_T_SHIFT, ACL_T_NEVER, ACL_T_LATE, ACL_T_PRE, GATES_AT);
+	for (i = 0; i < ACL_N; i++)
+		printf(" %x %x", off[i], val[i]);
+	for (i = 0; i < sizeof(ms) / sizeof(ms[0]); i++)
+		printf(" %d", ms[i]);
+	printf("\nstages %x %x %x\n", M1_ACL_STAGE_PRE, M1_ACL_STAGE, M1_ACL_STAGE_PEND);
+	for (s = 0; s < 256; s++)
+		printf("st %x %x\n", s, acl_stage((u8)s));
+	for (i = 0; i < 100; i++)
+		printf("en %u %d\n", i, acl_entry(i));
+	for (m = 0; m < 256; m++)
+		for (c = 0; c < 16; c++)
+			printf("b %x %x %x\n", m, c, acl_byte((u8)m, (u8)c));
+	while (scanf("%llu %llu", &dt, &tps) == 2)
+		printf("c %x\n", acl_code(dt, tps));
+	return 0;
+}
+"""
+# m1_acl_pre(), m1_acl_write() and m1_acl_out() as they stand, with e1_hook.c's own table, waits and m1_post_val(), against a
+# model that logs every read, write, clock read and PMU byte. argv[1]: which muxes read parked, a mask in the table's order;
+# argv[2]: the microseconds between the cluster words and the last send; argv[3]: K if the PMU stops taking bytes after the
+# first, o if a mux that isn't parked reads with bit 30 set and nothing else of the table's value.
+ACL_FN_PRELUDE = r"""
+#include <stdio.h>
+#include <string.h>
+#include "a2_pre.h"
+#include "acc_last.h"
+#define __iomem
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define static_assert(...) _Static_assert(__VA_ARGS__, "")
+#define BIT(n) (1U << (n))
+#define GENMASK(h, l) (((~0U) << (l)) & (~0U >> (31 - (h))))
+#define PAGE_MASK (~0x3fffULL)
+#define U32_MAX 0xffffffffU
+#define dsb(x) do { } while (0)
+#define isb() do { } while (0)
+static unsigned char clk_page[0x4000], soc_page[0x4000], spmi_page[0x4000], other[0x4000];
+static void *m1_spmi = spmi_page;
+static const char *sc = "";
+static unsigned int parked;
+static u64 clk = 1000, m1_tps = 24000000;
+static int cluster_ack = 1;
+static u64 m1_now(void) { printf("now\n"); return clk; }
+static const unsigned int mux_off[5] = { 0x164, 0x16c, 0x168, 0x15c, 0x170 };
+static u32 readl(const void *p)
+{
+	const unsigned char *c = p;
+	unsigned long o = (unsigned long)(c - clk_page);
+	unsigned int n;
+	u32 v = 0xdead0000;
+
+	if (c < clk_page || c >= clk_page + sizeof(clk_page)) {
+		printf("r X %lx 0\n", (unsigned long)(c - other));
+		return 0;
+	}
+	for (n = 0; n < 5; n++)
+		if (o == mux_off[n])
+			v = parked & (1U << n) ? 0x80100000 : strchr(sc, 'o') ? 0x40000000 : n == 3 ? 0x87100000 : 0x85100000;
+	printf("r C %lx %x\n", o, v);
+	return v;
+}
+static void wlog(u32 v, void *p)
+{
+	unsigned char *c = p;
+
+	if (c >= soc_page && c < soc_page + sizeof(soc_page))
+		printf("w S %lx %x\n", (unsigned long)(c - soc_page), v);
+	else if (c >= spmi_page && c < spmi_page + sizeof(spmi_page))
+		printf("w P %lx %x\n", (unsigned long)(c - spmi_page), v);
+	else if (c >= clk_page && c < clk_page + sizeof(clk_page))
+		printf("w C %lx %x\n", (unsigned long)(c - clk_page), v);
+	else
+		printf("w X %lx %x\n", (unsigned long)(c - other), v);
+}
+static void writel(u32 v, void *p) { wlog(v, p); }
+static void writel_relaxed(u32 v, void *p) { wlog(v, p); }
+/* As e1_hook.c's: a command that fails stops every one after it, and the caller goes on. K: the second one fails. */
+static void m1_crumb(unsigned int addr, const u8 *b, unsigned int n)
+{
+	static unsigned int sent;
+	static int dead;
+
+	if (dead || (strchr(sc, 'K') && sent == 1)) {
+		dead = 1;
+		return;
+	}
+	sent++;
+	printf("k %x %u %x\n", addr, n, b[0]);
+}
+"""
+ACL_FN_MAIN = r"""
+int main(int argc, char **argv)
+{
+	unsigned long long us;
+	unsigned int k;
+	u64 t;
+	u8 b;
+
+	sscanf(argv[1], "%x", &parked);
+	sscanf(argv[2], "%llu", &us);
+	if (argc > 3)
+		sc = argv[3];
+	for (k = 0; k < ARRAY_SIZE(post_map); k++)
+		post_map[k] = other + 8 * k;
+	for (k = 0; k < ARRAY_SIZE(m1_waits); k++)
+		if ((m1_waits[k].addr & PAGE_MASK) == A2P_MUX_PAGE)
+			post_map[m1_waits[k].idx] = clk_page + (m1_waits[k].addr & 0x3fff);
+	for (k = 0; k < ARRAY_SIZE(e1_post_slpa); k++)
+		if ((e1_post_slpa[k].addr & PAGE_MASK) == ACL_PAGE)
+			post_map[k] = soc_page + (e1_post_slpa[k].addr & 0x3fff);
+	b = m1_acl_pre();
+	printf("pre %x\n", b);
+	t = m1_acl_write();
+	printf("wrote\n");
+	clk += us * (m1_tps / 1000000);
+	m1_acl_out(b, t);
+	printf("end\n");
+	return 0;
+}
+"""
+ACL_INIT_PRELUDE = r"""
+#include <stdarg.h>
+#include <stdio.h>
+#include "a2_pre.h"
+#include "acc_last.h"
+#define __iomem
+#define __init
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define BIT(n) (1U << (n))
+#define GENMASK(h, l) (((~0U) << (l)) & (~0U >> (31 - (h))))
+#define PAGE_MASK (~0x3fffULL)
+#define EINVAL 22
+static unsigned char rows[0x4000];
+static unsigned int nread;
+static u64 never;
+static int cluster_ack = 1;
+static u32 readl(const void *p)
+{
+	printf("read row %lu\n", (unsigned long)((const unsigned char *)p - rows));
+	return 0x1000 + nread++;
+}
+static int e1_never_write(u64 addr) { return addr == never; }
+static void pr_err(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("err "); vprintf(fmt, ap); va_end(ap); }
+static void pr_info(const char *fmt, ...) { va_list ap; va_start(ap, fmt); printf("info "); vprintf(fmt, ap); va_end(ap); }
+"""
+ACL_INIT_MAIN = r"""
+int main(int argc, char **argv)
+{
+	unsigned int i;
+	int ret;
+
+	(void)argc;
+	/* argv[1]: an address on the never-write list; argv[2]: a table row left unmapped, or 0. */
+	sscanf(argv[1], "%llx", (unsigned long long *)&never);
+	for (i = 0; i < ARRAY_SIZE(post_map); i++)
+		post_map[i] = rows + i;
+	sscanf(argv[2], "%u", &i);
+	if (i)
+		post_map[i] = NULL;
+	ret = m1_acl_init();
+	printf("ret %d reads %u\n", ret, nread);
+	return 0;
+}
+"""
+# The three entries, written out a second time: the table's index, the offset in the soc-cluster page, the value.
+ACL_WORDS = [(52, 0x0, 0x0), (53, 0x4, 0x20), (54, 0x8, 0x20)]
+# The time's codes, written out a second time: under so many microseconds, and the decoder's words for each.
+ACL_UNDER_US = [(5000, 1), (10000, 2), (20000, 3), (50000, 4), (100000, 5)]
+ACL_SPAN = {1: "under 5 ms", 2: "under 10 ms (5 ms or more)", 3: "under 20 ms (10 ms or more)", 4: "under 50 ms (20 ms or more)",
+            5: "under 100 ms (50 ms or more)", 6: "100 ms OR MORE"}
+
+
+def acc_last_tests(g, src):
+    """acc_last=1: acc_last.h against an independent reading of it; m1_acl_pre(), m1_acl_write() and m1_acl_out() compiled as they
+    stand, with the module's own table, waits and m1_post_val(), against a model that logs every access; m1_acl_init()'s
+    refusals; the places in e1_hook.c that use them; and the byte, the run's stages and --clear through m1-crumbs."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    def code_for(us):
+        return next((c for lim, c in ACL_UNDER_US if us < lim), 6)
+
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    waits = cut("#define M1_W_CLEAR\t\t0\n", "\n};\n")
+    table = cut("static const struct e1_mmio_write {", "\n};\n")
+    ackdefs = cut("#define M1_ACK_ANE0\t\t55\n", "#define M1_ACK_FLAG") + cut("#define M1_ACK_FLAG", "\n")[len("#define M1_ACK_FLAG"):]
+    spmidefs = cut("#define M1_SPMI_ACK(w)", "\n") + cut("#define M1_SPMI_WORDS", "\n")
+    postval = cut("static u64 m1_post_val(unsigned int i)", "\n}\n")
+    pre_fn, write_fn, out_fn = (cut("static u8 m1_acl_pre(void)", "\n}\n"), cut("static u64 m1_acl_write(void)", "\n}\n"),
+                                cut("static void m1_acl_out(u8 pre, u64 t)", "\n}\n"))
+    init = cut("static int __init m1_acl_init(void)", "\n}\n")
+    spans = (0, 100, 4999, 5000, 9999, 10000, 19999, 20000, 49999, 50000, 52000, 99999, 100000, 300000, 5000000)
+    scen = [(m, us, "") for m in (0, 0x1f, 0x01, 0x10, 0x05, 0x1a, 0x08) for us in (0, 20000)] + [(0x0a, us, "") for us in spans] + [(0x15, 30000, "o")]
+    with tempfile.TemporaryDirectory() as tmp:
+        def build(name, code):
+            c = os.path.join(tmp, name + ".c")
+            with open(c, "w") as f:
+                f.write(code)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(tmp, name), c], check=True)
+            return os.path.join(tmp, name)
+
+        def out(exe, *args):
+            return subprocess.run([exe, *args], capture_output=True, text=True, check=True).stdout.splitlines()
+
+        rnd = random.Random(20261114)
+        times = [(us * 24 + d, 24000000) for us, _ in ACL_UNDER_US for d in (-1, 0, 1)] + [(0, 24000000), (1, 24000000), (10 ** 12, 24000000)]
+        times += [(rnd.randrange(0, 4000000), 24000000) for _ in range(300)] + [(rnd.randrange(0, 200000), 1000000) for _ in range(100)]
+        feed = "".join(f"{dt} {tps}\n" for dt, tps in times)
+        hdr = [l.split() for l in subprocess.run([build("hdr", ACL_HDR)], input=feed, capture_output=True, text=True, check=True).stdout.splitlines()]
+        common = ackdefs + spmidefs + table + "static void *post_map[ARRAY_SIZE(e1_post_slpa)];\n" + waits + postval
+        fn = build("fn", ACL_FN_PRELUDE + common + pre_fn + write_fn + out_fn + ACL_FN_MAIN)
+        runs = {a: out(fn, f"{a[0]:x}", str(a[1]), *([a[2]] if a[2] else [])) for a in scen}
+        out_k = out(fn, "1f", "7000", "K")
+        ini_head = ACL_INIT_PRELUDE + ackdefs + table + "static void *post_map[ARRAY_SIZE(e1_post_slpa)];\n"
+        ini = build("ini", ini_head + waits + postval + init + ACL_INIT_MAIN)
+        loads = {a: out(ini, *a) for a in (("0", "0"), ("28e098000", "0"), ("28e098004", "0"), ("28e098008", "0"), ("28e0802d8", "0"), ("28e038164", "0"),
+                                           ("28e09800c", "0"), ("0", "52"), ("0", "53"), ("0", "54"), ("0", "62"), ("0", "66"), ("0", "49"))}
+        bad_lists = {}
+        for what, redef in (("the entries one earlier", "#undef ACL_FIRST\n#define ACL_FIRST 51\n"),
+                            ("the entries one later", "#undef ACL_FIRST\n#define ACL_FIRST 53\n"),
+                            ("the last two the other way round", "#undef ACL_OFFS\n#define ACL_OFFS { 0x0, 0x8, 0x4 }\n"),
+                            ("another page", "#undef ACL_PAGE\n#define ACL_PAGE 0x28e09c000ULL\n"),
+                            ("0 for PACC1", "#undef ACL_VALS\n#define ACL_VALS { 0x0, 0x20, 0x0 }\n"),
+                            ("0x20 for EACC", "#undef ACL_VALS\n#define ACL_VALS { 0x20, 0x20, 0x20 }\n"),
+                            ("cluster_ack=1's value on EACC's entry", "#undef M1_ACK_ANE0\n#define M1_ACK_ANE0 52\n"),
+                            ("a mux value the table doesn't write", "#undef A2P_MUX_VAL\n#define A2P_MUX_VAL 0x80100001U\n"),
+                            ("six muxes", "#undef ACL_MUX_N\n#define ACL_MUX_N 6\n"),
+                            ("the PLL-off word's page for the muxes'", "#undef A2P_MUX_PAGE\n#define A2P_MUX_PAGE 0x28e224000ULL\n")):
+            bad_lists[what] = out(build("bad" + str(len(bad_lists)), ini_head + waits + redef + postval + init + ACL_INIT_MAIN), "0", "0")
+        moved = waits.replace("{ 55, M1_W_CLUSTER, BIT(2), M1_ACK_BUSY,   0x28e09800cULL }", "{ 54, M1_W_CLUSTER, BIT(2), M1_ACK_BUSY,   0x28e098008ULL }")
+        bad_wait = out(build("badw", ini_head + moved + postval + init + ACL_INIT_MAIN), "0", "0") if moved != waits else []
+        wide = table.replace("{ 0x28e098004ULL, 4, 0x20ULL }", "{ 0x28e098004ULL, 8, 0x20ULL }")
+        bad_width = (out(build("badx", ACL_INIT_PRELUDE + ackdefs + wide + "static void *post_map[ARRAY_SIZE(e1_post_slpa)];\n" + waits + postval + init
+                               + ACL_INIT_MAIN), "0", "0") if wide != table else [])
+
+    # The header against a second writing-out of it.
+    consts, stages = hdr[0], hdr[1]
+    st = {int(l[1], 16): int(l[2], 16) for l in hdr if l[0] == "st"}
+    en = {int(l[1]): int(l[2]) for l in hdr if l[0] == "en"}
+    by = {(int(l[1], 16), int(l[2], 16)): int(l[3], 16) for l in hdr if l[0] == "b"}
+    codes = [int(l[1], 16) for l in hdr if l[0] == "c"]
+    check(consts == ["consts", "52", "3", "3", "3", "28e098000", "5", "1f", "5", "0", "6", "7", "6016"] + [f"{x:x}" for _, o, v in ACL_WORDS for x in (o, v)]
+          + [str(lim // 1000) for lim, _ in ACL_UNDER_US] and stages == ["stages", "11", "13", "12"],
+          "acc_last.h: the table's entries 52 to 54, the soc-cluster page's offsets 0, 4 and 8 with 0, 0x20 and 0x20, five muxes in the"
+          " byte's low five bits, the time's code above them with 0 for never, 6 for 100 ms or more and 7 for not yet, the bounds 5,"
+          " 10, 20, 50 and 100 ms, the byte at 0x6016, and stages 0x11, 0x13 and 0x12", str(hdr[:2]))
+    check(all(st[s] == {0x4b: 0x11, 0x55: 0x13, 0x54: 0x12}.get(s, s) for s in range(256)) and len(st) == 256,
+          "acl_stage(): 0x11, 0x13 and 0x12 for gates_mark=1's 0x4b, 0x55 and 0x54, and every other stage as it is")
+    check(len(en) == 100 and all(en[i] == (i in (52, 53, 54)) for i in range(100)),
+          "acl_entry(): true for the table's entries 52, 53 and 54 and for no other", str([i for i in en if en[i]]))
+    wrong = [(hex(m), c, hex(b)) for (m, c), b in by.items() if b != (m & 0x1f) | (c & 7) << 5]
+    check(len(by) == 256 * 16 and not wrong and {by[(m, c)] for m in range(32) for c in range(8)} == set(range(256)),
+          "acl_byte(): the muxes' five bits below the code's three, neither reaching into the other, and every byte made once", str(wrong[:3]))
+    want_codes = [next((c for lim, c in ACL_UNDER_US if dt * 1000000 < lim * tps), 6) for dt, tps in times]
+    check(len(codes) == len(times) and codes == want_codes and set(codes) == {1, 2, 3, 4, 5, 6},
+          f"acl_code() for {len(times)} spans, the bounds and a tick either side of each among them: 1 to 5 under 5, 10, 20, 50 and 100 ms,"
+          " 6 from there on, and never 0 or 7", str([(t, c, w) for t, c, w in zip(times, codes, want_codes) if c != w][:3]))
+    check((g["ACL_PRE"], g["ACL_WD2"], g["ACL_STAGES"]) == (0x11, (0x12, 0x13), (0x11, 0x12, 0x13)) and (g["ACL_T_PRE"], g["ACL_T_LATE"]) == (7, 6)
+          and g["ACL_T_MS"] == tuple(lim // 1000 for lim, _ in ACL_UNDER_US) and g["ACL_T8103_MS"] == 52 and g["ACL_UNDER_MS"] == 20
+          and g["ACL_MUXES"] == tuple(f"0x28e038{o:03x}" for o in A2P_MUXES)
+          and not set(g["ACL_STAGES"]) & (set(g["GATES_STAGES"]) | set(g["SIOD_STAGES"]) | set(g["SIOD1_STAGES"]) | set(g["PCD_STAGES"])
+                                          | set(g["SST_STAGES"]) | set(g["A2P_STAGES"]) | set(g["POSITION"]) | set(g["ACK_EARLY"]) | {0x0e, 0x0f, 0x10}),
+          "m1-crumbs has the byte's fields, the muxes in the table's order and the stages as the header has them, and the stages are no"
+          " other run's")
+
+    # The three functions in every scenario: the accesses, in order.
+    for a in scen:
+        m, us, how = a
+        ev = runs[a]
+        code = code_for(us)
+        want = ([f"r C {o:x} {0x80100000 if m >> n & 1 else 0x40000000 if how else 0x87100000 if n == 3 else 0x85100000:x}" for n, o in enumerate(A2P_MUXES)]
+                + [f"k 6016 1 {m | 0xe0:x}", f"pre {m | 0xe0:x}", "now"] + [f"w S {o:x} {v:x}" for _, o, v in ACL_WORDS]
+                + ["wrote", "now", f"k 6016 1 {m | code << 5:x}"] + [f"w P {0x60 + 4 * i:x} ffffffff" for i in range(9)] + ["end"])
+        check(ev == want, f"m1_acl_pre(), m1_acl_write() and m1_acl_out(), muxes 0x{m:02x}, {us} us{', a mux with bit 30 set' if how else ''}: the"
+              " five muxes read once each in the table's order and the byte with the code at 7, before any write; the clock, then 0, 0x20"
+              f" and 0x20 to the three cluster words in the table's order and nothing else; the clock again and the byte with code {code},"
+              " then the nine acks; no other read or write", "\n".join(ev) + "\nwant\n" + "\n".join(want))
+    check([l for l in out_k if l.startswith(("k ", "w S", "pre"))] == ["k 6016 1 ff", "pre ff", "w S 0 0", "w S 4 20", "w S 8 20"]
+          and len([l for l in out_k if l.startswith("w P")]) == 9 and out_k[-1] == "end",
+          "with the PMU refusing the byte's second send: the three cluster words are written all the same and the acks follow, so a code"
+          " still at 7 doesn't show a run that stopped", "\n".join(out_k))
+
+    # The source: what the functions write, and where they're called.
+    wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
+    check(not re.search(wr, pre_fn) and not re.search(wr, init)
+          and re.findall(wr + r"[^;]*;", write_fn) == ["writel_relaxed(m1_post_val(i), post_map[i]);"]
+          and "\tu64 t = m1_now();\n" in write_fn and "\tfor (i = ACL_FIRST; i < ACL_FIRST + ACL_N; i++)\n\t\twritel_relaxed(m1_post_val(i), post_map[i]);\n\tdsb(sy);" in write_fn and write_fn.rstrip().endswith("\treturn t;\n}")
+          and write_fn.count("dsb(sy);") == 1 and "isb" not in write_fn
+          and re.findall(wr + r"[^;]*;", out_fn) == ["writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));"]
+          and "\tb = acl_byte(pre, acl_code(m1_now() - t, m1_tps));\n\tm1_crumb(GATES_AT, &b, 1);\n" in out_fn
+          and "\t}\n\tdsb(sy);\n\tisb();\n\tb = acl_byte(mux, ACL_T_PRE);\n\tm1_crumb(GATES_AT, &b, 1);\n\treturn b;\n" in pre_fn
+          and all(len(re.findall(r"\b%s\(" % f, code_only)) == 2 for f in ("m1_acl_pre", "m1_acl_write", "m1_acl_out", "m1_acl_init", "acl_stage", "acl_entry")),
+          "m1_acl_write() has one write, the table's own value to the table's own row for entries 52 to 54, after its read of the clock"
+          " and before a barrier; m1_acl_out()'s only writes are the acks; the mux read, which ends with a barrier before its byte, and"
+          " the load write nothing; each is called once")
+    check(all(t in src for t in ("ACL_N == 3 && ACL_FIRST == 52", "ACL_PAGE == 0x28e098000ULL && ACL_PAGE == M1_SOC_CLUSTERS", "ACL_MUX_N == A2P_MUX_N",
+                                 "ACL_T_SHIFT == ACL_MUX_N && ACL_T_PRE == 7", "M1_ACL_STAGE_PRE == 0x11 && M1_ACL_STAGE == 0x13 && M1_ACL_STAGE_PEND == 0x12"))
+          and "\tstatic const u64 want_addr[ACL_N] = { 0x28e098000ULL, 0x28e098004ULL, 0x28e098008ULL };\n\tstatic const u32 want_val[ACL_N] = { 0x0, 0x20, 0x20 };\n" in init,
+          "the entries, the page, the byte's layout and the stages are pinned at build time, and the load compares the three rows with a"
+          " second writing-out of their addresses and values")
+    after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
+    check(in_order_of(after, ["\t\tif (e1_post_early(w))\n\t\t\tcontinue;\n", "\t\tif (acc_last && acl_entry(i))\n\t\t\tcontinue;\n", "\t\tif (sio_on && i == M1_SIO_ENTRY",
+                              "\t\t\twriteq_relaxed(m1_post_val(i), post_map[i]);\n", "\t\t\twritel_relaxed(m1_post_val(i), post_map[i]);\n",
+                              "\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n",
+                              "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre && !acc_last) {\n",
+                              "\tif (a2_pre)\n\t\tm1_gates = m1_a2_pre();\n", "\tif (acc_last)\n\t\tm1_gates = m1_acl_pre();\n",
+                              "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();", "\tif (acc_last)\n\t\tt_acl = m1_acl_write();\n\twritel_relaxed(1, commit);\n",
+                              "m1_alarm_arm(rtc);", "\t\tm1_hold_release(held, qto, flags);\n", "\tif (wd2_bite)\n\t\tm1_wd2_out();\n",
+                              "\tif (acc_last)\n\t\tm1_acl_out(m1_gates, t_acl);\n", "\tm1_arm_deep_sleep();\n"])
+          and len(re.findall(r"\bacc_last\b", re.sub(r"/\*.*?\*/", "", after, flags=re.S))) == 6 and "\tu64 t0, t_acl = 0;\n" in after and len(re.findall(r"\bt_acl\b", after)) == 3,
+          "step 5 skips the three entries before it writes anything for them; step 8 reads the muxes in place of gates_mark=1's reads;"
+          " step 9 writes the three under the mask with nothing between them and the commit's write; the time goes out after the"
+          " release and wd2_bite=1's stage, the last thing before CPU0's WFI", after[-5500:])
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    check("static bool acc_last;\nmodule_param(acc_last, bool, 0444);\n" in src and not re.search(r"\bacc_last\s*=[^=]", code_only)
+          and in_order_of(params, ["\tif (acc_last && (!gates_mark || sio_down || pcie_down || sio_steps || a2_pre || observe || probe)) {\n\t\tpr_err(",
+                                   "\t\treturn -EINVAL;\n\t}\n", "\treturn 0;\n\nbad_wait:"])
+          and 'acc_last ? " acc_last=1" : ""' in src
+          and in_order_of(src, ["\tif (gates_mark) {\n\t\tint ret = m1_gates_init();", "\tif (a2_pre) {\n\t\tint ret = m1_a2p_init();",
+                                "\tif (acc_last) {\n\t\tint ret = m1_acl_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"]),
+          "acc_last=1 loads only with gates_mark=1 and never with sio_down=1, pcie_down=1, sio_steps=1, a2_pre=1, observe=1 or probe=1;"
+          " it's off by default, read-only, named in the load line, and the load runs m1_acl_init() and returns its refusal", params[-1800:])
+
+    # m1_acl_init(): the five muxes and the three cluster words read once each through their rows and logged; refused, with
+    # nothing read, if a word is on the never-write list, a row isn't mapped or the lists aren't the ones meant.
+    ok = loads[("0", "0")]
+    check(ok[-1] == "ret 0 reads 8" and [r for r in ok if r.startswith("read ")] == [f"read row {i}" for i in (62, 63, 64, 65, 66, 52, 53, 54)]
+          and len([r for r in ok if r.startswith("info m1: acc_last: awake: EACC 0x28e098000 00001005; PACC0 0x28e098004 00001006; PACC1 0x28e098008 00001007;"
+                                                 " the muxes, in the table's order: 00001000 00001001 00001002 00001003 00001004.")]) == 1
+          and not any(r.startswith("err") for r in ok),
+          "m1_acl_init(): the five muxes through the table's rows 62 to 66 and the three cluster words through rows 52 to 54, once each, and"
+          " logged", "\n".join(ok))
+    check(all(loads[(n, "0")][-1] == "ret -22 reads 0" for n in ("28e098000", "28e098004", "28e098008"))
+          and all(loads[(n, "0")][-1] == "ret 0 reads 8" for n in ("28e0802d8", "28e038164", "28e09800c"))
+          and all(loads[("0", n)][-1] == "ret -22 reads 0" for n in ("52", "53", "54", "62", "66")) and loads[("0", "49")][-1] == "ret 0 reads 8"
+          and all(v[-1] == "ret -22 reads 0" and any(r.startswith("err m1: acc_last:") for r in v) and not any(r.startswith("info") for r in v)
+                  for v in bad_lists.values())
+          and bad_wait and bad_wait[-1] == "ret -22 reads 0" and any("a wait is on entry 54" in r for r in bad_wait)
+          and bad_width and bad_width[-1] == "ret -22 reads 0" and any(r.startswith("err m1: acc_last: entry 53") for r in bad_width),
+          "m1_acl_init(): refuses, reading nothing, if one of the three is on the never-write list, one of their rows or a mux's isn't"
+          " mapped, the entries aren't the three cluster words, four bytes wide, with the table's values (cluster_ack=1's among them), a wait is on one"
+          " of them, or the table's waits in the muxes' page aren't five rows that write the value meant", str(loads) + str(bad_lists) + str(bad_wait))
+
+    # m1-crumbs. The run's record at its last stage, all as meant, with its byte at 0x6016.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+        alarm = (0x41, 121544 + 3600, 0, 0)
+        rec = dict(parked=0x7d, left=0, down=0xf5, secs=121544, prog=(0xff, 0xff), flags=0x90, isrs=0x8d)
+
+        def dec(stage, gb, x=217, **kw):
+            fake(path, scratch(stage, **dict(rec, drained=gb, **kw)), rtc_secs=121544 + x + 40, alarm=alarm)
+            r = run(path, cnt="960000000 24000000")
+            return r.returncode, r.stdout, r.stderr
+
+        rc, out_, err = dec(0x93, 0x60, x=90)
+        check(rc == 0 and "stage 0x6004 = 0x93 (pmp_out=1: bit 7, so the stage is 0x13) (pmgr_late=1): acc_last=1: gates_mark=1's 0x55:" in out_
+              and "One more command follows this stage in that run, the byte with the time's code (0x6016)" in out_
+              and "0x6016 = 0x60: acc_last=1's byte, in place of the alarm's result:" in out_
+              and "  the five ClkGen muxes the table parked, each read once after the table: NONE OF THE FIVE READ 0x80100000" in out_
+              and "  the time, code 3: under 20 ms (10 ms or more) from CPU0's read of the clock before the first cluster word" in out_
+              and "  so: THE CLUSTER WORDS WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT UNDER 20 MS (10 MS OR MORE) AFTER THEM: well under the 52 ms T8103" in out_
+              and "0x6016 = 0x60: acc_last=1's byte, in place of the alarm's result: step 5 was to leave the three" in out_
+              and "alarm command" not in out_ and "gates_mark=1's byte" not in out_ and "a2_pre=1's byte" not in out_
+              and "0x6007 = 0xf5: fabric_up=1's byte, in place of the cores that held:\n" in out_ and "WD1 stood as the marker" in out_
+              and "0x6005 = 0x7d: wd2_bite=1, after the commit, the alarm and the release:\n" in out_
+              and "0x6013 = 0xff: ps_words=1 wrote the 20 power words" in out_
+              and "  wd1_mark=1's marker: about 90 s is what WD1 gives with its count never zeroed: B2 didn't reach its op 224" in out_
+              and "0x140c is the commit's second + 3600, as the run wrote it" in out_,
+              "acc_last=1's 0x93: its byte read line by line in the alarm's result's place; the rest read as --m1-gates' 0xd5", out_ + err)
+        rc5, out5, err5 = dec(0xd5, 0x80)
+        rcc, outc, errc = dec(0x93, 0x80)
+        skip = ("0x6000:", "0x6010:", "stage 0x6004", "0x6016", "  0x28e", "  AFNC2", "  so: ", "  the f", "  the time")
+        missing = [l for l in out5.splitlines() if not l.startswith(skip) and l not in outc.splitlines()]
+        check(rc5 == 0 and rcc == 0 and "gates_mark=1's byte" in out5 and "acc_last=1's byte" not in out5 and not missing,
+              "0x80 at 0x6016: the gate byte under 0xd5, acc_last=1's under 0x93, and nothing else read differently", "\n".join(missing))
+        rc, out_, err = dec(0x93, 0x9f, x=120)
+        check(rc == 0 and "all five read 0x80100000, as the table wrote them" in out_ and "the time, code 4: under 50 ms (20 ms or more)" in out_
+              and "  wd1_mark=1's marker: about 120 s is WD2: B2 zeroed WD1's count" in out_,
+              "acc_last=1's 0x93 with a restart at 120 s: read as B2 past its op 224, by the marker", out_ + err)
+        rc, out_, err = dec(0x92, 0xc5)
+        check(rc == 0 and "so the stage is 0x12" in out_ and "acc_last=1: gates_mark=1's 0x54:" in out_ and "pending afterwards" in out_
+              and "read 0x80100000, the table's value: 0x28e038164, 0x28e038168; DIDN'T: 0x28e03816c, 0x28e03815c, 0x28e038170" in out_
+              and "  so: NOT A TEST OF THE LIMIT, whatever the span: CPU0 had an exception pending after the commit" in out_
+              and "THE CLUSTER WORDS WERE WRITTEN LAST" not in out_ and "from the three cluster words on, which this run writes under step 9's mask" in out_
+              and "restart's time isn't read" in out_ and "  wd1_mark=1's marker: not read. CPU0 had an exception pending" in out_,
+              "acc_last=1's 0x92: the pending stage, which names the three writes made under the mask; the muxes named one by one; no"
+              " verdict on the limit whatever the span, and no reading of the time", out_ + err)
+        rc, out_, err = dec(0x93, 0xc5, x=90)
+        check(rc == 0 and "  so: THE CLUSTER WORDS WERE WRITTEN LAST, BUT THE RUN TOOK 100 MS OR MORE FROM THEM TO ITS LAST STAGE: not under the 52 ms" in out_,
+              "acc_last=1's 0x93 with a span of 100 ms or more: said not to test T8103's figure", out_ + err)
+        rc, out_, err = dec(0x93, 0xe3, x=90)
+        check(rc == 0 and "  the time: NOT RECORDED. The code is still 7" in out_ and "  so: " not in "\n".join(l for l in out_.splitlines() if "CLUSTER WORDS" in l)
+              and "THE CLUSTER WORDS WERE WRITTEN LAST" not in out_,
+              "acc_last=1's 0x93 with the code still 7: the time is said not to be recorded, with no verdict", out_ + err)
+        rc, out_, err = dec(0x91, 0xe3, x=90, parked=0xfe)
+        check(rc == 0 and "so the stage is 0x11" in out_ and "8 (acc_last=1): gates_mark=1's 0x4b, in a run whose step 5 left the three CPU complexes' cluster words out" in out_
+              and "parked (0x6005 = 0xfe): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7\n" in out_
+              and "  stage 0x11, so nothing records the cluster words or the commit after this byte (0x12 or 0x13 comes after them): the time's code is 7," in out_
+              and "THE CLUSTER WORDS WERE WRITTEN LAST" not in out_ and "  wd1_mark=1's marker: not read. Stage 0x11 is the last before the commit" in out_,
+              "acc_last=1's 0x91: the stage before the commit, its byte with the muxes and the code at 7, no verdict and no reading of the"
+              " time", out_ + err)
+        for x in (10, 90):
+            rc, out_, err = dec(0x91, 0, x=x, parked=0xfe)
+            check(rc == 0 and "0x6016 = 0x00: ACC_LAST'S BYTE DIDN'T LAND (bits 7:5 are 0), though stage 0x11 and the steps' outcomes did" in out_
+                  and "before the cluster words and the commit" in out_ and "the five ClkGen muxes the table parked" not in out_
+                  and f"the SoC restarted about {x} s after the commit" in out_,
+                  f"acc_last=1's 0x91 with 0x6016 = 0, a restart at {x} s: said to have stopped before the cluster words", out_ + err)
+        for stage, gb, kw, want in ((0x93, 0x00, {}, "0x6016 = 0x00: bits 7:5 are 0, so acc_last=1's byte didn't survive the reset"),
+                                    (0x92, 0x1f, {}, "0x6016 = 0x1f: bits 7:5 are 0"),
+                                    (0x93, 0x60, dict(prog=(0xff, 0x00)), "0x6016 = 0x60: not read. acc_last=1's byte goes out after the steps' outcomes"),
+                                    (0x13, 0x60, {}, "0x6016 = 0x60: not read. An acc_last=1 run's stages always carry pmp_out=1's bit 7")):
+            rc, out_, err = dec(stage, gb, **kw)
+            check(rc == 0 and want in out_ and "ACC_LAST'S BYTE" not in out_ and "alarm command" not in out_
+                  and "the five ClkGen muxes the table parked" not in out_ and "THE CLUSTER WORDS" not in out_,
+                  f"stage 0x{stage:02x}, 0x6016 = 0x{gb:02x}{', no outcomes marker' if kw.get('prog') else ''}: acc_last=1's byte isn't read", out_ + err)
+        rc, out_, err = dec(0x93, 0x60, prog=(0xff, 0x00))
+        check(rc == 0 and "The steps' outcomes go out right after stage 0x11's command" in out_,
+              "acc_last=1 without the outcomes' marker: fabric_up=1's byte is said to follow stage 0x11's command, the run's own", out_ + err)
+        # Every byte, at each of the run's stages, read independently of the decoder.
+        wrong = []
+        names = [f"0x28e038{o:03x}" for o in A2P_MUXES]
+        for s in (0x11, 0x12, 0x13):
+            for v in range(256):
+                b = bytearray(0x20)
+                b[0x12], b[0x13], b[0x16] = 0xc0, 0xff, v
+                lines = g["acl_lines"](s, bytes(b), True)
+                text = "\n".join(lines)
+                so = [l for l in lines if l.startswith("  so: ")]
+                code, on = v >> 5, [bool(v >> n & 1) for n in range(5)]
+                if not code:
+                    ok = len(lines) == 1 and not so and ("DIDN'T LAND" in text) == (s == 0x11) and ("Not read" in text) == (s != 0x11)
+                else:
+                    ml = lines[1]
+                    did, _, didnt = ml.partition("; DIDN'T: ")
+                    ok = ("acc_last=1's byte" in lines[0] and ml.startswith("  the five ClkGen muxes the table parked, each read once after the table: ")
+                          and ("all five read 0x80100000" in ml) == all(on) and ("NONE OF THE FIVE READ 0x80100000" in ml) == (not any(on))
+                          and ("the load's log has all five awake" in ml) == (not all(on))
+                          and (all(on) or not any(on) or all((nm in did) == o and (nm in didnt) == (not o) for nm, o in zip(names, on)))
+                          and (not (all(on) or not any(on)) or not any(nm in ml for nm in names))
+                          and "SIO's firmware isn't shown stopped" not in text)
+                    if s == 0x11:
+                        ok = (ok and len(lines) == 3 and not so and "the time, code" not in text and "NOT RECORDED" not in text
+                              and lines[2].startswith("  stage 0x11, so nothing records the cluster words or the commit after this byte")
+                              and ('"not yet", as that send has it' in lines[2]) == (code == 7) and ("Not read as a time" in lines[2]) == (code != 7)
+                              and (code == 7 or f"the time's code is {code}," in lines[2]) and lines[2].endswith("Inconclusive about the rest of the entry"))
+                    elif code == 7:
+                        ok = ok and len(lines) == 3 and not so and lines[2].startswith("  the time: NOT RECORDED. The code is still 7") and "the time, code" not in text
+                    else:
+                        ok = (ok and len(lines) == 4 and len(so) == 1 and lines[3] == so[0]
+                              and lines[2].startswith(f"  the time, code {code}: {ACL_SPAN[code]} from CPU0's read of the clock before the first cluster word")
+                              and "Nothing records that the other cores left their hold" in lines[2]
+                              and "means B2" not in text and "proves" not in text and "isn't what ends the runs" not in text)
+                        clean = s == 0x13
+                        ok = (ok and ("NOT A TEST OF THE LIMIT, whatever the span" in so[0] and "restart's time isn't read" in so[0]) == (not clean)
+                              and ("THE CLUSTER WORDS WERE WRITTEN LAST" in so[0]) == clean
+                              and ("WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT " + ACL_SPAN[code].upper() + " AFTER THEM: well under the 52 ms" in so[0]) == (clean and code <= 3)
+                              and ("is unlikely to be what ends the runs" in so[0] and "isn't excluded" in so[0] and "not yet that it's the time" in so[0]) == (clean and code <= 3)
+                              and ("WERE WRITTEN LAST, AND THE RUN'S LAST STAGE WAS OUT " + ACL_SPAN[code].upper() + " AFTER THEM: TOO CLOSE TO CALL against the 52 ms" in so[0]
+                                   and "neither tests that limit nor clears it" in so[0]) == (clean and code == 4)
+                              and ("WERE WRITTEN LAST, BUT THE RUN TOOK " + ACL_SPAN[code].upper() + " FROM THEM TO ITS LAST STAGE: not under the 52 ms" in so[0]
+                                   and "doesn't test that limit" in so[0]) == (clean and code >= 5)
+                              and ("about 120 s" in so[0] and "is what B2 getting past its op 224 would give" in so[0]
+                                   and "as far as the marker and WD2's sample bear a reading out" in so[0]) == clean)
+                if not ok:
+                    wrong.append((hex(s), hex(v), lines))
+            b = bytearray(0x20)
+            b[0x12], b[0x13], b[0x16] = 0x40, 0xff, 0x60
+            if sum("SIO's firmware isn't shown stopped" in l for l in g["acl_lines"](s, bytes(b), True)) != 1:
+                wrong.append((hex(s), "SIO's firmware not stopped: not said"))
+            b[0x12] = 0xc0
+            if "not read" not in g["acl_lines"](s, bytes(b), False)[0] or len(g["acl_lines"](s, bytes(b), False)) != 1:
+                wrong.append((hex(s), "no pmp_out=1 bit"))
+        check(not wrong, "acc_last=1: for every byte at each of its stages: the muxes' line names each mux by its bit; before the commit the"
+              " code is 7 or the byte isn't read as a time, and there's no verdict; after it a code of 7 is a time that wasn't recorded,"
+              " a code of 1 to 3 a span well under T8103's figure, 4 too close to call and 5 or 6 one that doesn't test it, and only at"
+              " the clean last stage: at the pending one no verdict on the limit; the restart's time is spoken of once; nothing is"
+              " read from a byte whose code is 0", str(wrong[:2]))
+        mr = g["mark_reading"]
+        wrong = [(hex(v), x) for v in range(256) for x in (60, 88, 90, 105, 120, 123, 135, 146, 150, 163, 300)
+                 if mr(x, 0x11, v) != mr(x, 0x4b, v).replace("Stage 0x4b", "Stage 0x11") or mr(x, 0x12, v) != mr(x, 0x54, v)
+                 or mr(x, 0x13, v) != mr(x, 0x55, v)]
+        check(not wrong and "Stage 0x11 is the last before the commit" in mr(90, 0x11, 0x7d),
+              "the restart's time is read against the marker at 0x11, 0x12 and 0x13 exactly as at 0x4b, 0x54 and 0x55", str(wrong[:3]))
+        # --clear: the run's alarm disarmed by its compare value; with the second lost, 0x6016 is never taken for the alarm's result.
+        for stage, kw in ((0x93, {}), (0x92, {}), (0x91, dict(parked=0xfe))):
+            before = fake(path, scratch(stage, **dict(rec, drained=0xbd, **kw)), rtc_secs=121761, alarm=alarm)
+            r = run(path, "--clear", cnt="4800000000 24000000")
+            want = bytearray(before)
+            want[0x6004:0x6008] = bytes(4)
+            want[0x6010:0x6017] = bytes(7)
+            want[0x1401] = 0x01
+            check(r.returncode == 0 and open(path, "rb").read() == bytes(want) and "disarmed: 0x1401 = 0x01" in r.stdout,
+                  f"--clear after acc_last=1's 0x{stage:02x}: the run's alarm disarmed by its compare value, and the crumbs zeroed", r.stdout + r.stderr)
+        before = fake(path, scratch(0x93, **dict(rec, secs=0, drained=0xbd)), rtc_secs=121761, alarm=alarm)
+        r = run(path, "--clear", cnt="4800000000 24000000")
+        check(r.returncode == 2 and open(path, "rb").read() == before and "disarmed" not in r.stdout
+              and "after gates_mark=1's, sio_down=1's, pcie_down=1's, sio_steps=1's, a2_pre=1's and acc_last=1's stages it never does: it's that run's byte" in r.stderr,
+              "--clear after 0x93 with the second lost and 0xbd at 0x6016: not taken for an acked alarm, so nothing is written", r.stdout + r.stderr)
 
 
 PROBE_HDR = r"""
@@ -7097,7 +7617,7 @@ def position_tests(g, src):
                   f"cluster_ack=1 with 0x6006 and 0x6007 both 0 (0x6014 = 0x{flags:02x}): no word is said to have read 0", out + err)
         rc, out, err = dec(0xd7, dict(ack15, flags=0xa0))
         UNREAD = ("  0x6014's bits 4 and 5 are cluster_ack=1's alone in a sio_stop=1 run: bit 5 only with bit 4, and only at that run's stages (0x4e, 0x56, 0x57,"
-                  " or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, or sio_down=1's 0x3d, 0x3e, 0x3f, or pcie_down=1's 0x1d, 0x1e, 0x1f, or sio_steps=1's 0x15, 0x16, 0x17, or a2_pre=1's 0x19, 0x1a, 0x1b, with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
+                  " or fabric_up=1's 0x52, 0x51, 0x53, or gates_mark=1's 0x4b, 0x54, 0x55, or sio_down=1's 0x3d, 0x3e, 0x3f, or pcie_down=1's 0x1d, 0x1e, 0x1f, or sio_steps=1's 0x15, 0x16, 0x17, or a2_pre=1's 0x19, 0x1a, 0x1b, or acc_last=1's 0x11, 0x12, 0x13, with pmp_out=1's bit 7). Here they aren't that: don't read them\n")
         check(rc == 0 and "0x6014 bit 4 (cluster_ack=1)" not in out and UNREAD in out,
               "bit 5 without the mark in a sio_stop=1 record: called out, and not read as cluster_ack=1's", out + err)
         # Stages no cluster_ack=1 run sends (0x4f, and recfg_bite=1's), and a stage without pmp_out=1's bit: the mark isn't read there.
@@ -7108,7 +7628,7 @@ def position_tests(g, src):
                   f"stage 0x{stage:02x} with 0x6014 = 0x90: not a cluster_ack=1 run's stage, so the mark isn't read and the bits are called unreadable", out + err)
         # The mark's byte lost (bit 7 clear), or a stage before it was sent: 0x6006's cluster bits can't be read either way, and it says so,
         # whether or not one is set.
-        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1, 0x3d with sio_down=1, 0x1d with pcie_down=1, 0x15 with sio_steps=1, 0x19 with a2_pre=1){}."
+        NOMARK = ("  (nothing here says whether this was a cluster_ack=1 run: its mark is 0x6014's bit 4, sent just before stage 0x4e (0x52 with fabric_up=1, 0x4b with gates_mark=1, 0x3d with sio_down=1, 0x1d with pcie_down=1, 0x15 with sio_steps=1, 0x19 with a2_pre=1, 0x11 with acc_last=1){}."
                   " In one, bits 2-5 are the cluster words whose flag stayed, not the waits on bit 4 that timed out)\n")
         for stage in (0xce, 0xd6, 0xd7):
             for left in (0x04, 0x00):
@@ -7666,7 +8186,7 @@ def position_tests(g, src):
     # recfg_bite=1: the module reads, and never writes, the SRAM; the sample goes out once, after the release, in one command with its stage.
     tool = open(TOOL).read()
     check("#define M1_RECFG_STAGE\t\t0x47" in src and "#define M1_RECFG_STAGE_PEND\t0x46" in src and "RECFG_STAGES = (0x46, 0x47)\n" in tool
-          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x15, 0x19, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b),
+          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x15, 0x19, 0x11, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b, 0x12, 0x13),
           "recfg_bite=1's stages are 0x46 and 0x47 in the module and in m1-crumbs, with sio_stop=1's stages")
     uses = [l for l in src.splitlines() if re.search(r"\bm1_recfg\b", l)]
     literals = [int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", src)]
@@ -7726,8 +8246,8 @@ def position_tests(g, src):
           " after it, and returns their refusals")
 
     # wd2_bite=1: one write to WD2, its bite, by CPU0 after the release, and only if WD2 showed RESET_EN; the sample in one command with its stage.
-    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2 + SST_WD2 + A2P_WD2\n" in tool
-          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b) and g["WD2_PEND"] == (0x56, 0x51, 0x54, 0x3e, 0x1e, 0x16, 0x1a),
+    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2 + SST_WD2 + A2P_WD2 + ACL_WD2\n" in tool
+          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b, 0x12, 0x13) and g["WD2_PEND"] == (0x56, 0x51, 0x54, 0x3e, 0x1e, 0x16, 0x1a, 0x12),
           "wd2_bite=1's stages are 0x56 and 0x57 in the module and in m1-crumbs, with recfg_bite=1's as the stages whose 0x6005 is a sample")
     wout = src[src.index("static void m1_wd2_out(void)"):]
     wout = wout[:wout.index("\n}\n")]
