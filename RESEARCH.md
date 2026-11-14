@@ -5046,6 +5046,46 @@ What it says:
 Next (PLAN.md): the cluster words written last, with the time from them to the release recorded,
 and the muxes read out one by one as that run's rider. Desk first, as listed in the section above.
 
+### `acc_last=1` as built: the CPU complexes' cluster words written last, and the time after them kept (2026-11-14)
+
+The build PLAN.md had next. `run-floor --m1-acc-last` is `--m1-gates`' recipe with `acc_last=1`
+(`e1-hook/acc_last.h`).
+
+- **The desk checks first.** The table's entries 52 to 54 are the soc-cluster words of EACC, PACC0
+  and PACC1 (0x28e098000 := 0, + 4 := 0x20, + 8 := 0x20): T6000's counterpart of the two words Naeem
+  Malik's T8103 driver writes last (PMGR + 0x18000 and + 0x18004 there too). No wait of macOS's is on
+  them. After them the table has the other clusters' words (ANE0, AFR, DISPLAY, AVEMSR, each with a
+  wait), SIO_CPU, the five mux parks and PLL-off, then the commit. How long the replay takes from
+  entry 52 to CPU0's WFI was never recorded; what is known is its bounds: up to 10 ms a wait, the 20
+  power words (four of which don't read back, so likely their whole 10 ms each), seven stop requests,
+  about a dozen PMU commands, step 8's reads or moves, the commit, six more PMU commands, and up to
+  300 ms for the engine to arm WD2. So tens of ms at the least, and it can't be said to be under
+  T8103's 52 ms in any run so far. The holds can come before the cluster words: nothing in step 6
+  reads them.
+- **What the run does.** Step 5 leaves the three entries out. Steps 6 to 8 run as before. In step 9,
+  under the mask, CPU0 reads the clock, writes the three (the table's values, in the table's order)
+  and then the commit, with nothing between. After the alarm's commands, the release and
+  `wd2_bite=1`'s stage it reads the clock again and sends one more byte with the span as a code.
+  **No address or value is new.** What is new is the order: the three now come after the table's
+  entries 55 to 72 where macOS writes them before. That is T8103's order as Naeem has it (the parks,
+  then the cluster words, then the timer); whether T6000 minds isn't known, and a run that ends
+  differently in step 5 (a wait unmet at 0x6006) would say so.
+- **The rider.** In step 8, in place of `gates_mark=1`'s reads, the five ClkGen muxes are read, one
+  bit each: which read 0x80100000. The `a2_pre=1` run had one bit for all five.
+- **The byte, 0x6016:** bits 4:0 the muxes in the table's order; bits 7:5 the time's code (0 never;
+  1 to 5 under 5, 10, 20, 50, 100 ms; 6 that or more; 7 "not yet", the send before the cluster
+  words). Stages 0x91, then 0x93 or 0x92.
+- **What the span covers:** from before the first cluster word to after the last stage went out, so
+  the commit, the alarm, the release of the other cores and CPU0's wait for WD2. It bounds the other
+  cores' way to their WFI from above. It leaves out the byte's own command, the acks and CPU0's WFI.
+- **What it can say.** A restart at about 120 s, at 150 s or more, or none: B2 got past its op 224,
+  and the place of these writes is what the runs lacked. A restart at 90 s with a code of 4 or less:
+  a limit of T8103's size isn't what ends the runs (a shorter one isn't excluded). With a code of 5
+  or 6 the run didn't get under 52 ms and the limit is untested: the wait for WD2 is cut next.
+- **Checked:** `tests/m1_crumbs_test.py` (1,076 checks; the three functions compiled as they stand
+  against a model that logs every access), `tests/e1a_launcher_test.py` (2,042),
+  `tests/e1_hook_probe_test.py` (79), `tests/mutants.py` (923 mutants, 84 of them this rung's).
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

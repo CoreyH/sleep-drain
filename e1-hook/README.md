@@ -152,6 +152,22 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   recorded, not a proven stop: CPU0 didn't come through the next move, or a send failed and the run went on
   unrecorded. It adds at most about 0.3 s before the commit. The rest of the ending reads as `--m1-gates`'. Run once,
   2026-11-14: the byte 0xff (all three took and settled; the muxes didn't all read parked), restart at 91 s.
+- `acc_last=1` (`run-floor --m1-acc-last`, on `gates_mark=1`, never with `sio_down=1`, `pcie_down=1`, `sio_steps=1`,
+  `a2_pre=1`, `observe=1` or `probe=1`; `e1-hook/acc_last.h` has the entries, the time's code, the byte and the
+  stages) writes the three CPU complexes' soc-cluster words last. Step 5 leaves out the table's entries 52 to 54
+  (0x28e098000 := 0, 0x28e098004 := 0x20, 0x28e098008 := 0x20: EACC, PACC0, PACC1), and step 9 writes them, the
+  same values in the same order, under the mask and right before the commit's write. After the release and
+  `wd2_bite=1`'s stage one more command goes out: the byte with the time from before the first cluster word, as a
+  code. In step 8, where `gates_mark=1`'s reads would be, CPU0 reads the five ClkGen muxes the table parked. No new
+  address and no new value; what changes is the three writes' place, after the table's entries 55 to 72 where
+  macOS has them before. The byte: bits 4:0, mux n in the table's order (0x28e038164, 16c, 168, 15c, 170) read
+  0x80100000; bits 7:5 the time's code: 0 never, 1 to 5 under 5, 10, 20, 50 and 100 ms, 6 that or more, 7 "not
+  yet" (the send before the cluster words). The span runs to CPU0's read of the clock after the last stage went
+  out: it covers the commit, the alarm's commands, the release, the wait for WD2's arming (up to 300 ms) and the
+  stage's command, and not the byte's own command or CPU0's WFI. Stages 0x91, then 0x93 or 0x92. Why: on T8103
+  the chip starts its own block at the first cluster word and every core has to be in its wait within tens of ms
+  (Naeem Malik's second driver); nothing shows T6000 has such a limit. The rest of the ending reads as
+  `--m1-gates`'. Not run yet.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be
