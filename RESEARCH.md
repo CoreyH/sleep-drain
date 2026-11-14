@@ -5006,7 +5006,8 @@ like the same thing (the mapping is judgment).
    (the SIO_CPU write, the muxes, PLL-off: macOS makes them after the cluster words), and whether
    the cores' holds can be taken before the cluster words.
 3. **Asking Naeem which T6000 driver he read is worth more than either run** if it's public or
-   he'll share it. A draft is Corey's to ask for.
+   he'll share it. A draft is Corey's to ask for. (Asked on 2026-11-14, with Corey's OK:
+   malik-na/linux-aurora#77.)
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

@@ -114,8 +114,11 @@ the PR with that session's work.
     three written last, the time from them to the release recorded. Desk first: how long steps
     6 to 8 take, and what the table has after entry 54. Then, still not built: what opens the 22
     to a write (B2 clears two words of the engine's page right before them).
-  - **Open, Corey's:** Naeem Malik's commits cite a working deep sleep on T6000 ("a reference
-    driver for the M1 Pro"). It wasn't found in public. Asking him which it is needs Corey's OK.
+  - **Asked, waiting:** Naeem Malik's commits cite a working deep sleep on T6000 ("a reference
+    driver for the M1 Pro"). It wasn't found in public. Corey had the question posted on
+    2026-11-14: malik-na/linux-aurora#77 (which driver, whether it wakes again, whether the
+    52 ms is T8103's). Check it for an answer at the start of a session; a reply there, or
+    reading what he points to, still needs Corey's OK.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
     the full mutant run; write-ups stay short.
