@@ -1,6 +1,6 @@
 # Plan
 
-Last updated 2026-11-12. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-15. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
@@ -115,16 +115,56 @@ the PR with that session's work.
     ending unchanged: a limit of T8103's size is unlikely to be it. None of the five muxes read
     0x80100000 in step 8; whether their writes were refused, or took and changed, or read back
     otherwise, isn't recorded.
-  - **Next, not built: the muxes' values.** Reads only: each mux's top byte (bits 31:24, where
-    the park's field and its two flags are) right after its own write and wait in step 5, and
-    again in step 8, in the PMU's bytes. Refused, changed later, or read back otherwise: one run
-    says which. Desk first: which bytes of the record are free for ten values, or which of the
-    five can stand for the rest.
-  - **After it, if they were refused: what opens the 22, and the muxes, to a write.** A
-    hypothesis until then. B2 clears two words of the engine's page right before its 22 writes
-    (the test of the engine's two words, in Track A below; the sweep's notes on it apply): which
-    two words, what the sweep says about writing them from the AP, and whether a `probe
-    --pre`-style test that comes back can carry it.
+  - **The strategy review of 2026-11-14/15 changed the order** (RESEARCH.md, "The strategy
+    review"; the reports are in `~/.local/share/sleep-drain/strategy-review-20261114/`). The stall
+    is after the last core stops, and every rung since run 17 looked before it. The one-way mux
+    run and the test of the engine's two words are set aside; so is every AP-made rung on B2's
+    ops, until a witness shows B2 past its first gate.
+  - **Next, in this order** (nothing built yet; items marked OK need Corey's word first):
+    1. Free, no build: `inhibit-charge` checked awake on the charger; whether the keyboard light
+       survives a plain s2idle; macOS's `ioreg` and `log show` for its platform sleep and quiesce
+       actions (ten minutes in macOS, Corey's); an SMC dump either side of a plain restart, as the
+       control for the diff across a run.
+    2. One rung, "the last look", on run 17's recipe (`--m1-mark`'s, without the later AP-made B2
+       steps): CPU0 records, raw, if its last WFI returns (0x2922c0040's bit 1, PHASE, HS_A, HS_B,
+       the first of SIO's words still on, then PCIe, ANS, PMP); the cluster status words
+       (0x28e09a000 + 4n) read before CPU0's WFI; WD1's marker at 70 s, which is also the second
+       count that separates the two readings of 90 s; no idle reading; raw words and one decoder,
+       not a verdict byte. Run A: nothing armed, so a return means a pending source. Run B, same
+       build: a wake at +20 s (the PMU alarm, or CPU0's timer), and the keyboard light lit before
+       the commit (four new writes: fpwm0's power word and the PWM's registers) and filmed at 240
+       frames a second. OK: PMU bytes 0x6008-0x600e.
+    3. One returning batch, in a safe boot: CPU0's RVBAR and its lock bit; 0x2922c0200,
+       0x2922c0214, 0x2925c0014; the muxes written, read and restored (in place of the one-way mux
+       run); the cluster status words awake.
+    4. If runs A and B leave B2 at its first gate: the commit alone from plain s2idle, the alarm
+       at 15 s, the look list before and after, then WD2's bite moved and a restart. It returns
+       with whole words if the kernel survives; in a safe boot, and no mount of /boot after the
+       commit.
+    5. The power meter (OK: the purchase, and runs on the charger): macOS's own sleep entry and a
+       plain s2idle first, then one baseline one-way run on the charger. It says how deep the dark
+       stretch gets, not which op.
+  - **Budget:** ten one-way runs or three weeks from the first witness run, whichever comes
+    first; no run without two outcomes each worth 20%. Then: go on only if a witness has named
+    where B2 stops; otherwise write the entry work up for aurora-silicon/linux and stop the runs.
+  - **Waiting for a witness to name a place** (not to be built before): a script engine that
+    writes; a RAM-only boot that chains runs (feasible, about one rung, but it writes the boot
+    partition every cycle and changes "Corey runs every run"); serial code; a `pram` store; the
+    macOS kernel extension.
+  - **The way back isn't in this plan's power** (RESEARCH.md, same section). To ask, each post
+    with Corey's OK: aurora-silicon's maintainers (is the resume mailbox generic or limited to
+    T8140 and later; would T6000 data and ops for their sleep core be taken while the entry still
+    resets; has their M1 Pro ever returned a core through the RVBAR); omacom's (will linux-aurora
+    carry the sleep core and m1n1-aurora a mailbox); maralcbr (how his replay ended).
+  - **The nights, beside all of it:** suspend, then power off after N minutes (the alarm,
+    disarmed on every other way out; the alarm modules loaded at boot until #351 merges: OK), or
+    at once `sleep-guard` with other thresholds. First the two numbers nobody has: the draw
+    powered off over a night, and lid-open to desktop.
+  - **Process, from now:** raw words and one decoder; a generic read-only look that takes an
+    address list; the adversarial pass for new writes only; once the module has changed anything
+    it restarts, it doesn't fail the suspend; read-only looks at addresses already read cleanly
+    in that state may run from the regular boot with /boot unmounted. PLAN.md's Track A still
+    carries superseded plans newest-first and contradicts itself in places: to be cut down.
   - **Asked, waiting:** Naeem Malik's commits cite a working deep sleep on T6000 ("a reference
     driver for the M1 Pro"). It wasn't found in public. Corey had the question posted on
     2026-11-14: malik-na/linux-aurora#77 (which driver, whether it wakes again, whether the
@@ -132,7 +172,8 @@ the PR with that session's work.
     reading what he points to, still needs Corey's OK.
   - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
     started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
-    the full mutant run; write-ups stay short.
+    the full mutant run; write-ups stay short. (2026-11-14: Corey raised the usage and ran the
+    review at full depth. Whether this rule still stands is asked, not yet answered.)
 
 ## Picking this up
 
@@ -174,7 +215,8 @@ State that lives on the MacBook, not in git:
 - The alarm needs the test drivers after every boot:
   `make -C rtc-alarm-test && pkexec rtc-alarm-test/load`.
 - The RTC was set to the real time on 2026-11-02. It had counted from 1970
-  since the battery ran flat.
+  since the battery ran flat. It reads 1970 again since 2026-11-15: the Mac
+  slept from 11-14 15:57 at 50% and ran flat overnight. To be set again.
 - `/boot/macos-session/`: macOS 26.6.2's IODeviceTree, `pmset` log and
   battery readings from 2026-10-30.
 

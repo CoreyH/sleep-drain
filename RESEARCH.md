@@ -5133,6 +5133,111 @@ What it says:
 Next (PLAN.md): the muxes' values read out, before and after the park, which tells those cases
 apart; then, if they were refused, what opens them and the 22 to a write (Pullfrog on #105).
 
+### The strategy review: the stall is in the dark, and almost everything built looks before it (2026-11-14 to -15)
+
+Corey, 2026-11-14, after the `acc_last=1` run: "can we pause for a moment and assess our strategy. are
+there other tools we can use to try and crack this case? any way to speed up the cycles? do we *need*
+safe mode?", and later "I could buy one of those 'cloud kvm' devices too". Done as two read-only
+passes: 18 fact-finders over this notebook, PLAN.md, the local SRAM decode, the code, the logs and
+outside sources; then four independent strategists, five fact checks and four adversarial reviews of
+a draft. The 32 reports are on this MacBook, out of the repo: `~/.local/share/sleep-drain/strategy-review-20261114/`.
+No run, no write, nothing posted. What follows is what was measured or read, then the judgment.
+
+**Measured, about the instrument**
+- Two read-only probes that returned gave about 436 full words; six one-way runs gave about 12
+  payload bytes. Every new bit of the last four one-way runs was read by CPU0 before the commit. The
+  only fact any run has from after the commit is the restart's time.
+- B2 is 246 ops: 152 writes, 89 polls, 4 delays, End. Its first 222 ops write nothing that outlasts
+  a reset; ops 223-224 (WD0's and WD1's counts) are the time channel's one boundary. 22 polls have
+  the unbounded form: ops 1, 3, 6 (the engine's page), 31, 33, 231, 233, 244 (HS_B), 177-187 (bit 31
+  of eleven clock blocks), 189, 192, and 241 (the SPMI ack). 58 have the retry bit and 6 don't, all
+  with a count field of 255; read as one 12-bit field, as this Mac's bytes suggest, the 58 are
+  4095. No public source says what the engine does when a counted poll runs out (PongoOS only parses
+  the format; XNU names the engine three times). Estimate: it stops there, 65%; falls through, 25%;
+  something else, 10%. The op-140 gate lead rests on the first.
+- A run takes Corey a median 10.8 minutes (machine floor 232 s, of which the 60 s idle reading and
+  the 90 s marker are chosen; the safe boot about 1.5 minutes). Same-day runs are a median 140
+  minutes apart: the run is about 8% of the loop, the build and its review the rest. 19 rungs, mean
+  1,144 lines each (tests 44%, mutants 8%, the mechanism 45-110 lines). No review found a wrong
+  register write in any build; findings were decoder claims, load checks and test holes.
+- The safe boot: at the end of noirq the filesystems are synced, user space frozen and the NVMe
+  controller shut down, so a run that never returns is a power cut on an idle drive. btrfs logged
+  nothing in 89 boots; /boot's vfat was found "not properly unmounted" on 11-12 and 11-14. What the
+  safe boot guards is a kernel that keeps running, damaged, with a writable disk: a probe that
+  returns, or a replay that stops short after `slpa`. That path can be closed in the module: once
+  anything has been changed, restart, don't fail the suspend.
+
+**Corrections to these notes**
+- "aurora-linux #99" (the hibernation line at the top) is iconidentify/aurora-linux#99, moved to
+  omacom/linux-aurora#50, which is open and blocked.
+- aura boots this board: Aurora Silicon lists J314S as qualified (aurora-silicon/linux discussion
+  95). This Mac already runs at EL2, under m1n1-aurora 1.6.1.aurora3, with spin-table CPUs and no
+  `aurora,s2r-mailbox` in /chosen. The sleep core (`drivers/soc/apple/sleep.c`) is in
+  aurora-silicon/linux (7.3) only; omacom/linux-aurora has none. #1477 was closed on 11-14 and split
+  into #1903, #1904 and #1909 to #1916. #1769 doesn't say the M1 generation "differs in kind".
+- UART0's power word (0x28e580240) reads 0x200 awake: the port is runtime-suspended, not switched
+  off by the suspend. It isn't among the UARTs `ps_words=1` writes; B2 switches it off itself.
+- Run 2's observer did see CPU0 and its complex off. What nothing has seen is the last core and its
+  complex going down, and anything after that.
+
+**The way back.** XNU: "The reconfig engine script brings the CPU out of reset at the kernel's reset
+vector"; iBoot locks CPU0's RVBAR to the boot object's entry page. The contract in aurora-silicon's
+series (#1208): the loader sends a reset secondary back through its spin-table release address and
+the boot core to a resume mailbox, published as `/chosen/aurora,s2r-mailbox`; without it their
+driver doesn't bind. On T8103 the boot CPU has never run its first instruction at the RVBAR after a
+completed entry, and a core restart there failed on T6020. PSCI through EFI is T8103 only, has no
+system suspend, and has had no new version since the PSCI maintainer's objection in September. So a
+completed entry here gives a drain figure, not a sleep: the return needs a loader that publishes the
+mailbox (not Claude's to write), the sleep core in the kernel this Mac runs, a core that does
+execute at the RVBAR, and device restore. CPU0's RVBAR and its lock bit have never been read here.
+
+**Found, not on file before**
+- Witnesses that need no CPU. The keyboard backlight is a hardware PWM (pwm@39b030000, domain
+  fpwm0, power word 0x28e580190), the tenth of the 43 words B2 writes in its SIO chain: lit before
+  the commit and filmed, it says whether B2 gets that far. The Mac's input power through an inline
+  logging meter (KM003C: 1 kHz, open Linux tools; `charge_behaviour` offers inhibit-charge here):
+  the plateau of the dark stretch is resolvable (about 80%), B2's single steps probably not (20%).
+- CPU0's last WFI: a return is counted only with `observe=1`, so since run 11 a WFI that returns
+  has been lost silently. A pending source holding a core up is the stall the M4 drivers found.
+- cpuidle's deepest state ("CPU PD") is what every core sits in during s2idle, so "every core
+  down" can also be had from Linux's own idle: the commit alone at the end of noirq, the alarm at
+  15 s, and a look on the way back. No `slpa`, so the NVMe lives and the words come back in full.
+- An SMC key dump has never been diffed across a one-way run.
+- Stores that may outlast a reset: `pram` (1.5 MB of DRAM at 0x107e6cd0000 by macOS's tree, right
+  where the live tree's dcp_data ends and outside /memory; XNU carries panic logs in it across a
+  reset; survival through this boot chain untested); PMU bytes 0x6008-0x600e and 0x6017-0x601f read
+  0 and have no Linux cell, but lie in macOS's legacy scratchpad; the PMU's 1 KiB `socd` area.
+- macOS's side without m1n1: `ioreg` and `log show` for the platform sleep and quiesce actions
+  (free); a kernel extension registered as a quiesce action could snapshot PMGR words at macOS's
+  last step before a real sleep and on wake (Permissive Security on its own volume; unverified on
+  26.6.2). Its snapshot precedes the cores' last WFI.
+- A serial console on UART0 through macvdmtool or tuxvdmtool from the second Mac: about 75% that
+  text can be printed up to the last core's stop (the unknown is the port's mux through the
+  suspend); blind after it. A network KVM can't reset the Mac, sees nothing once it is dark, has a
+  dead keyboard at the passphrase prompt as the initramfs is built, and adds two attachments.
+- Policies, quoted: Asahi's, "A contributor using an LLM to interpret a trace made using the m1n1
+  hypervisor may be issued with a first and final warning"; m1n1's AGENTS.md forbids "any usage of
+  AI or LLM tools whatsoever"; both aurora kernels take AI-assisted patches with an `Assisted-by`
+  tag and no AI sign-off.
+
+**The judgment** (four strategists and four reviewers, who agreed on the main lines)
+- At least 85% of what isn't known lies after the last core stops. If B2 never passes its first
+  gate, none of the AP-made rungs on its later ops (runs 7 to 12 and 16, the gates read, both
+  `sio_down` runs, `pcie_down`, `sio_steps`, `a2_pre`, `acc_last`) could have moved the ending. A
+  wider record of what CPU0 reads before the commit doesn't change that.
+- Where the entry stops, by the four strategists: B2 never passes op 1, 40 to 50%; in ops 2-34, 12
+  to 20%; in the power-downs, 27 to 37%; the pair finishes and something else resets, 5 to 8%. That
+  the entry can be completed on this Mac from Linux: about 50%. A whole sleep-and-wake cycle here
+  within three months: 4 to 10%.
+- So: witnesses for the dark stretch first (PLAN.md has the order); AP-made rungs on B2's ops stop
+  until a witness shows B2 past op 1; the scripted write engine, the chained RAM-only boot, serial
+  code, a `pram` store and the kernel extension wait for a witness to name a place; the one-way
+  runs get a budget (ten runs or three weeks, and no run without two outcomes each worth 20%).
+- For the nights themselves: suspend, then power off after some minutes, which needs only the alarm
+  (omacom/linux-aurora#351). On 2026-11-14 the Mac went to sleep at 15:57 with 50% (inside
+  `sleep-guard`'s day hours, where its threshold is 15%), ran flat overnight, and the PMU's clock
+  reads 1970 again.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
