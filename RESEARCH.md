@@ -5133,7 +5133,7 @@ What it says:
 Next (PLAN.md): the muxes' values read out, before and after the park, which tells those cases
 apart; then, if they were refused, what opens them and the 22 to a write (Pullfrog on #105).
 
-### The strategy review: the stall is in the dark, and almost everything built looks before it (2026-11-14 to -15)
+### The strategy review: what isn't known lies after CPU0's last record, and almost everything built looks before it (2026-11-14 to -15)
 
 Corey, 2026-11-14, after the `acc_last=1` run: "can we pause for a moment and assess our strategy. are
 there other tools we can use to try and crack this case? any way to speed up the cycles? do we *need*
@@ -5145,8 +5145,11 @@ No run, no write, nothing posted. What follows is what was measured or read, the
 
 **Measured, about the instrument**
 - Two read-only probes that returned gave about 436 full words; six one-way runs gave about 12
-  payload bytes. Every new bit of the last four one-way runs was read by CPU0 before the commit. The
-  only fact any run has from after the commit is the restart's time.
+  payload bytes. Every new bit of the last four one-way runs was read by CPU0 before the commit, or
+  (`acc_last=1`'s span) right after it. Three things are to be kept apart: the commit; CPU0's last
+  record, made after the commit and the release (WD2's sample with PHASE, and that span); and CPU0's
+  own last WFI. From after that last record no run has anything but the restart's time, so no
+  record shows that the last core went down at all.
 - B2 is 246 ops: 152 writes, 89 polls, 4 delays, End. Its first 222 ops write nothing that outlasts
   a reset; ops 223-224 (WD0's and WD1's counts) are the time channel's one boundary. 22 polls have
   the unbounded form: ops 1, 3, 6 (the engine's page), 31, 33, 231, 233, 244 (HS_B), 177-187 (bit 31
@@ -5199,9 +5202,15 @@ execute at the RVBAR, and device restore. CPU0's RVBAR and its lock bit have nev
   the plateau of the dark stretch is resolvable (about 80%), B2's single steps probably not (20%).
 - CPU0's last WFI: a return is counted only with `observe=1`, so since run 11 a WFI that returns
   has been lost silently. A pending source holding a core up is the stall the M4 drivers found.
-- cpuidle's deepest state ("CPU PD") is what every core sits in during s2idle, so "every core
-  down" can also be had from Linux's own idle: the commit alone at the end of noirq, the alarm at
-  15 s, and a look on the way back. No `slpa`, so the NVMe lives and the words come back in full.
+- cpuidle's deepest state ("CPU PD") is what every core is asked into during s2idle, so "every
+  core down" might also be had from Linux's own idle: the commit alone at the end of noirq, the
+  alarm at 15 s, and a look on the way back. A hypothesis, twice over: cpuidle counts requests, not
+  cores and complexes found off together, and that path isn't the recipe's (no stop bits, no
+  `ACC_OVRD` arming, a WFI that returns). So a look that finds nothing changed neither places nor
+  excludes the recipe's stall; only an engine that moves would say something. Without `slpa` the
+  SMC doesn't take the NVMe, but B2 lowers the storage's PCIe words and cycles ANS2 itself, so a
+  commit that gets far enough can still lose the disk and the log: words in full if the kernel and
+  the NVMe survive, the PMU's bytes otherwise.
 - An SMC key dump has never been diffed across a one-way run.
 - Stores that may outlast a reset: `pram` (1.5 MB of DRAM at 0x107e6cd0000 by macOS's tree, right
   where the live tree's dcp_data ends and outside /memory; XNU carries panic logs in it across a
@@ -5221,7 +5230,8 @@ execute at the RVBAR, and device restore. CPU0's RVBAR and its lock bit have nev
   tag and no AI sign-off.
 
 **The judgment** (four strategists and four reviewers, who agreed on the main lines)
-- At least 85% of what isn't known lies after the last core stops. If B2 never passes its first
+- At least 85% of what isn't known lies after CPU0's last record: whether the last core and its
+  complex go down, and what the engine does then. If B2 never passes its first
   gate, none of the AP-made rungs on its later ops (runs 7 to 12 and 16, the gates read, both
   `sio_down` runs, `pcie_down`, `sio_steps`, `a2_pre`, `acc_last`) could have moved the ending. A
   wider record of what CPU0 reads before the commit doesn't change that.

@@ -116,8 +116,9 @@ the PR with that session's work.
     0x80100000 in step 8; whether their writes were refused, or took and changed, or read back
     otherwise, isn't recorded.
   - **The strategy review of 2026-11-14/15 changed the order** (RESEARCH.md, "The strategy
-    review"; the reports are in `~/.local/share/sleep-drain/strategy-review-20261114/`). The stall
-    is after the last core stops, and every rung since run 17 looked before it. The one-way mux
+    review"; the reports are in `~/.local/share/sleep-drain/strategy-review-20261114/`). What
+    isn't known lies after CPU0's last record (whether the last core goes down at all, and what
+    the engine does then), and every rung since run 17 looked before it. The one-way mux
     run and the test of the engine's two words are set aside; so is every AP-made rung on B2's
     ops, until a witness shows B2 past its first gate.
   - **Next, in this order** (nothing built yet; items marked OK need Corey's word first):
@@ -139,8 +140,10 @@ the PR with that session's work.
        run); the cluster status words awake.
     4. If runs A and B leave B2 at its first gate: the commit alone from plain s2idle, the alarm
        at 15 s, the look list before and after, then WD2's bite moved and a restart. It returns
-       with whole words if the kernel survives; in a safe boot, and no mount of /boot after the
-       commit.
+       with whole words only if the kernel and the NVMe survive (B2 itself powers the storage
+       down if it gets that far): the PMU's bytes carry a summary either way. In a safe boot, and
+       no mount of /boot after the commit. cpuidle's "every core down" isn't the recipe's, so only
+       an engine that moves is a result; nothing changed places nothing.
     5. The power meter (OK: the purchase, and runs on the charger): macOS's own sleep entry and a
        plain s2idle first, then one baseline one-way run on the charger. It says how deep the dark
        stretch gets, not which op.
