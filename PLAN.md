@@ -132,7 +132,12 @@ the PR with that session's work.
        inhibited (what its last digit is, how fast the screen follows); macOS's `ioreg` and
        `log show` for its platform sleep and quiesce actions (ten minutes in macOS, Corey's); an
        SMC dump either side of a plain restart, as the control for the diff across a run.
-    2. One rung, "the last look", on run 17's recipe (`--m1-mark`'s, without the later AP-made B2
+    2. **Built 2026-11-16, to run:** `run-floor --no-reading --m1-last-look` (run A), then
+       `--m1-last-look-wake` (run B, after `e1-hook/kbd-blink` has shown the blink awake);
+       RESEARCH.md, "`last_look=1` as built", has the bytes and how each ending reads. The
+       cluster status words went to item 3: no bytes for them, and a first read under the mask
+       could itself end the WFI. As planned:
+       One rung, "the last look", on run 17's recipe (`--m1-mark`'s, without the later AP-made B2
        steps): CPU0 records, raw, if its last WFI returns (0x2922c0040's bit 1, PHASE, HS_A, HS_B,
        the first of SIO's words still on, then PCIe, ANS, PMP); the cluster status words
        (0x28e09a000 + 4n) read before CPU0's WFI; WD1's marker at 70 s, which is also the second

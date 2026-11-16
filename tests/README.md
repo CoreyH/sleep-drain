@@ -47,7 +47,15 @@ used to sit in CLAUDE.md, entry for entry):
   logs every read, write, clock read and PMU byte (30 pairings of which muxes read parked and how long the run
   took, and once with the PMU refusing the second send: five reads and a byte before any write, the clock, the
   three cluster words and nothing else, the clock, the byte, the acks), `m1_acl_init()`'s refusals, where
-  `e1_hook.c` calls each, and the byte through m1-crumbs for every value at each stage. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
+  `e1_hook.c` calls each, and the byte through m1-crumbs for every value at each stage. For last_look=1 and
+  ll_wake=1 it compiles `last_look.h` against a second writing-out (the time's code at every edge, each byte's
+  bits, the stage map), runs `m1_ll_ret()` through 105 returns against pages that log every access (the three
+  commands in order, each before the next one's reads, the acks after each, 0x6008 again at the second and the
+  hundredth return and at no other, nothing written but the acks and the timer's control), `m1_ll_blink()`
+  with FPWM0 coming on and never coming on, `m1_ll_timer()`, and `m1_pmu_ok()` over every address and length
+  with and without last_look=1; then where `e1_hook.c` calls each, the load's refusals, and the record through
+  m1-crumbs: each field, records that stop short, both runs' stages, the restart's time against the marker at
+  70 s, 0x0201, and `--clear`, which zeroes 0x6008-0x600e only after one of that run's stages. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
   writing-out of A2's ops 11 to 16 (every pairing of each word's two bits at every count of moves made, and 400
   drawn cases), and runs `m1_a2_pre()` with the module's own table of waits against a model of the p-state page
   and the muxes' page in 29 scenarios (a write dropped, a word that settles late or never or keeps bit 31, DCS put

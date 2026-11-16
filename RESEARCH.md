@@ -5331,6 +5331,61 @@ no code read today, nothing posted):
 - His gates are power words the AP can read; that the same holds for whatever stands behind
   0x2922c0044's bit 2 here is not known.
 
+### `last_look=1` as built: CPU0's last WFI recorded if it returns, the marker at 70 s, and a second form with a wake and a blinking keyboard (2026-11-16)
+
+The first rung of the order after the review (PLAN.md), built as `e1_hook last_look=1` and `ll_wake=1`,
+`run-floor --m1-last-look` and `--m1-last-look-wake`; `e1-hook/last_look.h` has the bytes. Both sit on
+`--m1-mark`'s recipe, run 17's, without any of the AP-made steps on B2's ops that came after it.
+
+**What changes in run A (`last_look=1`).**
+- WD1's count is written as 80 s where `wd1_mark=1` writes 60 s: the same register, another value. A marker
+  that stands restarts the SoC about 70 s after step 4. A restart that moves from 90 s to 70 s is WD1's; one
+  that stays at 90 s never was (the second reading "The strategy review" left open).
+- CPU0's final loop now does something when its WFI returns. Since run 11 it only looped. The first return
+  sends seven bytes to the PMU's 0x6008-0x600e (Corey's OK of 2026-11-16) in three commands, each sent before
+  the next one's reads, so that a read that hangs loses only what follows: when it returned and how often;
+  what was pending, whether CPU0's timer was firing, the handshake bits, and the low bytes of 0x2922c0040,
+  0x2922c0044 and PHASE; then how many of SIO's 43 power words, the five PCIe words, ANS2 and the PMP's read
+  off. Every address is one this module has read in this state before. The only write besides the PMU's bytes
+  and nub-spmi0's acks is CPU0's timer control, set to 0.
+- Nothing is armed that could end that WFI, so a return in run A means a pending source: the stall the M4
+  drivers found. All 0 means CPU0 never came back to send, which is not a proof that it was powered off.
+- `m1-crumbs` prints the PMU's 0x0201 with every record, and `--clear` zeroes 0x6008-0x600e only after one of
+  this run's stages.
+
+**What run B adds (`ll_wake=1`): three things armed, each with its own reading.**
+- The PMU's alarm 20 s after the commit's second, not an hour. An SoC that slept comes out through its reset
+  vector, which is the boot loader's here: a restart at about 20 s, well before the marker.
+- CPU0's own timer (the host's physical timer, CNTHP at EL2), 25 s after its last step, unmasked. A core that
+  was power-gated loses it. A core that only sits in its WFI returns, and the seven bytes are then a look at
+  the engine 25 s in: whether B2's gate bit reads set with every other core down, where PHASE is, how far
+  the power words went.
+- The keyboard backlight set blinking in step 8, 100 ms on and 100 ms off: FPWM0's power word (0x28e580190)
+  asked on, and, only if it reads on within 10 ms, the PWM's on cycles, off cycles and control, in the
+  kernel driver's order and with its control value (`drivers/pwm/pwm-apple.c`, read from omacom/linux-aurora).
+  Four new writes. B2 switches FPWM0 off as the tenth of its 43 SIO words. A blink was chosen over a steady
+  light because a gated PWM may freeze its pin either way: a blink that stops is the sign, whichever level it
+  stops at. `e1-hook/kbd-blink` makes the three PWM writes awake, to see the blink first.
+- It differs from macOS's state at the commit in one more word (FPWM0 on), and an armed timer may itself
+  keep a core from gating. That is why A runs first and alone.
+
+**How an ending reads** (one line each; `m1-crumbs` says which applies):
+- restart at about 70 s, bytes 0: the marker; B2 short of its op 224, and CPU0 never came back. As run 17.
+- restart at about 70 s, bytes set: CPU0's WFI returned. In A, a pending source, and the bytes name it. In
+  B at 22 to 30 s with the timer firing, CPU0 was never power-gated, and the bytes are the look.
+- restart well before 70 s: something else, new here (Naeem Malik's M1 does this 5 s after its release).
+- about 120 s, or 150 s or more, or dark: B2 past its op 224, read as `--m1-mark`'s.
+- in B, the light: blinking to the restart, B2 short of its tenth SIO word; stopping earlier, when.
+
+**Left out of this rung, against the plan's wording.** The cluster status words (0x28e09a000 + 4n) aren't read:
+nothing has read them, the record has no bytes left for three words, and a first read under step 9's mask
+could leave an SError pending, which would itself end CPU0's WFI. They go to the returning batch.
+
+**Checked without hardware.** `tests/m1_crumbs_test.py` compiles the header and the four functions and runs
+them against pages that log every access; 57 mutants of the new code, all caught after three holes they
+found were closed. The tests found one bug before any review: after the hundredth return every further one
+would have been sent.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

@@ -1,0 +1,89 @@
+#!/usr/bin/python3 -I
+"""e1-hook/kbd-blink: set the keyboard backlight blinking for a few seconds, awake, as
+e1_hook ll_wake=1 sets it right before the commit (last_look.h), to see that it shows.
+
+  pkexec /home/corey/src/sleep-drain/e1-hook/kbd-blink [SECONDS]     (root; default 8)
+
+ll_wake=1's run uses the light as a witness: B2 switches FPWM0 off as the tenth of its
+43 SIO power words, so a light that blinks until the restart says B2 never got that far.
+That needs the PWM to take a period of 200 ms (the kernel's driver runs it at 25 kHz) and
+the blink to be seen. This makes the same three writes awake, through /dev/mem, and
+prints what the registers read before and after:
+  1. the light on full through the kernel's driver, so that FPWM0 is on
+  2. FPWM0's power word (0x28e580190) read: nothing more unless its actual state is f
+     (a read behind a gated clock faults, and that fault is a panic)
+  3. the PWM's control, off cycles and on cycles read (0x39b030000, +0x18, +0x1c)
+  4. on cycles := 2400000, off cycles := 2400000, control := 0x4021: 100 ms on, 100 ms off
+  5. after SECONDS, the light back to what it was through the driver, which writes its
+     own cycles and control again
+Nothing here outlasts step 5, and nothing but the PWM's three registers is written.
+Each register is read and written as one 32-bit access. J314s only.
+"""
+import ctypes
+import mmap
+import os
+import sys
+import time
+
+KBD = "/sys/class/leds/kbd_backlight"
+PS_PAGE, FPWM0 = 0x28e580000, 0x190
+PWM, CTRL, OFF, ON = 0x39b030000, 0x00, 0x18, 0x1c
+CYCLES, GO = 2400000, 0x4021
+PAGE = 0x4000
+
+
+def die(msg):
+    print(f"kbd-blink: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) > 1 or (args and not args[0].isdigit()) or (args and not 1 <= int(args[0]) <= 60):
+        die("usage: kbd-blink [SECONDS], 1 to 60")
+    secs = int(args[0]) if args else 8
+    if os.geteuid():
+        die("run as root (pkexec)")
+    with open("/proc/device-tree/compatible", "rb") as f:
+        if b"apple,j314s" not in f.read().split(b"\0"):
+            die("this isn't a J314s")
+    with open("/proc/device-tree/soc/pwm@39b030000/compatible", "rb") as f:
+        if b"apple,s5l-fpwm" not in f.read().split(b"\0"):
+            die("/soc/pwm@39b030000 isn't an apple,s5l-fpwm")
+    before = open(f"{KBD}/brightness").read().strip()
+    top = open(f"{KBD}/max_brightness").read().strip()
+
+    def light(v):
+        with open(f"{KBD}/brightness", "w") as f:
+            f.write(f"{v}\n")
+
+    light(top)
+    time.sleep(0.5)
+    fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
+    try:
+        psm = mmap.mmap(fd, PAGE, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=PS_PAGE)
+        v = ctypes.c_uint32.from_buffer(psm, FPWM0).value
+        print(f"FPWM0's power word 0x{PS_PAGE + FPWM0:x} = 0x{v:08x}, with the light on full through the driver")
+        if v & 0xf0 != 0xf0:
+            light(before)
+            die("FPWM0 doesn't read on (actual state f): the PWM isn't touched")
+        pm = mmap.mmap(fd, PAGE, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=PWM)
+        reg = {name: ctypes.c_uint32.from_buffer(pm, off) for name, off in (("control", CTRL), ("off cycles", OFF), ("on cycles", ON))}
+        print("the PWM as the driver left it: " + ", ".join(f"{n} 0x{r.value:x}" for n, r in reg.items()))
+        reg["on cycles"].value = CYCLES
+        reg["off cycles"].value = CYCLES
+        reg["control"].value = GO
+        time.sleep(0.3)
+        print("after the three writes:        " + ", ".join(f"{n} 0x{r.value:x}" for n, r in reg.items()))
+        print(f"The keyboard should now blink five times a second, for {secs} s. Look at it.")
+        time.sleep(secs)
+    finally:
+        # The driver writes its own cycles and control again; 0 first, so that a light that was on full is written too.
+        light(0)
+        light(before)
+        os.close(fd)
+    print(f"the light is back at {before} of {top} through the driver")
+
+
+if __name__ == "__main__":
+    main()
