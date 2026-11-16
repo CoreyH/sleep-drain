@@ -1,0 +1,35 @@
+# Loads the PMU RTC alarm drivers at boot (rtc-alarm-test, as install.sh built
+# them for the kernel it ran on), so that sleep-drain-off-after has an alarm to
+# arm. Needed until linux-aurora #351 merges. "sleep-drain-nights on" enables
+# it.
+#
+# Not in a safe boot: the one-way experiments run there on the stock drivers.
+# The initramfs hook writes /run/sleep-drain-safe/active before it hands over
+# to systemd, and /run moves along, so the file is there before any unit
+# starts. The kernel command line's sleepdrain.safe is what turns that hook on.
+#
+# After a kernel update the modules no longer match, and load stops before it
+# touches a driver. The unit then shows as failed, nothing depends on it, and
+# sleeps go on as before, without the power-off. install.sh, run on the new
+# kernel, builds the modules again and then starts this unit itself, if it is
+# enabled and the alarm RTC isn't there, so no restart is needed. It never
+# starts it over drivers that are loaded: load would stop at "described
+# already" and leave the unit failed for nothing.
+
+[Unit]
+Description=Load the PMU RTC alarm drivers for sleep-drain-off-after
+ConditionPathExists=/etc/sleep-drain/off-after
+ConditionPathExists=!/run/sleep-drain-safe/active
+ConditionKernelCommandLine=!sleepdrain.safe
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# load expects the stock drivers bound. Give them up to 30 s; if they still
+# aren't, load says which one is missing.
+ExecStartPre=-/usr/bin/timeout 30 /bin/sh -c 'until [ -e /sys/bus/platform/devices/macsmc-rtc/driver ] && [ -e /sys/bus/platform/devices/macsmc-reboot/driver ] && [ -e /sys/bus/platform/devices/2920a1300.spmi/driver ]; do sleep 0.5; done'
+ExecStart=/usr/local/lib/sleep-drain/rtc-alarm/load
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

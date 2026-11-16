@@ -1,0 +1,121 @@
+#!/bin/bash
+# Turn the power-off after a sleep on battery on or off.
+#   sleep-drain-nights on [MINUTES]   a sleep on battery ends in a power-off after MINUTES
+#                                     (1 to 720, default 25); the session is lost
+#   sleep-drain-nights off            sleeps last until something wakes the Mac (the default)
+#   sleep-drain-nights                show the setting, the alarm RTC and any alarm set
+# on and off need root, and root comes through pkexec here:
+#   pkexec /usr/local/bin/sleep-drain-nights on [MINUTES]
+#   pkexec /usr/local/bin/sleep-drain-nights off
+# Started without root, they fall back on sudo for each step.
+#
+# The sleep-drain-off-after hook reads /etc/sleep-drain/off-after at each
+# suspend, so a change applies from the next suspend on. The hook needs the PMU
+# RTC alarm drivers, which sleep-drain-alarm.service loads at boot: "on"
+# enables that unit and starts it now if the alarm RTC isn't there yet, "off"
+# disables it. The drivers, once loaded, stay until the next restart.
+#
+# off also calls off a power-off that is on its way: the hook's finish step
+# asks for none once the flag or the state file is gone, and off stops its unit.
+#
+# Switch it off for a night that is meant to be measured: with it on, the
+# night ends after MINUTES.
+set -euo pipefail
+# pkexec resets PATH. Whatever it is, the system's tools are on it.
+PATH=${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+
+flag=${OFF_AFTER_FLAG:-/etc/sleep-drain/off-after}
+state=${OFF_AFTER_STATE:-/run/sleep-drain-off-after}
+safe=${OFF_AFTER_SAFE:-/run/sleep-drain-safe/active}
+rtc_glob=${OFF_AFTER_RTC_GLOB:-/sys/class/rtc/rtc*}
+unit=sleep-drain-alarm.service
+
+as_root() { if ((EUID == 0)); then "$@"; else sudo "$@"; fi; }
+
+# The alarm RTC, as the hook finds it.
+rtc_find() {
+  local r
+  while IFS= read -r r; do
+    if [[ $(basename "$(readlink -f "$r/device/driver/module" 2> /dev/null)") == rtc_macsmc_alarm &&
+      -e $r/wakealarm ]]; then
+      echo "$r"
+      return 0
+    fi
+  done < <(compgen -G "$rtc_glob")
+  return 1
+}
+
+alarm_set() {
+  local a
+  a=$(cat "$1/wakealarm" 2> /dev/null) || true
+  if [[ $a =~ ^[1-9][0-9]*$ ]]; then echo "$a"; fi
+}
+
+state_get() { if [[ -e $state ]]; then sed -n "s/^$1=//p" "$state" | head -n 1; fi; }
+
+case "${1:-status}" in
+  on)
+    minutes=${2-25}
+    [[ $minutes =~ ^[0-9]{1,3}$ ]] && ((10#$minutes >= 1 && 10#$minutes <= 720)) ||
+      { echo "sleep-drain-nights: MINUTES is a number from 1 to 720" >&2; exit 2; }
+    [[ ! -e $safe ]] || { echo "sleep-drain-nights: this is a safe boot; switch it on from a regular boot" >&2; exit 1; }
+    as_root install -d -m 755 "$(dirname "$flag")"
+    echo "$((10#$minutes))" | as_root tee "$flag" > /dev/null
+    as_root systemctl enable "$unit"
+    if ! rtc_find > /dev/null; then
+      as_root systemctl start "$unit" ||
+        echo "sleep-drain-nights: the alarm drivers didn't load; sleeps aren't cut short until they do" >&2
+    fi
+    ;;
+  off)
+    as_root rm -f "$flag"
+    # An alarm of ours that is still set. Any other alarm is left alone.
+    if [[ -e $state ]]; then
+      ours=$(state_get alarm_at)
+      if rtc=$(rtc_find) && [[ -n $ours && $(alarm_set "$rtc") == "$ours" ]]; then
+        as_root sh -c 'echo 0 > "$1"' sh "$rtc/wakealarm"
+      fi
+      as_root rm -f "$state" "$state.tmp" "$state.finish"
+    fi
+    # A power-off on its way: with the flag and the state gone the hook's
+    # finish step asks for none, and this stops it where it is. No such unit
+    # is the usual case.
+    as_root systemctl stop sleep-drain-off-after-finish.service 2> /dev/null || true
+    as_root systemctl disable "$unit"
+    ;;
+  status) ;;
+  *) echo "usage: sleep-drain-nights [on [MINUTES] | off]" >&2; exit 2 ;;
+esac
+
+if [[ -e $flag ]]; then
+  minutes=$(tr -d '[:space:]' < "$flag")
+  [[ $minutes =~ ^[0-9]{1,3}$ ]] && ((10#$minutes >= 1 && 10#$minutes <= 720)) || minutes=25
+  echo "nights: a sleep on battery ends in a power-off after $((10#$minutes)) minutes"
+  [[ ! -e $safe ]] || echo "nights: not in this boot, which is a safe boot"
+else
+  echo "nights: sleeps last until something wakes the Mac"
+fi
+
+if rtc=$(rtc_find); then
+  alarm=$(alarm_set "$rtc")
+  ours=$(state_get alarm_at)
+  if [[ -z $alarm ]]; then
+    echo "alarm: ${rtc##*/} is the alarm RTC; no alarm is set"
+  elif [[ $alarm == "$ours" ]]; then
+    echo "alarm: ${rtc##*/} is the alarm RTC; our alarm is set for $alarm (the RTC reads $(cat "$rtc/since_epoch"))"
+  else
+    echo "alarm: ${rtc##*/} is the alarm RTC; an alarm that isn't ours is set for $alarm (a timed test?)"
+  fi
+else
+  echo "alarm: no alarm RTC, so nothing is armed and sleeps aren't cut short"
+  # Why not: the unit's state, and the last thing it said in this boot.
+  enabled=$(systemctl is-enabled "$unit" 2> /dev/null) || true
+  active=$(systemctl show -p ActiveState --value "$unit" 2> /dev/null) || true
+  result=$(systemctl show -p Result --value "$unit" 2> /dev/null) || true
+  last=$(journalctl -b -u "$unit" -n 1 -o cat --no-pager 2> /dev/null) || true
+  echo "alarm: $unit is ${enabled:-not installed}, ${active:-unknown} (result: ${result:-unknown})${last:+; it last said: $last}"
+fi
+
+if [[ -e $state ]]; then
+  echo "state: $(tr '\n' ' ' < "$state")"
+fi

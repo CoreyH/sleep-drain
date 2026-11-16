@@ -1,0 +1,417 @@
+#!/bin/bash
+# sleep-drain-off-after: a sleep on battery ends in a power-off after N minutes.
+#
+# s2idle on this Mac draws about 2 W, so a lid closed overnight on battery runs
+# it flat. This systemd-sleep hook arms the PMU's RTC alarm before a suspend on
+# battery. When the alarm ends the sleep and the lid is still closed, the Mac
+# powers off. The session is lost: Corey OK'd that on 2026-11-16.
+#
+# On only while /etc/sleep-drain/off-after exists (sleep-drain-nights writes
+# it). Its content is the number of minutes, 1 to 720; anything else means 25.
+# It needs the alarm RTC, rtc_macsmc_alarm, which sleep-drain-alarm.service
+# loads at boot until linux-aurora #351 merges. Without it nothing is armed and
+# the sleep goes on as before. It does nothing in a safe boot, where the
+# one-way experiments run.
+#
+# Every time here is in the alarm RTC's own seconds (its since_epoch), not the
+# system clock's. The alarm is compared with the RTC's time, and the two clocks
+# can be years apart: this kernel never writes the system time back to the RTC,
+# and the RTC starts from 1970 after the PMU has lost power.
+#
+#   pre     On battery, with the alarm RTC there and no alarm of somebody
+#           else's set: arm the alarm for the deadline (now + N minutes) and
+#           write the state file. An alarm that isn't ours is a timed test
+#           (rtcwake -m no -s 900): it is left alone, and so is that sleep.
+#           A wake before the alarm with the lid closed makes logind suspend
+#           again. That sleep keeps the deadline of the one before, if it
+#           starts within 120 s, so the deadline doesn't move out with each
+#           spurious wake. The alarm is never less than 60 s ahead.
+#   post    No state file: nothing. On the charger: clear. Before the alarm's
+#           time: keep the state if the lid is closed and stays closed for 5 s
+#           more (logind may not have seen it open yet), clear if it's open. At
+#           the alarm's time: power off if the lid is closed, or if it was open
+#           before the sleep, is open now and the alarm's time is at most 20 s
+#           back (an idle suspend that the alarm ended). A lid that was closed
+#           and is open now is the user coming back: clear.
+#   finish  The power-off itself, started by post outside systemd-suspend's
+#           unit. logind refuses a power-off while its suspend job is still
+#           running, and that job ends only when this hook has returned. So
+#           post starts this through systemd-run, under a handle-lid-switch
+#           block inhibitor: without it logind could suspend again (the lid is
+#           still closed) before the power-off is asked for. It checks the lid
+#           and the charger every second for 5 s, since logind may not have
+#           seen the lid open yet, then asks for the power-off, again each
+#           second for up to 30 s while logind refuses. Before each request
+#           it checks once more: a lid that opened, the charger, or
+#           "sleep-drain-nights off" (the flag or the state file gone) calls
+#           the power-off off.
+#
+# If a power-off doesn't happen, the state stays, the next sleep sets the alarm
+# 60 s ahead and post tries again. After three tries in a row it stops arming.
+#
+# One line per decision goes to the journal and to
+# /var/log/sleep-drain-off-after.log. /var/log/sleep-drain.log is left alone:
+# sleep-drain-report parses it.
+#
+# Every path and command can be replaced through OFF_AFTER_* (the tests do).
+set -u
+
+FLAG=${OFF_AFTER_FLAG:-/etc/sleep-drain/off-after}
+STATE=${OFF_AFTER_STATE:-/run/sleep-drain-off-after}
+SAFE=${OFF_AFTER_SAFE:-/run/sleep-drain-safe/active}
+AC=${OFF_AFTER_AC:-/sys/class/power_supply/macsmc-ac/online}
+RTC_GLOB=${OFF_AFTER_RTC_GLOB:-/sys/class/rtc/rtc*}
+LOG=${OFF_AFTER_LOG:-/var/log/sleep-drain-off-after.log}
+SELF=${OFF_AFTER_SELF:-$(readlink -f "$0")}
+# Commands, as words: the lid's state (prints true or false), the power-off,
+# and the sleep between checks.
+read -ra LID_CMD <<< "${OFF_AFTER_LID:-logind LidClosed}"
+read -ra POWEROFF <<< "${OFF_AFTER_POWEROFF:-systemctl poweroff --no-block}"
+read -ra SLEEP <<< "${OFF_AFTER_SLEEP:-sleep}"
+# What runs "finish" outside systemd-suspend.service, holding the inhibitor.
+# systemd-inhibit starts its command only once it has the lock.
+if [[ -n ${OFF_AFTER_DETACH:-} ]]; then
+  read -ra DETACH <<< "$OFF_AFTER_DETACH"
+else
+  DETACH=(systemd-run --quiet --collect --unit=sleep-drain-off-after-finish
+    --description="Power off after a sleep on battery (sleep-drain-off-after)"
+    systemd-inhibit --what=handle-lid-switch --mode=block --who=sleep-drain-off-after
+    --why="Powering off: the sleep on battery reached its time limit")
+fi
+
+DEFAULT_MINUTES=25
+KEEP_WITHIN=120   # a sleep this soon after a wake keeps that sleep's deadline
+MIN_AHEAD=60      # the alarm is never nearer than this
+DUE_SLACK=2       # a wake this close to the alarm's time is the alarm's
+IDLE_WINDOW=20    # lid open: how long after the alarm's time it still counts
+RECHECKS=5        # seconds of lid and charger checks before the power-off
+ASK_TRIES=30      # seconds of asking logind for the power-off
+MAX_TRIES=3       # power-offs that didn't happen before arming stops
+
+PHASE=${1:-}
+RTC=
+deadline='' alarm_at='' lid_pre='' armed_at='' last_post='' tries=0 mode=''
+
+say() {
+  echo "sleep-drain-off-after: $PHASE $*"
+  { echo "$(date -Is) $PHASE $*" >> "$LOG"; } 2> /dev/null || true
+}
+
+num() { [[ $1 =~ ^[0-9]{1,18}$ ]]; }
+
+logind() {
+  busctl --system get-property org.freedesktop.login1 /org/freedesktop/login1 \
+    org.freedesktop.login1.Manager "$1" 2>/dev/null | awk '{print $2}'
+}
+
+# true or false as logind has the lid, or unknown.
+lid() {
+  local l
+  l=$("${LID_CMD[@]}" 2> /dev/null)
+  case $l in
+    true | false) echo "$l" ;;
+    *) echo unknown ;;
+  esac
+}
+
+# The alarm RTC: the one rtc_macsmc_alarm drives, if it has a wakealarm.
+rtc_find() {
+  local r
+  while IFS= read -r r; do
+    if [[ $(basename "$(readlink -f "$r/device/driver/module" 2> /dev/null)") == rtc_macsmc_alarm &&
+      -e $r/wakealarm ]]; then
+      echo "$r"
+      return 0
+    fi
+  done < <(compgen -G "$RTC_GLOB")
+  return 1
+}
+
+# The alarm RTC's time in seconds.
+clock() {
+  local t=${OFF_AFTER_NOW:-}
+  [[ -n $t ]] || t=$(cat "$RTC/since_epoch" 2> /dev/null)
+  num "$t" || return 1
+  echo "$((10#$t))"
+}
+
+# The alarm that is set, in the RTC's seconds. Nothing if none is: the kernel
+# then reads empty.
+alarm_set() {
+  local a
+  a=$(cat "$RTC/wakealarm" 2> /dev/null)
+  if [[ $a =~ ^[1-9][0-9]*$ ]]; then echo "$a"; fi
+}
+
+alarm_write() { { echo "$1" > "$RTC/wakealarm"; } 2> /dev/null; }
+
+state_get() { sed -n "s/^$1=//p" "$STATE" 2> /dev/null | head -n 1; }
+
+state_load() {
+  deadline=$(state_get deadline) alarm_at=$(state_get alarm_at) lid_pre=$(state_get lid_pre)
+  armed_at=$(state_get armed_at) last_post=$(state_get last_post) mode=$(state_get mode)
+  tries=$(state_get tries)
+  num "$tries" || tries=0
+}
+
+state_save() {
+  printf '%s\n' "deadline=$deadline" "alarm_at=$alarm_at" "lid_pre=$lid_pre" "armed_at=$armed_at" \
+    "last_post=$last_post" "tries=$tries" "mode=$mode" > "$STATE.tmp" 2> /dev/null &&
+    mv -f "$STATE.tmp" "$STATE"
+}
+
+state_drop() { rm -f "$STATE" "$STATE.tmp" "$STATE.finish"; }
+
+# Drop our alarm and our state. The alarm is cleared only if the one that is
+# set is the one the state names: any other is somebody else's.
+clear() {
+  local ours
+  ours=$(state_get alarm_at)
+  if [[ -n $RTC && -n $ours && $(alarm_set) == "$ours" ]]; then
+    alarm_write 0 || say "error why=alarm-not-cleared alarm=$ours"
+  fi
+  state_drop
+}
+
+pre() {
+  local minutes ac now cur ours kept=no back
+
+  RTC=$(rtc_find) || RTC=
+  if [[ ! -e $FLAG ]]; then
+    # Switched off by hand with an alarm of ours still set.
+    if [[ -e $STATE ]]; then
+      clear
+      say "cleared why=switched-off"
+    fi
+    return 0
+  fi
+  minutes=$(tr -d '[:space:]' < "$FLAG" 2> /dev/null)
+  if [[ $minutes =~ ^[0-9]{1,3}$ ]] && ((10#$minutes >= 1 && 10#$minutes <= 720)); then
+    minutes=$((10#$minutes))
+  else
+    minutes=$DEFAULT_MINUTES
+  fi
+
+  # A sleep that isn't armed must not leave an older state for post to act on.
+  ac=$(cat "$AC" 2> /dev/null)
+  if [[ $ac != 0 ]]; then
+    clear
+    say "not-armed why=on-charger ac_online=${ac:-unknown}"
+    return 0
+  fi
+  if [[ -z $RTC ]]; then
+    state_drop
+    say "not-armed why=no-alarm-rtc"
+    return 0
+  fi
+  if ! now=$(clock); then
+    clear
+    say "not-armed why=rtc-time-unreadable"
+    return 0
+  fi
+
+  cur=$(alarm_set)
+  ours=$(state_get alarm_at)
+  if [[ -n $cur && $cur != "$ours" ]]; then
+    state_drop
+    say "left-alone why=alarm-not-ours alarm=$cur now=$now"
+    return 0
+  fi
+
+  state_load
+  if num "$last_post" && num "$deadline" && ((now >= last_post && now - last_post <= KEEP_WITHIN)); then
+    kept=yes
+  else
+    deadline=$((now + minutes * 60)) tries=0
+  fi
+  if ((tries >= MAX_TRIES)); then
+    clear
+    say "not-armed why=power-off-failed tries=$tries"
+    return 0
+  fi
+  alarm_at=$deadline
+  if ((alarm_at < now + MIN_AHEAD)); then alarm_at=$((now + MIN_AHEAD)); fi
+  lid_pre=$(lid) armed_at=$now last_post='' mode=''
+
+  # 0 first: the kernel refuses a new alarm while one is set.
+  alarm_write 0 && alarm_write "$alarm_at"
+  back=$(alarm_set)
+  if [[ $back != "$alarm_at" ]]; then
+    if [[ -n $back ]]; then alarm_write 0; fi
+    state_drop
+    say "not-armed why=alarm-write-failed wrote=$alarm_at reads=${back:-nothing} now=$now"
+    return 0
+  fi
+  if ! state_save; then
+    alarm_write 0
+    state_drop
+    say "not-armed why=state-not-written alarm_at=$alarm_at"
+    return 0
+  fi
+  say "armed now=$now deadline=$deadline alarm_at=$alarm_at minutes=$minutes" \
+    "deadline_kept=$kept tries=$tries lid_closed=$lid_pre"
+}
+
+# The lid reads closed for RECHECKS seconds more. logind may not have seen it
+# open yet right after a wake, and a deadline kept for a user who is back
+# would power the Mac off soon after they close the lid again.
+lid_stays_closed() {
+  local n
+  for ((n = 0; n < RECHECKS; n++)); do
+    "${SLEEP[@]}" 1
+    [[ $(lid) == true ]] || return 1
+  done
+}
+
+post() {
+  local now ac lid_now n
+
+  [[ -e $STATE ]] || return 0
+  RTC=$(rtc_find) || RTC=
+  state_load
+  if [[ -z $RTC ]] || ! num "$alarm_at" || ! num "$deadline" || ! now=$(clock); then
+    clear
+    say "cleared why=state-or-rtc-unreadable"
+    return 0
+  fi
+  ac=$(cat "$AC" 2> /dev/null)
+  lid_now=$(lid)
+  if [[ $ac != 0 ]]; then
+    clear
+    say "cleared why=on-charger ac_online=${ac:-unknown} now=$now alarm_at=$alarm_at"
+    return 0
+  fi
+
+  if ((now < alarm_at - DUE_SLACK)); then
+    if [[ $lid_now == true ]] && lid_stays_closed; then
+      # logind suspends again; that sleep's pre keeps this deadline.
+      last_post=$now
+      if state_save; then
+        say "kept why=early-wake now=$now alarm_at=$alarm_at deadline=$deadline lid_closed=true"
+      else
+        clear
+        say "cleared why=state-not-written now=$now"
+      fi
+    else
+      clear
+      say "cleared why=early-wake now=$now alarm_at=$alarm_at lid_closed=$(lid)"
+    fi
+    return 0
+  fi
+
+  if [[ $lid_now == true ]]; then
+    mode=closed
+  elif [[ $lid_pre == false && $lid_now == false ]] && ((now <= alarm_at + IDLE_WINDOW)); then
+    mode=idle
+  else
+    clear
+    say "cleared why=lid-not-closed now=$now alarm_at=$alarm_at lid_closed_before=$lid_pre lid_closed=$lid_now"
+    return 0
+  fi
+
+  tries=$((tries + 1)) last_post=$now
+  rm -f "$STATE.finish"
+  if ! state_save; then
+    clear
+    say "cleared why=state-not-written now=$now"
+    return 0
+  fi
+  say "power-off why=alarm-time mode=$mode now=$now alarm_at=$alarm_at try=$tries" \
+    "lid_closed_before=$lid_pre lid_closed=$lid_now"
+  if ! "${DETACH[@]}" "$SELF" finish; then
+    say "error why=finish-not-started try=$tries"
+    return 0
+  fi
+  # Stay until finish holds its inhibitor (or is done): while this hook runs,
+  # logind's suspend job is open and it can't start another.
+  for ((n = 0; n < 25; n++)); do
+    if [[ -e $STATE.finish || ! -e $STATE ]]; then return 0; fi
+    "${SLEEP[@]}" 0.2
+  done
+  say "error why=finish-not-seen try=$tries"
+}
+
+# Whether what the power-off was decided on still holds; if not, why says so.
+# "sleep-drain-nights off" removes the flag and the state: either one gone
+# calls the power-off off.
+still_wanted() {
+  local ac l
+  if [[ ! -e $FLAG || ! -e $STATE ]]; then
+    why=switched-off
+    return 1
+  fi
+  ac=$(cat "$AC" 2> /dev/null)
+  l=$(lid)
+  if [[ $ac != 0 ]]; then
+    why="on-charger ac_online=${ac:-unknown}"
+    return 1
+  fi
+  case $mode:$l in
+    closed:true | idle:false | idle:true) return 0 ;;
+  esac
+  why="lid-not-closed lid_closed=$l"
+  return 1
+}
+
+finish() {
+  local n err='' why=''
+
+  [[ -e $STATE ]] || return 0
+  RTC=$(rtc_find) || RTC=
+  state_load
+  : > "$STATE.finish"
+  if [[ $mode != closed && $mode != idle ]]; then
+    clear
+    say "called-off why=no-power-off-decided"
+    return 0
+  fi
+
+  for ((n = 0; n < RECHECKS; n++)); do
+    "${SLEEP[@]}" 1
+    if ! still_wanted; then
+      clear
+      say "called-off why=$why"
+      return 0
+    fi
+  done
+
+  # The check comes right before each request, so nothing is asked for once
+  # the lid is open, the charger is in or sleep-drain-nights has switched it off.
+  for ((n = 1; n <= ASK_TRIES; n++)); do
+    if ! still_wanted; then
+      clear
+      say "called-off why=$why"
+      return 0
+    fi
+    if err=$("${POWEROFF[@]}" 2>&1); then
+      say "power-off-asked mode=$mode try=$tries asked=$n"
+      # Keep the inhibitor until the shutdown stops this unit.
+      "${SLEEP[@]}" 600
+      return 0
+    fi
+    "${SLEEP[@]}" 1
+  done
+
+  # Still wanted: the state stays, the next sleep sets the alarm 60 s ahead and
+  # post tries again. Switched off in the meantime: the state that was removed
+  # isn't written again.
+  if ! still_wanted; then
+    clear
+    say "called-off why=$why"
+    return 0
+  fi
+  if n=$(clock); then
+    last_post=$n
+    state_save
+  fi
+  say "power-off-refused try=$tries asked=$ASK_TRIES said=${err//$'\n'/; }"
+  return 1
+}
+
+[[ -e $SAFE ]] && exit 0
+case $PHASE in
+  pre) pre ;;
+  post) post ;;
+  finish) finish || exit 1 ;;
+esac
+exit 0
