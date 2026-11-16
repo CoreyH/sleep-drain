@@ -5318,14 +5318,16 @@ no code read today, nothing posted):
 - **Nothing new** on omacom/linux-aurora#290 (our drain issue) or JJRPF/Aurora-DeepIdle#9 since 2026-11-07.
 
 **What it changes** (judgment):
-- An entry that gets through can still end in a restart seconds later, with nothing dark to see. So "the
+- An entry whose engine gets past its gates can still end in a restart seconds after the release, with
+  nothing dark to see. Whether his entry finished before that restart isn't shown: 0x0201 witnesses the
+  gates, not the pair's last command, and run 38's result (a wake, or a reset by firmware) isn't out. So "the
   Mac restarted" has three readings a run has to keep apart: WD1's marker at its set time (B2 short of
   op 224), a restart well before it (something else ended it: his case), and dark past it (B2 past
   op 224). The last look's marker time and the PMU's 0x0201 separate them; `m1-crumbs` should print
   0x0201 with every record from now on (a read through the same nvmem file, nothing new).
 - The estimate that the entry can be completed on this Mac (about 50%) had no term for the system
-  firmware. His finding puts one in, direction down, size unknown: he had a working entry before 13.5 and
-  this Mac never has.
+  firmware. His finding puts one in, direction down, size unknown: by his account the same sequence slept
+  until the alarm before 13.5, and this Mac never has.
 - His gates are power words the AP can read; that the same holds for whatever stands behind
   0x2922c0044's bit 2 here is not known.
 

@@ -143,8 +143,9 @@ the PR with that session's work.
        frames a second. The record may use PMU bytes 0x6008-0x600e (OK'd 2026-11-16), and
        `m1-crumbs` prints the PMU's 0x0201 with every record: B2's op 237-238 writes 1 there, a
        boot shows 2, and on Naeem Malik's M1 the engine's value outlasts the restart. Three
-       endings to keep apart (his M1 restarts 5 s after a finished entry, under this system
-       firmware): the marker's time, a restart well before it, dark past it.
+       endings to keep apart (his M1 restarts about 5 s after the release with its engine past
+       the gates, under this system firmware; whether that entry finished first isn't shown):
+       the marker's time, a restart well before it, dark past it.
     3. One returning batch, in a safe boot: CPU0's RVBAR and its lock bit; 0x2922c0200,
        0x2922c0214, 0x2925c0014; the muxes written, read and restored (in place of the one-way mux
        run); the cluster status words awake.
