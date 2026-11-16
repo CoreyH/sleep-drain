@@ -1,0 +1,40 @@
+# inhibit-charge check, 2026-11-16T11:12:41+01:00, kernel 7.2.11-15-1-ARCH
+## rtc before: 1970-01-01 21:46:05
+hwclock --systohc rc=0
+## rtc after: 2026-11-16 10:12:42 (system 2026-11-16 10:12:42 UTC)
+## total system power file: /sys/class/hwmon/hwmon2/power1_input
+11:12:42 before status=Charging cur_uA=1284000 bat_uW=16475000 sys_uW=10789865 behaviour=[auto] inhibit-charge auto-discharge
+11:12:44 before status=Charging cur_uA=1281000 bat_uW=16435000 sys_uW=10533014 behaviour=[auto] inhibit-charge auto-discharge
+11:12:46 before status=Charging cur_uA=1279000 bat_uW=16410000 sys_uW=10082880 behaviour=[auto] inhibit-charge auto-discharge
+11:12:48 before status=Charging cur_uA=1266000 bat_uW=16242000 sys_uW=10987747 behaviour=[auto] inhibit-charge auto-discharge
+11:12:50 before status=Charging cur_uA=1258000 bat_uW=16138000 sys_uW=11187496 behaviour=[auto] inhibit-charge auto-discharge
+## write inhibit-charge rc=0
+11:12:52 inhibit status=Charging cur_uA=1259000 bat_uW=16151000 sys_uW=10702934 behaviour=auto [inhibit-charge] auto-discharge
+11:12:54 inhibit status=Not charging cur_uA=299000 bat_uW=3797000 sys_uW=8132637 behaviour=auto [inhibit-charge] auto-discharge
+11:12:56 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=9689861 behaviour=auto [inhibit-charge] auto-discharge
+11:12:58 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=9695737 behaviour=auto [inhibit-charge] auto-discharge
+11:13:00 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=9820783 behaviour=auto [inhibit-charge] auto-discharge
+11:13:02 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=10043366 behaviour=auto [inhibit-charge] auto-discharge
+11:13:04 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=10114964 behaviour=auto [inhibit-charge] auto-discharge
+11:13:06 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=10495227 behaviour=auto [inhibit-charge] auto-discharge
+11:13:08 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=10460781 behaviour=auto [inhibit-charge] auto-discharge
+11:13:10 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=10413393 behaviour=auto [inhibit-charge] auto-discharge
+11:13:12 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=10520064 behaviour=auto [inhibit-charge] auto-discharge
+11:13:14 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=10483090 behaviour=auto [inhibit-charge] auto-discharge
+11:13:16 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=9667110 behaviour=auto [inhibit-charge] auto-discharge
+11:13:18 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=9768783 behaviour=auto [inhibit-charge] auto-discharge
+11:13:20 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=9703899 behaviour=auto [inhibit-charge] auto-discharge
+11:13:22 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=10220143 behaviour=auto [inhibit-charge] auto-discharge
+11:13:24 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=9660863 behaviour=auto [inhibit-charge] auto-discharge
+11:13:26 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=9731708 behaviour=auto [inhibit-charge] auto-discharge
+11:13:28 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=9973764 behaviour=auto [inhibit-charge] auto-discharge
+11:13:30 inhibit status=Not charging cur_uA=0 bat_uW=0 sys_uW=10271514 behaviour=auto [inhibit-charge] auto-discharge
+## write auto rc=0
+11:13:32 after status=Not charging cur_uA=0 bat_uW=0 sys_uW=10123553 behaviour=[auto] inhibit-charge auto-discharge
+11:13:34 after status=Charging cur_uA=331000 bat_uW=4201000 sys_uW=11350261 behaviour=[auto] inhibit-charge auto-discharge
+11:13:36 after status=Charging cur_uA=1364000 bat_uW=17466000 sys_uW=12076140 behaviour=[auto] inhibit-charge auto-discharge
+11:13:38 after status=Charging cur_uA=1572000 bat_uW=20167000 sys_uW=11669332 behaviour=[auto] inhibit-charge auto-discharge
+11:13:40 after status=Charging cur_uA=1602000 bat_uW=20561000 sys_uW=10731544 behaviour=[auto] inhibit-charge auto-discharge
+11:13:42 after status=Charging cur_uA=1557000 bat_uW=19984000 sys_uW=10214595 behaviour=[auto] inhibit-charge auto-discharge
+11:13:44 after status=Charging cur_uA=1485000 bat_uW=19052000 sys_uW=10895793 behaviour=[auto] inhibit-charge auto-discharge
+11:13:46 after status=Charging cur_uA=1454000 bat_uW=18653000 sys_uW=11186939 behaviour=[auto] inhibit-charge auto-discharge

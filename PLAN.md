@@ -1,6 +1,6 @@
 # Plan
 
-Last updated 2026-11-15. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-16. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
@@ -121,11 +121,17 @@ the PR with that session's work.
     the engine does then), and every rung since run 17 looked before it. The one-way mux
     run and the test of the engine's two words are set aside; so is every AP-made rung on B2's
     ops, until a witness shows B2 past its first gate.
-  - **Next, in this order** (nothing built yet; items marked OK need Corey's word first):
-    1. Free, no build: `inhibit-charge` checked awake on the charger; whether the keyboard light
-       survives a plain s2idle; macOS's `ioreg` and `log show` for its platform sleep and quiesce
-       actions (ten minutes in macOS, Corey's); an SMC dump either side of a plain restart, as the
-       control for the diff across a run.
+  - **Corey's answers, 2026-11-16** (RESEARCH.md, "After the review"): yes to the nights, to PMU
+    bytes 0x6008-0x600e, to runs on the charger with a meter, to drafting the questions to upstream
+    (each post still needs an OK), and the one-step-a-session rule is lifted. The meter is their
+    own POWER-Z C240: a display, no logging, so it's filmed.
+  - **Next, in this order** (nothing built yet):
+    1. Free, no build. Done 2026-11-16: `inhibit-charge` awake on the charger (it works: the
+       battery's current reads 0 within six seconds; not yet shown through a suspend). Open:
+       whether the keyboard light survives a plain s2idle; the C240 in line, awake, charge
+       inhibited (what its last digit is, how fast the screen follows); macOS's `ioreg` and
+       `log show` for its platform sleep and quiesce actions (ten minutes in macOS, Corey's); an
+       SMC dump either side of a plain restart, as the control for the diff across a run.
     2. One rung, "the last look", on run 17's recipe (`--m1-mark`'s, without the later AP-made B2
        steps): CPU0 records, raw, if its last WFI returns (0x2922c0040's bit 1, PHASE, HS_A, HS_B,
        the first of SIO's words still on, then PCIe, ANS, PMP); the cluster status words
@@ -134,7 +140,11 @@ the PR with that session's work.
        not a verdict byte. Run A: nothing armed, so a return means a pending source. Run B, same
        build: a wake at +20 s (the PMU alarm, or CPU0's timer), and the keyboard light lit before
        the commit (four new writes: fpwm0's power word and the PWM's registers) and filmed at 240
-       frames a second. OK: PMU bytes 0x6008-0x600e.
+       frames a second. The record may use PMU bytes 0x6008-0x600e (OK'd 2026-11-16), and
+       `m1-crumbs` prints the PMU's 0x0201 with every record: B2's op 237-238 writes 1 there, a
+       boot shows 2, and on Naeem Malik's M1 the engine's value outlasts the restart. Three
+       endings to keep apart (his M1 restarts 5 s after a finished entry, under this system
+       firmware): the marker's time, a restart well before it, dark past it.
     3. One returning batch, in a safe boot: CPU0's RVBAR and its lock bit; 0x2922c0200,
        0x2922c0214, 0x2925c0014; the muxes written, read and restored (in place of the one-way mux
        run); the cluster status words awake.
@@ -144,9 +154,9 @@ the PR with that session's work.
        down if it gets that far): the PMU's bytes carry a summary either way. In a safe boot, and
        no mount of /boot after the commit. cpuidle's "every core down" isn't the recipe's, so only
        an engine that moves is a result; nothing changed places nothing.
-    5. The power meter (OK: the purchase, and runs on the charger): macOS's own sleep entry and a
+    5. The power meter (Corey's C240, filmed; charge inhibited): macOS's own sleep entry and a
        plain s2idle first, then one baseline one-way run on the charger. It says how deep the dark
-       stretch gets, not which op.
+       stretch gets, not which op. A logging meter only if the C240 shows a level worth resolving.
   - **Budget:** ten one-way runs or three weeks from the first witness run, whichever comes
     first; no run without two outcomes each worth 20%. Then: go on only if a witness has named
     where B2 stops; otherwise write the entry work up for aurora-silicon/linux and stop the runs.
@@ -159,10 +169,10 @@ the PR with that session's work.
     T8140 and later; would T6000 data and ops for their sleep core be taken while the entry still
     resets; has their M1 Pro ever returned a core through the RVBAR); omacom's (will linux-aurora
     carry the sleep core and m1n1-aurora a mailbox); maralcbr (how his replay ended).
-  - **The nights, beside all of it:** suspend, then power off after N minutes (the alarm,
-    disarmed on every other way out; the alarm modules loaded at boot until #351 merges: OK), or
-    at once `sleep-guard` with other thresholds. First the two numbers nobody has: the draw
-    powered off over a night, and lid-open to desktop.
+  - **The nights, beside all of it** (OK'd 2026-11-16: 20 to 30 minutes): suspend, then power off
+    after N minutes (the alarm, disarmed on every other way out; the alarm modules loaded at boot
+    until #351 merges). To build. Still wanted, the two numbers nobody has: the draw powered off
+    over a night, and lid-open to desktop.
   - **Process, from now:** raw words and one decoder; a generic read-only look that takes an
     address list; the adversarial pass for new writes only; once the module has changed anything
     it restarts, it doesn't fail the suspend; read-only looks at addresses already read cleanly
@@ -171,12 +181,12 @@ the PR with that session's work.
   - **Asked, waiting:** Naeem Malik's commits cite a working deep sleep on T6000 ("a reference
     driver for the M1 Pro"). It wasn't found in public. Corey had the question posted on
     2026-11-14: malik-na/linux-aurora#77 (which driver, whether it wakes again, whether the
-    52 ms is T8103's). Check it for an answer at the start of a session; a reply there, or
-    reading what he points to, still needs Corey's OK.
-  - **Spend tokens with care** (Corey, 2026-11-10: Fable usage is limited). One step a session,
-    started from this file; a step that only reads gets Pullfrog and its own targeted checks, not
-    the full mutant run; write-ups stay short. (2026-11-14: Corey raised the usage and ran the
-    review at full depth. Whether this rule still stands is asked, not yet answered.)
+    52 ms is T8103's). No reply by 2026-11-16. Check it for an answer at the start of a session;
+    a reply there, or reading what he points to, still needs Corey's OK. His own runs go on, on
+    the M1 under system firmware 13.5 (`m1power/s2r-rs1-135`, runs 26 to 38).
+  - **Tokens:** the one-step-a-session rule of 2026-11-10 is lifted (Corey, 2026-11-16). What
+    stays, as practice: a step that only reads gets Pullfrog and its own targeted checks, not the
+    full mutant run; write-ups stay short.
 
 ## Picking this up
 
@@ -218,8 +228,8 @@ State that lives on the MacBook, not in git:
 - The alarm needs the test drivers after every boot:
   `make -C rtc-alarm-test && pkexec rtc-alarm-test/load`.
 - The RTC was set to the real time on 2026-11-02. It had counted from 1970
-  since the battery ran flat. It reads 1970 again since 2026-11-15: the Mac
-  slept from 11-14 15:57 at 50% and ran flat overnight. To be set again.
+  since the battery ran flat, and again from 2026-11-15 (the Mac slept from
+  11-14 15:57 at 50% and ran flat overnight) until it was set on 2026-11-16.
 - `/boot/macos-session/`: macOS 26.6.2's IODeviceTree, `pmset` log and
   battery readings from 2026-10-30.
 
@@ -2177,7 +2187,7 @@ omacom/linux-aurora#274 (issuecomment-6520008651).
 
 ## Session hygiene
 
-- One step per session. End it by updating this file's checkboxes and
-  "Where things stand".
+- End a session by updating this file's checkboxes and "Where things stand"
+  (the one-step-per-session rule was lifted on 2026-11-16).
 - Hand web research and long reads to subagents. Keep their conclusions, with
   links, in RESEARCH.md.

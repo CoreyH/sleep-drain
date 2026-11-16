@@ -5248,6 +5248,87 @@ execute at the RVBAR, and device restore. CPU0's RVBAR and its lock bit have nev
   `sleep-guard`'s day hours, where its threshold is 15%), ran flat overnight, and the PMU's clock
   reads 1970 again.
 
+### After the review: Corey's answers, a meter already in the house, the first free checks, and the others' weekend (2026-11-16)
+
+**Corey's answers** to the review's five questions: "I completely forgot, I have a power-z model c240! its
+right here. and yes on everything else." So: a lid close on battery may mean sleep, then power off after
+20 to 30 minutes; PMU bytes 0x6008-0x600e may carry the run record; runs on the charger with a meter in
+line are fine; questions to upstream may be drafted (each post still needs an OK on its text); and the
+one-step-a-session rule of 2026-11-10 is lifted.
+
+**The meter is a POWER-Z C240, not a KM003C.** ChargerLAB's own pages (read by a subagent, 2026-11-16): it
+has "no HID port on the side, which means you cannot connect it to PC. So it's basically a lite version of
+the KM003C"; the screen shows volts, amps, watts, "D+, D-, CC, charging timer, and accumulated energy input
+(Wh)"; 0-50 V, 0-6 A, PD 3.1 to 140 W; accuracy "relatively lower" than the KM003C's, no figure; refresh
+rate, resolution and its own draw aren't stated. So it can't log. It can be filmed: a sustained lower
+level in the dark stretch (the review's "plateau") shows on the watts line and, summed, on the Wh counter;
+single steps of milliseconds don't. The KM003C isn't bought. It's worth its price only if the C240 shows a
+level worth resolving. Unknown until tried: what its last digit is at 1 to 10 W, and how fast the screen
+follows.
+
+**`inhibit-charge`, checked awake on the charger** (`results/inhibit-charge-20261116/check.txt`; one root
+script, which first set the PMU's clock: it read 1970-01-01 again, and reads the right time now). Battery
+at 97%, charging at 1.26 A. Two to four seconds after `inhibit-charge` was written to
+`macsmc-battery/charge_behaviour` the status read "Not charging", and from six seconds on the battery's
+current read 0, for the 34 s it was left so; the SMC's total system power stayed at 9.7 to 10.5 W. Two to
+four seconds after `auto` it was charging again. So with the charge inhibited the meter's reading is the
+Mac's draw and nothing else, as far as the battery's own gauge can say (its 0 is the gauge's, to its
+resolution; a trickle under that isn't excluded). Not checked: whether the setting holds through a suspend
+or a one-way run's commit, which is where it's needed. The SMC keeps it, by the look of it; a run will say.
+
+**The PMU's register 0x0201, a third read:** 0x02 (regular boot, 2026-11-16, after `acc_last=1`'s run and
+the flat battery). Still what every boot shows.
+
+**What the others did, 2026-11-13 to -16** (a read of public issue threads, PR lists and commit messages;
+no code read today, nothing posted):
+- **malik-na/linux-aurora#77** (our question): no reply.
+- **Naeem Malik's second driver went on, on the M1 (T8103) under system firmware 13.5**: branch
+  `m1power/s2r-rs1-135`, nine commits past `m1power/s2r-rs1`, runs 26 to 38, dated 2026-11-15 and -16. From
+  his commit messages (his words in quotes; his values are his chip's, and leads here, not facts about
+  T6000):
+  - His engine gets through its gates. "The decoded sleep program writes the power chip's 0x0201 = 01 in
+    sequence 1, after sequence 0's island gate polls, and runs 27b and 32 read 04 -> 01: the engine gets
+    past gates #45 and #47." That is the same PMU register B2 writes 1 to here (op 237-238), used as a
+    witness that outlasts the restart. On his PMU it reads 04 before and 01 after; here a boot shows 02,
+    which is why the reads of 2026-11-10 said nothing. If a restart keeps the engine's 1 here as it does
+    there, 0x02 after every run agrees with WD1's marker: B2 has never reached its PMU command.
+  - And his M1 restarts all the same, about 5 s after the release, and not by the watchdog: "Run 36 moved
+    the engine's watchdog 2 to 100 s (read back) and the M1 still restarted ~5.5 s after the release, with
+    0x0201 04 -> 01 and the power chip's restart counter unchanged: not watchdog 2. Under the earlier
+    system firmware the same sequence slept until the alarm, so the restart is new with 13.5 and its
+    coprocessor firmware." Run 38 masks every wake source to tell a wake from a reset by firmware. This
+    Mac's system firmware is 13.5 too.
+  - What his sequence 0 waits on is readable from the AP there: "44 device power-state words, bit 11 must
+    be 0; five power-manager words, bit 30 must be 1", read "just before the release". Run 18 found one
+    busy (`ps_fpwm1`, "never while awake"). Here B2's first poll is one AON word (0x2922c0044 bit 2), and
+    its bit-11 polls come later (ops 35-229).
+  - `sio_on`: macOS turns SIO's parents on "about 1 ms before its commit", with the auto flag clear, "so the
+    island's gate (#45) can read ready when the chip's sleep program powers the island down itself". Here
+    the recipe leaves SIO's parents and SIO_CPU on too ("The gates read's run").
+  - `pmp_idle`: "macOS idles the PMP (AP 0x201, IOP 0x201) between MBSE slpw and slpa and will not complete
+    a sleep without it (try61)". This recipe's `pmp_out=1` idles the PMP after `slpa` (step K4), not
+    before it. A difference in order, not known to matter.
+- **omacom/linux-aurora#351** (the alarm, ours): open, no maintainer's review, no `ci:build`. #454
+  (p4ulcristian's T8112 alarm on top of it) is open too.
+- **aurora-silicon/linux:** #1477's nine parts (#1904, #1909-#1916) are open with no comments; #1664 (M4
+  Max) wakes on its author's J616c and still resets on joske's J614c after a week of byte-for-byte
+  records, the open difference being one fabric word (`fab3_soc`); a row of T6050 deep-sleep follow-ups
+  merged on 2026-11-16 (#2046, #2053, #2057, #2066): their deep sleep is at the stage of docks and
+  displays on that chip. Nothing for T600x.
+- **Nothing new** on omacom/linux-aurora#290 (our drain issue) or JJRPF/Aurora-DeepIdle#9 since 2026-11-07.
+
+**What it changes** (judgment):
+- An entry that gets through can still end in a restart seconds later, with nothing dark to see. So "the
+  Mac restarted" has three readings a run has to keep apart: WD1's marker at its set time (B2 short of
+  op 224), a restart well before it (something else ended it: his case), and dark past it (B2 past
+  op 224). The last look's marker time and the PMU's 0x0201 separate them; `m1-crumbs` should print
+  0x0201 with every record from now on (a read through the same nvmem file, nothing new).
+- The estimate that the entry can be completed on this Mac (about 50%) had no term for the system
+  firmware. His finding puts one in, direction down, size unknown: he had a working entry before 13.5 and
+  this Mac never has.
+- His gates are power words the AP can read; that the same holds for whatever stands behind
+  0x2922c0044's bit 2 here is not known.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.
