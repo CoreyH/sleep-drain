@@ -2501,6 +2501,40 @@ static void m1_arm_deep_sleep(void)
 	asm volatile("msr s3_5_c15_c6_0, %0; isb" : : "r"(acc));
 }
 
+/*
+ * last_look=1: CPU0's WFI with x18 to x30 kept on its stack across it, as the kernel's own apple_cpu_deep_wfi() keeps
+ * them (cpuidle-apple.c: "Deep WFI will clobber FP state, among other things"). A core that comes back at the next
+ * instruction may come back without its registers, and what follows the WFI here is C: m1_deep_wfi()'s flags and
+ * m1_ll_ret()'s pointers must not be live in a register across it. A call, so the compiler takes x0 to x17 as lost.
+ * The barriers are m1_deep_wfi()'s own.
+ */
+asm(
+	".pushsection .text, \"ax\"\n"
+	".type m1_ll_wfi, @function\n"
+	"m1_ll_wfi:\n"
+	"	str x30, [sp, #-16]!\n"
+	"	stp x28, x29, [sp, #-16]!\n"
+	"	stp x26, x27, [sp, #-16]!\n"
+	"	stp x24, x25, [sp, #-16]!\n"
+	"	stp x22, x23, [sp, #-16]!\n"
+	"	stp x20, x21, [sp, #-16]!\n"
+	"	stp x18, x19, [sp, #-16]!\n"
+	"	dsb sy\n"
+	"	isb\n"
+	"	wfi\n"
+	"	ldp x18, x19, [sp], #16\n"
+	"	ldp x20, x21, [sp], #16\n"
+	"	ldp x22, x23, [sp], #16\n"
+	"	ldp x24, x25, [sp], #16\n"
+	"	ldp x26, x27, [sp], #16\n"
+	"	ldp x28, x29, [sp], #16\n"
+	"	ldr x30, [sp], #16\n"
+	"	ret\n"
+	".size m1_ll_wfi, . - m1_ll_wfi\n"
+	".popsection\n"
+);
+void m1_ll_wfi(void);
+
 /* last_look=1: one command to the PMU's bytes and its vectors acked, as after every SPMI command before a deep WFI. */
 static void m1_ll_send(unsigned int addr, const u8 *b, unsigned int n)
 {
@@ -2568,7 +2602,9 @@ static void m1_ll_ret(void)
  * ll_wake=1, step 10, CPU0's last act before its deep WFI: its own timer (the
  * host's physical timer, CNTHP at EL2, which m1_quiet_core() stopped), set to
  * fire LL_TIMER_S later and left unmasked. A pending FIQ ends a WFI with every
- * exception masked; a core that was power-gated never sees it.
+ * exception masked. Whether a core that went down in this state still comes
+ * back for it isn't known: Linux's own deep idle on this chip is ended by the
+ * core's timer, with other override bits than this recipe's.
  */
 static void m1_ll_timer(void)
 {
@@ -2578,18 +2614,20 @@ static void m1_ll_timer(void)
 }
 
 /*
- * ll_wake=1, step 8, SError still unmasked: FPWM0's power word asked on (its
- * target to f, the rest as found, as the power-state driver asks), up to 10 ms
- * for its actual state, and only then the PWM's three writes, in pwm-apple's
- * order: on cycles, off cycles, then the control that latches them. True if
- * they were made.
+ * ll_wake=1, step 8, SError still unmasked: FPWM0's power word asked on as the
+ * power-state driver asks (its target to f; bits 28 and 12:8 written 0, bit 11
+ * among them, the hardware's busy bit, which is never written back: m1_ps_off()'s
+ * mask), up to 10 ms for its actual state, and only then the PWM's three writes,
+ * in pwm-apple's order: on cycles, off cycles, then the control that latches
+ * them; dsb and isb, so that a write that faulted panics here and not under
+ * step 9's mask. True if they were made.
  */
 static bool m1_ll_blink(void)
 {
 	void __iomem *ps = m1_sio + LL_FPWM0;
 	u64 t0;
 
-	writel(readl(ps) | 0xf, ps);
+	writel((readl(ps) & ~(BIT(28) | BIT(12) | BIT(11) | BIT(10) | BIT(9) | BIT(8))) | 0xf, ps);
 	dsb(sy);
 	t0 = m1_now();
 	while ((readl(ps) & LL_PS_ACTUAL) != LL_PS_ACTUAL) {
@@ -2601,6 +2639,7 @@ static bool m1_ll_blink(void)
 	writel(LL_BLINK_CYCLES, m1_ll_pwm + LL_PWM_OFF);
 	writel(LL_PWM_GO, m1_ll_pwm + LL_PWM_CTRL);
 	dsb(sy);
+	isb();
 	return true;
 }
 
@@ -2620,7 +2659,10 @@ static void __noreturn m1_deep_wfi(struct m1_core *mark, bool look)
 	cyc |= 0x3000001ULL;
 	asm volatile("msr s3_5_c15_c5_0, %0; isb" : : "r"(cyc));
 	for (;;) {
-		asm volatile("dsb sy; isb; wfi" : : : "memory");
+		if (look)
+			m1_ll_wfi();	/* the same three instructions, with the registers kept */
+		else
+			asm volatile("dsb sy; isb; wfi" : : : "memory");
 		if (mark) {
 			WRITE_ONCE(mark->wfi_ret, READ_ONCE(mark->wfi_ret) + 1);
 			m1_clean(mark);
@@ -5411,8 +5453,8 @@ static_assert(M1_PS_SIO_PAGE + LL_FPWM0 == 0x28e580190ULL && M1_POS_PAGE + LL_HS
 	      LL_TIMER_S < (WD1_MARK_BITE - LL_WD1_COUNT) / WD1_HZ);
 
 /*
- * last_look=1 at load, after m1_wd1_init(): the pages its reads go through are mapped (wd2_bite=1's, pmgr_late=1's and
- * m1's own), and the words it would read are logged awake, but for HS_A, which nothing here has read awake. With
+ * last_look=1 at load, after m1_wd2_init(), which maps the engine's page: the pages its reads go through are mapped
+ * (wd2_bite=1's, pmgr_late=1's and m1's own), and the words it would read are logged awake, but for HS_A, which nothing here has read awake. With
  * ll_wake=1: none of the four addresses it writes is on the never-write list, the PWM is the device tree's fpwm at
  * that address, its page is mapped here, CNTFRQ leaves the timer's value in TVAL's 31 bits, and the PWM's three
  * registers are logged if FPWM0 reads on (a read behind a gated clock would fault). Reads only.
@@ -5796,12 +5838,6 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
-	if (last_look) {
-		int ret = m1_ll_init();
-
-		if (ret)
-			return ret;
-	}
 	if (pmp_out) {
 		int ret = m1_pmp_init();
 
@@ -5852,6 +5888,13 @@ static int __init m1_init(void)
 	}
 	if (wd2_bite) {
 		int ret = m1_wd2_init();
+
+		if (ret)
+			return ret;
+	}
+	/* After m1_wd2_init(), which maps the engine's page: m1_ll_init() refuses without it. */
+	if (last_look) {
+		int ret = m1_ll_init();
 
 		if (ret)
 			return ret;

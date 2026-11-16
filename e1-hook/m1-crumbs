@@ -1151,8 +1151,11 @@ def mark_reading(x, s, v):
     if abs(x - unzeroed) <= 4:
         return (f"{head}about {unzeroed} s is what WD1 gives with its count never zeroed: B2 didn't reach its op 224, and the stall is"
                 " at B2's first poll, in the first handshake (A2's three steps of its own) or in B2's power-down. That's the"
-                " reading that fits with nothing else assumed, not a proof of which watchdog fired: a pair that finished, with"
-                " a later A sequence starting about 60 s after the commit and arming WD2 with its own 30 s, gives the same time")
+                " reading that fits with nothing else assumed, not a proof of which watchdog fired"
+                + (": a pair that finished, with a later A sequence starting about 60 s after the commit and arming WD2 with its own"
+                   " 30 s, gives the same time" if unzeroed == 90 else
+                   f". The marker was set to {unzeroed} s in this run where the earlier runs had 90 s: a restart that moved with it is"
+                   " WD1's, which the 90 s alone couldn't say"))
     if abs(x - WD2_BITE_S) <= 4:
         if not moved:
             return (f"{head}about {WD2_BITE_S} s, but wd2_bite=1's sample, above, doesn't show WD2 armed and counting with CPU0's"
@@ -1207,13 +1210,14 @@ def ll_lines(s, b):
     blink = []
     if s in LLW_STAGES:
         blink = [f"  0x6016 bit 6: step 8 {'made' if b[0x16] & LL_BLINK_BIT else 'did NOT make'} the keyboard PWM's three writes"
-                 + ("" if b[0x16] & LL_BLINK_BIT else " (FPWM0 didn't read on within 10 ms, or the alarm's byte didn't land): no blink"
-                    " was to be seen, and its absence says nothing about B2")]
+                 + ("" if b[0x16] & LL_BLINK_BIT else " (FPWM0 didn't read on within 10 ms, or the alarm's byte, which carries the bit"
+                    " and goes out after the first commit write, didn't land): a blink may not have been there to see, and its absence"
+                    " says nothing about B2")]
     if s in (LL_PRE, LLW_PRE):
         if any(r):
             return out + [f"  NOT READ: stage 0x{s:02x} is the last before the commit, and these bytes are only sent after CPU0's WFI,"
-                          " which comes after the later stage: the stage's command after the commit didn't land, or the bytes aren't this run's"]
-        return out + ["  all 0, and the stage is the last before the commit: the run isn't shown to have reached CPU0's WFI"]
+                          " which comes after the later stage: the stage's command after the commit didn't land, or the bytes aren't this run's"] + blink
+        return out + ["  all 0, and the stage is the last before the commit: the run isn't shown to have reached CPU0's WFI"] + blink
     if not any(r):
         return out + ["  all 0: CPU0's WFI didn't return, as far as this record goes: CPU0 never came back to send them (it went down,"
                       " or it stayed in its WFI for good), or its first command failed. Not a proof that the core was powered off"
@@ -1223,10 +1227,15 @@ def ll_lines(s, b):
     if not b0 & 0x80 or not b0 & 3 or b0 & 0x0c:
         return out + [f"  0x6008 = 0x{b0:02x}: not a value e1_hook writes (bit 7 set, bits 3:2 clear, a count in bits 1:0): NOT READ"] + blink
     out.append(f"  0x6008 = 0x{b0:02x}: CPU0'S LAST WFI RETURNED, first {LL_T[b0 >> 4 & 7]} after the commit's last write; {LL_COUNT[b0 & 3]} by"
-               " the last time it was counted. A core whose WFI returns wasn't powered off then, and a core left up holds the engine")
-    if not any(r[1:5]):
-        return out + ["  0x6009-0x600c read 0: the second command, the engine's page and the handshake, didn't land (a read that hung,"
-                      " or SPMI): nothing more is read"] + blink
+               " the last time it was counted. A core that is up again holds the engine; whether it had been down in between isn't"
+               " shown (Linux's own deep idle on this chip comes back at the next instruction too)"
+               + (". A count past one can be the look's own doing: a read of its that faulted leaves an SError pending, masked,"
+                  " and every later WFI returns for it" if b0 & 3 > 1 else ""))
+    # The third command is only sent after the second was acked, and both its bytes carry bit 7: with them there, four zeros are data.
+    third = bool(r[5] & 0x80 and r[6] & 0x80)
+    if not any(r[1:5]) and not third:
+        return out + ["  0x6009-0x600c read 0 and the third command's bytes aren't there: the second command, the engine's page and the"
+                      " handshake, didn't land (a read that hung, or SPMI): nothing more is read"] + blink
     pend = [n for i, n in enumerate(("an FIQ", "an IRQ", "an SError")) if b1 >> i & 1]
     out.append(f"  0x6009 = 0x{b1:02x}: pending at the return (ISR_EL1): {', '.join(pend) or 'nothing'}; CPU0's own timer "
                + ("was firing" if b1 & 8 else "was not firing")
@@ -1236,7 +1245,7 @@ def ll_lines(s, b):
     out.append(f"  0x600b = 0x{r[3]:02x}: 0x2922c0044's low byte: bit 2 {'set' if r[3] & 4 else 'clear'} (B2's first poll, op 1, waits for it"
                f" set), bit 3 {'set' if r[3] & 8 else 'clear'} (op 3 waits for it clear)")
     out.append(f"  0x600c = 0x{r[4]:02x}: PHASE's low byte ({PHASES.get(r[4], 'not a phase on file')})")
-    if not r[5] & 0x80 or not r[6] & 0x80:
+    if not third:
         return out + [f"  0x600d 0x600e = {r[5]:02x} {r[6]:02x}: the third command, B2's power words, didn't land whole (bit 7 of each): not read"] + blink
     n = r[5] & 0x3f
     out.append(f"  0x600d = 0x{r[5]:02x}: {n} of the 43 power words of SIO's subtree read off (actual state 0)"
@@ -2092,7 +2101,7 @@ def decode(b, rtc, cnt=None, alarm=None, r0201=None):
     commit = None
     if base in SHORT or s in HOLD_AFTER:
         low = int.from_bytes(b[0x10:0x12], "little")
-        whole = run_second(low, alarm[1], now, ares or 0) if s in HOLD_AFTER and alarm else None
+        whole = run_second(low, alarm[1], now, ares or 0, alarm_secs(s)) if s in HOLD_AFTER and alarm else None
         if whole is not None:
             commit = whole
             out.append(f"RTC second just before the commit, from its low two bytes and the run's alarm: {commit},"
@@ -2232,7 +2241,13 @@ def decode(b, rtc, cnt=None, alarm=None, r0201=None):
         elif s in ACL_STAGES:
             out += acl_lines(s, b, pmp)
         elif s in ALARM_STAGES:
-            out.append(alarm_byte(b[0x16] & ~LL_BLINK_BIT if s in LLW_STAGES else b[0x16]))
+            if s in LLW_STAGES and b[0x16] & LL_BLINK_BIT:
+                # ll_wake=1: bit 6 is the keyboard light's; the alarm's result is the byte without it, and the byte is shown whole.
+                out.append(alarm_byte(b[0x16] & ~LL_BLINK_BIT).replace(f"0x6016 = 0x{b[0x16] & ~LL_BLINK_BIT:02x}:",
+                                                                      f"0x6016 = 0x{b[0x16]:02x} (bit 6 is the keyboard light's, below; without it"
+                                                                      f" 0x{b[0x16] & ~LL_BLINK_BIT:02x}):", 1))
+            else:
+                out.append(alarm_byte(b[0x16]))
             if s in (0x59, 0x5a, 0x4e, FAB_PRE, LL_PRE, LLW_PRE) and ares in ALARM_ACKED:
                 nxt = {0x59: "0x5f", 0x5a: "0x5b", 0x4e: "0x4f, or recfg_bite=1's 0x46 or 0x47, or wd2_bite=1's 0x56 or 0x57,",
                        FAB_PRE: "0x51 or 0x53", LL_PRE: "0x0a or 0x0b", LLW_PRE: "0x07 or 0x08"}[s]
@@ -2252,8 +2267,7 @@ def decode(b, rtc, cnt=None, alarm=None, r0201=None):
         out += ll_lines(s, b)
     if alarm:
         out += alarm_lines(s, commit, alarm, now, ares)
-    if r0201 is not None:
-        out.append(r0201_line(r0201))
+    out.append(r0201_line(r0201) if r0201 is not None else "PMU 0x0201: not read")
     return out
 
 
@@ -2269,13 +2283,17 @@ def main():
         b = os.pread(fd, 0x20, 0x6000)
         rtc = os.pread(fd, 6, RTC)
         al = [os.pread(fd, n, off) for off, n in ((ALARM_CTRL, 1), (ALARM, 4), (ALARM_EVENT, 1), (ALARM_MASK, 1))]
-        r0201 = os.pread(fd, 1, R0201)
     except OSError as e:
         die(f"{path}: {e}")
-    if len(b) != 0x20 or len(rtc) != 6 or [len(x) for x in al] != [1, 4, 1, 1] or len(r0201) != 1:
+    if len(b) != 0x20 or len(rtc) != 6 or [len(x) for x in al] != [1, 4, 1, 1]:
         die(f"{path}: short read")
+    # 0x0201 is an extra: a read of it that fails mustn't keep the record from being read or cleared.
+    try:
+        r0201 = os.pread(fd, 1, R0201)
+    except OSError:
+        r0201 = b""
     alarm = (al[0][0], int.from_bytes(al[1], "little"), al[2][0], al[3][0])
-    for line in decode(b, rtc, counter(), alarm, r0201[0]):
+    for line in decode(b, rtc, counter(), alarm, r0201[0] if len(r0201) == 1 else None):
         print(line)
     if clear:
         # The run's own alarm: its compare value is the commit's second +

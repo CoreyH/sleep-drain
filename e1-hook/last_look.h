@@ -50,9 +50,10 @@
  *                  through its reset vector, which here is the boot loader's:
  *                  a restart at about 20 s
  *   CPU0's timer   its own timer (the host's: CNTHP at EL2) set to fire 25 s
- *                  after step 10, unmasked. A core that was power-gated loses
- *                  it; a core that only sits in its WFI returns, and the
- *                  bytes above are then a look at the engine 25 s in
+ *                  after step 10, unmasked. If the WFI returns for it, the
+ *                  bytes above are a look at the engine 25 s in. A return
+ *                  doesn't show the core was never down: Linux's own deep
+ *                  idle here is ended by the core's timer too
  *   the light      in step 8, right before the commit: FPWM0's power word
  *                  asked on, and, if it reads on within 10 ms, the keyboard
  *                  backlight's PWM set to 100 ms on, 100 ms off (three writes,

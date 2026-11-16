@@ -5356,10 +5356,13 @@ The first rung of the order after the review (PLAN.md), built as `e1_hook last_l
 **What run B adds (`ll_wake=1`): three things armed, each with its own reading.**
 - The PMU's alarm 20 s after the commit's second, not an hour. An SoC that slept comes out through its reset
   vector, which is the boot loader's here: a restart at about 20 s, well before the marker.
-- CPU0's own timer (the host's physical timer, CNTHP at EL2), 25 s after its last step, unmasked. A core that
-  was power-gated loses it. A core that only sits in its WFI returns, and the seven bytes are then a look at
-  the engine 25 s in: whether B2's gate bit reads set with every other core down, where PHASE is, how far
-  the power words went.
+- CPU0's own timer (the host's physical timer, CNTHP at EL2), 25 s after its last step, unmasked. If the WFI
+  returns for it, the seven bytes are a look at the engine 25 s in: whether B2's gate bit reads set with
+  every other core down, where PHASE is, how far the power words went. A return doesn't show that the core
+  was never down: Linux's own deep idle on this chip (`cpuidle-apple.c`) is ended by the core's timer and
+  comes back at the next instruction, without its registers, which is why CPU0's WFI here keeps x18 to x30
+  on its stack as that driver does. Whether a core that went down under this recipe's override bits comes
+  back for its timer at all isn't known.
 - The keyboard backlight set blinking in step 8, 100 ms on and 100 ms off: FPWM0's power word (0x28e580190)
   asked on, and, only if it reads on within 10 ms, the PWM's on cycles, off cycles and control, in the
   kernel driver's order and with its control value (`drivers/pwm/pwm-apple.c`, read from omacom/linux-aurora).
@@ -5372,7 +5375,8 @@ The first rung of the order after the review (PLAN.md), built as `e1_hook last_l
 **How an ending reads** (one line each; `m1-crumbs` says which applies):
 - restart at about 70 s, bytes 0: the marker; B2 short of its op 224, and CPU0 never came back. As run 17.
 - restart at about 70 s, bytes set: CPU0's WFI returned. In A, a pending source, and the bytes name it. In
-  B at 22 to 30 s with the timer firing, CPU0 was never power-gated, and the bytes are the look.
+  B at 22 to 30 s with the timer firing, CPU0 came back for its timer, and the bytes are the look; whether
+  it had been down in between they don't say.
 - restart well before 70 s: something else, new here (Naeem Malik's M1 does this 5 s after its release).
 - about 120 s, or 150 s or more, or dark: B2 past its op 224, read as `--m1-mark`'s.
 - in B, the light: blinking to the restart, B2 short of its tenth SIO word; stopping earlier, when.
@@ -5382,9 +5386,19 @@ nothing has read them, the record has no bytes left for three words, and a first
 could leave an SError pending, which would itself end CPU0's WFI. They go to the returning batch.
 
 **Checked without hardware.** `tests/m1_crumbs_test.py` compiles the header and the four functions and runs
-them against pages that log every access; 57 mutants of the new code, all caught after three holes they
+them against pages that log every access; the mutants of the new code are all caught, after the holes they
 found were closed. The tests found one bug before any review: after the hundredth return every further one
 would have been sent.
+
+**What the adversarial pass found** (one subagent, read-only; all taken). The run could not have loaded:
+`m1_ll_init()` ran before `m1_wd2_init()`, which maps the engine's page, and refused. The tests passed with
+it, since they checked its place only against `m1_wd1_init()`; they now check it against the initializer
+that maps each page it needs. And the code after CPU0's WFI kept its flags and pointers in registers a
+deep WFI may not keep (the point above). Smaller ones: the power word is now written as the power-state
+driver writes it, with the hardware's busy bit never written back; an `isb` after the PWM's writes; four
+places where the decoder said more or less than the bytes do. Open after it, for the plan: after run B the
+alarm has fired and its event stays latched (`--clear` writes only its control), and nothing here knows
+whether a latched event holds a wake source up at the next run's commit.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 

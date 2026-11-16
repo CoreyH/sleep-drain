@@ -18,6 +18,12 @@ prints what the registers read before and after:
      own cycles and control again
 Nothing here outlasts step 5, and nothing but the PWM's three registers is written.
 Each register is read and written as one 32-bit access. J314s only.
+
+What it shows: that the three values blink the light, and that the blink is seen. What
+it doesn't: the run's fourth write, FPWM0's power word asked on, and a PWM programmed
+right after its domain came up; here the kernel's driver has had FPWM0 on all along.
+If it's killed before step 5 the light goes on blinking until the brightness is next
+changed; a restart ends it in any case.
 """
 import ctypes
 import mmap
