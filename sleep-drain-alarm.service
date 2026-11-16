@@ -10,8 +10,11 @@
 #
 # After a kernel update the modules no longer match, and load stops before it
 # touches a driver. The unit then shows as failed, nothing depends on it, and
-# sleeps go on as before, without the power-off, until install.sh has run on
-# the new kernel.
+# sleeps go on as before, without the power-off. install.sh, run on the new
+# kernel, builds the modules again and then starts this unit itself, if it is
+# enabled and the alarm RTC isn't there, so no restart is needed. It never
+# starts it over drivers that are loaded: load would stop at "described
+# already" and leave the unit failed for nothing.
 
 [Unit]
 Description=Load the PMU RTC alarm drivers for sleep-drain-off-after

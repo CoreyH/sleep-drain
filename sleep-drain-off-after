@@ -41,7 +41,10 @@
 #           still closed) before the power-off is asked for. It checks the lid
 #           and the charger every second for 5 s, since logind may not have
 #           seen the lid open yet, then asks for the power-off, again each
-#           second for up to 30 s while logind refuses.
+#           second for up to 30 s while logind refuses. Before each request
+#           it checks once more: a lid that opened, the charger, or
+#           "sleep-drain-nights off" (the flag or the state file gone) calls
+#           the power-off off.
 #
 # If a power-off doesn't happen, the state stays, the next sleep sets the alarm
 # 60 s ahead and post tries again. After three tries in a row it stops arming.
@@ -329,8 +332,14 @@ post() {
 }
 
 # Whether what the power-off was decided on still holds; if not, why says so.
+# "sleep-drain-nights off" removes the flag and the state: either one gone
+# calls the power-off off.
 still_wanted() {
   local ac l
+  if [[ ! -e $FLAG || ! -e $STATE ]]; then
+    why=switched-off
+    return 1
+  fi
   ac=$(cat "$AC" 2> /dev/null)
   l=$(lid)
   if [[ $ac != 0 ]]; then
@@ -366,7 +375,14 @@ finish() {
     fi
   done
 
+  # The check comes right before each request, so nothing is asked for once
+  # the lid is open, the charger is in or sleep-drain-nights has switched it off.
   for ((n = 1; n <= ASK_TRIES; n++)); do
+    if ! still_wanted; then
+      clear
+      say "called-off why=$why"
+      return 0
+    fi
     if err=$("${POWEROFF[@]}" 2>&1); then
       say "power-off-asked mode=$mode try=$tries asked=$n"
       # Keep the inhibitor until the shutdown stops this unit.
@@ -374,14 +390,16 @@ finish() {
       return 0
     fi
     "${SLEEP[@]}" 1
-    if ! still_wanted; then
-      clear
-      say "called-off why=$why"
-      return 0
-    fi
   done
 
-  # The state stays: the next sleep sets the alarm 60 s ahead, and post tries again.
+  # Still wanted: the state stays, the next sleep sets the alarm 60 s ahead and
+  # post tries again. Switched off in the meantime: the state that was removed
+  # isn't written again.
+  if ! still_wanted; then
+    clear
+    say "called-off why=$why"
+    return 0
+  fi
   if n=$(clock); then
     last_post=$n
     state_save

@@ -4,15 +4,25 @@
 #                                     (1 to 720, default 25); the session is lost
 #   sleep-drain-nights off            sleeps last until something wakes the Mac (the default)
 #   sleep-drain-nights                show the setting, the alarm RTC and any alarm set
+# on and off need root, and root comes through pkexec here:
+#   pkexec /usr/local/bin/sleep-drain-nights on [MINUTES]
+#   pkexec /usr/local/bin/sleep-drain-nights off
+# Started without root, they fall back on sudo for each step.
+#
 # The sleep-drain-off-after hook reads /etc/sleep-drain/off-after at each
 # suspend, so a change applies from the next suspend on. The hook needs the PMU
 # RTC alarm drivers, which sleep-drain-alarm.service loads at boot: "on"
 # enables that unit and starts it now if the alarm RTC isn't there yet, "off"
 # disables it. The drivers, once loaded, stay until the next restart.
 #
+# off also calls off a power-off that is on its way: the hook's finish step
+# asks for none once the flag or the state file is gone, and off stops its unit.
+#
 # Switch it off for a night that is meant to be measured: with it on, the
 # night ends after MINUTES.
 set -euo pipefail
+# pkexec resets PATH. Whatever it is, the system's tools are on it.
+PATH=${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 
 flag=${OFF_AFTER_FLAG:-/etc/sleep-drain/off-after}
 state=${OFF_AFTER_STATE:-/run/sleep-drain-off-after}
@@ -67,6 +77,10 @@ case "${1:-status}" in
       fi
       as_root rm -f "$state" "$state.tmp" "$state.finish"
     fi
+    # A power-off on its way: with the flag and the state gone the hook's
+    # finish step asks for none, and this stops it where it is. No such unit
+    # is the usual case.
+    as_root systemctl stop sleep-drain-off-after-finish.service 2> /dev/null || true
     as_root systemctl disable "$unit"
     ;;
   status) ;;

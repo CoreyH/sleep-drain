@@ -38,15 +38,17 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   on every other way out, does nothing in a safe boot, and without the alarm
   RTC the sleep goes on as before. Its times are the alarm RTC's, not the
   system clock's. It logs to `/var/log/sleep-drain-off-after.log`.
-  `sleep-drain-nights on [MINUTES]`, `off` and `status` switch it. Switch it
-  off for a night that is meant to be measured.
+  `pkexec /usr/local/bin/sleep-drain-nights on [MINUTES]` and `off` switch
+  it, and `sleep-drain-nights` shows it. `off` also calls off a power-off that
+  is on its way. Switch it off for a night that is meant to be measured.
 - `sleep-drain-alarm.service`: loads the alarm drivers at boot for that hook,
   from the copies `install.sh` builds into `/usr/local/lib/sleep-drain/rtc-alarm/`
   (the three modules of `rtc-alarm-test/` and its `load`). Enabled by
   `sleep-drain-nights on`, skipped in a safe boot. After a kernel update the
   modules don't match, `load` refuses them and the unit fails, harmlessly,
-  until `install.sh` has run on the new kernel. While it's enabled, a regular
-  boot has the alarm drivers, not the stock ones.
+  until `install.sh` runs on the new kernel: it builds them again and starts
+  the unit, if it's enabled and the alarm RTC isn't there. While it's enabled,
+  a regular boot has the alarm drivers, not the stock ones.
 - `test-kernel`: installs an aurora kernel package (such as an upstream PR's
   CI build) beside the regular linux-aurora, boots it once via grub-reboot,
   and removes it again, without touching anything pacman owns.

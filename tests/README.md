@@ -111,9 +111,12 @@ used to sit in CLAUDE.md, entry for entry):
   with stubs for the power-off, the sleep between checks and what starts its `finish` step: when it arms and
   when it doesn't (no flag, safe boot, charger, no alarm RTC, an alarm that isn't ours), the minutes, the
   deadline kept through early wakes, every case that powers off and every case that must not, the re-check,
-  and a power-off that logind refuses. It also checks `sleep-drain-alarm.service`'s conditions against the
-  safe boot's initramfs hook, `install.sh` and `uninstall.sh` for the new files, and runs
-  `sleep-drain-nights` with stub `sudo` and `systemctl`.
+  a power-off that logind refuses, and the real `sleep-drain-nights off` run in the middle of the re-check
+  and of the refused requests (no power-off asked for after it, no state written again). It also checks
+  `sleep-drain-alarm.service`'s conditions against the safe boot's initramfs hook, `install.sh` and
+  `uninstall.sh` for the new files, runs `install.sh`'s two functions that start the unit after a rebuild,
+  and runs `sleep-drain-nights` with stub `sudo` and `systemctl`, also as uid 0 in a bubblewrap user
+  namespace with only the stubs on PATH, as pkexec starts it.
 - `tests/mutants.py` isn't a test of the code but of the tests: it breaks `e1_hook.c`, its headers,
   `m1-crumbs` and `e1-hook/probe` one way at a time in a copy (a wrong value, a write that isn't gated, a
   check dropped, a bit read wrong) and says which of those `tests/m1_crumbs_test.py` (for the launcher,

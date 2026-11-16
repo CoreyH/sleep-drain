@@ -5,18 +5,22 @@ The hook runs as it is, with every path and command it uses pointed (OFF_AFTER_*
 directory: the flag, the state file, the charger, two RTCs (rtc0 is a decoy that rtc_macsmc
 drives, rtc1 is the alarm RTC), the lid (a file that `cat` prints), and stubs for the power-off,
 the sleep between checks and what starts "finish". The stubs record their calls. The sleep stub
-can change the lid or the charger at its Nth one-second sleep, which is how a lid that opens
-during the re-check is played. The fake wakealarm is a plain file: it keeps what was written, so a
-cleared alarm reads 0 where the kernel's reads empty.
+can change the lid or the charger at its Nth one-second sleep, or run a shell line there, which is
+how a lid that opens during the re-check and a "sleep-drain-nights off" in the middle of it are
+played. The fake wakealarm is a plain file: it keeps what was written, so a cleared alarm reads 0
+where the kernel's reads empty.
 
-Then the unit file's conditions against what the safe boot's initramfs hook really does, and
-install.sh and uninstall.sh against the files this adds. sleep-drain-nights runs with stub sudo,
-systemctl and journalctl.
+Then the unit file's conditions against what the safe boot's initramfs hook really does,
+install.sh and uninstall.sh against the files this adds, and the two functions of install.sh that
+start the unit after a rebuild, run as they stand. sleep-drain-nights runs with stub sudo,
+systemctl and journalctl, and once more as uid 0 in a bubblewrap user namespace with only the
+stubs on PATH, which is how pkexec starts it (that part is skipped without bwrap).
 
   python3 -I -B tests/off_after_test.py
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -161,6 +165,15 @@ exec bash "$@"
         """At the nth one-second sleep, the lid or the charger changes."""
         target = {"lid": self.lid, "ac": self.ac}[what]
         write(os.path.join(self.tmp, f"on-sleep-{n}"), f"echo {value} > {target}\n")
+
+    def at_sleep_run(self, n, shell):
+        """At the nth one-second sleep, this shell line runs."""
+        write(os.path.join(self.tmp, f"on-sleep-{n}"), shell + "\n")
+
+    def leftovers(self):
+        """The state file and its two side files, whichever are there."""
+        d = os.path.dirname(self.state_path)
+        return sorted(f for f in os.listdir(d) if f.startswith(os.path.basename(self.state_path)))
 
     def logged(self):
         return read(self.log) or ""
@@ -707,8 +720,7 @@ def test_install():
     check("if make -s -C \"$build\" > /dev/null; then" in block and "else" in block and "exit" not in block,
           "install.sh: a failed build isn't fatal")
     check("/var/log/sleep-drain-off-after.log" in inst, "install.sh makes the hook's log")
-    check("systemctl enable sleep-drain-alarm" not in inst and "systemctl start sleep-drain-alarm" not in inst,
-          "install.sh doesn't switch it on: sleep-drain-nights does")
+    check("systemctl enable sleep-drain-alarm" not in inst, "install.sh doesn't enable the unit: sleep-drain-nights does")
     un = read(os.path.join(ROOT, "uninstall.sh"))
     for path in ("/usr/lib/systemd/system-sleep/sleep-drain-off-after", "/usr/local/bin/sleep-drain-nights",
                  "/etc/systemd/system/sleep-drain-alarm.service"):
@@ -716,13 +728,70 @@ def test_install():
     check("systemctl disable sleep-drain-alarm.service" in un, "uninstall.sh disables the unit")
 
 
-def nights(w, *args, alarm_rtc=True, start_fails=False):
+def test_install_starts_unit():
+    """After a kernel update: install.sh's own two functions, with stub systemctl and the fake RTCs."""
+    inst = read(os.path.join(ROOT, "install.sh"))
+    fns = [re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", inst, re.S | re.M) for name in ("alarm_rtc_there", "start_alarm_unit")]
+    check(all(fns), "install.sh has alarm_rtc_there and start_alarm_unit")
+    if not all(fns):
+        return
+    script = "set -euo pipefail\n" + fns[0].group(0) + fns[1].group(0) + 'start_alarm_unit "$1"\necho "went on"\n'
+
+    def run(built="yes", enabled=True, alarm_rtc=True, start_fails=False):
+        w = world()
+        stubs = nights_stubs(w)
+        if not enabled:
+            write(os.path.join(w.tmp, "unit-disabled"), "")
+        if not alarm_rtc:
+            os.remove(os.path.join(w.rtc, "wakealarm"))
+        if start_fails:
+            write(os.path.join(w.tmp, "start-fails"), "")
+        e = {"PATH": stubs + ":/usr/bin:/bin", "OFF_AFTER_RTC_GLOB": os.path.join(w.tmp, "rtc/rtc*")}
+        r = subprocess.run(["bash", "-c", script, "install.sh", built], env=e, capture_output=True, text=True, timeout=60)
+        return w, r
+
+    start = ["systemctl start sleep-drain-alarm.service"]
+    w, r = run(alarm_rtc=False)
+    check(r.returncode == 0 and w.calls() == start and "went on" in r.stdout,
+          "install.sh: modules rebuilt, unit enabled, no alarm RTC: it starts the unit", r.stdout + r.stderr + str(w.calls()))
+    w, r = run()
+    check(r.returncode == 0 and w.calls() == [] and "went on" in r.stdout,
+          "install.sh: the alarm RTC is there already: the unit isn't started again", r.stdout + r.stderr + str(w.calls()))
+    w, r = run(enabled=False, alarm_rtc=False)
+    check(r.returncode == 0 and w.calls() == [], "install.sh: the unit isn't enabled: not started",
+          r.stdout + r.stderr + str(w.calls()))
+    w, r = run(built="no", alarm_rtc=False)
+    check(r.returncode == 0 and w.calls() == [], "install.sh: the build failed: not started",
+          r.stdout + r.stderr + str(w.calls()))
+    w, r = run(alarm_rtc=False, start_fails=True)
+    check(r.returncode == 0 and w.calls() == start and "went on" in r.stdout and "didn't start" in r.stderr,
+          "install.sh: the unit fails to start: said, and the install goes on", r.stdout + r.stderr)
+
+    lines = [l.strip() for l in inst.splitlines()]
+    check('start_alarm_unit "$alarm_built"' in lines
+          and lines.index('start_alarm_unit "$alarm_built"') == lines.index("systemctl daemon-reload") + 1,
+          "install.sh calls it right after daemon-reload")
+    ok_branch = inst[inst.index('if make -s -C "$build" > /dev/null; then\n  for ko in'):]
+    ok_branch = ok_branch[:ok_branch.index("\nelse\n")]
+    check(inst.count("alarm_built=yes") == 1 and "alarm_built=yes" in ok_branch
+          and inst.index("alarm_built=no") < inst.index("alarm_built=yes"),
+          "install.sh: alarm_built is yes only where the alarm modules' build worked")
+    check(inst.count("systemctl start sleep-drain-alarm.service") == 1
+          and "systemctl start sleep-drain-alarm.service" in fns[1].group(0),
+          "install.sh starts the unit nowhere else")
+    unit = read(UNIT)
+    check("starts this unit itself" in unit and "described\n# already" in unit,
+          "the unit's header says that install.sh starts it, and when it doesn't")
+
+
+def nights_stubs(w):
+    """Stub sudo, systemctl and journalctl for sleep-drain-nights and install.sh's functions."""
     stubs = os.path.join(w.tmp, "nstubs")
-    write(os.path.join(stubs, "sudo"), '#!/bin/sh\nexec "$@"\n', 0o755)
+    write(os.path.join(stubs, "sudo"), f'#!/bin/sh\n: > {w.tmp}/sudo-used\nexec "$@"\n', 0o755)
     write(os.path.join(stubs, "systemctl"), f"""#!/bin/sh
-case "$1" in
-  is-enabled) echo enabled; exit 0 ;;
-  show) case "$*" in *ActiveState*) echo failed ;; *) echo exit-code ;; esac; exit 0 ;;
+case " $* " in
+  *" is-enabled "*) if [ -f {w.tmp}/unit-disabled ]; then echo disabled; exit 1; fi; echo enabled; exit 0 ;;
+  *" show "*) case "$*" in *ActiveState*) echo failed ;; *) echo exit-code ;; esac; exit 0 ;;
 esac
 echo "systemctl $*" >> {w.calls_path}
 [ "$1" = start ] && [ -f {w.tmp}/start-fails ] && exit 1
@@ -730,13 +799,93 @@ exit 0
 """, 0o755)
     write(os.path.join(stubs, "journalctl"),
           "#!/bin/sh\necho \"load: rtc-macsmc-alarm.ko isn't built for 7.9.9: run make again\"\n", 0o755)
+    return stubs
+
+
+def nights(w, *args, alarm_rtc=True, start_fails=False, path=None, as_uid0=False):
+    stubs = nights_stubs(w)
     if not alarm_rtc and os.path.exists(os.path.join(w.rtc, "wakealarm")):
         os.remove(os.path.join(w.rtc, "wakealarm"))
     if start_fails:
         write(os.path.join(w.tmp, "start-fails"), "")
     e = w.env()
-    e["PATH"] = stubs + ":/usr/bin:/bin"
-    return subprocess.run(["bash", NIGHTS, *args], env=e, capture_output=True, text=True, timeout=60)
+    e["PATH"] = stubs + (":/usr/bin:/bin" if path is None else path)
+    cmd = ["/usr/bin/bash", NIGHTS, *args]
+    if as_uid0:
+        cmd = [shutil.which("bwrap"), "--unshare-user", "--uid", "0", "--gid", "0", "--dev-bind", "/", "/"] + cmd
+    return subprocess.run(cmd, env=e, capture_output=True, text=True, timeout=60)
+
+
+NIGHTS_OFF = ["systemctl stop sleep-drain-off-after-finish.service", "systemctl disable sleep-drain-alarm.service"]
+
+
+def test_switched_off():
+    """sleep-drain-nights off while finish is on its way to the power-off."""
+    def off_at(w, n):
+        stubs = nights_stubs(w)
+        w.at_sleep_run(n, f"PATH={stubs}:$PATH bash {NIGHTS} off > /dev/null 2>&1")
+
+    def ready(**files):
+        w = world()
+        w.pre()
+        w.fire()
+        for name, text in files.items():
+            write(os.path.join(w.tmp, name.replace("_", "-")), text)
+        return w
+
+    w = ready()
+    off_at(w, 3)
+    r = w.post(T + 1500)
+    check(w.calls() == [FINISH] + ["sleep 1"] * 3 + NIGHTS_OFF and w.leftovers() == [] and not os.path.exists(w.flag)
+          and "finish called-off why=switched-off" in w.logged(),
+          "nights off in the third second of the re-check: no power-off, no state", w.dump(r) + str(w.leftovers()))
+
+    w = ready()
+    off_at(w, 5)
+    r = w.post(T + 1500)
+    check("poweroff" not in w.calls() and w.leftovers() == [],
+          "nights off in the last second of the re-check: no power-off, no state", w.dump(r) + str(w.leftovers()))
+
+    w = ready(poweroff_ok_at="9\n")
+    off_at(w, 7)
+    r = w.post(T + 1500)
+    c = w.calls()
+    check(c.count("poweroff") == 2 and c[-2:] == NIGHTS_OFF and w.leftovers() == [],
+          "nights off while the power-off is being refused: none asked for after it, no state",
+          w.dump(r) + str(w.leftovers()))
+
+    w = ready(poweroff_fails="")
+    off_at(w, 20)
+    r = w.post(T + 1500)
+    c = w.calls()
+    check(c.count("poweroff") == 15 and c[-2:] == NIGHTS_OFF and w.leftovers() == []
+          and "power-off-refused" not in w.logged(),
+          "nights off halfway through 30 refusals: no more asking, and the state isn't written again",
+          w.dump(r) + str(w.leftovers()))
+
+    # off's effect, one half at a time: the flag gone, or the state gone.
+    w = ready()
+    w.at_sleep_run(2, f"rm -f {w.flag}")
+    r = w.post(T + 1500)
+    check("poweroff" not in w.calls() and w.leftovers() == [] and w.wake() in ("", "0"),
+          "the flag goes during the re-check: no power-off, the state goes too", w.dump(r) + str(w.leftovers()))
+    w = ready()
+    w.at_sleep_run(4, f"rm -f {w.state_path}")
+    r = w.post(T + 1500)
+    check("poweroff" not in w.calls() and w.leftovers() == [],
+          "the state goes during the re-check: no power-off, and it isn't written again",
+          w.dump(r) + str(w.leftovers()))
+    w = ready(poweroff_fails="")
+    w.at_sleep_run(35, f"rm -f {w.state_path}")
+    r = w.post(T + 1500)
+    check(w.calls().count("poweroff") == 30 and w.leftovers() == [] and "power-off-refused" not in w.logged(),
+          "the state goes after the 30th refusal: it isn't written again", w.dump(r) + str(w.leftovers()))
+    w = ready(poweroff_ok_at="4\n")
+    w.at_sleep_run(8, f"rm -f {w.flag}")
+    r = w.post(T + 1500)
+    check(w.calls().count("poweroff") == 3 and w.leftovers() == [],
+          "the flag goes while the power-off is being refused: none asked for after it",
+          w.dump(r) + str(w.leftovers()))
 
 
 def test_nights():
@@ -755,8 +904,9 @@ def test_nights():
     w.reset_calls()
     r = nights(w, "off")
     check(r.returncode == 0 and not os.path.exists(w.flag) and w.state() is None and w.wake() == "0"
-          and w.calls() == ["systemctl disable sleep-drain-alarm.service"],
-          "nights off: the flag, our alarm and the state go, the unit is disabled", r.stdout + r.stderr + w.dump())
+          and w.calls() == NIGHTS_OFF,
+          "nights off: the flag, our alarm and the state go, a finish step is stopped, the unit is disabled",
+          r.stdout + r.stderr + w.dump())
     check("sleeps last until something wakes the Mac" in r.stdout, "nights off: says so", r.stdout)
 
     w = world(minutes=None)
@@ -804,6 +954,39 @@ def test_nights():
     r = subprocess.run(["bash", "-n", NIGHTS], capture_output=True, text=True)
     check(r.returncode == 0 and os.access(NIGHTS, os.X_OK), "nights parses and is executable", r.stderr)
 
+    # As pkexec starts it: uid 0, and a PATH that isn't the caller's. Here the
+    # PATH has only the stubs, so every other tool comes from what the script adds.
+    src = read(NIGHTS)
+    check("#   pkexec /usr/local/bin/sleep-drain-nights on [MINUTES]" in src
+          and "#   pkexec /usr/local/bin/sleep-drain-nights off" in src,
+          "nights: the header says to run on and off through pkexec")
+    w = world(minutes=None)
+    r = nights(w, "on", "40", path="")
+    check(r.returncode == 0 and read(w.flag) == "40\n" and "after 40 minutes" in r.stdout,
+          "nights on with no system directory on PATH: works", r.stdout + r.stderr)
+    w.pre()
+    r = nights(w, "off", path="")
+    check(r.returncode == 0 and not os.path.exists(w.flag) and w.state() is None and w.wake() == "0",
+          "nights off with no system directory on PATH: works", r.stdout + r.stderr + w.dump())
+    if not shutil.which("bwrap"):
+        print("skip nights as uid 0: needs bwrap")
+        return
+    w = world(minutes=None)
+    r = nights(w, "on", "30", path="", as_uid0=True)
+    check(r.returncode == 0 and read(w.flag) == "30\n" and w.calls() == ["systemctl enable sleep-drain-alarm.service"]
+          and not os.path.exists(os.path.join(w.tmp, "sudo-used")),
+          "nights on as uid 0 (pkexec): the flag and the unit, without sudo", r.stdout + r.stderr + str(w.calls()))
+    w.pre()
+    w.reset_calls()
+    r = nights(w, "off", path="", as_uid0=True)
+    check(r.returncode == 0 and not os.path.exists(w.flag) and w.state() is None and w.wake() == "0"
+          and w.calls() == NIGHTS_OFF and not os.path.exists(os.path.join(w.tmp, "sudo-used")),
+          "nights off as uid 0 (pkexec): the flag, our alarm and the state go, without sudo",
+          r.stdout + r.stderr + w.dump())
+    w = world(minutes=None)
+    nights(w, "on", "30")
+    check(os.path.exists(os.path.join(w.tmp, "sudo-used")), "(not as root, the same steps go through sudo)")
+
 
 def main():
     test_not_armed()
@@ -817,9 +1000,11 @@ def main():
     test_recheck()
     test_idle()
     test_refused()
+    test_switched_off()
     test_defaults()
     test_unit()
     test_install()
+    test_install_starts_unit()
     test_nights()
     print(f"{failed} failed" if failed else "all ok")
     return 1 if failed else 0
