@@ -136,7 +136,11 @@ the PR with that session's work.
        `--m1-last-look-wake` (run B, after `e1-hook/kbd-blink` has shown the blink awake);
        RESEARCH.md, "`last_look=1` as built", has the bytes and how each ending reads. The
        cluster status words went to item 3: no bytes for them, and a first read under the mask
-       could itself end the WFI. As planned:
+       could itself end the WFI. Run A first and alone. After run B the PMU alarm has fired and
+       its event (0x14c0) stays latched: `m1-crumbs --clear` writes only the alarm's control.
+       Whether a latched event holds a wake source up at a later run's commit isn't known, so
+       no further one-way run after B until the event has been looked at (the alarm driver of a
+       regular boot may clear it; `pmu-alarm` reads it). As planned:
        One rung, "the last look", on run 17's recipe (`--m1-mark`'s, without the later AP-made B2
        steps): CPU0 records, raw, if its last WFI returns (0x2922c0040's bit 1, PHASE, HS_A, HS_B,
        the first of SIO's words still on, then PCIe, ANS, PMP); the cluster status words
@@ -174,11 +178,19 @@ the PR with that session's work.
     with Corey's OK: aurora-silicon's maintainers (is the resume mailbox generic or limited to
     T8140 and later; would T6000 data and ops for their sleep core be taken while the entry still
     resets; has their M1 Pro ever returned a core through the RVBAR); omacom's (will linux-aurora
-    carry the sleep core and m1n1-aurora a mailbox); maralcbr (how his replay ended).
+    carry the sleep core and m1n1-aurora a mailbox); maralcbr (how his replay ended). Drafted
+    2026-11-16, not posted, on this MacBook: `~/.local/share/sleep-drain/drafts-20261116/` (a
+    comment for omacom/linux-aurora#290, which asks maralcbr too, and a discussion for
+    aurora-silicon/linux).
   - **The nights, beside all of it** (OK'd 2026-11-16: 20 to 30 minutes): suspend, then power off
     after N minutes (the alarm, disarmed on every other way out; the alarm modules loaded at boot
-    until #351 merges). To build. Still wanted, the two numbers nobody has: the draw powered off
-    over a night, and lid-open to desktop.
+    until #351 merges). Built 2026-11-16 (PR #108: `sleep-drain-off-after`, `sleep-drain-nights`,
+    `sleep-drain-alarm.service`), hardware-free checks only. To do on the Mac: `pkexec bash
+    install.sh`, `pkexec /usr/local/bin/sleep-drain-nights on 2`, one lid close on battery, the
+    log (`/var/log/sleep-drain-off-after.log`), then `on 25` and one restart to see the unit load
+    the drivers at boot. With it on, regular boots run the alarm test drivers; `off` before a
+    night that is meant to be measured. Still wanted, the two numbers nobody has: the draw
+    powered off over a night, and lid-open to desktop.
   - **Process, from now:** raw words and one decoder; a generic read-only look that takes an
     address list; the adversarial pass for new writes only; once the module has changed anything
     it restarts, it doesn't fail the suspend; read-only looks at addresses already read cleanly
@@ -232,7 +244,8 @@ State that lives on the MacBook, not in git:
 - The design study for the step after the feasibility run, on this MacBook only (it quotes
   dump words): `~/.local/share/sleep-drain/recfg-marker-study-20261109/study.md`.
 - The alarm needs the test drivers after every boot:
-  `make -C rtc-alarm-test && pkexec rtc-alarm-test/load`.
+  `make -C rtc-alarm-test && pkexec rtc-alarm-test/load`, or, once `sleep-drain-nights on` has
+  been run, `sleep-drain-alarm.service` loads them at boot (never in a safe boot).
 - The RTC was set to the real time on 2026-11-02. It had counted from 1970
   since the battery ran flat, and again from 2026-11-15 (the Mac slept from
   11-14 15:57 at 50% and ran flat overnight) until it was set on 2026-11-16.
