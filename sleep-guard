@@ -2,12 +2,18 @@
 # sleep-guard: power off instead of suspending when the lid closes on battery
 # below a threshold that depends on the time of day.
 #
-# s2idle on this machine draws ~2.2 W (~3.5-3.9%/h), and there is neither
-# hibernation nor an RTC wake alarm to cut a long suspend short, so a lid
-# closed at low charge ends in a hard power loss overnight. While on battery
-# below the threshold, this holds a handle-lid-switch block inhibitor so logind
-# does not suspend, and powers off cleanly once the lid has stayed closed for
-# SLEEP_GUARD_GRACE seconds. Docked (external display) lid closes are left alone.
+# s2idle on this machine draws ~2.2 W (~3.5-3.9%/h), and there is no
+# hibernation, so a lid closed at low charge ends in a hard power loss
+# overnight. The PMU's RTC alarm can cut a suspend short: sleep-drain-off-after
+# powers off after N minutes of sleep on battery. But it is off unless
+# "sleep-drain-nights on" has switched it on, and it needs the out-of-tree
+# alarm drivers, which a kernel update takes away until install.sh runs again.
+# So this guard doesn't count on it and never lets a low battery sleep at all.
+#
+# While on battery below the threshold, this holds a handle-lid-switch block
+# inhibitor so logind does not suspend, and powers off cleanly once the lid has
+# stayed closed for SLEEP_GUARD_GRACE seconds. Docked (external display) lid
+# closes are left alone.
 #
 # During the day (SLEEP_GUARD_DAY_START to SLEEP_GUARD_DAY_END, in hours) a lid
 # close is likely short, so the threshold is low. Outside those hours it is

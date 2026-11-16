@@ -29,6 +29,24 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   battery below a threshold. `upower-critical.conf`, a UPower drop-in, does
   the same for UPower's critical-battery action at 2%, which by default
   suspends here.
+- `sleep-drain-off-after`: a second systemd-sleep hook (installed beside
+  `sleep-drain-log`). With `/etc/sleep-drain/off-after` there (its content is
+  the minutes, default 25), it arms the PMU's RTC alarm before a suspend on
+  battery, and powers off when the alarm ends the sleep with the lid still
+  closed. The session is lost: Corey OK'd that on 2026-11-16. It leaves a
+  timed test's alarm (`rtcwake -m no`) and that sleep alone, clears its alarm
+  on every other way out, does nothing in a safe boot, and without the alarm
+  RTC the sleep goes on as before. Its times are the alarm RTC's, not the
+  system clock's. It logs to `/var/log/sleep-drain-off-after.log`.
+  `sleep-drain-nights on [MINUTES]`, `off` and `status` switch it. Switch it
+  off for a night that is meant to be measured.
+- `sleep-drain-alarm.service`: loads the alarm drivers at boot for that hook,
+  from the copies `install.sh` builds into `/usr/local/lib/sleep-drain/rtc-alarm/`
+  (the three modules of `rtc-alarm-test/` and its `load`). Enabled by
+  `sleep-drain-nights on`, skipped in a safe boot. After a kernel update the
+  modules don't match, `load` refuses them and the unit fails, harmlessly,
+  until `install.sh` has run on the new kernel. While it's enabled, a regular
+  boot has the alarm drivers, not the stock ones.
 - `test-kernel`: installs an aurora kernel package (such as an upstream PR's
   CI build) beside the regular linux-aurora, boots it once via grub-reboot,
   and removes it again, without touching anything pacman owns.

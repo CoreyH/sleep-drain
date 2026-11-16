@@ -3,6 +3,10 @@
 set -uo pipefail
 
 systemctl disable --now sleep-guard.service
+# The alarm drivers, if loaded, stay until the next restart.
+systemctl disable sleep-drain-alarm.service
+rm -f /etc/systemd/system/sleep-drain-alarm.service /usr/local/bin/sleep-drain-nights \
+  /usr/lib/systemd/system-sleep/sleep-drain-off-after /run/sleep-drain-off-after
 [[ -x /usr/local/bin/sleep-drain-safe ]] && /usr/local/bin/sleep-drain-safe remove
 rm -f /etc/initcpio/hooks/sleepdrain-safe /etc/initcpio/install/sleepdrain-safe
 rmmod pmp_sleep_release 2> /dev/null

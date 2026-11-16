@@ -4,6 +4,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 install -m 755 sleep-drain-log /usr/lib/systemd/system-sleep/sleep-drain-log
+# The power-off after N minutes of sleep on battery: the hook, its switch, and
+# the unit that loads the alarm drivers at boot. Off until "sleep-drain-nights on".
+install -m 755 sleep-drain-off-after /usr/lib/systemd/system-sleep/sleep-drain-off-after
+install -m 755 sleep-drain-nights /usr/local/bin/sleep-drain-nights
+install -m 644 sleep-drain-alarm.service /etc/systemd/system/sleep-drain-alarm.service
 install -m 755 sleep-guard /usr/local/bin/sleep-guard
 install -m 644 sleep-guard.service /etc/systemd/system/sleep-guard.service
 # UPower's critical-battery action: power off, not suspend.
@@ -44,9 +49,25 @@ else
   echo "smc_peek not built for $(uname -r); readings go without BACC and BQCC" >&2
 fi
 rm -rf -- "${build:?}"
+# The PMU RTC alarm drivers of rtc-alarm-test, built the same way, with a copy
+# of load, which finds the modules beside itself. sleep-drain-alarm.service
+# runs that copy at boot. After a kernel update these no longer match, load
+# refuses them, and sleeps aren't cut short until this script has run again.
+build=$(mktemp -d)
+cp rtc-alarm-test/rtc-macsmc-alarm.c rtc-alarm-test/spmi-apple-wake.c rtc-alarm-test/pmu-alarm-dt.c \
+  rtc-alarm-test/Makefile "$build"/
+install -D -m 755 rtc-alarm-test/load /usr/local/lib/sleep-drain/rtc-alarm/load
+if make -s -C "$build" > /dev/null; then
+  for ko in rtc-macsmc-alarm spmi-apple-wake pmu-alarm-dt; do
+    install -D -m 644 "$build/$ko.ko" "/usr/local/lib/sleep-drain/rtc-alarm/$ko.ko"
+  done
+else
+  echo "the alarm drivers not built for $(uname -r); sleeps on battery aren't cut short" >&2
+fi
+rm -rf -- "${build:?}"
 install -d -m 755 /etc/sleep-drain /var/log/sleep-drain
-touch /var/log/sleep-drain.log
-chmod 644 /var/log/sleep-drain.log
+touch /var/log/sleep-drain.log /var/log/sleep-drain-off-after.log
+chmod 644 /var/log/sleep-drain.log /var/log/sleep-drain-off-after.log
 
 systemctl daemon-reload
 systemctl enable sleep-guard.service
