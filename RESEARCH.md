@@ -5445,8 +5445,8 @@ event bit set and its enable gone, 0x140c the commit's second + 20. PMU 0x0201 =
 **What it says.**
 - **B2 never got to its power-downs.** FPWM0 is the tenth of the 43 SIO words B2 switches off, from its op
   35 on, and the light it clocks blinked until the restart. With WD1's count never zeroed (the restart at
-  70 s again), B2 is held in its first thirty-odd ops for the whole 70 s: at its first poll (op 1,
-  0x2922c0044's bit 2), at op 3's, or in the first handshake. This is the witness the plan asked for
+  70 s again), B2 is held before its tenth SIO word for the whole 70 s: at its first poll (op 1,
+  0x2922c0044's bit 2), at op 3's, in the first handshake, or not started; the light doesn't say which. This is the witness the plan asked for
   before any more work on B2's later ops: none of the AP-made steps on its power-downs (runs 18 on) could
   have mattered, because B2 doesn't get there. What rests on an assumption: that B2's write to FPWM0's
   word would have stopped the PWM though the run had asked the word on.
@@ -5456,8 +5456,12 @@ event bit set and its enable gone, 0x140c the commit's second + 20. PMU 0x0201 =
   time. By the record's own terms a core that was still powered would have come back, so this is the
   first sign that the last core does go down; not a proof (a first command that failed reads the same,
   and a core that deep may not take its timer).
-- So the picture at the commit: every core down, the engine in A2 (PHASE 4) with WD2 counting, B2 not
-  past its first gate, and nothing moving for 70 s until WD1 ends it.
+- So the picture after the commit: seven cores parked and CPU0 in its last WFI (whether it is powered
+  down is a hypothesis, above), the engine in A2 (PHASE 4, 10 ms after the release) with WD2 counting,
+  B2 not as far as its tenth SIO word, and WD1 ending it at 70 s. Which of B2's opening polls or the
+  first handshake holds it isn't shown: nothing sampled the gate's words after CPU0's WFI. Runs 6 to 9
+  sampled them with CPU0 awake, where the awake core may itself hold the gate ("What it doesn't
+  settle", above), so those readings aren't this stall's until something shows the two are the same.
 
 **After the run:** `m1-crumbs --clear` disarmed the alarm (0x1401 = 0x01); the nights went on again at 25,
 and with the alarm driver loaded `pmu-alarm status` reads `ctrl=0x01 event=0x00 mask=0x01`: nothing of

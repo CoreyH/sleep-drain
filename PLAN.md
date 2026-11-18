@@ -145,9 +145,10 @@ the PR with that session's work.
        its ops 223-224 in 70 s. **Run B done 2026-11-18** (RESEARCH.md, "Run B, the last look with
        a wake"), with the nights off around it: the keyboard blinked for all 70 s, so B2 never
        reached its power-downs (FPWM0 is the tenth word of them); the alarm fired at 20 s and
-       nothing followed; CPU0 didn't come back for its timer. **B2 is held at its first gate**
-       (op 1's poll of 0x2922c0044's bit 2, op 3's, or the first handshake), which is the
-       witness the budget rule asked for. So next is what that gate waits on: items 3 and 4 as
+       nothing followed; CPU0 left no bytes for its timer (that it is powered down stays a
+       hypothesis). **B2 is held before its power-downs** (op 1's poll of 0x2922c0044's bit 2,
+       op 3's, or the first handshake: not shown which), which is the witness the budget rule
+       asked for. So next is what that gate waits on: items 3 and 4 as
        reviewed, and this Mac's side of the diff against macOS's commit state (item 1). To
        weigh at the desk first, not yet a plan: runs 6 to 9 read the gate's words with CPU0
        awake, 1 s and 25 s after the commit (0x2922c0044 bit 2 clear and bit 3 set, 0x2922c0040
@@ -156,7 +157,8 @@ the PR with that session's work.
        in its deep WFI too. The same read under today's recipe (every coprocessor stopped, the
        displays off, the fabric up) is new only if a word reads differently from run 6's: bit
        2 set with CPU0 up would take the cores out of the gate; the same bits would say
-       nothing more. Any later run that sets the alarm near:
+       nothing more. Either way such a reading is one with CPU0 awake, not the final-WFI stall's
+       (Pullfrog on #113). Any later run that sets the alarm near:
        the nights off around it, as here, until the snapshot below is built.
        To build: the alarm's registers saved before the unit loads the driver, and the
        decoder saying when the driver is bound (its "cleared the enable (new)" line was wrong
