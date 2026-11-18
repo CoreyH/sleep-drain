@@ -99,6 +99,7 @@
  *   pkexec e1-hook/run-floor --m1-acc-last        (--m1-gates' and acc_last=1: the same)
  *   pkexec e1-hook/run-floor --m1-last-look       (--m1-mark's and last_look=1: the same)
  *   pkexec e1-hook/run-floor --m1-last-look-wake  (that and ll_wake=1: the same)
+ *   pkexec e1-hook/run-floor --m1-gate-look       (that and gate_look=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -393,6 +394,9 @@ MODULE_PARM_DESC(acc_last, "With gates_mark=1, never with sio_down=1, pcie_down=
 static bool last_look;
 module_param(last_look, bool, 0444);
 MODULE_PARM_DESC(last_look, "With wd1_mark=1, never with gates_mark=1, observe=1, position=1, recfg_bite=1 or probe=1: --m1-mark's run with WD1's count at 80 s in place of 60 s (the marker 70 s after step 4), and, the first time CPU0's own last WFI returns, seven bytes to the PMU's 0x6008-0x600e (Corey's OK of 2026-11-16): when and how often it returned, what was pending, the engine's two gate words, PHASE and the handshakes, and how many of B2's power words read off; reads only, but for CPU0's timer control set to 0 (last_look.h)");
+static bool gate_look;
+module_param(gate_look, bool, 0444);
+MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
 static bool ll_wake;
 module_param(ll_wake, bool, 0444);
 MODULE_PARM_DESC(ll_wake, "With last_look=1: the PMU's alarm 20 s after the commit in place of an hour, CPU0's own timer set to end its WFI 25 s after step 10, and in step 8 FPWM0's power word asked on and the keyboard backlight's PWM set to blink, 100 ms on and 100 ms off (four writes; last_look.h)");
@@ -1634,6 +1638,12 @@ static void e1_after_slpa(void)
  * SIO's 43, no write is on the never-write list and the PWM is the device
  * tree's, and logs the words awake. The stages are ll_stage()'s: 0x09, then
  * 0x0b or 0x0a after the release; with ll_wake=1 0x06, then 0x08 or 0x07.
+ * gate_look=1 (run-floor --m1-gate-look; with last_look=1) adds m1_ll_look()
+ * in step 10: 1 s after the commit's last write, before CPU0's last WFI, the
+ * return's reads made with CPU0 still up and sent in two commands, 0x6008's
+ * bit 3 saying so; m1_ll_ret() then sends 0x6008 alone. Reads only, and no
+ * stage of its own: the bit is in the record, and K1 leaves 0x6008 as 0x04
+ * until the look's own command.
  *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
@@ -2136,6 +2146,10 @@ static int m1_pmu_start(void)
 		ret = m1_kwrite(0x6010, zero, 7);
 	if (!ret && last_look)
 		ret = m1_kwrite(LL_AT, zero, LL_N);
+	if (!ret && gate_look) {
+		v = LL_ARMED;	/* gate_look=1: a look is to come; its first command writes LL_LOOKED over this */
+		ret = m1_kwrite(LL_AT, &v, 1);
+	}
 	if (ret)
 		return ret;
 	m1_sent_50 = true;
@@ -2582,8 +2596,10 @@ static void m1_ll_ret(void)
 	ctl = read_sysreg(cntp_ctl_el0);
 	write_sysreg(0, cntp_ctl_el0);	/* ll_wake=1's timer: it ended this WFI, and mustn't end the next */
 	isb();
-	b0 = ll_b0(n, ll_time_code(now - m1_t_third, m1_tps));
+	b0 = (u8)(ll_b0(n, ll_time_code(now - m1_t_third, m1_tps)) | (gate_look ? LL_LOOKED : 0));
 	m1_ll_send(LL_AT, &b0, 1);
+	if (gate_look)	/* 0x6009-0x600e are m1_ll_look()'s, and stay */
+		return;
 	/* Each read into its own variable, in this order: an argument list has none. */
 	hsa = readl(hs_a);
 	hsb = readl(m1_pos + LL_HS_B);
@@ -2602,6 +2618,49 @@ static void m1_ll_ret(void)
 	pmp = readl(m1_ps + M1_PS_PMP_RO);
 	b[5] = ll_b6(pc, ll_off(ans), ll_off(pmp));
 	m1_ll_send(LL_AT + 5, b + 4, 2);
+}
+
+/*
+ * gate_look=1, step 10, CPU0 alone, every exception masked, before its own
+ * last WFI (last_look.h has why): once LL_LOOK_MS have passed since the
+ * commit's last write, the reads m1_ll_ret() makes at a return, made with CPU0
+ * still up. Two commands, the engine's page and the handshake first, so that a
+ * power word's read that hangs loses only the second: 0x6008 := LL_LOOKED with
+ * 0x6009-0x600c, then 0x600d and 0x600e. Bit 3 of 0x6009 is HS_A's bit 31
+ * here. Reads only: the words m1_ll_ret() reads, which position=1's sample
+ * read in this state, a core up after the commit, in runs 6 to 10.
+ */
+static void m1_ll_look(void)
+{
+	static const u16 sio[SIOD_N] = SIOD_OFFS, pcie[PCD_N] = PCD_OFFS;
+	void __iomem *hs_a = post_map[ARRAY_SIZE(e1_post_slpa) - 1] + M1_POS_HS_A;
+	u64 until = m1_t_third + m1_tps * LL_LOOK_MS / 1000;
+	u8 b[LL_N], off = 0, pc = 0, isr;
+	u32 hsa, hsb, fpwm, ans, pmp;
+	unsigned int i;
+
+	while (m1_now() < until)
+		cpu_relax();
+	isr = (read_sysreg(isr_el1) >> 6) & 7;
+	/* Each read into its own variable, in this order: an argument list has none. */
+	hsa = readl(hs_a);
+	hsb = readl(m1_pos + LL_HS_B);
+	b[0] = LL_LOOKED;
+	b[1] = ll_b1(isr, hsa & BIT(31), hsa, hsb);	/* bit 3: HS_A's bit 31, where the return has CPU0's timer */
+	b[2] = (u8)readl(m1_pos + M1_POS_GATE40);
+	b[3] = (u8)readl(m1_pos + M1_POS_GATE44);
+	b[4] = ll_b4(readl(m1_pos + M1_POS_PHASE));	/* the command's last byte: its bit 7 says the five landed */
+	m1_ll_send(LL_AT, b, 5);
+	for (i = 0; i < SIOD_N; i++)
+		off += ll_off(readl(m1_sio + sio[i]));
+	fpwm = readl(m1_sio + LL_FPWM0);
+	b[5] = ll_b5(off, ll_off(fpwm));
+	for (i = 0; i < PCD_N; i++)
+		pc |= ll_off(readl(m1_ps + pcie[i])) ? BIT(i) : 0;
+	ans = readl(m1_sio + M1_PS_ANS2);
+	pmp = readl(m1_ps + M1_PS_PMP_RO);
+	b[6] = ll_b6(pc, ll_off(ans), ll_off(pmp));
+	m1_ll_send(LL_AT + 5, b + 5, 2);
 }
 
 /*
@@ -4118,6 +4177,8 @@ static void __noreturn m1_after_slpa(void)
 	}
 
 	/* 10 */
+	if (gate_look)
+		m1_ll_look();
 	if (ll_wake)
 		m1_ll_timer();
 	m1_arm_deep_sleep();
@@ -5457,6 +5518,9 @@ static_assert(M1_PS_SIO_PAGE + LL_FPWM0 == 0x28e580190ULL && M1_POS_PAGE + LL_HS
 	      LL_WD1_COUNT == 0x7270e000U && LL_WD1_COUNT < WD1_MARK_BITE && LL_BLINK_CYCLES == 2400000U && LL_PWM_GO == 0x4021U &&
 	      LL_PWM + LL_PWM_ON == 0x39b03001cULL && LL_PWM + LL_PWM_OFF == 0x39b030018ULL && LL_ALARM_SECS < LL_TIMER_S &&
 	      LL_TIMER_S < (WD1_MARK_BITE - LL_WD1_COUNT) / WD1_HZ);
+/* gate_look=1's bit is none of the return's in 0x6008, and its look comes before the alarm's time. */
+static_assert(LL_LOOKED == 0x08 && LL_ARMED == 0x04 && !((LL_LOOKED | LL_ARMED) & (LL_MARK | 7U << LL_T_SHIFT | 3U)) &&
+	      LL_LOOK_MS < LL_ALARM_SECS * 1000);
 
 /*
  * last_look=1 at load, after m1_wd2_init(), which maps the engine's page: the pages its reads go through are mapped
@@ -5491,6 +5555,9 @@ static int __init m1_ll_init(void)
 	pr_info("m1: last_look: awake: 0x2922c0040 %08x, 0x2922c0044 %08x, PHASE %08x, HS_B %08x; %u of SIO's 43 power words read off, FPWM0's %08x, the PCIe five off 0x%02x, ANS2 %08x, the PMP %08x. WD1's count is written as %u s; if CPU0's last WFI returns, seven bytes go to the PMU's 0x%x-0x%x\n",
 		readl(m1_pos + M1_POS_GATE40), readl(m1_pos + M1_POS_GATE44), readl(m1_pos + M1_POS_PHASE), readl(m1_pos + LL_HS_B),
 		off, ps, pc, readl(m1_sio + M1_PS_ANS2), readl(m1_ps + M1_PS_PMP_RO), LL_WD1_COUNT / WD1_HZ, LL_AT, LL_AT + LL_N - 1);
+	if (gate_look)
+		pr_info("m1: last_look: gate_look=1: %u ms after the commit's last write, before its last WFI, CPU0 reads those words and HS_A again and sends them to 0x%x-0x%x, with bit 3 of the first byte\n",
+			LL_LOOK_MS, LL_AT, LL_AT + LL_N - 1);
 	if (!ll_wake)
 		return 0;
 	if (e1_never_write(LL_PWM + LL_PWM_CTRL) || e1_never_write(LL_PWM + LL_PWM_OFF) || e1_never_write(LL_PWM + LL_PWM_ON) ||
@@ -6417,6 +6484,10 @@ static int __init e1_check_params(void)
 		pr_err("ll_wake=1 needs last_look=1 (it's that run with the alarm at 20 s, CPU0's timer at 25 s and the keyboard light set blinking)\n");
 		return -EINVAL;
 	}
+	if (gate_look && !last_look) {
+		pr_err("gate_look=1 needs last_look=1 (it's that run with the return's reads made once before CPU0's last WFI, 1 s after the commit)\n");
+		return -EINVAL;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -6590,7 +6661,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -6598,7 +6669,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
 		gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;

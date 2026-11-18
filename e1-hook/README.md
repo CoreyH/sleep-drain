@@ -194,6 +194,15 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   off as the tenth of its 43 SIO words, so a light that blinks until the restart says B2 never got that far.
   Bit 6 of the alarm's byte at 0x6016 says the PWM's writes were made. Stages 0x86, then 0x88 or 0x87.
   `e1-hook/kbd-blink` (root, awake) makes the PWM's three writes for a few seconds, to see the blink first.
+- `gate_look=1` (`run-floor --m1-gate-look`, on `last_look=1`; the launcher sets `ll_wake=1` with it) adds one
+  read to that run: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads what
+  a return of that WFI would read (the engine's two gate words, PHASE, HS_A, HS_B, SIO's 43 power words, the
+  PCIe five, ANS2, the PMP's) and sends it itself, in two commands: 0x6008 := 0x08 with 0x6009-0x600c, then
+  0x600d and 0x600e. Bit 3 of 0x6009 is HS_A's bit 31 there. K1 leaves 0x6008 as 0x04, so a look that never
+  landed shows. A WFI that returns afterwards sends 0x6008 alone, bit 3 kept. Runs 6 to 10 read these words
+  with CPU0 awake under an earlier recipe; this is that read under today's. It is a reading with a core up,
+  which may itself hold B2's first poll: not the stall's own state after the WFI. Reads only; no stage of its
+  own (the stages are `ll_wake=1`'s).
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be

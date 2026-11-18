@@ -30,7 +30,8 @@
  * The bytes, all 0 if the WFI never returned or the first command failed:
  *   0x6008  bit 7 set; bits 6:4 the time of the first return since the
  *           commit's last write, LL_T_MS's code; bits 1:0 how often it has
- *           returned: 1 once, 2 twice or more, 3 a hundred times or more
+ *           returned: 1 once, 2 twice or more, 3 a hundred times or more.
+ *           Bit 3 (LL_LOOKED) is gate_look=1's, below
  *   0x6009  bits 2:0 ISR_EL1's F, I and A at the first return; bit 3 CPU0's
  *           own timer was firing; bit 4 HS_A's bit 24; bits 5, 6, 7 HS_B's
  *           bits 0, 1 and 31
@@ -66,6 +67,29 @@
  *                  three writes were made.
  * Run A (last_look=1 alone) arms none of the three, so that a WFI that returns
  * there means a pending source, and its ending compares with run 17's.
+ *
+ * gate_look=1, with either form (PLAN.md, after runs A and B, which left B2
+ * before its power-downs with CPU0 in its last WFI), adds one thing:
+ *   the look       in step 10, before CPU0's last WFI: once LL_LOOK_MS have
+ *                  passed since the commit's last write, CPU0 reads what a
+ *                  return would read and sends it itself, in two commands:
+ *                  0x6008 := LL_LOOKED with 0x6009-0x600c, then 0x600d and
+ *                  0x600e. The bytes are the return's, but for bit 3 of
+ *                  0x6009: HS_A's bit 31, A2's raise for its first handshake
+ *                  (no timer of CPU0's can be firing yet). A WFI that returns
+ *                  after it sends 0x6008 alone, as above with LL_LOOKED kept,
+ *                  and leaves the look's six bytes. K1 writes 0x6008 as
+ *                  LL_ARMED, so a record of 04 and six zeros says a look
+ *                  was to come and its first command never landed, where
+ *                  seven zeros would read as a WFI that didn't return.
+ * Runs 6 to 10 read the engine's words this way, CPU0 awake after the commit:
+ * 0x2922c0044's bit 2 clear and bit 3 set, 0x2922c0040's bit 1 set, HS_A's bit
+ * 31 up and bit 24 clear. Since run 11 CPU0 has gone straight down, and the
+ * recipe has gained SIO's firmware stopped, the 20 power words, the cluster
+ * words' ack and the fabric back at 3. This is that read under today's recipe.
+ * It is a reading with a core up, which may itself hold B2's first poll: bit 2
+ * set here takes the cores out of that poll; the old bits say nothing new, and
+ * neither is the stall's own state after CPU0's WFI.
  *
  * The stages are --m1-mark's with other numbers, so that the decoder knows
  * which marker time and which alarm to expect.
@@ -106,6 +130,9 @@ typedef uint64_t u64;
 #define LL_PS_ACTUAL		0xf0U
 
 #define LL_MARK			(1U << 7)
+#define LL_LOOKED		(1U << 3)	/* in 0x6008: 0x6009-0x600e are gate_look=1's, read before CPU0's WFI */
+#define LL_ARMED		(1U << 2)	/* 0x6008 as K1 leaves it with gate_look=1, until the look's own command */
+#define LL_LOOK_MS		1000		/* gate_look=1: after the commit's last write */
 #define LL_T_SHIFT		4
 #define LL_T_MS			{ 10, 100, 1000, 5000, 15000, 22000, 30000 }
 #define LL_T_LATE		7		/* 30 s or more */

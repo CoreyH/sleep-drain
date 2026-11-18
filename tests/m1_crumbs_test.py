@@ -6991,6 +6991,7 @@ int main(void)
 	       LL_PS_ACTUAL, LL_MANY, M1_LL_STAGE_PRE, M1_LL_STAGE_PEND, M1_LL_STAGE, M1_LLW_STAGE_PRE, M1_LLW_STAGE_PEND, M1_LLW_STAGE,
 	       WD1_HZ, WD1_MARK_BITE);
 	printf("fpwm0 %x\n", sio[9]);
+	printf("look %x %x %u\n", LL_LOOKED, LL_ARMED, LL_LOOK_MS);
 	for (a = 0; a < 3; a++)
 		for (dt = 0; dt < 40 * tps[a]; dt += tps[a] / 1000 ? tps[a] / 1000 : 1) {
 			static u8 last = 0xff;
@@ -7059,7 +7060,7 @@ static void *m1_pos = pg[0], *m1_sio = pg[1], *m1_ps = pg[2], *m1_spmi = pg[3], 
 static const struct { int x; } e1_post_slpa[74];
 static void *post_map[74];
 static u64 clk, step, m1_tps = 24000000, m1_t_third = 1000;
-static int follow = 1, dead;
+static int follow = 1, dead, gate_look;
 static u64 m1_now(void) { clk += step; return clk; }
 static int where(const void *p, unsigned long *off)
 {
@@ -7143,7 +7144,17 @@ int main(int argc, char **argv)
 	isr_el1 = 1U << 6;
 	cntp_ctl_el0 = 5;
 	clk = m1_t_third + 26 * m1_tps;
-	dead = !strcmp(sc, "dead");
+	dead = !strcmp(sc, "dead") || !strcmp(sc, "lookdead");
+	if (!strncmp(sc, "look", 4)) {
+		/* The look: HS_A as runs 6 to 10 read it, bit 31 up and bit 24 clear; the counter 7000000 ticks a read. */
+		pg[4][M1_POS_HS_A / 4] = 0x80010000;
+		clk = m1_t_third;
+		step = 7000000;
+		m1_ll_look();
+		printf("clk %llu\n", (unsigned long long)clk);
+		return 0;
+	}
+	gate_look = !strcmp(sc, "retlook");
 	for (i = 1; i <= 105; i++) {
 		printf("call %u\n", i);
 		m1_ll_ret();
@@ -7184,6 +7195,7 @@ def last_look_tests(g, src):
                    if re.match(r"#define (M1_SPMI_WORDS|M1_SPMI_ACK\(w\)|M1_POS_(GATE40|GATE44|PHASE|HS_A)|M1_PS_ANS2|M1_PS_PMP_RO)\s", line))
     send_fn, ret_fn, timer_fn, blink_fn = (cut("static void m1_ll_send(", "\n}\n"), cut("static void m1_ll_ret(void)", "\n}\n"),
                                            cut("static void m1_ll_timer(void)", "\n}\n"), cut("static bool m1_ll_blink(void)", "\n}\n"))
+    look_fn = cut("static void m1_ll_look(void)", "\n}\n")
     okdefs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_ALARM_ON|M1_PMU_RTC)\s", line))
     with tempfile.TemporaryDirectory() as tmp:
         def build(name, code):
@@ -7197,8 +7209,9 @@ def last_look_tests(g, src):
             return subprocess.run([exe, *args], capture_output=True, text=True, check=True).stdout.splitlines()
 
         hdr = [l.split() for l in lines(build("llhdr", LL_HDR))]
-        fn = build("llfn", LL_FN_PRELUDE + defs + send_fn + ret_fn + timer_fn + blink_fn + LL_FN_MAIN)
+        fn = build("llfn", LL_FN_PRELUDE + defs + send_fn + ret_fn + look_fn + timer_fn + blink_fn + LL_FN_MAIN)
         ret, dead, timer = lines(fn, "ret"), lines(fn, "dead"), lines(fn, "timer")
+        look, look_dead, ret_look = lines(fn, "look"), lines(fn, "lookdead"), lines(fn, "retlook")
         blink_on, blink_auto, blink_never, blink_busy = lines(fn, "blink"), lines(fn, "blinka"), lines(fn, "blinkn"), lines(fn, "blinkb")
         ok = [tuple(int(x, 16) if i == 2 else int(x) for i, x in enumerate(l.split()[1:]))
               for l in lines(build("llok", "#include <stdio.h>\n#include <stdbool.h>\n#include <stdint.h>\ntypedef uint8_t u8;\n"
@@ -7272,7 +7285,7 @@ def last_look_tests(g, src):
           "m1_ll_ret() writes nothing but nub-spmi0's acks, CPU0's timer control (0, once) and its five commands to the PMU's bytes")
     check(dead == [l for l in want if not l.startswith("c ")],
           "with SPMI already failed the same reads and acks are made and nothing is sent: no command goes out after a failed one", "\n".join(dead[:40]))
-    check(ret_fn.index("now = m1_now();") < ret_fn.index("m1_ll_send(LL_AT, &b0, 1);\n\t/* Each read into its own variable") < ret_fn.index("hsa = readl(hs_a);\n\thsb = readl(m1_pos + LL_HS_B);\n")
+    check(ret_fn.index("now = m1_now();") < ret_fn.index("m1_ll_send(LL_AT, &b0, 1);\n\tif (gate_look)\t/* 0x6009-0x600e are m1_ll_look()'s, and stay */\n\t\treturn;\n\t/* Each read into its own variable") < ret_fn.index("hsa = readl(hs_a);\n\thsb = readl(m1_pos + LL_HS_B);\n")
           and "\tfpwm = readl(m1_sio + LL_FPWM0);\n" in ret_fn and "\tans = readl(m1_sio + M1_PS_ANS2);\n\tpmp = readl(m1_ps + M1_PS_PMP_RO);\n" in ret_fn
           and not re.search(r"\w\([^;]*readl\([^;]*,[^;]*readl\(", ret_fn)
           and ret_fn.index("m1_ll_send(LL_AT + 1, b, 4);") < ret_fn.index("for (i = 0; i < SIOD_N; i++)") < ret_fn.index("m1_ll_send(LL_AT + 5, b + 4, 2);")
@@ -7281,6 +7294,46 @@ def last_look_tests(g, src):
           "m1_ll_ret() takes the clock first, sends each command before the next one's reads, counts up to a hundred and has no MMIO write of its own")
     check(send_fn.count("m1_crumb(addr, b, n);") == 1 and "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));" in send_fn and "dsb(sy);\n\tisb();\n}" in send_fn,
           "m1_ll_send(): the command, the nine acks, dsb and isb")
+
+    # gate_look=1: m1_ll_look() before the WFI, and m1_ll_ret() after it.
+    look_want = (["sr isr_el1", "r C 4", "r E 10c", "r E 40", "r E 44", "r E 110", "c 6008 08 c9 02 0c 84"] + acks
+                 + [f"r S {o:x}" for o in sio] + ["r S 190"] + [f"r P {o:x}" for o in (0x2e8, 0x2f0, 0x320, 0x148, 0x150)]
+                 + ["r S 3b8", "r P 2d8", "c 600d cc a5"] + acks + ["clk 28001000"])
+    check(look == look_want,
+          "m1_ll_look(): the counter read until 1 s past the commit's last write and no longer, ISR_EL1 read, then HS_A, HS_B, 0x2922c0040,"
+          " 0x2922c0044 and PHASE read and 0x6008-0x600c sent as one command (0x08, then 0xc9 with HS_A's bit 31 in bit 3, 0x02, 0x0c, 0x84);"
+          " then SIO's 43, FPWM0's, the PCIe five, ANS2 and the PMP's read and 0x600d-0x600e sent; the nine acks after each", "\n".join(look[:70]))
+    check(look_dead == [l for l in look_want if not l.startswith("c ")] and not [l for l in look if l.startswith(("w ", "sw ")) and not l.startswith("w A ")]
+          and len([l for l in look if l.startswith("c ")]) == 2 and "r X 0" not in look,
+          "m1_ll_look() writes nothing but nub-spmi0's acks and its two commands, no system register at all, and with SPMI already failed sends nothing")
+    check(in_order_of(look_fn, ["u64 until = m1_t_third + m1_tps * LL_LOOK_MS / 1000;", "\twhile (m1_now() < until)\n\t\tcpu_relax();\n",
+                                "isr = (read_sysreg(isr_el1) >> 6) & 7;", "hsa = readl(hs_a);\n\thsb = readl(m1_pos + LL_HS_B);\n", "b[0] = LL_LOOKED;",
+                                "b[1] = ll_b1(isr, hsa & BIT(31), hsa, hsb);", "b[4] = ll_b4(readl(m1_pos + M1_POS_PHASE));", "m1_ll_send(LL_AT, b, 5);",
+                                "for (i = 0; i < SIOD_N; i++)", "\tans = readl(m1_sio + M1_PS_ANS2);\n\tpmp = readl(m1_ps + M1_PS_PMP_RO);\n",
+                                "m1_ll_send(LL_AT + 5, b + 5, 2);\n}"])
+          and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\(", look_fn) and "write_sysreg" not in look_fn
+          and not re.search(r"\w\([^;]*readl\([^;]*,[^;]*readl\(", look_fn) and look_fn.count("m1_ll_send(") == 2,
+          "m1_ll_look() waits on the counter first, sends the engine's page and the handshake before it reads a power word, and has no write of"
+          " its own to a register")
+    ret_look_want = (["call 1", "sr isr_el1", "sr cntp_ctl_el0", "sw cntp_ctl_el0 0", "c 6008 e9"] + acks + ["call 2", "c 6008 ea"] + acks
+                     + [f"call {i}" for i in range(3, 100)] + ["call 100", "c 6008 eb"] + acks + [f"call {i}" for i in range(101, 106)])
+    check(ret_look == ret_look_want,
+          "m1_ll_ret() with gate_look=1: 0x6008 alone at the first, the second and the hundredth return, with bit 3 kept (0xe9, 0xea, 0xeb), and"
+          " no read of the engine's page or a power word: the look's six bytes stay", "\n".join(ret_look[:40]))
+    check([r for r in hdr if r[0] == "look"] == [["look", "8", "4", "1000"]] and g["LL_LOOKED"] == 0x08 and g["LL_ARMED"] == 0x04 and g["LL_LOOK_MS"] == 1000
+          and "static_assert(LL_LOOKED == 0x08 && LL_ARMED == 0x04 && !((LL_LOOKED | LL_ARMED) & (LL_MARK | 7U << LL_T_SHIFT | 3U)) &&\n"
+              "\t      LL_LOOK_MS < LL_ALARM_SECS * 1000);\n" in src
+          and all(not 0x0c & (0x80 | t << 4 | c) for t in range(8) for c in range(4)),
+          "the look's bit is 3 and K1's mark bit 2 of 0x6008, neither one of the return's bits, the look 1 s after the commit, before the alarm's"
+          " time; m1-crumbs has the same three")
+    start = cut("static int m1_pmu_start(void)", "\n}\n")
+    check(in_order_of(start, ["\tif (!ret && last_look)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n",
+                              "\tif (!ret && gate_look) {\n\t\tv = LL_ARMED;", "\t\tret = m1_kwrite(LL_AT, &v, 1);\n\t}\n\tif (ret)\n\t\treturn ret;\n"])
+          and "if (gate_look && !last_look) {" in src and "module_param(gate_look, bool, 0444);" in src and "\nstatic bool gate_look;\n" in src
+          and 'll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : ""' in src
+          and len(re.findall(r"\bm1_ll_look\(", code_only)) == 2 and len(re.findall(r"\bgate_look\b", code_only)) == 10,
+          "gate_look=1 is off unless asked for, refuses without last_look=1, can't be set after the load and is named in the load line; K1 writes"
+          " its mark over the zeroed 0x6008 through the kernel's path; m1_ll_look() has one caller")
 
     # ll_wake=1: the timer and the light.
     check(timer == [f"sw cntp_tval_el0 {25 * 24000000:x}", "sw cntp_ctl_el0 1"],
@@ -7328,12 +7381,12 @@ def last_look_tests(g, src):
           "m1_deep_wfi() calls m1_ll_ret() after a WFI that returned, only where its caller asks: CPU0's call passes last_look, the parked cores' false")
     check(in_order_of(after, ["\tif (acc_last)\n\t\tm1_gates = m1_acl_pre();\n", "\tif (ll_wake)\n\t\tm1_ll_blinks = m1_ll_blink();\n", "\t/* recfg_bite=1",
                               "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "\tif (position || last_look)\n\t\tm1_t_third = m1_now();\n",
-                              "\tif (wd2_bite)\n\t\tm1_wd2_out();\n", "\t/* 10 */\n\tif (ll_wake)\n\t\tm1_ll_timer();\n\tm1_arm_deep_sleep();\n"
+                              "\tif (wd2_bite)\n\t\tm1_wd2_out();\n", "\t/* 10 */\n\tif (gate_look)\n\t\tm1_ll_look();\n\tif (ll_wake)\n\t\tm1_ll_timer();\n\tm1_arm_deep_sleep();\n"
                               "\tm1_deep_wfi(obs ? &m1_core[0] : NULL, last_look);\n}"])
           and len(re.findall(r"\bm1_ll_blink\(", code_only)) == 2 and len(re.findall(r"\bm1_ll_timer\(", code_only)) == 2
           and len(re.findall(r"\bm1_ll_blinks\b", code_only)) == 3,
           "step 8 sets the light blinking, with ll_wake=1 alone, before step 9's mask; the clock is taken after the commit's last write; the timer is"
-          " set in step 10, with ll_wake=1 alone, right before CPU0's deep WFI")
+          " set in step 10, with ll_wake=1 alone, right before CPU0's deep WFI; gate_look=1's look comes first in step 10, with gate_look=1 alone")
     alarm_fn = cut("static void m1_alarm_arm(const u8 *rtc)", "\n}\n")
     check("u8 res = BIT(7) | (m1_ll_blinks ? LL_BLINK_BIT : 0), ev = 0, v;" in alarm_fn and "\tsecs += ll_wake ? LL_ALARM_SECS : M1_ALARM_SECS;\n" in alarm_fn
           and all(not 0x40 & v for v in (0x80, 0x83, 0x85, 0x87, 0x8d, 0x8f, 0x9d, 0x9f, 0xbd, 0xbf)),
@@ -7478,6 +7531,77 @@ def last_look_tests(g, src):
         check(rc == 0 and "0x6016 = 0xfd (bit 6 is the keyboard light's, below; without it 0xbd): every alarm command was acked" in out
               and "  0x6016 bit 6: step 8 made the keyboard PWM's three writes" in out,
               "run B's stage before the commit with 0xfd at 0x6016: the byte shown whole, and the light's writes said to have been made", out + err)
+        # gate_look=1: the look's form of the record.
+        rc, out, err, _, _ = dec(0x08, bytes((0x08, 0xc9, 0x02, 0x0c, 0x84, 0xcc, 0xa5)), b16=0xfd)
+        check(rc == 0 and "  0x6008 = 0x08: gate_look=1's look was sent, and no return of CPU0's WFI was recorded after it. The look landed whole (below);"
+              " CPU0 then sets its own timer, 25 s out and unmasked, and takes its WFI, which nothing here records" in out
+              and "Not a proof that the core was powered off" in out and "CPU0'S LAST WFI RETURNED" not in out and "Its own timer was set" not in out
+              and "last_look=1 ll_wake=1: fabric_up=1's 0x53" in out and "Its own timer, set 25 s out, and its deep WFI follow (after gate_look=1's look, in a run"
+              " with it), and this stage doesn't show they were reached" in out and "took its deep WFI. If that WFI" not in out
+              and "  0x6009-0x600e: gate_look=1's look, read 1 s after the commit's last write with CPU0 still up, before its last WFI. A reading with a core up" in out
+              and "Runs 6 to 10 read, this way under an earlier recipe" in out
+              and "  0x6009 = 0xc9: pending at the look (ISR_EL1): an FIQ; HS_A bit 31 = 1 (A2's raise for its first handshake), bit 24 = 0 (the answer A2 waits for);"
+                  " HS_B bits 0, 1, 31 = 0, 1, 1" in out and "CPU0's own timer" not in out
+              and "  0x600a = 0x02: 0x2922c0040's low byte (bit 1 set)" in out
+              and "  0x600b = 0x0c: 0x2922c0044's low byte: bit 2 set (B2's first poll, op 1, waits for it set), bit 3 set (op 3 waits for it clear)" in out
+              and "  0x600c = 0x84: PHASE's low seven bits 0x4" in out and "  0x600d = 0xcc: 12 of the 43 power words" in out
+              and "  0x600e = 0xa5: read off: of the five PCIe words, APCIE_ST_SYS, APCIE_GP_SYS; ANS2 off; the PMP's word on" in out
+              and "  0x6016 bit 6: step 8 made the keyboard PWM's three writes" in out,
+              "the look's record under run B's stage, the harness's own bytes: said to be the look's and a reading with a core up, HS_A's bit 31 read"
+              " where the return has the timer, every other field as before, and no return claimed", out + err)
+        rc, out, err, _, _ = dec(0x0b, bytes((0x08, 0x08, 0x03, 0x08, 0x84, 0x9a, 0x83)))
+        check(rc == 0 and "gate_look=1's look was sent, and no return of CPU0's WFI was recorded after it. The look landed whole (below); CPU0 then takes its WFI" in out
+              and "its own timer" not in out.split("0x6008 = 0x08")[1].split("\n")[0] and "Its deep WFI follows (after gate_look=1's look, in a run with it)" in out
+              and "pending at the look (ISR_EL1): nothing; HS_A bit 31 = 1" in out and "bit 24 = 0" in out
+              and "0x600b = 0x08: 0x2922c0044's low byte: bit 2 clear (B2's first poll, op 1, waits for it set), bit 3 set" in out
+              and "26 of the 43 power words" in out and "FPWM0's own, the tenth B2 writes, read on" in out,
+              "the look as runs 6 to 10 would have it (bit 2 clear, bit 3 set, bit 31 up) under run A's stage: read, with no timer sentence", out + err)
+        for b0, said in ((0xe9, "first 22 to 30 s"), (0x89, "first under 10 ms"), (0xea, "twice or more, under a hundred times"), (0xeb, "a hundred times or more")):
+            rc, out, err, _, _ = dec(0x08, bytes((b0, 0xc9, 0x02, 0x0c, 0x84, 0xcc, 0xa5)), b16=0xfd)
+            check(rc == 0 and f"  0x6008 = 0x{b0:02x}: CPU0'S LAST WFI RETURNED" in out and said in out
+                  and "Bit 3: the bytes below are gate_look=1's look, made before that WFI, not the return's" in out
+                  and "pending at the look (ISR_EL1): an FIQ" in out and "pending at the return" not in out and "no return of CPU0's WFI was recorded" not in out,
+                  f"0x6008 = 0x{b0:02x}: a return after the look: both said, and the six bytes still read as the look's", out + err)
+        # A look that stopped short: no claim that the timer was set or the WFI reached (Pullfrog on #114).
+        for r, engine in ((bytes((0x08, 0, 0, 0, 0, 0, 0)), False), (bytes((0x08, 0xc9, 0x02, 0x0c, 0x84, 0, 0)), True)):
+            rc, out, err, _, _ = dec(0x08, r, b16=0xfd)
+            line = out.split("  0x6008 = 0x08")[1].split("\n")[0] if "  0x6008 = 0x08" in out else ""
+            check(rc == 0 and "gate_look=1's look was sent, and no return of CPU0's WFI was recorded after it. The look did NOT land whole (below), so CPU0"
+                  " isn't shown to have got through it" in out and "kept CPU0 from the rest of step 10, where it sets its own timer, 25 s out and unmasked, and takes its WFI" in line
+                  and "isn't then run B's stall" in line and "it went down" not in line and "Not a proof" not in line and "landed whole (below); CPU0 then" not in line
+                  and ("(B2's first poll, op 1" in out) == engine and ("pending at the look" in out) == engine
+                  and ("0x600d 0x600e = 00 00: the third command, B2's power words, didn't land whole" in out) == engine
+                  and ("the second command, the engine's page and the handshake, didn't land whole" in out) == (not engine)
+                  and "don't show they were reached" not in line and "this stage doesn't show they were reached" in out,
+                  f"a look that stopped short ({r.hex(' ')}): no return recorded, the look not whole, and nothing said of the timer being set or the"
+                  f" WFI reached; the engine's bytes {'read' if engine else 'not read'}", out + err)
+        rc, out, err, _, _ = dec(0x08, bytes((0x04, 0, 0, 0, 0, 0, 0)), b16=0xfd)
+        check(rc == 0 and "  0x6008 = 0x04: gate_look=1 was set and its look never landed: K1 writes this byte" in out and "would have written 0x08 over it" in out
+              and "Nothing here says whether CPU0's WFI returned" in out and "NOT READ" not in out.split("0x6008 = 0x04")[1].split("\n")[0]
+              and "didn't return, as far as" not in out and "pending at the" not in out,
+              "K1's mark alone under the last stage: the look never landed, and nothing is said of the WFI", out + err)
+        rc, out, err, _, _ = dec(0x08, bytes((0x04, 0xc9, 0x02, 0x0c, 0x84, 0xcc, 0xa5)), b16=0xfd)
+        check(rc == 0 and "gate_look=1 was set and its look never landed" in out and "0x6009-0x600e = c9 02 0c 84 cc a5 aren't shown to be this run's: NOT READ" in out
+              and "pending at the" not in out and "(B2's first poll, op 1" not in out,
+              "K1's mark with bytes after it: they aren't read", out + err)
+        for r, said in ((bytes((0x0c, 0xc9, 2, 0xc, 0x84, 0xcc, 0xa5)), "0x6008 = 0x0c: not a value e1_hook writes"),
+                        (bytes((0x48, 0xc9, 2, 0xc, 0x84, 0xcc, 0xa5)), "0x6008 = 0x48: not a value e1_hook writes"),
+                        (bytes((0x88, 0xc9, 2, 0xc, 0x84, 0xcc, 0xa5)), "0x6008 = 0x88: not a value e1_hook writes"),
+                        (bytes((0x08, 0xc9, 2, 0xc, 0x04, 0xcc, 0xa5)), "0x6009-0x600c = c9 02 0c 04: the second command, the engine's page and the handshake, didn't land whole"),
+                        (bytes((0x08, 0xc9, 2, 0xc, 0x84, 0, 0)), "0x600d 0x600e = 00 00: the third command, B2's power words, didn't land whole")):
+            rc, out, err, _, _ = dec(0x08, r, b16=0xfd)
+            check(rc == 0 and said in out and ("(B2's first poll, op 1" in out) == (r[4] == 0x84 and r[0] == 0x08),
+                  f"a look's record that isn't e1_hook's or stops short ({r.hex(' ')}): said, and no further than it goes", out + err)
+        rc, out, err, _, _ = dec(0x06, bytes((0x04, 0, 0, 0, 0, 0, 0)), b16=0xfd)
+        check(rc == 0 and "  0x6008 = 0x04 and six zeros, and the stage is the last before the commit: gate_look=1 was set (K1 writes this byte), and the run"
+              " isn't shown to have reached CPU0's look or its WFI" in out and "NOT READ: stage 0x06" not in out,
+              "K1's mark under the stage before the commit: the run isn't shown to have reached the look", out + err)
+        for stage, r in ((0x08, bytes((0x08, 0xc9, 2, 0xc, 0x84, 0xcc, 0xa5))), (0x06, bytes((0x04, 0, 0, 0, 0, 0, 0))), (0x0b, bytes((0xe9, 0x08, 3, 8, 0x84, 0x9a, 0x83)))):
+            rc, out, err, before, after = dec(stage, r, 0xfd if stage != 0x0b else 0xbd, clear=True)
+            want = bytearray(before)
+            want[0x6004:0x600f], want[0x6010:0x6017], want[0x1401] = bytes(11), bytes(7), 0x01
+            check(rc == 0 and after == bytes(want) and "cleared: 0x6004-0x600e and 0x6010-0x6016 read back as zeros" in out,
+                  f"--clear after a gate_look=1 record under stage 0x{0x80 | stage:02x}: 0x6008-0x600e zeroed with the rest", out + err)
         rc, out, err, _, _ = dec(0x09, bytes((0xe1, 0xd9, 2, 0xc, 0x84, 0xcc, 0xa5)))
         rc2, out2, err2, _, _ = dec(0x06)
         check(rc == 0 and "NOT READ: stage 0x09 is the last before the commit" in out and "CPU0'S LAST WFI RETURNED" not in out
