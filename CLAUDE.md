@@ -94,7 +94,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   kernel's headers) that lists the SMC's keys through macsmc, read-only, in
   `/sys/kernel/debug/smc-peek/{keys,values}`. It never writes a key, and reads
   a function key only if `read_funcs` names it. `smc-keys` decodes and diffs
-  its dumps.
+  its dumps, and `smc-keys redact` takes the values that name this Mac out of
+  one: every dump goes through it before it's committed.
 - `pmgr-peek.c`: reads PMGR registers through /dev/mem, read-only, and refuses
   any address outside the PMGR windows of the live device tree (`--cpu-start`
   adds the CPU-start block's four words). `pmgr-map` builds its address list
