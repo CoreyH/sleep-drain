@@ -7533,8 +7533,11 @@ def last_look_tests(g, src):
               "run B's stage before the commit with 0xfd at 0x6016: the byte shown whole, and the light's writes said to have been made", out + err)
         # gate_look=1: the look's form of the record.
         rc, out, err, _, _ = dec(0x08, bytes((0x08, 0xc9, 0x02, 0x0c, 0x84, 0xcc, 0xa5)), b16=0xfd)
-        check(rc == 0 and "  0x6008 = 0x08: gate_look=1's look was sent, and CPU0's WFI didn't return after it, as far as this record goes" in out
-              and "Its own timer was set 25 s out, unmasked" in out and "CPU0'S LAST WFI RETURNED" not in out
+        check(rc == 0 and "  0x6008 = 0x08: gate_look=1's look was sent, and no return of CPU0's WFI was recorded after it. The look landed whole (below);"
+              " CPU0 then sets its own timer, 25 s out and unmasked, and takes its WFI, which nothing here records" in out
+              and "Not a proof that the core was powered off" in out and "CPU0'S LAST WFI RETURNED" not in out and "Its own timer was set" not in out
+              and "last_look=1 ll_wake=1: fabric_up=1's 0x53" in out and "Its own timer, set 25 s out, and its deep WFI follow (after gate_look=1's look, in a run"
+              " with it), and this stage doesn't show they were reached" in out and "took its deep WFI. If that WFI" not in out
               and "  0x6009-0x600e: gate_look=1's look, read 1 s after the commit's last write with CPU0 still up, before its last WFI. A reading with a core up" in out
               and "Runs 6 to 10 read, this way under an earlier recipe" in out
               and "  0x6009 = 0xc9: pending at the look (ISR_EL1): an FIQ; HS_A bit 31 = 1 (A2's raise for its first handshake), bit 24 = 0 (the answer A2 waits for);"
@@ -7547,7 +7550,8 @@ def last_look_tests(g, src):
               "the look's record under run B's stage, the harness's own bytes: said to be the look's and a reading with a core up, HS_A's bit 31 read"
               " where the return has the timer, every other field as before, and no return claimed", out + err)
         rc, out, err, _, _ = dec(0x0b, bytes((0x08, 0x08, 0x03, 0x08, 0x84, 0x9a, 0x83)))
-        check(rc == 0 and "gate_look=1's look was sent, and CPU0's WFI didn't return after it" in out and "Its own timer" not in out
+        check(rc == 0 and "gate_look=1's look was sent, and no return of CPU0's WFI was recorded after it. The look landed whole (below); CPU0 then takes its WFI" in out
+              and "its own timer" not in out.split("0x6008 = 0x08")[1].split("\n")[0] and "Its deep WFI follows (after gate_look=1's look, in a run with it)" in out
               and "pending at the look (ISR_EL1): nothing; HS_A bit 31 = 1" in out and "bit 24 = 0" in out
               and "0x600b = 0x08: 0x2922c0044's low byte: bit 2 clear (B2's first poll, op 1, waits for it set), bit 3 set" in out
               and "26 of the 43 power words" in out and "FPWM0's own, the tenth B2 writes, read on" in out,
@@ -7556,8 +7560,21 @@ def last_look_tests(g, src):
             rc, out, err, _, _ = dec(0x08, bytes((b0, 0xc9, 0x02, 0x0c, 0x84, 0xcc, 0xa5)), b16=0xfd)
             check(rc == 0 and f"  0x6008 = 0x{b0:02x}: CPU0'S LAST WFI RETURNED" in out and said in out
                   and "Bit 3: the bytes below are gate_look=1's look, made before that WFI, not the return's" in out
-                  and "pending at the look (ISR_EL1): an FIQ" in out and "pending at the return" not in out and "didn't return after it" not in out,
+                  and "pending at the look (ISR_EL1): an FIQ" in out and "pending at the return" not in out and "no return of CPU0's WFI was recorded" not in out,
                   f"0x6008 = 0x{b0:02x}: a return after the look: both said, and the six bytes still read as the look's", out + err)
+        # A look that stopped short: no claim that the timer was set or the WFI reached (Pullfrog on #114).
+        for r, engine in ((bytes((0x08, 0, 0, 0, 0, 0, 0)), False), (bytes((0x08, 0xc9, 0x02, 0x0c, 0x84, 0, 0)), True)):
+            rc, out, err, _, _ = dec(0x08, r, b16=0xfd)
+            line = out.split("  0x6008 = 0x08")[1].split("\n")[0] if "  0x6008 = 0x08" in out else ""
+            check(rc == 0 and "gate_look=1's look was sent, and no return of CPU0's WFI was recorded after it. The look did NOT land whole (below), so CPU0"
+                  " isn't shown to have got through it" in out and "kept CPU0 from the rest of step 10, where it sets its own timer, 25 s out and unmasked, and takes its WFI" in line
+                  and "isn't then run B's stall" in line and "it went down" not in line and "Not a proof" not in line and "landed whole (below); CPU0 then" not in line
+                  and ("(B2's first poll, op 1" in out) == engine and ("pending at the look" in out) == engine
+                  and ("0x600d 0x600e = 00 00: the third command, B2's power words, didn't land whole" in out) == engine
+                  and ("the second command, the engine's page and the handshake, didn't land whole" in out) == (not engine)
+                  and "don't show they were reached" not in line and "this stage doesn't show they were reached" in out,
+                  f"a look that stopped short ({r.hex(' ')}): no return recorded, the look not whole, and nothing said of the timer being set or the"
+                  f" WFI reached; the engine's bytes {'read' if engine else 'not read'}", out + err)
         rc, out, err, _, _ = dec(0x08, bytes((0x04, 0, 0, 0, 0, 0, 0)), b16=0xfd)
         check(rc == 0 and "  0x6008 = 0x04: gate_look=1 was set and its look never landed: K1 writes this byte" in out and "would have written 0x08 over it" in out
               and "Nothing here says whether CPU0's WFI returned" in out and "NOT READ" not in out.split("0x6008 = 0x04")[1].split("\n")[0]

@@ -5463,6 +5463,12 @@ caught; two older ones brought up to the code, found at once by the list's check
 `tests/e1a_launcher_test.py` for the new option. No full mutant run and no adversarial pass: a read-only
 step on reviewed code (PLAN.md, "Tokens").
 
+**What Pullfrog found** (on #114; taken). The look's marker alone doesn't show that CPU0 set its timer or reached
+its WFI: a power word's read that hung would end CPU0 inside the look, and the decoder read 0x08 as a WFI that
+didn't return. It now says no return was recorded, says the timer and the WFI follow the look only where the
+look landed whole, and names a look that stopped short as an ending of the look's own making; the two stage
+lines no longer say the WFI was taken.
+
 ### Run B, the last look with a wake: the light blinked to the end, the alarm fired into nothing (2026-11-18)
 
 `run-floor --no-reading --m1-last-look-wake` in a safe boot, on battery at 98%, loaded 13:07, the nights

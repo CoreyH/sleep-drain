@@ -358,8 +358,9 @@ HOLD_TEXT = {
     0x09: "8 (last_look=1): fabric_up=1's 0x52, in a run whose WD1 marker has its count at 80 s: the steps' outcomes (0x6012)"
           " follow it, then nub-spmi0's acks, the commit, the alarm's commands, the release and stage 0x0a or 0x0b",
     0x0b: "last_look=1: fabric_up=1's 0x53: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2"
-          " was armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards, then took its deep WFI. If that WFI"
-          " returned, 0x6008-0x600e say so, below",
+          " was armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards. Its deep WFI follows (after"
+          " gate_look=1's look, in a run with it), and this stage doesn't show it was reached. If that WFI returned,"
+          " 0x6008-0x600e say so, below",
     0x0a: "last_look=1: fabric_up=1's 0x51: the commit, the alarm and the release are done, and CPU0 wrote WD2's bite, if WD2"
           " was armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards: that would end its"
           " deep WFI, and 0x6008-0x600e, below, say whether it did",
@@ -367,8 +368,9 @@ HOLD_TEXT = {
           " (0x6012) follow it, then FPWM0 asked on and the keyboard light's PWM set blinking, nub-spmi0's acks, the commit,"
           " the alarm's commands (20 s out), the release and stage 0x07 or 0x08",
     0x08: "last_look=1 ll_wake=1: fabric_up=1's 0x53: the commit, the alarm and the release are done, and CPU0 wrote WD2's"
-          " bite, if WD2 was armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards, set its own timer 25 s"
-          " out and took its deep WFI. If that WFI returned, 0x6008-0x600e say so, below",
+          " bite, if WD2 was armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards. Its own timer, set 25 s"
+          " out, and its deep WFI follow (after gate_look=1's look, in a run with it), and this stage doesn't show they were"
+          " reached. If that WFI returned, 0x6008-0x600e say so, below",
     0x07: "last_look=1 ll_wake=1: fabric_up=1's 0x51: the commit, the alarm and the release are done, and CPU0 wrote WD2's"
           " bite, if WD2 was armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards: that"
           " would end its deep WFI, and 0x6008-0x600e, below, say whether it did",
@@ -1239,11 +1241,17 @@ def ll_lines(s, b):
                       " far, or the command failed). Nothing here says whether CPU0's WFI returned"
                       + (f"; 0x6009-0x600e = {r[1:].hex(' ')} aren't shown to be this run's: NOT READ" if any(r[1:]) else "")] + blink
     if looked and not ret:
-        out.append(f"  0x6008 = 0x{b0:02x}: gate_look=1's look was sent, and CPU0's WFI didn't return after it, as far as this record goes: CPU0"
-                   " never came back to send the byte again (it went down, or it stayed in its WFI for good), or that command failed. Not a"
-                   " proof that the core was powered off"
-                   + (f". Its own timer was set {LL_TIMER_S} s out, unmasked: a core still powered would have come back for it, unless"
-                      " the restart came first (the restart's time, above)" if s in LLW_STAGES else ""))
+        # The look comes before the timer and the WFI: only a look that landed whole shows CPU0 got through it, and nothing
+        # here shows the timer set or the WFI entered (Pullfrog on #114: a power word's read that hung ends CPU0 in the look).
+        whole = bool(r[4] & 0x80 and r[5] & 0x80 and r[6] & 0x80)
+        tmr = f"sets its own timer, {LL_TIMER_S} s out and unmasked, and " if s in LLW_STAGES else ""
+        out.append(f"  0x6008 = 0x{b0:02x}: gate_look=1's look was sent, and no return of CPU0's WFI was recorded after it. "
+                   + (f"The look landed whole (below); CPU0 then {tmr}takes its WFI, which nothing here records. If it did, it never"
+                      " came back to send this byte again (it went down, or it stayed in its WFI for good), or that command failed. Not a"
+                      " proof that the core was powered off" if whole else
+                      f"The look did NOT land whole (below), so CPU0 isn't shown to have got through it: a read of the look's that"
+                      f" hung would have kept CPU0 from the rest of step 10, where it {tmr}takes its WFI. That would be an ending of the"
+                      " look's own making: the restart's time, above, isn't then run B's stall"))
     elif not ret & 0x80 or not ret & 3 or ret & 0x04:
         return out + [f"  0x6008 = 0x{b0:02x}: not a value e1_hook writes (bit 7 set, bit 2 clear, a count in bits 1:0; bit 3 with gate_look=1's"
                       " look): NOT READ"] + blink
