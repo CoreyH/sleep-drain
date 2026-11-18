@@ -59,7 +59,10 @@ used to sit in CLAUDE.md, entry for entry):
   70 s, 0x0201, and `--clear`, which zeroes 0x6008-0x600e only after one of that run's stages. For gate_look=1
   it runs `m1_ll_look()` against the same pages (the wait on the counter, the two commands, nothing written
   but the acks) and `m1_ll_ret()` after a look (0x6008 alone, bit 3 kept), and the look's form of the record
-  through m1-crumbs: the look with and without a return, K1's mark alone, records that stop short. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
+  through m1-crumbs: the look with and without a return, K1's mark alone, records that stop short. For
+  obs_gate=1 it runs `m1_og_look()` against the same pages (the four power words, the engine's words, one
+  command, 500 ms, the second), `m1_pmu_ok()` with it, and CPU7's record through m1-crumbs under each of
+  its stages, with `--clear`. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
   writing-out of A2's ops 11 to 16 (every pairing of each word's two bits at every count of moves made, and 400
   drawn cases), and runs `m1_a2_pre()` with the module's own table of waits against a model of the p-state page
   and the muxes' page in 29 scenarios (a write dropped, a word that settles late or never or keeps bit 31, DCS put

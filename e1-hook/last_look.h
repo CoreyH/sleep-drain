@@ -93,6 +93,26 @@
  *
  * The stages are --m1-mark's with other numbers, so that the decoder knows
  * which marker time and which alarm to expect.
+ *
+ * obs_gate=1 is not a form of last_look=1 but the same seven bytes in another
+ * run: observe=1's, runs 2 and 3, where CPU7 stays up through the commit and
+ * watches CPU0's and the E complex's power words read off (PLAN.md, after the
+ * gate-look run). That run read 0x2922c0044 as 0x0b with CPU0 awake, bits 0
+ * and 1 up where awake they are clear, and bit 2, B2's first poll, clear: a
+ * fit for one bit per CPU complex, set when the complex is down. Here the
+ * observer sits in another complex (P1) and reads the same word after CPU0
+ * and its complex have gone, with the four power words beside it, twice:
+ *   0x6008  bit 7 set; bits 0 to 3: CPU0's, ECPM's, PCPM0's and PCPM1's power
+ *           words read off (actual state 0), read right before the words below
+ *   0x6009  ll_b1()'s byte with nothing in bits 2:0: bit 3 HS_A's bit 31, bit
+ *           4 its bit 24, bits 5, 6, 7 HS_B's bits 0, 1 and 31
+ *   0x600a  0x2922c0040's low byte
+ *   0x600b  0x2922c0044's low byte
+ *   0x600c  bit 7 set; PHASE's low seven bits. The first command's last byte
+ *   0x600d  0x2922c0044's low byte again, OG_LATER_MS later
+ *   0x600e  bit 7 set; bits 6:3 the four power words read off again, in
+ *           0x6008's order; bits 1:0 0x2922c0040's bits 1:0 then
+ * K1 leaves 0x6008 as OG_ARMED, so a look that never landed shows. Reads only.
  */
 #ifndef LAST_LOOK_H
 #define LAST_LOOK_H
@@ -144,6 +164,22 @@ typedef uint64_t u64;
 #define M1_LLW_STAGE_PRE	0x06	/* ll_wake=1's */
 #define M1_LLW_STAGE_PEND	0x07
 #define M1_LLW_STAGE		0x08
+
+#define OG_MARK			(1U << 7)
+#define OG_ARMED		(1U << 6)	/* 0x6008 as K1 leaves it with obs_gate=1, until CPU7's first command */
+#define OG_LATER_MS		500		/* the second sample, after the first */
+
+/* The four power words, each true if it read off: 0x6008. */
+static inline u8 og_b0(bool cpu0, bool ecpm, bool pcpm0, bool pcpm1)
+{
+	return (u8)(OG_MARK | (cpu0 ? 1U : 0) | (ecpm ? 1U << 1 : 0) | (pcpm0 ? 1U << 2 : 0) | (pcpm1 ? 1U << 3 : 0));
+}
+
+/* The second sample's last byte: the four again, and 0x2922c0040's bits 1:0. */
+static inline u8 og_b6(u32 gate40, bool cpu0, bool ecpm, bool pcpm0, bool pcpm1)
+{
+	return (u8)(OG_MARK | (og_b0(cpu0, ecpm, pcpm0, pcpm1) & 0xf) << 3 | (gate40 & 3));
+}
 
 /* dt: ticks since the commit's last write; tps: ticks a second. */
 static inline u8 ll_time_code(u64 dt, u64 tps)

@@ -5426,6 +5426,45 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### `obs_gate=1` as built: the observer reads the gate word with CPU0 and the E complex down (2026-11-18)
+
+**Why.** The gate-look run read 0x2922c0044 as 0x0b with CPU0 awake and the two P complexes off: bits 0
+and 1 up, bit 2, B2's first poll, clear. The reading that fits, one bit per CPU complex, is tested by
+moving the core that stays up into another complex. Runs 2 and 3 did that for the power words: CPU7, in P
+complex 1, stayed up through the commit and saw CPU0's and the E complex's power words read off within
+500 ms each. Neither read the engine's page. This run is run 3's with that read added.
+
+**What each outcome says** (the word's low nibble, with CPU0 and ECPM off, PCPM0 off, PCPM1 up):
+- bit 2 set and one of bits 0 and 1 clear (0x0d or 0x0e): a bit per complex, and the E complex's is bit 2:
+  B2's first poll is the E complex down, which the recipe reaches whenever CPU0 isn't the core kept up.
+  Then 0x2922c0040's bit 1 and PHASE say whether B2 moved past its ops 1 to 6 with a P core still up, and
+  the stall of runs A and B lies after the first poll, at op 3's bit or the handshake.
+- 0x0b again: the bits don't follow the complexes that are down. Bit 2 is then the last one, whichever
+  complex that is, or something else, and the two set bits were not the P complexes'.
+- anything else is new by itself. The second sample, 500 ms on, says whether the word was still moving.
+Estimate, mine: the first about 55%, the second 30%.
+
+**What it is.** `e1_hook obs_gate=1`, with `observe=1`; `run-floor --m1-obs-gate` is `--m1-late`'s line
+with it (`replay=15 oneway=1 quiet=1 m1=1 observe=1 pmgr_late=1 obs_gate=1`). In `m1_observe()`, after
+both polls and CPU7's first record (stage 0x71 with the "off" bits), `m1_og_look()` reads CPU0's, ECPM's,
+PCPM0's and PCPM1's power words, HS_A, HS_B, 0x2922c0040, 0x2922c0044 and PHASE and sends 0x6008-0x600c;
+waits 500 ms on the counter; reads the four, 0x2922c0044 and 0x2922c0040 again and sends 0x600d-0x600e.
+K1 leaves 0x6008 as 0x40, CPU7's first command writes over it. `--clear` zeroes the seven bytes after such
+a record. Run 3's recipe otherwise: no alarm, no hold, no marker, WD2 at its own 30 s; CPU7 goes to its
+own WFI about half a second later than in run 3.
+
+**Writes.** None to a register. To the PMU: 0x6008-0x600e, the bytes OK'd on 2026-11-16, zeroed and
+marked at K1 through the kernel's path and written by CPU7's two commands; `m1_pmu_ok()` lets those
+through with `obs_gate=1` alone and nothing that starts below 0x6008. No power-domain word is read that
+CPU7 or CPU0 hasn't polled after a commit before (the gate-look run's second command, after SIO's and the
+PCIe's words, never landed; none of those is read here).
+
+**Checked.** `tests/m1_crumbs_test.py`: `m1_og_look()` compiled as it stands against pages that log every
+access, `m1_pmu_ok()` over every address and length with it, CPU7's record through m1-crumbs under each of
+its stages. 34 new mutants (`ogl:`), all caught, one after a test was added for it; two older ones brought
+up to the code. `tests/e1a_launcher_test.py` for the new option. No full mutant run and no adversarial
+pass: reads on reviewed code.
+
 ### The gate-look run: 0x2922c0044 reads 0x0b with CPU0 awake, two new bits up and bit 2 still clear (2026-11-18)
 
 `run-floor --no-reading --m1-gate-look` in a safe boot, on battery at about 75%, loaded 14:47, the nights

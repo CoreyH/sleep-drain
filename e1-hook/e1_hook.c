@@ -100,6 +100,7 @@
  *   pkexec e1-hook/run-floor --m1-last-look       (--m1-mark's and last_look=1: the same)
  *   pkexec e1-hook/run-floor --m1-last-look-wake  (that and ll_wake=1: the same)
  *   pkexec e1-hook/run-floor --m1-gate-look       (that and gate_look=1: the same)
+ *   pkexec e1-hook/run-floor --m1-obs-gate        (--m1-late's and obs_gate=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -394,6 +395,9 @@ MODULE_PARM_DESC(acc_last, "With gates_mark=1, never with sio_down=1, pcie_down=
 static bool last_look;
 module_param(last_look, bool, 0444);
 MODULE_PARM_DESC(last_look, "With wd1_mark=1, never with gates_mark=1, observe=1, position=1, recfg_bite=1 or probe=1: --m1-mark's run with WD1's count at 80 s in place of 60 s (the marker 70 s after step 4), and, the first time CPU0's own last WFI returns, seven bytes to the PMU's 0x6008-0x600e (Corey's OK of 2026-11-16): when and how often it returned, what was pending, the engine's two gate words, PHASE and the handshakes, and how many of B2's power words read off; reads only, but for CPU0's timer control set to 0 (last_look.h)");
+static bool obs_gate;
+module_param(obs_gate, bool, 0444);
+MODULE_PARM_DESC(obs_gate, "With observe=1: after CPU7's polls of CPU0's and the E complex's power words, CPU7 reads the engine's two gate words, PHASE, the handshake words and the four CPU power words (CPU0, ECPM, PCPM0, PCPM1), and the gate words and the four again 500 ms later, and sends them to the PMU's 0x6008-0x600e. Reads only");
 static bool gate_look;
 module_param(gate_look, bool, 0444);
 MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
@@ -2109,6 +2113,9 @@ static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n
 		return true;
 	if (addr == 0x6001)
 		return n == 1 && (b[0] == 0x50 || b[0] == 0x30);
+	/* obs_gate=1: CPU7's look goes to 0x6008-0x600e, and K1's mark and zeros (last_look.h). */
+	if (obs_gate && addr >= LL_AT && end <= LL_AT + LL_N)
+		return true;
 	/* last_look=1: 0x6008-0x600e too (last_look.h). */
 	return (addr >= 0x6004 && end <= (last_look ? LL_AT + LL_N : 0x6008)) || (addr >= 0x6010 && end <= 0x6017);
 }
@@ -2148,6 +2155,12 @@ static int m1_pmu_start(void)
 		ret = m1_kwrite(LL_AT, zero, LL_N);
 	if (!ret && gate_look) {
 		v = LL_ARMED;	/* gate_look=1: a look is to come; its first command writes LL_LOOKED over this */
+		ret = m1_kwrite(LL_AT, &v, 1);
+	}
+	if (!ret && obs_gate)
+		ret = m1_kwrite(LL_AT, zero, LL_N);
+	if (!ret && obs_gate) {
+		v = OG_ARMED;	/* obs_gate=1: CPU7's look is to come; its first command writes over this */
 		ret = m1_kwrite(LL_AT, &v, 1);
 	}
 	if (ret)
@@ -2196,6 +2209,10 @@ static void m1_pmu_undo(void)
 	err = m1_kwrite(0x6010, zero, 7);
 	ret = ret ?: err;
 	if (last_look) {
+		err = m1_kwrite(LL_AT, zero, LL_N);
+		ret = ret ?: err;
+	}
+	if (obs_gate) {
 		err = m1_kwrite(LL_AT, zero, LL_N);
 		ret = ret ?: err;
 	}
@@ -2775,6 +2792,53 @@ static void m1_time_clusters(u8 *te, u8 *tp, u64 t_go)
 }
 
 /*
+ * obs_gate=1, on CPU7 in m1_observe(), after its polls of CPU0's and the E
+ * complex's power words and its first record (last_look.h has the bytes and
+ * why): the four CPU power words, then the handshake words, the engine's two
+ * gate words and PHASE, sent as one command; OG_LATER_MS later the gate words
+ * and the four again, a second command. Reads only: the power words are the
+ * ones m1_observe() and m1_hold_release() poll, the engine's page and HS_A the
+ * ones position=1 and gate_look=1 read after the commit with a core up.
+ */
+static void m1_og_look(void)
+{
+	void __iomem *hs_a = post_map[ARRAY_SIZE(e1_post_slpa) - 1] + M1_POS_HS_A;
+	u32 hsa, hsb, g40, g44, phase;
+	bool c0, ec, p0, p1;
+	u8 b[LL_N];
+	u64 t0;
+
+	/* Each read into its own variable, in this order: an argument list has none. */
+	c0 = !m1_ps_state(M1_PS_CPU0);
+	ec = !m1_ps_state(M1_PS_ECPM);
+	p0 = !m1_ps_state(M1_PS_PCPM0);
+	p1 = !m1_ps_state(M1_PS_PCPM1);
+	hsa = readl(hs_a);
+	hsb = readl(m1_pos + LL_HS_B);
+	g40 = readl(m1_pos + M1_POS_GATE40);
+	g44 = readl(m1_pos + M1_POS_GATE44);
+	phase = readl(m1_pos + M1_POS_PHASE);
+	b[0] = og_b0(c0, ec, p0, p1);
+	b[1] = ll_b1(0, hsa & BIT(31), hsa, hsb);
+	b[2] = (u8)g40;
+	b[3] = (u8)g44;
+	b[4] = ll_b4(phase);	/* the command's last byte: its bit 7 says the five landed */
+	m1_crumb(LL_AT, b, 5);
+	t0 = m1_now();
+	while (m1_now() - t0 < m1_tps * OG_LATER_MS / 1000)
+		cpu_relax();
+	c0 = !m1_ps_state(M1_PS_CPU0);
+	ec = !m1_ps_state(M1_PS_ECPM);
+	p0 = !m1_ps_state(M1_PS_PCPM0);
+	p1 = !m1_ps_state(M1_PS_PCPM1);
+	g44 = readl(m1_pos + M1_POS_GATE44);
+	g40 = readl(m1_pos + M1_POS_GATE40);
+	b[5] = (u8)g44;
+	b[6] = og_b6(g40, c0, ec, p0, p1);
+	m1_crumb(LL_AT + 5, b + 5, 2);
+}
+
+/*
  * observe=1, on CPU7 from the commit on (CPU0 wrote CPU7's stop bit before
  * it, and is in its own deep WFI by now): watch, record, stop. Every
  * exception is masked and its interrupt sources are quiet since the park;
@@ -2844,6 +2908,9 @@ static void __noreturn m1_observe(struct m1_core *c)
 	       (READ_ONCE(m1_core[0].wfi_ret) ? BIT(7) : 0);
 	b[3] = min(left, 255U);
 	m1_crumb(0x6004, b, 4);
+	/* obs_gate=1: the engine's gate words beside the power words, now that CPU0's and ECPM's polls are over. */
+	if (obs_gate)
+		m1_og_look();
 
 	for (i = 0; i < ARRAY_SIZE(soc); i++) {
 		if (readl(m1_soc + 4 * soc[i]) & BIT(4))
@@ -4275,6 +4342,26 @@ static int __init m1_pmp_init(void)
 }
 
 /*
+ * obs_gate=1 at load: the engine's page mapped, if no other option mapped it,
+ * and the words CPU7's look reads logged awake (but HS_A, read only after the
+ * commit). Reads only.
+ */
+static int __init m1_og_init(void)
+{
+	if (!m1_pos)
+		m1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);
+	if (!m1_pos || !m1_ps) {
+		pr_err("m1: obs_gate: the engine's page or the first power page isn't mapped; refusing\n");
+		return -ENOMEM;
+	}
+	pr_info("m1: obs_gate: awake: 0x2922c0040 %08x, 0x2922c0044 %08x, PHASE %08x, HS_B %08x; CPU0 %08x, ECPM %08x, PCPM0 %08x, PCPM1 %08x. After its two polls CPU7 reads them, and the gate words and the four again %u ms later, and sends seven bytes to the PMU's 0x%x-0x%x\n",
+		readl(m1_pos + M1_POS_GATE40), readl(m1_pos + M1_POS_GATE44), readl(m1_pos + M1_POS_PHASE), readl(m1_pos + LL_HS_B),
+		readl(m1_ps + M1_PS_CPU0), readl(m1_ps + M1_PS_ECPM), readl(m1_ps + M1_PS_PCPM0), readl(m1_ps + M1_PS_PCPM1),
+		OG_LATER_MS, LL_AT, LL_AT + LL_N - 1);
+	return 0;
+}
+
+/*
  * observe=1 at load: what CPU7 reads after the commit, mapped, and logged as
  * it is now, awake, for comparison. Reads only. Also the candidates for
  * T6000's CPM gating (M1_CPM_GATE, inferred).
@@ -5518,6 +5605,8 @@ static_assert(M1_PS_SIO_PAGE + LL_FPWM0 == 0x28e580190ULL && M1_POS_PAGE + LL_HS
 	      LL_WD1_COUNT == 0x7270e000U && LL_WD1_COUNT < WD1_MARK_BITE && LL_BLINK_CYCLES == 2400000U && LL_PWM_GO == 0x4021U &&
 	      LL_PWM + LL_PWM_ON == 0x39b03001cULL && LL_PWM + LL_PWM_OFF == 0x39b030018ULL && LL_ALARM_SECS < LL_TIMER_S &&
 	      LL_TIMER_S < (WD1_MARK_BITE - LL_WD1_COUNT) / WD1_HZ);
+/* obs_gate=1's two marks are apart, and its four power words are in the first power page. */
+static_assert(OG_MARK == 0x80 && OG_ARMED == 0x40 && M1_PS_CPU0 == 0x00 && M1_PS_ECPM == 0x60 && M1_PS_PCPM0 == 0x68 && M1_PS_PCPM1 == 0x70);
 /* gate_look=1's bit is none of the return's in 0x6008, and its look comes before the alarm's time. */
 static_assert(LL_LOOKED == 0x08 && LL_ARMED == 0x04 && !((LL_LOOKED | LL_ARMED) & (LL_MARK | 7U << LL_T_SHIFT | 3U)) &&
 	      LL_LOOK_MS < LL_ALARM_SECS * 1000);
@@ -5853,6 +5942,12 @@ static int __init m1_init(void)
 	}
 	if (observe) {
 		int ret = m1_observe_init();
+
+		if (ret)
+			return ret;
+	}
+	if (obs_gate) {
+		int ret = m1_og_init();
 
 		if (ret)
 			return ret;
@@ -6348,6 +6443,10 @@ static int __init e1_check_params(void)
 		pr_err("observe=1 is part of the M1 recipe: it needs m1=1 (and replay=15 oneway=1 quiet=1)\n");
 		return -EINVAL;
 	}
+	if (obs_gate && !observe) {
+		pr_err("obs_gate=1 needs observe=1 (it's CPU7's run with the engine's gate words read beside the power words it watches)\n");
+		return -EINVAL;
+	}
 	if (pmgr_late && !m1) {
 		pr_err("pmgr_late=1 is part of the M1 recipe: it needs m1=1 (and replay=15 oneway=1 quiet=1)\n");
 		return -EINVAL;
@@ -6661,8 +6760,8 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
-		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "", obs_gate ? " obs_gate=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
 		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "",

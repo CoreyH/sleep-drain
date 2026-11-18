@@ -203,6 +203,14 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   with CPU0 awake under an earlier recipe; this is that read under today's. It is a reading with a core up,
   which may itself hold B2's first poll: not the stall's own state after the WFI. Reads only; no stage of its
   own (the stages are `ll_wake=1`'s).
+- `obs_gate=1` (`run-floor --m1-obs-gate`, on `observe=1`; the launcher sets `pmgr_late=1` with it, run 3's
+  line) uses the same seven PMU bytes in the observer's run: after CPU7 has polled CPU0's and the E complex's
+  power words and sent its first record, it reads the four CPU power words (CPU0, ECPM, PCPM0, PCPM1), HS_A,
+  HS_B, the engine's two gate words and PHASE, and sends 0x6008-0x600c; 500 ms later the gate words and the
+  four again, 0x600d and 0x600e. K1 leaves 0x6008 as 0x40. The gate-look run read 0x2922c0044 as 0x0b with
+  CPU0 awake and the P complexes off; this reads it with CPU0 and the E complex off and P complex 1 up, to
+  see which bit follows which complex. Reads only; the stages are run 3's, and the restart comes at WD2's
+  30 s, with no marker.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be
