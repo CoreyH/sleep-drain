@@ -5426,6 +5426,43 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### `gate_look=1` as built: the gate's words read once more with CPU0 awake, under today's recipe (2026-11-18)
+
+After run B, Corey: "so what is the next step then?", and, to the answer below, "okay go ahead and build it".
+
+**Why this read, when runs 6 to 10 made it.** They sampled the engine's words with CPU0 awake 1 s and 25 s
+after the commit: 0x2922c0044's bit 2 clear and bit 3 set, 0x2922c0040's bit 1 set, HS_A's bit 31 up and bit
+24 clear, PHASE 4; and couldn't say whether the awake core itself held B2's first poll. From run 11 on CPU0
+has gone straight to its WFI, and the recipe has gained SIO's firmware stopped (run 11), the 20 power words
+(run 12), the cluster words' ack (run 16) and the fabric back at 3 (run 17): each a candidate for a poll
+that waits on more than the cores. Under that recipe the words have never been read after the commit. Runs
+A and B say B2 is held before its power-downs with CPU0 in its last WFI too. So one read, with two
+outcomes: bit 2 of 0x2922c0044 set with CPU0 up takes the cores out of B2's first poll, and the other bytes
+then say how far B2 and A2 are; the old bits again say the additions since run 10 didn't open it, and
+nothing about the stall after the WFI (Pullfrog on #113: a reading with a core up isn't that stall's).
+Estimate, mine: the first about one in four.
+
+**What it is.** `e1_hook gate_look=1`, with `last_look=1`; `run-floor --m1-gate-look` is run B's line with
+it. In step 10, before `m1_ll_timer()` and the WFI, `m1_ll_look()` waits on the counter until 1 s after the
+commit's last write, then makes `m1_ll_ret()`'s reads and sends them in two commands: 0x6008 := 0x08 with
+0x6009-0x600c (the handshake bits, 0x2922c0040's low byte, 0x2922c0044's, PHASE under bit 7), then 0x600d
+and 0x600e (SIO's count and FPWM0, the PCIe five, ANS2, the PMP). Bit 3 of 0x6009 carries HS_A's bit 31,
+where the return's form has CPU0's timer. K1 writes 0x6008 as 0x04, so that 04 and six zeros say a look was
+to come and never landed, where seven zeros would read as a WFI that didn't return. A WFI that returns
+after the look sends 0x6008 alone with bit 3 kept. No stage of its own. Everything else is run B's: the
+marker at 70 s, the alarm at 20 s, CPU0's timer (now 26 s after the commit), the light.
+
+**Writes.** None to a register. One more PMU write, 0x6008 := 0x04 at K1 through the kernel's path, inside
+the bytes OK'd on 2026-11-16. The reads are words this module has read after the commit with a core up
+(runs 6 to 10: the engine's page, HS_A, SIO_CPU's word) or reads at every load (the power words); HS_B is
+in the engine's page and wasn't among run 6's.
+
+**Checked.** `tests/m1_crumbs_test.py`: `m1_ll_look()` compiled as it stands against pages that log every
+access, `m1_ll_ret()` after a look, the record's new forms through m1-crumbs. 28 new mutants (`glk:`), all
+caught; two older ones brought up to the code, found at once by the list's check against the tree.
+`tests/e1a_launcher_test.py` for the new option. No full mutant run and no adversarial pass: a read-only
+step on reviewed code (PLAN.md, "Tokens").
+
 ### Run B, the last look with a wake: the light blinked to the end, the alarm fired into nothing (2026-11-18)
 
 `run-floor --no-reading --m1-last-look-wake` in a safe boot, on battery at 98%, loaded 13:07, the nights

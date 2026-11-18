@@ -158,8 +158,14 @@ the PR with that session's work.
        displays off, the fabric up) is new only if a word reads differently from run 6's: bit
        2 set with CPU0 up would take the cores out of the gate; the same bits would say
        nothing more. Either way such a reading is one with CPU0 awake, not the final-WFI stall's
-       (Pullfrog on #113). Any later run that sets the alarm near:
-       the nights off around it, as here, until the snapshot below is built.
+       (Pullfrog on #113). **Built 2026-11-18, to run:** that read, as `run-floor --no-reading
+       --m1-gate-look` (RESEARCH.md, "`gate_look=1` as built"): run B's line with one read added,
+       1 s after the commit and before CPU0's last WFI, sent to 0x6008-0x600e with bit 3 of the
+       first byte. The nights off before it and on after the read, as for run B; the keyboard
+       filmed. How it reads: 0x600b's bit 2 set takes the cores out of B2's first poll, and
+       0x600a, 0x600c, 0x600d then say how far B2 got with CPU0 up; bit 2 clear and bit 3 set
+       again says only that the additions since run 10 didn't open the poll. Any later run that
+       sets the alarm near: the nights off around it, as here, until the snapshot below is built.
        To build: the alarm's registers saved before the unit loads the driver, and the
        decoder saying when the driver is bound (its "cleared the enable (new)" line was wrong
        for run A's boot). Still to take: an SMC dump after a plain restart, the control for the
