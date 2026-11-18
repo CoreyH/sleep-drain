@@ -5184,7 +5184,7 @@ def probe_tests(g, src, dec):
                        if re.match(r"#define (M1_PS_SIO|M1_PS_SIO_CPU|M1_PS_UART_P|M1_PS_SPI_P|M1_PS_ANS2|M1_PS_PMP_RO|M1_POS_GATE44|M1_POS_GATE40|"
                                    r"M1_ASC_CPU_CONTROL|M1_ASC_CPU_STATUS|M1_ASC_CPU_RUN|M1_ASC_IDLE|M1_SIO_ENTRY|M1_PMU_ALARM\w*|M1_PMU_RTC|"
                                    r"M1_ALARM_ON)\s", line))
-        ran = build("prun", PROBE_RUN_PRELUDE + defs + "static bool alarm = true, last_look;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        ran = build("prun", PROBE_RUN_PRELUDE + defs + "static bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                     + PROBE_RUN_MODEL + cut("static struct {\n\tbool sio_run,", "} m1_pr;\n")
                     + cut("static bool m1_probe_word(", "\n}\n") + cut("static void m1_probe_at(u8 step)", "\n}\n")
                     + cut("static bool m1_sio_raise(void)", "\n}\n") + cut("static void m1_probe_prepare(void)\n{", "\n}\n") + cut("static void m1_probe_late(void)", "\n}\n") + PROBE_RUN_MAIN)
@@ -5664,7 +5664,7 @@ def look_tests(g, src, dec):
         hdr = [line.split() for line in build("lhdr", LOOK_HDR)]
         defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_PMU_RTC|M1_ALARM_ON)\s", line))
         defs_pos = [line for line in src.splitlines() if re.match(r"#define M1_POS_PAGE\s", line)]
-        ran = build("lrun", LOOK_RUN_PRELUDE + defs + defs_pos[0] + "\nstatic bool alarm = true, last_look;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        ran = build("lrun", LOOK_RUN_PRELUDE + defs + defs_pos[0] + "\nstatic bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                     + LOOK_RUN_MODEL + cut("#define LOOK_PRE_ROW", "\n") + cut("static void m1_look_at(u8 group)", "\n}\n") + cut("static void m1_look(const char *when, u8 pass)", "\n}\n")
                     + cut("static void m1_pre_beside(const char *when, bool gates)", "\n}\n") + cut("static int __init m1_look_init(void)", "\n}\n") + LOOK_RUN_MAIN)
 
@@ -6119,7 +6119,7 @@ def gate_tests(g, src, dec):
         defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_PMU_RTC|M1_ALARM_ON)\s", line))
         # LATE: the model's gate closes this many ticks after the UARTs went off: past the first poll's last read, and before the
         # read that comes right before the lane's write.
-        ran = build("grun", GATE_RUN_PRELUDE + "#define LATE 103\n" + defs + "static bool alarm = true, last_look;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        ran = build("grun", GATE_RUN_PRELUDE + "#define LATE 103\n" + defs + "static bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                     + GATE_RUN_MODEL + cut("static void m1_look_at(u8 group)", "\n}\n") + cut("static void m1_gate_log(const char *when)", "\n}\n")
                     + cut("static bool m1_gate_wait(const char *when)", "\n}\n") + cut("static u32 m1_gate_write(void __iomem *p,", "\n}\n")
                     + cut("static void m1_gate_test(void)", "\n}\n") + GATE_RUN_MAIN)
@@ -6669,10 +6669,10 @@ def pre_tests(g, src):
         defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_PMU_RTC|M1_ALARM_ON)\s", line))
         pieces = (cut("static void m1_look_at(u8 group)", "\n}\n") + cut("static void __iomem *m1_pre_word(unsigned int i)", "\n}\n")
                   + cut("static void m1_pre_log(const char *when, const u32 *v)", "\n}\n") + cut("static void m1_pre_beside(const char *when, bool gates)", "\n}\n"))
-        ran = build("prun", PRE_RUN_PRELUDE + defs + "static bool alarm = true, last_look;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        ran = build("prun", PRE_RUN_PRELUDE + defs + "static bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                     + PRE_RUN_MODEL + pieces + cut("static void m1_pre_test(void)", "\n}\n") + PRE_RUN_MAIN)
         defs_pos = [line for line in src.splitlines() if re.match(r"#define M1_POS_PAGE\s", line)]
-        loads = build("pload", LOOK_RUN_PRELUDE + defs + defs_pos[0] + "\nstatic bool alarm = true, last_look;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        loads = build("pload", LOOK_RUN_PRELUDE + defs + defs_pos[0] + "\nstatic bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                       + LOOK_RUN_MODEL + cut("#define LOOK_PRE_ROW", "\n") + cut("static void m1_look_at(u8 group)", "\n}\n")
                       + cut("static void m1_look(const char *when, u8 pass)", "\n}\n") + cut("static void m1_pre_beside(const char *when, bool gates)", "\n}\n")
                       + cut("static int __init m1_look_init(void)", "\n}\n") + LOOK_RUN_MAIN.split("int main(void)")[0] + PRE_LOAD_MAIN)
@@ -6992,6 +6992,11 @@ int main(void)
 	       WD1_HZ, WD1_MARK_BITE);
 	printf("fpwm0 %x\n", sio[9]);
 	printf("look %x %x %u\n", LL_LOOKED, LL_ARMED, LL_LOOK_MS);
+	printf("og %x %x %u\n", OG_MARK, OG_ARMED, OG_LATER_MS);
+	for (a = 0; a < 16; a++)
+		for (b = 0; b < 8; b++)
+			printf("ogb %u %u %x %x\n", a, b, og_b0(a & 1, a >> 1 & 1, a >> 2 & 1, a >> 3 & 1),
+			       og_b6(b | 0xfffffff8U * (b & 4 ? 1 : 0), a & 1, a >> 1 & 1, a >> 2 & 1, a >> 3 & 1));
 	for (a = 0; a < 3; a++)
 		for (dt = 0; dt < 40 * tps[a]; dt += tps[a] / 1000 ? tps[a] / 1000 : 1) {
 			static u8 last = 0xff;
@@ -7168,14 +7173,72 @@ int main(void)
 	unsigned int addr, n, w, ll;
 	u8 b[8] = { 0 };
 
-	for (ll = 0; ll < 2; ll++) {
-		last_look = ll;
+	for (ll = 0; ll < 3; ll++) {
+		last_look = ll == 1;
+		observe = ll == 2;
 		for (w = 0; w < 2; w++)
 			for (addr = 0x5ff8; addr < 0x6028; addr++)
 				for (n = 1; n <= 8; n++)
 					if (m1_pmu_ok(w, addr, b, n))
 						printf("ok %u %u %x %u\n", ll, w, addr, n);
 	}
+	return 0;
+}
+"""
+
+
+OG_K1_PRELUDE = r"""
+#include <stdio.h>
+#include <stdbool.h>
+#include <string.h>
+#include "last_look.h"
+#define EIO 5
+#define M1_PMU_RTC 0x1406
+static bool last_look, gate_look, obs_gate, observe, m1_sent_50;
+static u8 pmu[0x10000];
+static int m1_kwrite(unsigned int addr, const u8 *b, unsigned int n) { memcpy(pmu + addr, b, n); return 0; }
+static int m1_kread(unsigned int addr, u8 *b, unsigned int n) { memcpy(b, pmu + addr, n); return 0; }
+"""
+OG_K1_MAIN = r"""
+int main(int argc, char **argv)
+{
+	static const u8 old[] = { 0x00, 0x30, 0x00, 0x50, 0x7f, 0xff, 0x04, 0x1d, 0x87, 0xa8, 0x01, 0x0d, 0x84, 0x0d, 0xb9 };
+	const char *m = argc > 1 ? argv[1] : "";
+	unsigned int i;
+
+	memcpy(pmu + 0x6000, old, sizeof(old));
+	observe = !strcmp(m, "observe") || !strcmp(m, "obsgate");
+	obs_gate = !strcmp(m, "obsgate");
+	last_look = !strcmp(m, "lastlook");
+	if (m1_pmu_start() || !m1_sent_50 || gate_look)
+		return 1;
+	for (i = 0; i < 0x20; i++)
+		printf("%02x", pmu[0x6000 + i]);
+	printf("\n");
+	return 0;
+}
+"""
+OG_FN_MAIN = r"""
+int main(int argc, char **argv)
+{
+	const char *sc = argc > 1 ? argv[1] : "";
+
+	post_map[73] = pg[4];
+	dead = !strcmp(sc, "dead");
+	/* CPU0, the E complex and P complex 0 off, P complex 1 (the observer's) on: each word's actual state, bits 7:4. */
+	pg[2][M1_PS_CPU0 / 4] = 0x00000100;
+	pg[2][M1_PS_ECPM / 4] = 0x00000300;
+	pg[2][M1_PS_PCPM0 / 4] = 0x0000000f;
+	pg[2][M1_PS_PCPM1 / 4] = 0x000001f0;
+	pg[0][M1_POS_GATE40 / 4] = 0xabc00101;
+	pg[0][M1_POS_GATE44 / 4] = 0x1230000d;
+	pg[0][M1_POS_PHASE / 4] = 0x00000104;
+	pg[0][LL_HS_B / 4] = 0x80000001;
+	pg[4][M1_POS_HS_A / 4] = 0x80010000;
+	clk = 0;
+	step = 5000000;
+	m1_og_look();
+	printf("clk %llu\n", (unsigned long long)clk);
 	return 0;
 }
 """
@@ -7193,6 +7256,8 @@ def last_look_tests(g, src):
     code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
     defs = "".join(line + "\n" for line in src.splitlines()
                    if re.match(r"#define (M1_SPMI_WORDS|M1_SPMI_ACK\(w\)|M1_POS_(GATE40|GATE44|PHASE|HS_A)|M1_PS_ANS2|M1_PS_PMP_RO)\s", line))
+    og_defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define M1_PS_(CPU0|ECPM|PCPM0|PCPM1)\s", line))
+    og_fn, ps_state_fn = cut("static void m1_og_look(void)", "\n}\n"), cut("static unsigned int m1_ps_state(unsigned int off)", "\n}\n")
     send_fn, ret_fn, timer_fn, blink_fn = (cut("static void m1_ll_send(", "\n}\n"), cut("static void m1_ll_ret(void)", "\n}\n"),
                                            cut("static void m1_ll_timer(void)", "\n}\n"), cut("static bool m1_ll_blink(void)", "\n}\n"))
     look_fn = cut("static void m1_ll_look(void)", "\n}\n")
@@ -7212,10 +7277,14 @@ def last_look_tests(g, src):
         fn = build("llfn", LL_FN_PRELUDE + defs + send_fn + ret_fn + look_fn + timer_fn + blink_fn + LL_FN_MAIN)
         ret, dead, timer = lines(fn, "ret"), lines(fn, "dead"), lines(fn, "timer")
         look, look_dead, ret_look = lines(fn, "look"), lines(fn, "lookdead"), lines(fn, "retlook")
+        ogfn = build("ogfn", LL_FN_PRELUDE + defs + og_defs + "static void m1_use(void) { (void)m1_sio; (void)m1_spmi; (void)m1_ll_pwm; (void)writel;"
+                     " (void)isr_el1; (void)cntp_ctl_el0; (void)cntp_tval_el0; (void)follow; (void)gate_look; (void)m1_t_third; }\n" + ps_state_fn + og_fn
+                     + OG_FN_MAIN.replace("post_map[73] = pg[4];", "post_map[73] = pg[4];\n\tm1_use();"))
+        og, og_dead = lines(ogfn), lines(ogfn, "dead")
         blink_on, blink_auto, blink_never, blink_busy = lines(fn, "blink"), lines(fn, "blinka"), lines(fn, "blinkn"), lines(fn, "blinkb")
         ok = [tuple(int(x, 16) if i == 2 else int(x) for i, x in enumerate(l.split()[1:]))
               for l in lines(build("llok", "#include <stdio.h>\n#include <stdbool.h>\n#include <stdint.h>\ntypedef uint8_t u8;\n"
-                                   "static bool alarm = true, last_look;\n#define LL_AT 0x6008\n#define LL_N 7\n" + okdefs
+                                   "static bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + okdefs
                                    + cut("static bool m1_pmu_ok(bool write,", "\n}\n") + LL_OK_MAIN))]
 
     # The header, against the numbers as PLAN.md and last_look.h's comment have them.
@@ -7335,6 +7404,54 @@ def last_look_tests(g, src):
           "gate_look=1 is off unless asked for, refuses without last_look=1, can't be set after the load and is named in the load line; K1 writes"
           " its mark over the zeroed 0x6008 through the kernel's path; m1_ll_look() has one caller")
 
+    # obs_gate=1: CPU7's look, in observe=1's run.
+    four = ["r P 0", "r P 60", "r P 68", "r P 70"]
+    og_want = four + ["r C 4", "r E 10c", "r E 40", "r E 44", "r E 110", "c 6008 87 a8 01 0d 84"] + four + ["r E 44", "r E 40", "c 600d 0d b9", "clk 20000000"]
+    check(og == og_want,
+          "m1_og_look(): CPU0's, ECPM's, PCPM0's and PCPM1's power words read, then HS_A, HS_B, 0x2922c0040, 0x2922c0044 and PHASE, and 0x6008-0x600c"
+          " sent as one command (0x87: the first three off and PCPM1 on; 0xa8; 0x01; 0x0d; 0x84); 500 ms of the counter and no more; the four,"
+          " 0x2922c0044 and 0x2922c0040 again, and 0x600d-0x600e sent (0x0d, 0xb9)", "\n".join(og))
+    check(og_dead == [l for l in og_want if not l.startswith("c ")] and not [l for l in og if l.startswith(("w ", "sw ", "sr "))] and "r X 0" not in og,
+          "m1_og_look() writes nothing and touches no system register; with SPMI already failed it sends nothing")
+    check(in_order_of(og_fn, ["c0 = !m1_ps_state(M1_PS_CPU0);\n\tec = !m1_ps_state(M1_PS_ECPM);\n\tp0 = !m1_ps_state(M1_PS_PCPM0);\n\tp1 = !m1_ps_state(M1_PS_PCPM1);\n"
+                              "\thsa = readl(hs_a);\n\thsb = readl(m1_pos + LL_HS_B);\n\tg40 = readl(m1_pos + M1_POS_GATE40);\n\tg44 = readl(m1_pos + M1_POS_GATE44);\n",
+                              "b[0] = og_b0(c0, ec, p0, p1);", "b[1] = ll_b1(0, hsa & BIT(31), hsa, hsb);", "b[4] = ll_b4(phase);", "m1_crumb(LL_AT, b, 5);",
+                              "\twhile (m1_now() - t0 < m1_tps * OG_LATER_MS / 1000)\n\t\tcpu_relax();\n", "b[6] = og_b6(g40, c0, ec, p0, p1);",
+                              "m1_crumb(LL_AT + 5, b + 5, 2);\n}"])
+          and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\(", og_fn) and "sysreg" not in og_fn
+          and not re.search(r"\w\([^;]*(readl|m1_ps_state)\([^;]*,[^;]*(readl|m1_ps_state)\(", og_fn),
+          "m1_og_look() reads each word into its own variable, sends the first sample before it waits, and has no write to a register")
+    ogb = [r[1:] for r in hdr if r[0] == "ogb"]
+    check([r for r in hdr if r[0] == "og"] == [["og", "80", "40", "500"]] and len(ogb) == 128
+          and all(int(b0, 16) == 0x80 | int(a) and int(b6, 16) == 0x80 | int(a) << 3 | (int(b) & 3) for a, b, b0, b6 in ogb)
+          and g["OG_MARK"] == 0x80 and g["OG_ARMED"] == 0x40 and g["OG_LATER_MS"] == 500 and g["OG_STAGES"] == (0x61, 0x62, 0x6e, 0x6f, 0x71, 0x72, 0x7e, 0x7f)
+          and not set(g["OG_STAGES"]) & set(g["LL_STAGES"]),
+          "og_b0() and og_b6(): bit 7, the four power words in bits 3:0 or 6:3, 0x2922c0040's bits 1:0 alone in the second; K1's mark is bit 6;"
+          " m1-crumbs has the marks, the 500 ms and CPU7's stages, none of them last_look=1's")
+    observe_fn = cut("static void __noreturn m1_observe(struct m1_core *c)", "\n}\n")
+    start = cut("static int m1_pmu_start(void)", "\n}\n")
+    check(in_order_of(observe_fn, ["while (m1_ps_state(M1_PS_ECPM) && m1_now() - t0 < m1_tps / 2) {", "\tb[3] = min(left, 255U);\n\tm1_crumb(0x6004, b, 4);\n",
+                                   "\tif (obs_gate)\n\t\tm1_og_look();\n", "\tfor (i = 0; i < ARRAY_SIZE(soc); i++) {", "m1_stage(s + 2);"])
+          and len(re.findall(r"\bm1_og_look\(", code_only)) == 2
+          and in_order_of(start, ["\tif (!ret && observe)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n", "\tif (!ret && obs_gate) {\n\t\tv = OG_ARMED;",
+                                  "\t\tret = m1_kwrite(LL_AT, &v, 1);\n\t}\n\tif (ret)\n\t\treturn ret;\n"])
+          and "\tif (observe) {\n\t\terr = m1_kwrite(LL_AT, zero, LL_N);\n\t\tret = ret ?: err;\n\t}\n" in cut("static void m1_pmu_undo(void)", "\n}\n")
+          and "\tif (observe && addr >= LL_AT && end <= LL_AT + LL_N)\n\t\treturn true;\n" in cut("static bool m1_pmu_ok(bool write,", "\n}\n"),
+          "CPU7 makes its look after both polls and its first record, with obs_gate=1 alone, before its other reads; K1 zeroes 0x6008-0x600e in"
+          " every observer's run and writes the mark with obs_gate=1 alone, through the kernel's path; the undo zeroes them; m1_pmu_ok() lets"
+          " writes within the seven bytes through in an observer's run alone")
+    og_init = cut("static int __init m1_og_init(void)", "\n}\n")
+    check("if (obs_gate && !observe) {" in src and "module_param(obs_gate, bool, 0444);" in src and "\nstatic bool obs_gate;\n" in src
+          and 'observe ? " observe=1" : "", obs_gate ? " obs_gate=1" : ""' in src
+          and "\tif (obs_gate) {\n\t\tint ret = m1_og_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n" in src
+          and src.index("int ret = m1_observe_init();") < src.index("int ret = m1_og_init();")
+          and "\tif (!m1_pos)\n\t\tm1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);\n\tif (!m1_pos || !m1_ps) {" in og_init
+          and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\(", og_init) and "hs_a" not in og_init and "M1_POS_HS_A" not in og_init
+          and "static_assert(OG_MARK == 0x80 && OG_ARMED == 0x40 && M1_PS_CPU0 == 0x00 && M1_PS_ECPM == 0x60 && M1_PS_PCPM0 == 0x68 && M1_PS_PCPM1 == 0x70);" in src
+          and len(re.findall(r"\bobs_gate\b", code_only)) == 8,
+          "obs_gate=1 is off unless asked for, refuses without observe=1, can't be set after the load and is named in the load line; m1_og_init()"
+          " maps the engine's page if nothing else did, refuses without it, writes nothing and doesn't read HS_A awake")
+
     # ll_wake=1: the timer and the light.
     check(timer == [f"sw cntp_tval_el0 {25 * 24000000:x}", "sw cntp_ctl_el0 1"],
           "m1_ll_timer(): CPU0's timer value := 25 s of the counter, then its control := enable alone, unmasked; nothing else", str(timer))
@@ -7354,9 +7471,14 @@ def last_look_tests(g, src):
 
     # m1_pmu_ok(): 0x6008-0x600e with last_look=1 alone.
     w0 = {(a, n) for ll, w, a, n in ok if not ll and w}
-    w1 = {(a, n) for ll, w, a, n in ok if ll and w}
+    w1 = {(a, n) for ll, w, a, n in ok if ll == 1 and w}
+    w2 = {(a, n) for ll, w, a, n in ok if ll == 2 and w}
     r0 = {(a, n) for ll, w, a, n in ok if not ll and not w}
-    r1 = {(a, n) for ll, w, a, n in ok if ll and not w}
+    r1 = {(a, n) for ll, w, a, n in ok if ll == 1 and not w}
+    r2 = {(a, n) for ll, w, a, n in ok if ll == 2 and not w}
+    check(w2 == w0 | {(a, n) for a in range(0x6008, 0x600f) for n in range(1, 0x600f - a + 1)} and r2 == r0 and w2 < w1,
+          "m1_pmu_ok(): with observe=1 a write may also lie within 0x6008-0x600e, and nowhere else new: none that starts below 0x6008 and"
+          " runs into it, none at 0x600f; reads are the same")
     check(w0 < w1 and all(a >= 0x6004 and a + n <= 0x600f and a + n > 0x6008 for a, n in w1 - w0)
           and {(a, n) for a in range(0x6008, 0x600f) for n in range(1, 0x600f - a + 1)} <= w1 and (0x600f, 1) not in w1 and (0x6008, 8) not in w1
           and (0x6008, 1) not in w0 and r0 == r1,
@@ -7511,6 +7633,9 @@ def last_look_tests(g, src):
                         (bytes((0xe1, 0xd9, 2, 0xc, 0x84, 0xec, 0xa5)), "44 of the 43 power words of SIO's subtree read off (actual state 0): NOT A COUNT e1_hook can send")):
             rc, out, err, _, _ = dec(0x0b, r)
             check(rc == 0 and said in out, f"a record that stops short or isn't e1_hook's ({r.hex(' ')}): said, and no further than it goes", out + err)
+        rc, out, err, _, _ = dec(0x0b, bytes((0x40, 0, 0, 0, 0, 0, 0)))
+        check(rc == 0 and "0x6008 = 0x40: not a value e1_hook writes" in out and "obs_gate" not in out and "last_look=1's record of CPU0's own last WFI" in out,
+              "obs_gate=1's mark under one of last_look=1's stages isn't read as that run's: the stage says whose bytes these are", out + err)
         rc, out, err, _, _ = dec(0x0b, bytes((0xe1, 0, 0, 0, 0x80, 0x8c, 0x80)))
         check(rc == 0 and "pending at the return (ISR_EL1): nothing" in out and "0x600c = 0x80: PHASE's low seven bits 0x0" in out
               and "bit 1 clear: B2 clears it" in out and "12 of the 43 power words" in out and "didn't land" not in out,
@@ -7637,6 +7762,82 @@ def last_look_tests(g, src):
             rc, out, err, before, after = dec(0x0b, r0201=v, clear=True)
             check(rc == 0 and f"PMU 0x0201 = 0x{v:02x}: {said}" in out and after[0x0201] == v and (v == 2) == ("tell Claude" not in out),
                   f"0x0201 = {v}: read, said, and never written, with --clear too", out + err)
+    # obs_gate=1: CPU7's record, in observe=1's stages.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+
+        def og_dec(stage, r, clear=False):
+            sc = bytearray(scratch(stage, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0x80 | 5 << 3 | 1), flags=0x90, isrs=0x24, drained=0x95))
+            sc[8:0x0f] = r
+            before = fake(path, bytes(sc), rtc_secs=121761)
+            p = run(path, *(["--clear"] if clear else []))
+            return p.returncode, p.stdout, p.stderr, before, open(path, "rb").read()
+
+        full = bytes((0x87, 0xa8, 0x01, 0x0d, 0x84, 0x0d, 0xb9))
+        for stage in (0x7f, 0x6f, 0x71, 0x62):
+            rc, out, err, _, _ = og_dec(stage, full)
+            check(rc == 0 and "0x6008-0x600e = 87 a8 01 0d 84 0d b9: obs_gate=1's record: the engine's gate words read by CPU7, the observer" in out
+                  and "  0x6008 = 0x87: the power words, read right before the words below: CPU0 off, ECPM (the E complex) off, PCPM0 (P complex 0) off,"
+                      " PCPM1 (P complex 1, CPU7's own) on" in out
+                  and "  0x6009 = 0xa8: HS_A bit 31 = 1 (A2's raise for its first handshake), bit 24 = 0 (the answer A2 waits for); HS_B bits 0, 1, 31 = 1, 0, 1" in out
+                  and "  0x600a = 0x01: 0x2922c0040's low byte (bit 1 clear: B2 clears it at its ops 4 to 6)" in out
+                  and "  0x600b = 0x0d: 0x2922c0044's low byte: bit 0 set, bit 1 clear, bit 2 set (B2's first poll, op 1, waits for it set), bit 3 set (op 3 waits"
+                      " for it clear). Awake it reads 0x08; with CPU0 awake and the two P complexes off, 1 s after the commit, it read 0x0b" in out
+                  and "  0x600c = 0x84: PHASE's low seven bits 0x4" in out
+                  and "  0x600d = 0x0d: 0x2922c0044's low byte 500 ms later: bit 0 set, bit 1 clear, bit 2 set" in out
+                  and "  0x600e = 0xb9: then: CPU0 off, ECPM (the E complex) off, PCPM0 (P complex 0) off, PCPM1 (P complex 1, CPU7's own) on; 0x2922c0040's bits 1:0 = 1" in out
+                  and "last_look=1's record" not in out,
+                  f"CPU7's record under its stage 0x{stage:02x}, the harness's own bytes: every field read back as m1_og_look() packed it", out + err)
+        for r, said, more in ((bytes((0x40, 0, 0, 0, 0, 0, 0)), "  0x6008 = 0x40: obs_gate=1 was set and CPU7's look never landed: K1 writes this byte", False),
+                              (bytes((0x40, 0xa8, 1, 0xd, 0x84, 0xd, 0xb9)), "0x6009-0x600e = a8 01 0d 84 0d b9 aren't shown to be this run's: NOT READ", False),
+                              (bytes((0x97, 0xa8, 1, 0xd, 0x84, 0xd, 0xb9)), "  0x6008 0x6009 = 97 a8: not values e1_hook writes here", False),
+                              (bytes((0x87, 0xa9, 1, 0xd, 0x84, 0xd, 0xb9)), "  0x6008 0x6009 = 87 a9: not values e1_hook writes here", False),
+                              (bytes((0x87, 0xa8, 1, 0xd, 0x04, 0xd, 0xb9)), "  0x6008-0x600c = 87 a8 01 0d 04: the first command didn't land whole", False),
+                              (bytes((0x87, 0xa8, 1, 0xd, 0x84, 0, 0)), "  0x600d 0x600e = 00 00: the second command, 500 ms after the first, didn't land whole", True),
+                              (bytes((0x87, 0xa8, 1, 0xd, 0x84, 0xd, 0xbd)), "  0x600d 0x600e = 0d bd: the second command, 500 ms after the first, didn't land whole or isn't", True)):
+            rc, out, err, _, _ = og_dec(0x7f, r)
+            check(rc == 0 and said in out and ("(B2's first poll, op 1, waits for it set)" in out) == more and "500 ms later" not in out,
+                  f"CPU7's record that stops short or isn't e1_hook's ({r.hex(' ')}): said, and no further than it goes", out + err)
+        rc, out, err, _, _ = og_dec(0x70, full)
+        rc2, out2, err2, _, _ = og_dec(0x30, bytes((0x40, 0, 0, 0, 0, 0, 0)))
+        rc3, out3, err3, _, _ = og_dec(0x7f, bytes((0x40, 0, 0, 0, 0, 0, 0)))
+        check(rc == 0 and "NOT READ: the stage isn't one of last_look=1's" in out and "obs_gate=1's record" not in out
+              and rc2 == 0 and "  0x6008 = 0x40: the mark of an obs_gate=1 run whose look never landed. This run's if it was one, which stage 0x30 doesn't say;"
+              " otherwise an earlier run's, left uncleared" in out2 and "obs_gate=1 was set and" not in out2
+              and rc3 == 0 and "  0x6008 = 0x40: obs_gate=1 was set and CPU7's look never landed: K1 writes this byte" in out3,
+              "the same bytes under a stage before CPU7's first record aren't read as its look; K1's mark is this run's under one of CPU7's stages,"
+              " and under any other it is said that it may be an earlier run's", out + err + out2 + err2 + out3 + err3)
+        # An obs_gate=1 record left uncleared, then an ordinary observer's run (Pullfrog on #116): the real K1 zeroes the seven
+        # bytes, so that run's final stage can't carry the old record; without the observer K1 leaves them, and no CPU7 stage follows.
+        with tempfile.TemporaryDirectory() as ktmp:
+            k1c = os.path.join(ktmp, "k1.c")
+            with open(k1c, "w") as f:
+                f.write(OG_K1_PRELUDE + cut("static int m1_pmu_start(void)", "\n}\n") + OG_K1_MAIN)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(ktmp, "k1"), k1c], check=True)
+            k1 = {m: bytes.fromhex(subprocess.run([os.path.join(ktmp, "k1"), m], capture_output=True, text=True, check=True).stdout.strip())
+                  for m in ("observe", "obsgate", "plain", "lastlook")}
+        check(k1["observe"][8:0x0f] == bytes(7) and k1["obsgate"][8:0x0f] == bytes((0x40, 0, 0, 0, 0, 0, 0)) and k1["lastlook"][8:0x0f] == bytes(7)
+              and k1["plain"][8:0x0f] == full and all(v[4] == 0x01 and v[1] == 0x50 for v in k1.values()),
+              "K1, the real m1_pmu_start(), over a retained obs_gate=1 record: an ordinary observer's run zeroes 0x6008-0x600e, an obs_gate=1 run"
+              " leaves its mark alone there, a last_look=1 run zeroes them, and a run of neither kind leaves them", str({m: v.hex(' ') for m, v in k1.items()}))
+        sc = bytearray(scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0x80 | 5 << 3 | 1), flags=0x90, isrs=0x24, drained=0x95))
+        sc[8:0x0f] = k1["observe"][8:0x0f]
+        fake(path, bytes(sc), rtc_secs=121761)
+        p = run(path)
+        check(p.returncode == 0 and "obs_gate" not in p.stdout and "0x6008-0x600e" not in p.stdout and "0x6004 = 0x7f (pmgr_late=1): observe: CPU7 recorded everything" in p.stdout,
+              "an ordinary observer's final stage after that K1: nothing of the earlier record is left to read as this run's", p.stdout + p.stderr)
+        for stage, r in ((0x7f, full), (0x6e, bytes((0x87, 0xa8, 1, 0xd, 0x84, 0, 0))), (0x30, bytes((0x40, 0, 0, 0, 0, 0, 0)))):
+            rc, out, err, before, after = og_dec(stage, r, clear=True)
+            want = bytearray(before)
+            want[0x6004:0x600f], want[0x6010:0x6017] = bytes(11), bytes(7)
+            check(rc == 0 and after == bytes(want) and "cleared: 0x6004-0x600e and 0x6010-0x6016 read back as zeros" in out,
+                  f"--clear after obs_gate=1's record under stage 0x{stage:02x}: 0x6008-0x600e zeroed with the rest, nothing else", out + err)
+        rc, out, err, before, after = og_dec(0x70, full, clear=True)
+        want = bytearray(before)
+        want[0x6004:0x6008], want[0x6010:0x6017] = bytes(4), bytes(7)
+        check(rc == 0 and after == bytes(want) and "cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros" in out
+              and "0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage and no obs_gate=1 record says they're a run's" in out,
+              "--clear leaves bytes that are neither run's alone, and says so", out + err)
     tool = open(TOOL).read()
     check("    try:\n        r0201 = os.pread(fd, 1, R0201)\n    except OSError:\n        r0201 = b\"\"\n" in tool and "\"PMU 0x0201: not read\"" in tool
           and tool.count("R0201") == 2 and "os.pwrite(fd, b\"\\x01\", ALARM_CTRL)" in tool

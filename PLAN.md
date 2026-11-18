@@ -175,7 +175,14 @@ the PR with that session's work.
        gone down, as run 2's CPU7 read their power words (`observe=1` is run 2's recipe alone
        today): it would show which bit follows which complex, and whether the E complex's bit
        comes up when CPU0 goes down under today's recipe. No power-word reads after the commit
-       in it. Any later run that sets the alarm near: the nights off around it, as here, until
+       in it. **Built 2026-11-18, to run:** `run-floor --no-reading --m1-obs-gate` (RESEARCH.md,
+       "`obs_gate=1` as built"): run 3's line with CPU7 reading the gate word, the handshake
+       words, PHASE and the four CPU power words after CPU0 and the E complex have gone, and
+       again 500 ms later. No alarm in it, so the nights can stay on; the restart comes about
+       30 s after the dark screen. 0x0d or 0x0e says a bit per complex with the E complex's at
+       bit 2; 0x0b again says the bits don't follow which complexes are down. It is run 3's
+       recipe, not today's: what it shows of B2's progress is under that recipe. Any later run
+       that sets the alarm near: the nights off around it, as here, until
        the snapshot below is built.
        To build: the alarm's registers saved before the unit loads the driver, and the
        decoder saying when the driver is bound (its "cleared the enable (new)" line was wrong

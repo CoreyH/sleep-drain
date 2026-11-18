@@ -139,6 +139,10 @@ LL_BLINK_BIT = 0x40  # 0x6016 in an ll_wake=1 run: step 8 made the keyboard PWM'
 LL_LOOKED = 0x08  # 0x6008, gate_look=1: 0x6009-0x600e are CPU0's own look before its last WFI (last_look.h)
 LL_ARMED = 0x04  # 0x6008 as K1 leaves it with gate_look=1, until the look's first command
 LL_LOOK_MS = 1000  # last_look.h's: the look, after the commit's last write
+# obs_gate=1 (last_look.h): the same seven bytes in observe=1's run, CPU7's look at the engine's gate words
+OG_MARK, OG_ARMED, OG_LATER_MS = 0x80, 0x40, 500
+OG_STAGES = (0x61, 0x62, 0x6e, 0x6f, 0x71, 0x72, 0x7e, 0x7f)  # CPU7's stages from its first record on: the look follows that record
+OG_WORDS = ("CPU0", "ECPM (the E complex)", "PCPM0 (P complex 0)", "PCPM1 (P complex 1, CPU7's own)")
 
 
 def alarm_secs(s):
@@ -1204,10 +1208,63 @@ LL_COUNT = (None, "once", "twice or more, under a hundred times", "a hundred tim
 LL_PCIE = ("APCIE_ST_SYS", "APCIE_ST1_SYS", "APCIE_GP_SYS", "APCIE_ST", "APCIE_GP")  # pcie_down.h's order
 
 
+def og_record(s, r):
+    """Whether 0x6008-0x600e hold obs_gate=1's record, or K1's mark for it: never under one of last_look=1's stages."""
+    return s not in LL_STAGES and (r[0] == OG_ARMED or (s in OG_STAGES and bool(r[0] & OG_MARK)))
+
+
+def og_lines(s, r):
+    """obs_gate=1: 0x6008-0x600e, what CPU7, the observer, read of the engine's gate words and the four CPU power words after its
+    polls of CPU0's and the E complex's (e1-hook/last_look.h has the bytes). Fields as read, each named."""
+    def words(v):
+        return ", ".join(f"{n} {'off' if v >> i & 1 else 'on'}" for i, n in enumerate(OG_WORDS))
+
+    def gate44(v):
+        return (f"bit 0 {'set' if v & 1 else 'clear'}, bit 1 {'set' if v & 2 else 'clear'}, bit 2 {'set' if v & 4 else 'clear'} (B2's first poll,"
+                f" op 1, waits for it set), bit 3 {'set' if v & 8 else 'clear'} (op 3 waits for it clear)")
+
+    out = [f"0x6008-0x600e = {r.hex(' ')}: obs_gate=1's record: the engine's gate words read by CPU7, the observer, after its polls of"
+           " CPU0's and the E complex's power words:"]
+    b0 = r[0]
+    if b0 == OG_ARMED:
+        # Every observer's run zeroes these bytes at K1, so under one of CPU7's stages the mark is this run's. Under any other
+        # stage it may be an earlier run's, left uncleared: no other run zeroes them (Pullfrog on #116).
+        whose = ("obs_gate=1 was set and CPU7's look never landed" if s in OG_STAGES else
+                 "the mark of an obs_gate=1 run whose look never landed. This run's if it was one, which stage"
+                 f" 0x{s:02x} doesn't say; otherwise an earlier run's, left uncleared")
+        return out + [f"  0x6008 = 0x{b0:02x}: {whose}: K1 writes this byte, and the look's first command"
+                      " would have written over it (CPU7 didn't get that far, or the command failed)"
+                      + (f"; 0x6009-0x600e = {r[1:].hex(' ')} aren't shown to be this run's: NOT READ" if any(r[1:]) else "")]
+    if s not in OG_STAGES:
+        return out + [f"  NOT READ: stage 0x{s:02x} isn't one CPU7 sends from its first record on, and the look follows that record"]
+    if not b0 & OG_MARK or b0 & 0x70 or r[1] & 7:
+        return out + [f"  0x6008 0x6009 = {b0:02x} {r[1]:02x}: not values e1_hook writes here (bit 7 of the first with bits 6:4 clear; bits 2:0 of"
+                      " the second clear): NOT READ"]
+    if not r[4] & 0x80:
+        return out + [f"  0x6008-0x600c = {r[:5].hex(' ')}: the first command didn't land whole (bit 7 of 0x600c, its last byte): none of the"
+                      " five is read, and nothing after them"]
+    out.append(f"  0x6008 = 0x{b0:02x}: the power words, read right before the words below: {words(b0)}")
+    out.append(f"  0x6009 = 0x{r[1]:02x}: HS_A bit 31 = {r[1] >> 3 & 1} (A2's raise for its first handshake), bit 24 = {r[1] >> 4 & 1} (the answer A2"
+               f" waits for); HS_B bits 0, 1, 31 = {r[1] >> 5 & 1}, {r[1] >> 6 & 1}, {r[1] >> 7 & 1}")
+    out.append(f"  0x600a = 0x{r[2]:02x}: 0x2922c0040's low byte (bit 1 {'set' if r[2] & 2 else 'clear: B2 clears it at its ops 4 to 6'})")
+    out.append(f"  0x600b = 0x{r[3]:02x}: 0x2922c0044's low byte: {gate44(r[3])}. Awake it reads 0x08; with CPU0 awake and the two P complexes"
+               " off, 1 s after the commit, it read 0x0b (the gate-look run of 2026-11-18)")
+    out.append(f"  0x600c = 0x{r[4]:02x}: PHASE's low seven bits 0x{r[4] & 0x7f:x} ({PHASES.get(r[4] & 0x7f, 'not a phase on file')})")
+    if not r[6] & 0x80 or r[6] & 4:
+        return out + [f"  0x600d 0x600e = {r[5]:02x} {r[6]:02x}: the second command, {OG_LATER_MS} ms after the first, didn't land whole or isn't"
+                      " e1_hook's (bit 7 of 0x600e set, its bit 2 clear): not read"]
+    out.append(f"  0x600d = 0x{r[5]:02x}: 0x2922c0044's low byte {OG_LATER_MS} ms later: {gate44(r[5])}")
+    out.append(f"  0x600e = 0x{r[6]:02x}: then: {words(r[6] >> 3)}; 0x2922c0040's bits 1:0 = {r[6] & 3}")
+    return out
+
+
 def ll_lines(s, b):
     """last_look=1: 0x6008-0x600e, what CPU0 sent if its own last WFI returned, or with gate_look=1 what it sent itself before
     that WFI (e1-hook/last_look.h has the bytes). Fields as read, each named; what they add up to is PLAN.md's to say."""
     r = b[8:0x0f]
+    # obs_gate=1's record is in the same bytes, in observe=1's runs: its mark or K1's in 0x6008 under one of that run's stages.
+    if og_record(s, r):
+        return og_lines(s, r)
     out = [f"0x6008-0x600e = {r.hex(' ')}: last_look=1's record of CPU0's own last WFI:"]
     if s not in LL_STAGES:
         return out + ["  NOT READ: the stage isn't one of last_look=1's, and no other run writes these bytes. They read 0 in"
@@ -2369,7 +2426,9 @@ def main():
             # The stage's block last: a clear that stops halfway then leaves the stage, and the launchers, which go by a
             # zero stage, refuse (Pullfrog on #80: a run's bytes at 0x6011-0x6016 left under a zero stage).
             # last_look=1's bytes go only after one of its own stages: under any other, whatever is there isn't a run's.
-            crumbs = (CRUMBS[0], LL_CRUMBS) + CRUMBS[1:] if st in LL_STAGES else CRUMBS
+            # obs_gate=1's record, or K1's mark for it, is a run's too.
+            seven = st in LL_STAGES or og_record(st, b[8:0x0f])
+            crumbs = (CRUMBS[0], LL_CRUMBS) + CRUMBS[1:] if seven else CRUMBS
             for off, n in reversed(crumbs):
                 if os.pwrite(fd, bytes(n), off) != n:
                     die(f"short write at {off:#x}")
@@ -2378,9 +2437,9 @@ def main():
             die(f"{path}: {e}")
         if any(a != bytes(n) for a, (_, n) in zip(after, crumbs)):
             die("cleared, but they don't read back as zeros")
-        print(f"cleared: 0x6004-0x{'600e' if st in LL_STAGES else '6007'} and 0x6010-0x6016 read back as zeros")
-        if st not in LL_STAGES and any(b[8:0x0f]):
-            print("0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage says they're a run's")
+        print(f"cleared: 0x6004-0x{'600e' if seven else '6007'} and 0x6010-0x6016 read back as zeros")
+        if not seven and any(b[8:0x0f]):
+            print("0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage and no obs_gate=1 record says they're a run's")
     return 0
 
 
