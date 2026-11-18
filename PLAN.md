@@ -181,7 +181,21 @@ the PR with that session's work.
        again 500 ms later. No alarm in it, so the nights can stay on; the restart comes about
        30 s after the dark screen. 0x0d or 0x0e says a bit per complex with the E complex's at
        bit 2; 0x0b again says the bits don't follow which complexes are down. It is run 3's
-       recipe, not today's: what it shows of B2's progress is under that recipe. Any later run
+       recipe, not today's: what it shows of B2's progress is under that recipe. **Run
+       2026-11-18** (RESEARCH.md, "The observer's gate run"): 0x09 with CPU0 and ECPM off, PCPM0
+       off and PCPM1 up. Bits 0 and 1 are P complexes 0 and 1, each set when off; bit 2, B2's
+       first poll, is not the E complex's power word reading off. What bit 2 is isn't known:
+       all three off together, the E complex's in another sense, or nothing of the CPUs'.
+       Nor where runs A and B held B2: at op 1, at op 3, or in the first handshake.
+       **Next, at the desk first:** (1) which of 0x6008-0x600e outlast a restart: 0x600d and
+       0x600e were lost in both runs though their command was acknowledged and awake they take
+       a write; test values written awake, one plain restart, a read (the same restart gives
+       the SMC control dump); records use 0x6008-0x600c until then. For the gate-look run the
+       lost bytes are then no proof of a hang, and none that CPU0 reached its WFI: open. (2) What
+       else is in the engine's page next to 0x2922c0044: the whole page read awake by a look
+       that returns (item 3), then the words that differ read by the observer, in place of a
+       guess at bit 2. (3) The keyboard's light in an observer's run, where a P complex and
+       not the E complex is last: whether B2 gets to its power-downs then. Any later run
        that sets the alarm near: the nights off around it, as here, until
        the snapshot below is built.
        To build: the alarm's registers saved before the unit loads the driver, and the

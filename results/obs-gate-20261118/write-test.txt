@@ -1,0 +1,14 @@
+$ write-test.py (SPMI driver: spmi_apple_wake)
+before: 00 00 00 00 00 00 00
+0x6008: wrote a5, read a5; wrote 5a, read 5a; zeroed, reads 00
+0x6009: wrote a5, read a5; wrote 5a, read 5a; zeroed, reads 00
+0x600a: wrote a5, read a5; wrote 5a, read 5a; zeroed, reads 00
+0x600b: wrote a5, read a5; wrote 5a, read 5a; zeroed, reads 00
+0x600c: wrote a5, read a5; wrote 5a, read 5a; zeroed, reads 00
+0x600d: wrote a5, read a5; wrote 5a, read 5a; zeroed, reads 00
+0x600e: wrote a5, read a5; wrote 5a, read 5a; zeroed, reads 00
+0x600d, 2 bytes 0d b9 in one write: 0x6008-0x600e read 00 00 00 00 00 0d b9
+0x6008, 5 bytes 87 a8 03 09 84 in one write: 0x6008-0x600e read 87 a8 03 09 84 00 00
+0x6008, 7 bytes 01 02 03 04 05 06 07 in one write: 0x6008-0x600e read 01 02 03 04 05 06 07
+after: 00 00 00 00 00 00 00
+rc=0
