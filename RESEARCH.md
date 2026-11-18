@@ -5331,6 +5331,93 @@ no code read today, nothing posted):
 - His gates are power words the AP can read; that the same holds for whatever stands behind
   0x2922c0044's bit 2 here is not known.
 
+### `last_look=1` as built: CPU0's last WFI recorded if it returns, the marker at 70 s, and a second form with a wake and a blinking keyboard (2026-11-16)
+
+The first rung of the order after the review (PLAN.md), built as `e1_hook last_look=1` and `ll_wake=1`,
+`run-floor --m1-last-look` and `--m1-last-look-wake`; `e1-hook/last_look.h` has the bytes. Both sit on
+`--m1-mark`'s recipe, run 17's, without any of the AP-made steps on B2's ops that came after it.
+
+**What changes in run A (`last_look=1`).**
+- WD1's count is written as 80 s where `wd1_mark=1` writes 60 s: the same register, another value. A marker
+  that stands restarts the SoC about 70 s after step 4. A restart that moves from 90 s to 70 s is WD1's; one
+  that stays at 90 s never was (the second reading "The strategy review" left open).
+- CPU0's final loop now does something when its WFI returns. Since run 11 it only looped. The first return
+  sends seven bytes to the PMU's 0x6008-0x600e (Corey's OK of 2026-11-16) in three commands, each sent before
+  the next one's reads, so that a read that hangs loses only what follows: when it returned and how often;
+  what was pending, whether CPU0's timer was firing, the handshake bits, and the low bytes of 0x2922c0040,
+  0x2922c0044 and PHASE; then how many of SIO's 43 power words, the five PCIe words, ANS2 and the PMP's read
+  off. Every address is one this module has read in this state before. The only write besides the PMU's bytes
+  and nub-spmi0's acks is CPU0's timer control, set to 0.
+- Nothing is armed that could end that WFI, so a return in run A means a pending source: the stall the M4
+  drivers found. All 0 means CPU0 never came back to send, which is not a proof that it was powered off.
+- `m1-crumbs` prints the PMU's 0x0201 with every record, and `--clear` zeroes 0x6008-0x600e only after one of
+  this run's stages.
+
+**What run B adds (`ll_wake=1`): three things armed, each with its own reading.**
+- The PMU's alarm 20 s after the commit's second, not an hour. An SoC that slept comes out through its reset
+  vector, which is the boot loader's here: a restart at about 20 s, well before the marker.
+- CPU0's own timer (the host's physical timer, CNTHP at EL2), 25 s after its last step, unmasked. If the WFI
+  returns for it, the seven bytes are a look at the engine 25 s in: whether B2's gate bit reads set with
+  every other core down, where PHASE is, how far the power words went. A return doesn't show that the core
+  was never down: Linux's own deep idle on this chip (`cpuidle-apple.c`) is ended by the core's timer and
+  comes back at the next instruction, without its registers, which is why CPU0's WFI here keeps x18 to x30
+  on its stack as that driver does. Whether a core that went down under this recipe's override bits comes
+  back for its timer at all isn't known.
+- The keyboard backlight set blinking in step 8, 100 ms on and 100 ms off: FPWM0's power word (0x28e580190)
+  asked on, and, only if it reads on within 10 ms, the PWM's on cycles, off cycles and control, in the
+  kernel driver's order and with its control value (`drivers/pwm/pwm-apple.c`, read from omacom/linux-aurora).
+  Four new writes. B2 switches FPWM0 off as the tenth of its 43 SIO words. A blink was chosen over a steady
+  light because a gated PWM may freeze its pin either way: a blink that stops is the sign, whichever level it
+  stops at. `e1-hook/kbd-blink` makes the three PWM writes awake, to see the blink first.
+- It differs from macOS's state at the commit in one more word (FPWM0 on), and an armed timer may itself
+  keep a core from gating. That is why A runs first and alone.
+
+**How an ending reads** (one line each; `m1-crumbs` says which applies):
+- restart at about 70 s, bytes 0: the marker; B2 short of its op 224, and CPU0 never came back. As run 17.
+- restart at about 70 s, bytes set: CPU0's WFI returned. In A, a pending source, and the bytes name it. In
+  B at 22 to 30 s with the timer firing, CPU0 came back for its timer, and the bytes are the look; whether
+  it had been down in between they don't say.
+- restart well before 70 s: something else, new here (Naeem Malik's M1 does this 5 s after its release).
+- about 120 s, or 150 s or more, or dark: B2 past its op 224, read as `--m1-mark`'s.
+- in B, the light: blinking to the restart, B2 short of its tenth SIO word; stopping earlier, when.
+
+**Left out of this rung, against the plan's wording.** The cluster status words (0x28e09a000 + 4n) aren't read:
+nothing has read them, the record has no bytes left for three words, and a first read under step 9's mask
+could leave an SError pending, which would itself end CPU0's WFI. They go to the returning batch.
+
+**Checked without hardware.** `tests/m1_crumbs_test.py` compiles the header and the four functions and runs
+them against pages that log every access; the mutants of the new code are all caught, after the holes they
+found were closed. The tests found one bug before any review: after the hundredth return every further one
+would have been sent.
+
+**What the adversarial pass found** (one subagent, read-only; all taken). The run could not have loaded:
+`m1_ll_init()` ran before `m1_wd2_init()`, which maps the engine's page, and refused. The tests passed with
+it, since they checked its place only against `m1_wd1_init()`; they now check it against the initializer
+that maps each page it needs. And the code after CPU0's WFI kept its flags and pointers in registers a
+deep WFI may not keep (the point above). Smaller ones: the power word is now written as the power-state
+driver writes it, with the hardware's busy bit never written back; an `isb` after the PWM's writes; four
+places where the decoder said more or less than the bytes do. Open after it, for the plan: after run B the
+alarm has fired and its event stays latched (`--clear` writes only its control), and nothing here knows
+whether a latched event holds a wake source up at the next run's commit.
+
+**What Pullfrog found** (on #109's first commit; all taken). The same load order. The second command had no
+mark of its own, so a record cut off after 0x6009 read as measured zeros in the gate words and PHASE: bit 7
+of 0x600c is now set with PHASE's low seven bits, and without it 0x6009-0x600c aren't read. The alarm's
+interval in the decoder's reading of the second (20 s in run B, not an hour). Two tests held only for one
+order of evaluating a call's arguments, which C leaves open: the reads now go into locals, one after the
+other. And 37 older mutants had gone stale, their lines moved by this change; they'd have shown only in a
+run of the whole list, about an hour and a half. All 998 are caught again, and `tests/mutants.py` now checks
+the whole list against the tree before it runs anything.
+
+### The nights, switched on after a second flat battery (2026-11-18)
+
+The Mac went to sleep on 2026-11-16 at 13:59 with 98% (the sleep log's last `pre` line), before the nights'
+hook was installed, and was found flat on 2026-11-18: 61 Wh in under 44 hours, which is what about 2 W gives
+in 31. The PMU's clock read 1970 again and was set again. Then, in that boot: `pkexec bash install.sh` (from
+`rung/last-look` with main merged in) and `sleep-drain-nights on 25`. The unit started, `load` swapped the
+alarm drivers in on the running system and the toggle reports rtc0 as the alarm RTC. Not seen yet: the
+drivers loaded by the unit at boot, and a lid closed on battery that ends in a power-off.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

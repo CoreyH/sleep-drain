@@ -2,15 +2,16 @@
 """tests/mutants.py: break the one-way runs' code one way at a time and see that the tests notice (tests/m1_crumbs_test.py;
 tests/e1_hook_probe_test.py for the launcher e1-hook/probe).
 
-  python3 -I -B tests/mutants.py            every mutant (a few minutes: six at a time)
+  python3 -I -B tests/mutants.py            every mutant (about an hour and a half for a thousand: six at a time)
   python3 -I -B tests/mutants.py wd1 fab    only those whose name has one of these words
 
 Each mutant is one change to e1-hook/e1_hook.c, one of its headers, e1-hook/m1-crumbs or e1-hook/probe: a wrong value, a write
 that isn't gated, a check dropped, a bit read wrong. It's applied in a copy of e1-hook/ and tests/, never in the
 tree, and the tests run there. A mutant is caught if a check fails or the tests can't build what they compile; it
 survived if they still say "all ok", and then the tests have a hole. A mutant whose text isn't in the file any more
-is reported as stale: the code moved, and the list needs the same change. Before any mutant, the unchanged tests are run
-in such a copy and have to pass there. Exit status: 0 if every one was caught.
+is reported as stale: the code moved, and the list needs the same change. The whole list is checked for that against the
+tree before anything runs, whatever words were given, and a stale one stops the run there. Before any mutant, the unchanged
+tests are run in such a copy and have to pass there. Exit status: 0 if every one was caught.
 
 Add the mutants a new rung calls for when it's built: the ones a review would ask about.
 """
@@ -31,6 +32,7 @@ SST = "sio_steps.h"
 PRT = "pre_test.h"
 A2P = "a2_pre.h"
 ACL = "acc_last.h"
+LL = "last_look.h"
 # The test that has to notice a mutant of each file: the launcher e1-hook/probe has its own.
 TESTS = {PROBE: "e1_hook_probe_test.py"}
 
@@ -108,26 +110,26 @@ MUTANTS = [
     ("fab decoder: the byte read at every sio_stop=1 stage", CRUMBS, "            elif s in FAB_STAGES and fab_landed(b):\n                out += fab_lines(b[7], pre)", "            elif s in SIO_STOP_STAGES and fab_landed(b):\n                out += fab_lines(b[7], pre)"),
     ("fab decoder: 'after the write' and 'at the end' swapped", CRUMBS, "    was, took, kept = v >> 2 & 3, bool(v & 0x10), bool(v & 0x20)", "    was, took, kept = v >> 2 & 3, bool(v & 0x20), bool(v & 0x10)"),
     ("fab decoder: at 3 claimed without the last read", CRUMBS, "    elif took and kept:\n        out.append(\"  so: the fabric was at 3", "    elif took:\n        out.append(\"  so: the fabric was at 3"),
-    ('fab decoder: the pending stage read as the clean one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[1], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])'),
-    ("fab decoder: no 'nothing records the commit' at 0x52", CRUMBS, "            if s in (0x59, 0x5a, 0x4e, FAB_PRE) and", "            if s in (0x59, 0x5a, 0x4e) and"),
+    ('fab decoder: the pending stage read as the clean one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[1], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])'),
+    ("fab decoder: no 'nothing records the commit' at 0x52", CRUMBS, "            if s in (0x59, 0x5a, 0x4e, FAB_PRE, LL_PRE, LLW_PRE) and", "            if s in (0x59, 0x5a, 0x4e, LL_PRE, LLW_PRE) and"),
     ("fab decoder: the cluster mark not read at its stages", CRUMBS, "ACK_MARKED = (0x4e, 0x56, 0x57) + FAB_STAGES", "ACK_MARKED = (0x4e, 0x56, 0x57)"),
     # wd1_mark=1: the three writes, their order and place, and when the marker counts as standing
     ("wd1: on by default", C, "static bool wd1_mark;", "static bool wd1_mark = true;"),
     ("wd1: the bite written to the count", C, "\twritel(WD1_MARK_BITE, wdt + WD1_BITE);", "\twritel(WD1_MARK_BITE, wdt + WD1_COUNT);"),
-    ("wd1: armed before the count is in", C, "\twritel(WD1_MARK_COUNT, wdt + WD1_COUNT);\n\twritel(WD1_RESET_EN, wdt + WD1_CTRL);", "\twritel(WD1_RESET_EN, wdt + WD1_CTRL);\n\twritel(WD1_MARK_COUNT, wdt + WD1_COUNT);"),
+    ("wd1: armed before the count is in", C, "\twritel(last_look ? LL_WD1_COUNT : WD1_MARK_COUNT, wdt + WD1_COUNT);\t/* last_look=1: 80 s, the marker at 70 s (last_look.h) */\n\twritel(WD1_RESET_EN, wdt + WD1_CTRL);", "\twritel(WD1_RESET_EN, wdt + WD1_CTRL);\n\twritel(last_look ? LL_WD1_COUNT : WD1_MARK_COUNT, wdt + WD1_COUNT);"),
     ("wd1: not stopped first when it reads armed", C, "\tif (was)\n\t\twritel(0, wdt + WD1_CTRL);\n", ""),
-    ("wd1: the count written as 0", C, "\twritel(WD1_MARK_COUNT, wdt + WD1_COUNT);", "\twritel(0, wdt + WD1_COUNT);"),
+    ("wd1: the count written as 0", C, "\twritel(last_look ? LL_WD1_COUNT : WD1_MARK_COUNT, wdt + WD1_COUNT);", "\twritel(0, wdt + WD1_COUNT);"),
     ("wd1: a bite of 151 s", WD1, "#define WD1_MARK_BITE\t\t(150U * WD1_HZ)", "#define WD1_MARK_BITE\t\t(151U * WD1_HZ)"),
     ("wd1: a count of 30 s", WD1, "#define WD1_MARK_COUNT\t\t(60U * WD1_HZ)", "#define WD1_MARK_COUNT\t\t(30U * WD1_HZ)"),
     ("wd1: armed counts whatever the bite", WD1, "((ctl & WD1_RESET_EN) && bite == WD1_MARK_BITE ? M1_WD1_ARMED : 0)", "((ctl & WD1_RESET_EN) ? M1_WD1_ARMED : 0)"),
-    ("wd1: any count past 60 s counts", WD1, "(count > WD1_MARK_COUNT && count - WD1_MARK_COUNT <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0)", "(count > WD1_MARK_COUNT ? M1_WD1_LEAD : 0)"),
-    ("wd1: a count just under 60 s counts", WD1, "(count > WD1_MARK_COUNT && count - WD1_MARK_COUNT <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0)", "(count - WD1_MARK_COUNT + 1 <= WD1_MARK_SLACK + 1 ? M1_WD1_LEAD : 0)"),
-    ("wd1: a count that isn't running counts", WD1, "(count > WD1_MARK_COUNT && count - WD1_MARK_COUNT <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0)", "(count >= WD1_MARK_COUNT && count - WD1_MARK_COUNT <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0)"),
+    ("wd1: any count past 60 s counts", WD1, "(count > mark && count - mark <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0)", "(count > mark ? M1_WD1_LEAD : 0)"),
+    ("wd1: a count just under 60 s counts", WD1, "(count > mark && count - mark <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0)", "(count - mark + 1 <= WD1_MARK_SLACK + 1 ? M1_WD1_LEAD : 0)"),
+    ("wd1: a count that isn't running counts", WD1, "(count > mark && count - mark <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0)", "(count >= mark && count - mark <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0)"),
     ("wd1: 'armed' read from the count", C, "\tbool was = readl(wdt + WD1_CTRL);", "\tbool was = readl(wdt + WD1_COUNT);"),
     ("wd1: the load ignores its refusal", C, "\tif (wd1_mark) {\n\t\tint ret = m1_wd1_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n", "\tif (wd1_mark)\n\t\tm1_wd1_init();\n"),
-    ("wd1: its count zeroed through another name after the release", C, "\t/* 10 */\n\tm1_arm_deep_sleep();", "\t/* 10 */\n\t{\n\t\tvoid __iomem *w = m1_wdt;\n\n\t\twritel(0, w + 0x10);\n\t}\n\tm1_arm_deep_sleep();"),
+    ("wd1: its count zeroed through another name after the release", C, "\t\tm1_ll_timer();\n\tm1_arm_deep_sleep();", "\t\tm1_ll_timer();\n\t{\n\t\tvoid __iomem *w = m1_wdt;\n\n\t\twritel(0, w + 0x10);\n\t}\n\tm1_arm_deep_sleep();"),
     ("wd1: set without the parameter", C, "\tif (wd1_mark) {\n\t\tif (m1_wd1_set(m1_wdt))", "\tif (1) {\n\t\tif (m1_wd1_set(m1_wdt))"),
-    ("wd1: stopped again before the commit", C, "\tif (wd1_mark)\n\t\twd1 = m1_wd1_bits(", "\tif (wd1_mark)\n\t\twritel(0, m1_wdt + M1_WD1_CTRL);\n\tif (wd1_mark)\n\t\twd1 = m1_wd1_bits("),
+    ("wd1: stopped again before the commit", C, "\tif (wd1_mark)\n\t\twd1 = m1_wd1_bits_at(", "\tif (wd1_mark)\n\t\twritel(0, m1_wdt + M1_WD1_CTRL);\n\tif (wd1_mark)\n\t\twd1 = m1_wd1_bits_at("),
     ("wd1: the look taken in step 4, not last", C, "\t\tif (m1_wd1_set(m1_wdt))\n\t\t\tflags |= BIT(6);\n",
      "\t\tif (m1_wd1_set(m1_wdt))\n\t\t\tflags |= BIT(6);\n\t\twd1 = m1_wd1_bits(readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_BITE), readl(m1_wdt + WD1_COUNT));\n"),
     ("wd1: the two bits never reach the byte", C, "m1_fab_byte(held, fab_pre, fab_set, fab_end, wd1)", "m1_fab_byte(held, fab_pre, fab_set, fab_end, 0)"),
@@ -154,8 +156,8 @@ MUTANTS = [
     ("fab decoder: the byte read without the outcomes' marker", CRUMBS, "            elif s in FAB_STAGES and fab_landed(b):\n", "            elif s in FAB_STAGES:\n"),
     ("fab decoder: any 0x6013 counts as the marker", CRUMBS, "    return b[0x13] == K_MARK or b[0x13] & W_MARK == W_MARK", "    return True"),
     ("wd1 decoder: a count of 30 s", CRUMBS, "WD1_BITE_S, WD1_COUNT_S, WD2_BITE_S = 150, 60, 120", "WD1_BITE_S, WD1_COUNT_S, WD2_BITE_S = 150, 30, 120"),
-    ("wd1 decoder: 90 s without its other reading", CRUMBS, "                \" a later A sequence starting about 60 s after the commit and arming WD2 with its own 30 s, gives the same time\")",
-     "                \"\")"),
+    ("wd1 decoder: 90 s without its other reading", CRUMBS, "(\": a pair that finished, with a later A sequence starting about 60 s after the commit and arming WD2 with its own\"\n                   \" 30 s, gives the same time\" if unzeroed == 90 else",
+     "(\"\" if unzeroed == 90 else"),
     # gates_mark=1: reads only, its byte where the alarm's result was, its own stages, and a decoder that reads the byte only where it's there
     ("gates: on by default", C, "static bool gates_mark;", "static bool gates_mark = true;"),
     ("gates: parameter writable (0644)", C, "module_param(gates_mark, bool, 0444);", "module_param(gates_mark, bool, 0644);"),
@@ -194,8 +196,8 @@ MUTANTS = [
     ("gates decoder: the gate byte read as the alarm's result", CRUMBS, "        if s in GATES_STAGES:\n            out += gates_lines(s, b, pmp)\n        elif s in SIOD_STAGES:",
      "        if False:\n            out += gates_lines(s, b, pmp)\n        elif s in SIOD_STAGES:"),
     ("gates decoder: --clear takes the gate byte for the alarm's result", CRUMBS, '    return None if s in GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]', '    return None if s in SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]'),
-    ('gates decoder: the pending stage read as the clean one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[1], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])'),
-    ('gates decoder: the time read at the stage before the commit', CRUMBS, 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE)', 'PRE_STAGES = (FAB_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE)'),
+    ('gates decoder: the pending stage read as the clean one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[1], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])'),
+    ('gates decoder: the time read at the stage before the commit', CRUMBS, 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)', 'PRE_STAGES = (FAB_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)'),
     ("gates decoder: fabric_up=1's byte not read at the run's stages", CRUMBS, "FAB_STAGES = (FAB_PRE,) + FAB_WD2 + GATES_STAGES + SIOD_STAGES", "FAB_STAGES = (FAB_PRE,) + FAB_WD2 + SIOD_STAGES"),
     # sio_down=1: 43 words to 0 in B2's order and back as found, nothing else written, its byte, its stages, and a decoder that reads the byte only where it's there
     ("siod: on by default", C, "static bool sio_down;", "static bool sio_down = true;"),
@@ -298,8 +300,8 @@ MUTANTS = [
     ("siod decoder: no word about the commit's time with a poll unmet", CRUMBS, "            out.append(late)\n", "            pass\n"),
     ("siod decoder: its byte read as the alarm's result", CRUMBS, "        elif s in SIOD_STAGES:\n            out += siod_lines(s, b, pmp)", "        elif False:\n            out += siod_lines(s, b, pmp)"),
     ("siod decoder: --clear takes its byte for the alarm's result", CRUMBS, '    return None if s in GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]', '    return None if s in GATES_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]'),
-    ('siod decoder: the pending stage read as the clean one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[1], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])'),
-    ('siod decoder: the time read at the stage before the commit', CRUMBS, 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE)', 'PRE_STAGES = (FAB_PRE, GATES_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE)'),
+    ('siod decoder: the pending stage read as the clean one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[1], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])'),
+    ('siod decoder: the time read at the stage before the commit', CRUMBS, 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)', 'PRE_STAGES = (FAB_PRE, GATES_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)'),
     ("siod decoder: fabric_up=1's byte not read at the run's stages", CRUMBS, "FAB_STAGES = (FAB_PRE,) + FAB_WD2 + GATES_STAGES + SIOD_STAGES", "FAB_STAGES = (FAB_PRE,) + FAB_WD2 + GATES_STAGES"),
     ("siod decoder: the first form's record read by the second form's rules", CRUMBS, "    if b[4] & 0x7f in SIOD1_STAGES:", "    if False:"),
     ("siod decoder: the first form's stages still the run's", CRUMBS, "SIOD_PRE = 0x3d\n", "SIOD_PRE = 0x3a\n"),
@@ -563,7 +565,7 @@ MUTANTS = [
     ("gate decoder: a test that wasn't made given the byte's verdict", CRUMBS, "    if n == GATE_NOT_MADE:\n        return out + ", "    if False:\n        return out + "),
     ("gate decoder: the no-reads bit taken for part of the step", CRUMBS, "    n = at & ~(GATE_PASS | GATE_NO_SNAP)\n", "    n = at & ~GATE_PASS\n"),
     ("gate decoder: any byte passed as a skipped test's", CRUMBS, "\"the byte a test that wasn't made leaves\" if v == GATE_UNMADE else", "\"the byte a test that wasn't made leaves\" if True else"),
-    ("clear: the stage zeroed first, so a clear that stops halfway reads as clear", CRUMBS, "            for off, n in reversed(CRUMBS):\n", "            for off, n in CRUMBS:\n"),
+    ("clear: the stage zeroed first, so a clear that stops halfway reads as clear", CRUMBS, "            for off, n in reversed(crumbs):\n", "            for off, n in crumbs:\n"),
     ("probe launcher: bytes left beside a zero stage not refused", PROBE, "grep -q \"^0x6010: 00 00 00 00 00 00 00 \" <<< \"$crumbs\" || die", "true || die"),
     ("probe launcher: only six of the seven bytes beside the stage checked", PROBE, "\"^0x6010: 00 00 00 00 00 00 00 \"", "\"^0x6010: 00 00 00 00 00 00 \""),
     ("gate: the first poll's outcome reported as the second's", C, "\t\tclosed1 ? \"SET\" : \"clear\", lane_took ? \"took\" : \"did NOT take\", closed2 ? \"SET\" : \"clear\"", "\t\tclosed2 ? \"SET\" : \"clear\", lane_took ? \"took\" : \"did NOT take\", closed1 ? \"SET\" : \"clear\""),
@@ -653,7 +655,7 @@ MUTANTS = [
     ("pcd: its byte not the one the alarm's last command sends", C, "\tif (pcie_down)\n\t\tm1_gates = m1_pcie_down();", "\tif (pcie_down)\n\t\tm1_pcie_down();"),
     ("pcd: made after the commit", C, "\tif (pcie_down)\n\t\tm1_gates = m1_pcie_down();\n", ""),
     ('pcd: the stage before the commit not its own', C, '\t\tif (pcie_down)\n\t\t\tb[0] = pcd_stage(b[0]);\n\t\tif (sio_steps)', '\t\tif (sio_steps)'),
-    ('pcd: the last stage not its own', C, '\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tb[1] = m1_wd2_sample(', '\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tb[1] = m1_wd2_sample('),
+    ('pcd: the last stage not its own', C, '\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)', '\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)'),
     ("pcd: loads without gates_mark", C, "\tif (pcie_down && (!gates_mark || sio_down || probe)) {", "\tif (pcie_down && (sio_down || probe)) {"),
     ("pcd: loads with sio_down=1", C, "\tif (pcie_down && (!gates_mark || sio_down || probe)) {", "\tif (pcie_down && (!gates_mark || probe)) {"),
     ("pcd: loads with probe=1", C, "\tif (pcie_down && (!gates_mark || sio_down || probe)) {", "\tif (pcie_down && (!gates_mark || sio_down)) {"),
@@ -700,10 +702,10 @@ MUTANTS = [
     ("pcd decoder: the gate's bit read as the parents'", CRUMBS, "+ (\"SET, closed\" if v & PCD_CLOSED else", "+ (\"SET, closed\" if v & PCD_PARENTS else"),
     ("pcd decoder: 0x6016 taken for the alarm's result", CRUMBS, '    return None if s in GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]', '    return None if s in GATES_STAGES + SIOD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]'),
     ("pcd decoder: its byte never read", CRUMBS, "        elif s in PCD_STAGES:\n            out += pcd_lines(s, b, pmp)\n", ""),
-    ('pcd decoder: the time read at the stage before the commit', CRUMBS, 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE)', 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, SST_PRE, A2P_PRE, ACL_PRE)'),
-    ('pcd decoder: the pending stage read as the clean one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[1], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])'),
+    ('pcd decoder: the time read at the stage before the commit', CRUMBS, 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)', 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)'),
+    ('pcd decoder: the pending stage read as the clean one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[1], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])'),
     ("pcd decoder: the stage before the commit 0x1c", CRUMBS, "PCD_PRE = 0x1d", "PCD_PRE = 0x1c"),
-    ('pcd decoder: its pending stage not one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])'),
+    ('pcd decoder: its pending stage not one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])'),
     ("pcd decoder: fabric_up=1's byte read against gates_mark=1's stage", CRUMBS, 'else PCD_PRE if s in PCD_STAGES else SIOD_PRE if', 'else SIOD_PRE if'),
     ('sst: on by default', C, 'static bool sio_steps;', 'static bool sio_steps = true;'),
     ('sst: parameter writable (0644)', C, 'module_param(sio_steps, bool, 0444);', 'module_param(sio_steps, bool, 0644);'),
@@ -745,8 +747,8 @@ MUTANTS = [
     ('sst: the pass made on a gate closed before', C, '\t\tb = sst_closed_before();\n\t\tm1_crumb(GATES_AT, &b, 1);\n\t\treturn b;', '\t\tb = sst_closed_before();\n\t\tm1_crumb(GATES_AT, &b, 1);'),
     ("sst: step 8: gates_mark=1's reads made too", C, '\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre && !acc_last) {', '\tif (gates_mark && !sio_down && !pcie_down && !a2_pre && !acc_last) {'),
     ('sst: step 8: never called', C, '\tif (sio_steps)\n\t\tm1_gates = m1_sio_steps();\n', ''),
-    ('sst: the stage after the commit not its own', C, '\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tb[1] = m1_wd2_sample(', '\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tb[1] = m1_wd2_sample('),
-    ('sst: the stage before the commit not its own', C, '\t\tif (sio_steps)\n\t\t\tb[0] = sst_stage(b[0]);\n\t\tif (a2_pre)\n\t\t\tb[0] = a2p_stage(b[0]);\n\t\tif (acc_last)\n\t\t\tb[0] = acl_stage(b[0]);\n\t\tb[1] = parked', '\t\tif (a2_pre)\n\t\t\tb[0] = a2p_stage(b[0]);\n\t\tif (acc_last)\n\t\t\tb[0] = acl_stage(b[0]);\n\t\tb[1] = parked'),
+    ('sst: the stage after the commit not its own', C, '\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)', '\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)'),
+    ('sst: the stage before the commit not its own', C, '\t\tif (sio_steps)\n\t\t\tb[0] = sst_stage(b[0]);\n\t\tif (a2_pre)\n\t\t\tb[0] = a2p_stage(b[0]);\n\t\tif (acc_last)\n\t\t\tb[0] = acl_stage(b[0]);\n\t\tif (last_look)', '\t\tif (a2_pre)\n\t\t\tb[0] = a2p_stage(b[0]);\n\t\tif (acc_last)\n\t\t\tb[0] = acl_stage(b[0]);\n\t\tif (last_look)'),
     ('sst: loads with sio_down=1', C, '\tif (sio_steps && (!gates_mark || sio_down || pcie_down || probe)) {', '\tif (sio_steps && (!gates_mark || pcie_down || probe)) {'),
     ('sst: loads with pcie_down=1', C, '\tif (sio_steps && (!gates_mark || sio_down || pcie_down || probe)) {', '\tif (sio_steps && (!gates_mark || sio_down || probe)) {'),
     ('sst: loads with probe=1', C, '\tif (sio_steps && (!gates_mark || sio_down || pcie_down || probe)) {', '\tif (sio_steps && (!gates_mark || sio_down || pcie_down)) {'),
@@ -776,10 +778,10 @@ MUTANTS = [
     ('sst: header: 0x28e03801c ok with bit 30 still set', SST, '\treturn v == SST_CLK_VAL;', '\treturn (v & ~SST_CLK_PENDING) == SST_CLK_VAL;'),
     ('sst: decoder: its byte never read', CRUMBS, '        elif s in SST_STAGES:\n            out += sst_lines(s, b, pmp)\n', ''),
     ("sst: decoder: 0x6016 taken for the alarm's result", CRUMBS, '    return None if s in GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]', '    return None if s in GATES_STAGES + SIOD_STAGES + PCD_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]'),
-    ('sst: decoder: the time read at the stage before the commit', CRUMBS, 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE)', 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, A2P_PRE, ACL_PRE)'),
-    ('sst: decoder: its pending stage not one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], A2P_WD2[0], ACL_WD2[0])'),
+    ('sst: decoder: the time read at the stage before the commit', CRUMBS, 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)', 'PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)'),
+    ('sst: decoder: its pending stage not one', CRUMBS, 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])', 'WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])'),
     ('sst: decoder: the stage before the commit 0x14', CRUMBS, 'SST_PRE = 0x15', 'SST_PRE = 0x14'),
-    ("sst: decoder: fabric_up=1's byte read against pcie_down=1's stage", CRUMBS, '    pre = ACL_PRE if s in ACL_STAGES else A2P_PRE if s in A2P_STAGES else SST_PRE if s in SST_STAGES else PCD_PRE if', '    pre = ACL_PRE if s in ACL_STAGES else A2P_PRE if s in A2P_STAGES else PCD_PRE if'),
+    ("sst: decoder: fabric_up=1's byte read against pcie_down=1's stage", CRUMBS, ' else ACL_PRE if s in ACL_STAGES else A2P_PRE if s in A2P_STAGES else SST_PRE if s in SST_STAGES else PCD_PRE if', ' else ACL_PRE if s in ACL_STAGES else A2P_PRE if s in A2P_STAGES else PCD_PRE if'),
     ("sst: decoder: the first poll's line reads the second's bit", CRUMBS, '          + ("SET, closed" if v & SST_G1 else "clear, OPEN"))', '          + ("SET, closed" if v & SST_G2 else "clear, OPEN"))'),
     ("sst: decoder: closed put down to GPIO's cycle whatever its bit", CRUMBS, '    elif v & SST_G1 and v & SST_GPIO_OK:', '    elif v & SST_G1:'),
     ('sst: decoder: a verdict on the gate with the subtree not off', CRUMBS, '    elif not v & SST_SUB:\n        out.append("  so: INCONCLUSIVE on the gate', '    elif False:\n        out.append("  so: INCONCLUSIVE on the gate'),
@@ -848,7 +850,7 @@ MUTANTS = [
     ("a2p: its byte not the one the alarm's last command sends", C, "\tif (a2_pre)\n\t\tm1_gates = m1_a2_pre();", "\tif (a2_pre)\n\t\tm1_a2_pre();"),
     ("a2p: never made", C, "\tif (a2_pre)\n\t\tm1_gates = m1_a2_pre();\n", ""),
     ("a2p: the stage before the commit not its own", C, "\t\tif (a2_pre)\n\t\t\tb[0] = a2p_stage(b[0]);\n", ""),
-    ("a2p: the last stage not its own", C, "\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tb[1] = m1_wd2_sample(", "\tb[1] = m1_wd2_sample("),
+    ("a2p: the last stage not its own", C, "\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)", "\tif (last_look)"),
     ("a2p: loads without gates_mark=1", C, "\tif (a2_pre && (!gates_mark || sio_down || pcie_down || sio_steps || probe)) {", "\tif (a2_pre && (sio_down || pcie_down || sio_steps || probe)) {"),
     ("a2p: loads with sio_steps=1", C, "\tif (a2_pre && (!gates_mark || sio_down || pcie_down || sio_steps || probe)) {", "\tif (a2_pre && (!gates_mark || sio_down || pcie_down || probe)) {"),
     ("a2p: loads with probe=1", C, "\tif (a2_pre && (!gates_mark || sio_down || pcie_down || sio_steps || probe)) {", "\tif (a2_pre && (!gates_mark || sio_down || pcie_down || sio_steps)) {"),
@@ -890,10 +892,10 @@ MUTANTS = [
     ("a2p decoder: the two last stages the other way round", CRUMBS, "A2P_WD2 = (0x1a, 0x1b)", "A2P_WD2 = (0x1b, 0x1a)"),
     ("a2p decoder: its byte not read", CRUMBS, "        elif s in A2P_STAGES:\n            out += a2p_lines(s, b, pmp)\n", ""),
     ("a2p decoder: 0x6016 taken for the alarm's result", CRUMBS, "    return None if s in GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]", "    return None if s in GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + ACL_STAGES else b[0x16]"),
-    ("a2p decoder: the time read at the stage before the commit", CRUMBS, "PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE)", "PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, ACL_PRE)"),
-    ("a2p decoder: the pending stage read as the clean one", CRUMBS, "WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])", "WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[1], ACL_WD2[0])"),
-    ("a2p decoder: its pending stage not one", CRUMBS, "WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0])", "WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0])"),
-    ("a2p decoder: fabric_up=1's byte read against sio_steps=1's stage", CRUMBS, "    pre = ACL_PRE if s in ACL_STAGES else A2P_PRE if s in A2P_STAGES else SST_PRE if", "    pre = ACL_PRE if s in ACL_STAGES else SST_PRE if"),
+    ("a2p decoder: the time read at the stage before the commit", CRUMBS, "PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)", "PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, ACL_PRE, LL_PRE, LLW_PRE)"),
+    ("a2p decoder: the pending stage read as the clean one", CRUMBS, "WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])", "WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[1], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])"),
+    ("a2p decoder: its pending stage not one", CRUMBS, "WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])", "WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], LL_WD2[0], LLW_WD2[0])"),
+    ("a2p decoder: fabric_up=1's byte read against sio_steps=1's stage", CRUMBS, " else ACL_PRE if s in ACL_STAGES else A2P_PRE if s in A2P_STAGES else SST_PRE if", " else ACL_PRE if s in ACL_STAGES else SST_PRE if"),
     ("a2p decoder: the muxes' bit read the other way", CRUMBS, "\" they read, isn't in the bit)\" if v & A2P_MUX_BAD else", "\" they read, isn't in the bit)\" if not v & A2P_MUX_BAD else"),
     ("a2p decoder: a move's two bits the other way round", CRUMBS, "    took = [bool(v >> (1 + 2 * i) & 1) for i in range(3)]\n    settled = [bool(v >> (2 + 2 * i) & 1) for i in range(3)]",
      "    took = [bool(v >> (2 + 2 * i) & 1) for i in range(3)]\n    settled = [bool(v >> (1 + 2 * i) & 1) for i in range(3)]"),
@@ -918,7 +920,7 @@ MUTANTS = [
     ("acl: step 9 writes 0 to all three", C, "\t\twritel_relaxed(m1_post_val(i), post_map[i]);\n\tdsb(sy);", "\t\twritel_relaxed(0, post_map[i]);\n\tdsb(sy);"),
     ("acl: no barrier between the three and the commit", C, "\t\twritel_relaxed(m1_post_val(i), post_map[i]);\n\tdsb(sy);\t/* the commit is in another page: the three are out before it, as step 5's entries were */\n", "\t\twritel_relaxed(m1_post_val(i), post_map[i]);\n"),
     ("acl: no barrier between the muxes' reads and their byte", C, "\tdsb(sy);\n\tisb();\n\tb = acl_byte(mux, ACL_T_PRE);", "\tb = acl_byte(mux, ACL_T_PRE);"),
-    ("acl: the last stage its own in every run", C, "\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tb[1] = m1_wd2_sample(", "\tb[0] = acl_stage(b[0]);\n\tb[1] = m1_wd2_sample("),
+    ("acl: the last stage its own in every run", C, "\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)", "\tb[0] = acl_stage(b[0]);\n\tif (last_look)"),
     ("acl load: a row eight bytes wide passes", C, "w->addr != ACL_PAGE + off[i] || w->width != 4 || w->val != want_val[i] ||", "w->addr != ACL_PAGE + off[i] || w->val != want_val[i] ||"),
     ("acl: step 9 writes a fourth entry", C, "\tfor (i = ACL_FIRST; i < ACL_FIRST + ACL_N; i++)\n\t\twritel_relaxed", "\tfor (i = ACL_FIRST; i <= ACL_FIRST + ACL_N; i++)\n\t\twritel_relaxed"),
     ("acl: step 9 leaves EACC's out", C, "\tfor (i = ACL_FIRST; i < ACL_FIRST + ACL_N; i++)\n\t\twritel_relaxed", "\tfor (i = ACL_FIRST + 1; i < ACL_FIRST + ACL_N; i++)\n\t\twritel_relaxed"),
@@ -942,8 +944,8 @@ MUTANTS = [
      "\tif (acc_last)\n\t\tm1_acl_out(m1_gates, t_acl);\n\tif (wd2_bite)\n\t\tm1_wd2_out();\n"),
     ("acl: the time never sent", C, "\tif (acc_last)\n\t\tm1_acl_out(m1_gates, t_acl);\n", ""),
     ("acl: the time sent in every wd2_bite=1 run", C, "\tif (acc_last)\n\t\tm1_acl_out(m1_gates, t_acl);\n", "\tif (wd2_bite)\n\t\tm1_acl_out(m1_gates, t_acl);\n"),
-    ("acl: the stage before the commit not its own", C, "\t\tif (acc_last)\n\t\t\tb[0] = acl_stage(b[0]);\n\t\tb[1] = parked", "\t\tb[1] = parked"),
-    ("acl: the last stage not its own", C, "\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tb[1] = m1_wd2_sample(", "\tb[1] = m1_wd2_sample("),
+    ("acl: the stage before the commit not its own", C, "\t\tif (acc_last)\n\t\t\tb[0] = acl_stage(b[0]);\n\t\tif (last_look)", "\t\tif (last_look)"),
+    ("acl: the last stage not its own", C, "\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)", "\tif (last_look)"),
     ("acl: gates_mark=1's reads too", C, "!sio_steps && !a2_pre && !acc_last) {", "!sio_steps && !a2_pre) {"),
     ("acl: loads without gates_mark=1", C, "\tif (acc_last && (!gates_mark || sio_down", "\tif (acc_last && (sio_down"),
     ("acl: loads with a2_pre=1", C, "|| sio_steps || a2_pre || observe || probe)) {", "|| sio_steps || observe || probe)) {"),
@@ -980,10 +982,10 @@ MUTANTS = [
     ("acl decoder: the two last stages the other way round", CRUMBS, "ACL_WD2 = (0x12, 0x13)", "ACL_WD2 = (0x13, 0x12)"),
     ("acl decoder: its byte not read", CRUMBS, "        elif s in ACL_STAGES:\n            out += acl_lines(s, b, pmp)\n", ""),
     ("acl decoder: 0x6016 taken for the alarm's result", CRUMBS, "+ SST_STAGES + A2P_STAGES + ACL_STAGES else b[0x16]", "+ SST_STAGES + A2P_STAGES else b[0x16]"),
-    ("acl decoder: the time read at the stage before the commit", CRUMBS, "SST_PRE, A2P_PRE, ACL_PRE)", "SST_PRE, A2P_PRE)"),
-    ("acl decoder: the pending stage read as the clean one", CRUMBS, "SST_WD2[0], A2P_WD2[0], ACL_WD2[0])", "SST_WD2[0], A2P_WD2[0], ACL_WD2[1])"),
-    ("acl decoder: its pending stage not one", CRUMBS, "SST_WD2[0], A2P_WD2[0], ACL_WD2[0])", "SST_WD2[0], A2P_WD2[0])"),
-    ("acl decoder: fabric_up=1's byte read against a2_pre=1's stage", CRUMBS, "    pre = ACL_PRE if s in ACL_STAGES else A2P_PRE if", "    pre = A2P_PRE if"),
+    ("acl decoder: the time read at the stage before the commit", CRUMBS, "SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)", "SST_PRE, A2P_PRE, LL_PRE, LLW_PRE)"),
+    ("acl decoder: the pending stage read as the clean one", CRUMBS, "SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0]", "SST_WD2[0], A2P_WD2[0], ACL_WD2[1], LL_WD2[0]"),
+    ("acl decoder: its pending stage not one", CRUMBS, "SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0]", "SST_WD2[0], A2P_WD2[0], LL_WD2[0]"),
+    ("acl decoder: fabric_up=1's byte read against a2_pre=1's stage", CRUMBS, " else ACL_PRE if s in ACL_STAGES else A2P_PRE if", " else A2P_PRE if"),
     ("acl decoder: the code from bits 7:4", CRUMBS, "    code = v >> 5\n    if not pmp:", "    code = v >> 4\n    if not pmp:"),
     ("acl decoder: the muxes' bits the other way round", CRUMBS, "    parked = [bool(v >> i & 1) for i in range(5)]", "    parked = [bool(v >> (4 - i) & 1) for i in range(5)]"),
     ("acl decoder: two muxes' names the other way round", CRUMBS, 'ACL_MUXES = ("0x28e038164", "0x28e03816c", "0x28e038168",', 'ACL_MUXES = ("0x28e038164", "0x28e038168", "0x28e03816c",'),
@@ -1001,6 +1003,79 @@ MUTANTS = [
     ("acl decoder: a byte of 0 before the commit not said to have stopped there", CRUMBS, "    if not code and s == ACL_PRE:", "    if False and s == ACL_PRE:"),
     ("acl decoder: 'none of the five' when some read parked", CRUMBS, "on any of them\" if not any(parked) else", "on any of them\" if not all(parked) else"),
     ("acl decoder: 'all five' when only some read parked", CRUMBS, "\"all five read 0x80100000, as the table wrote them\" if all(parked) else", "\"all five read 0x80100000, as the table wrote them\" if any(parked) else"),
+    # last_look=1 and ll_wake=1: nothing but its own run writes 0x6008-0x600e or WD1's 80 s, CPU0 alone looks, each command before the next reads, the light and the timer only with ll_wake=1
+    ("llk: on by default", C, "static bool last_look;", "static bool last_look = true;"),
+    ("llk: ll_wake on by default", C, "static bool ll_wake;", "static bool ll_wake = true;"),
+    ("llk: parameter writable (0644)", C, "module_param(last_look, bool, 0444);", "module_param(last_look, bool, 0644);"),
+    ("llk: ll_wake writable (0644)", C, "module_param(ll_wake, bool, 0444);", "module_param(ll_wake, bool, 0644);"),
+    ("llk: 0x6008-0x600e open to every run", C, "end <= (last_look ? LL_AT + LL_N : 0x6008)", "end <= LL_AT + LL_N"),
+    ("llk: 0x600f too", C, "end <= (last_look ? LL_AT + LL_N : 0x6008)", "end <= (last_look ? LL_AT + LL_N + 1 : 0x6008)"),
+    ("llk: K1 leaves the seven bytes", C, "\tif (!ret && last_look)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n", ""),
+    ("llk: the undo leaves the seven bytes", C, "\tif (last_look) {\n\t\terr = m1_kwrite(LL_AT, zero, LL_N);\n\t\tret = ret ?: err;\n\t}\n", ""),
+    ("llk: WD1's count 60 s in its run", C, "\twritel(last_look ? LL_WD1_COUNT : WD1_MARK_COUNT, wdt + WD1_COUNT);", "\twritel(WD1_MARK_COUNT, wdt + WD1_COUNT);"),
+    ("llk: WD1's count 80 s in every run", C, "\twritel(last_look ? LL_WD1_COUNT : WD1_MARK_COUNT, wdt + WD1_COUNT);", "\twritel(LL_WD1_COUNT, wdt + WD1_COUNT);"),
+    ("llk: the look before the commit checks the old count", C, "\t\t\t\t     last_look ? LL_WD1_COUNT : WD1_MARK_COUNT);", "\t\t\t\t     WD1_MARK_COUNT);"),
+    ("llk: every core's WFI return looks", C, "\t\tif (look)\n\t\t\tm1_ll_ret();", "\t\tm1_ll_ret();"),
+    ("llk: CPU0 looks in every run", C, "m1_deep_wfi(obs ? &m1_core[0] : NULL, last_look);", "m1_deep_wfi(obs ? &m1_core[0] : NULL, true);"),
+    ("llk: every return past the hundredth sent", C, "\tif (n <= LL_MANY)\t/* stops", "\tif (n < LL_MANY)\t/* stops"),
+    ("llk: the timer left on at the return", C, "\twrite_sysreg(0, cntp_ctl_el0);\t/* ll_wake=1's timer: it ended this WFI, and mustn't end the next */\n", ""),
+    ("llk: the first command not sent before the reads", C, "\tm1_ll_send(LL_AT, &b0, 1);\n\t/* Each read into its own variable", "\t/* Each read into its own variable"),
+    ("llk: no acks after a command", C, "\tm1_crumb(addr, b, n);\n\tfor (i = 0; i < M1_SPMI_WORDS; i++)\n\t\twritel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));\n", "\tm1_crumb(addr, b, n);\n\t(void)i;\n"),
+    ("llk: the third command a byte early", C, "m1_ll_send(LL_AT + 5, b + 4, 2);", "m1_ll_send(LL_AT + 4, b + 4, 2);"),
+    ("llk: the time from the first commit write", C, "ll_time_code(now - m1_t_third, m1_tps)", "ll_time_code(now - m1_t_first, m1_tps)"),
+    ("llk: the clock not taken after the commit", C, "\tif (position || last_look)\n\t\tm1_t_third = m1_now();", "\tif (position)\n\t\tm1_t_third = m1_now();"),
+    ("llk: the light set in every run", C, "\tif (ll_wake)\n\t\tm1_ll_blinks = m1_ll_blink();", "\tm1_ll_blinks = m1_ll_blink();"),
+    ("llk: the PWM written with FPWM0 not on", C, "\t\tif (m1_now() - t0 > m1_tps / 100)\n\t\t\treturn false;\n\t\tcpu_relax();\n\t}\n\twritel(LL_BLINK_CYCLES, m1_ll_pwm + LL_PWM_ON);",
+     "\t\tif (m1_now() - t0 > m1_tps / 100)\n\t\t\tbreak;\n\t\tcpu_relax();\n\t}\n\twritel(LL_BLINK_CYCLES, m1_ll_pwm + LL_PWM_ON);"),
+    ("llk: FPWM0's word written back whole, its busy bit with it", C, "\twritel((readl(ps) & ~(BIT(28) | BIT(12) | BIT(11) | BIT(10) | BIT(9) | BIT(8))) | 0xf, ps);", "\twritel(readl(ps) | 0xf, ps);"),
+    ("llk: the busy bit alone written back", C, "\twritel((readl(ps) & ~(BIT(28) | BIT(12) | BIT(11) | BIT(10) | BIT(9) | BIT(8))) | 0xf, ps);", "\twritel((readl(ps) & ~(BIT(28) | BIT(12) | BIT(10) | BIT(9) | BIT(8))) | 0xf, ps);"),
+    ("llk: FPWM0's other bits dropped", C, "\twritel((readl(ps) & ~(BIT(28) | BIT(12) | BIT(11) | BIT(10) | BIT(9) | BIT(8))) | 0xf, ps);", "\t(void)readl(ps);\n\twritel(0xf, ps);"),
+    ("llk: no isb after the PWM's writes", C, "\twritel(LL_PWM_GO, m1_ll_pwm + LL_PWM_CTRL);\n\tdsb(sy);\n\tisb();\n", "\twritel(LL_PWM_GO, m1_ll_pwm + LL_PWM_CTRL);\n\tdsb(sy);\n"),
+    ("llk: CPU0's WFI without its registers kept", C, "\t\tif (look)\n\t\t\tm1_ll_wfi();\t/* the same three instructions, with the registers kept */\n\t\telse\n\t\t\tasm volatile", "\t\tif (!look)\n\t\t\tm1_ll_wfi();\n\t\telse\n\t\t\tasm volatile"),
+    ("llk: x19 not restored after the WFI", C, "\t\"\tldp x18, x19, [sp], #16\\n\"\n", "\t\"\tadd sp, sp, #16\\n\"\n"),
+    ("llk: x30 not saved before the WFI", C, "\t\"\tstr x30, [sp, #-16]!\\n\"\n\t\"\tstp x28, x29, [sp, #-16]!\\n\"\n", "\t\"\tsub sp, sp, #16\\n\"\n\t\"\tstp x28, x29, [sp, #-16]!\\n\"\n"),
+    ("llk load: the engine's page not asked for", C, "\tif (!m1_pos || !m1_sio || !m1_ps || !m1_wdt) {", "\tif (!m1_sio || !m1_ps || !m1_wdt) {"),
+    ("llk decoder: a second command read without its mark", CRUMBS, "    if not r[4] & 0x80:\n        return out + [f\"  0x6009-0x600c = ", "    if not any(r[1:5]):\n        return out + [f\"  0x6009-0x600c = "),
+    ("llk: PHASE's byte without its mark", LL, "\treturn (u8)(LL_MARK | (phase & 0x7f));", "\treturn (u8)phase;"),
+    ("llk: PHASE's byte sent raw", C, "\tb[3] = ll_b4(readl(m1_pos + M1_POS_PHASE));", "\tb[3] = (u8)readl(m1_pos + M1_POS_PHASE);"),
+    ("llk decoder: run B's commit found through an alarm an hour out", CRUMBS, "whole = run_second(low, alarm[1], now, ares or 0, alarm_secs(s)) if", "whole = run_second(low, alarm[1], now, ares or 0) if"),
+    ("llk decoder: the light's line dropped before the commit", CRUMBS, "        return out + [\"  all 0, and the stage is the last before the commit: the run isn't shown to have reached CPU0's WFI\"] + blink", "        return out + [\"  all 0, and the stage is the last before the commit: the run isn't shown to have reached CPU0's WFI\"]"),
+    ("llk decoder: the 90 s sentence at 70 s", CRUMBS, "\" 30 s, gives the same time\" if unzeroed == 90 else", "\" 30 s, gives the same time\" if unzeroed else"),
+    ("llk: the PWM's control before its cycles", C, "\twritel(LL_BLINK_CYCLES, m1_ll_pwm + LL_PWM_ON);\n\twritel(LL_BLINK_CYCLES, m1_ll_pwm + LL_PWM_OFF);\n\twritel(LL_PWM_GO, m1_ll_pwm + LL_PWM_CTRL);",
+     "\twritel(LL_PWM_GO, m1_ll_pwm + LL_PWM_CTRL);\n\twritel(LL_BLINK_CYCLES, m1_ll_pwm + LL_PWM_ON);\n\twritel(LL_BLINK_CYCLES, m1_ll_pwm + LL_PWM_OFF);"),
+    ("llk: the timer set in every run", C, "\tif (ll_wake)\n\t\tm1_ll_timer();", "\tm1_ll_timer();"),
+    ("llk: the timer masked", C, "\twrite_sysreg(ARCH_TIMER_CTRL_ENABLE, cntp_ctl_el0);", "\twrite_sysreg(ARCH_TIMER_CTRL_ENABLE | 2U, cntp_ctl_el0);"),
+    ("llk: the timer an hour out", C, "\twrite_sysreg(LL_TIMER_S * m1_tps, cntp_tval_el0);", "\twrite_sysreg(M1_ALARM_SECS * m1_tps, cntp_tval_el0);"),
+    ("llk: the alarm 20 s out in every run", C, "\tsecs += ll_wake ? LL_ALARM_SECS : M1_ALARM_SECS;", "\tsecs += LL_ALARM_SECS;"),
+    ("llk: the alarm an hour out with ll_wake=1", C, "\tsecs += ll_wake ? LL_ALARM_SECS : M1_ALARM_SECS;", "\tsecs += M1_ALARM_SECS;"),
+    ("llk: the light's bit never sent", C, "\tu8 res = BIT(7) | (m1_ll_blinks ? LL_BLINK_BIT : 0), ev = 0, v;", "\tu8 res = BIT(7), ev = 0, v;"),
+    ("llk: loads with gates_mark=1", C, "if (last_look && (!wd1_mark || gates_mark || observe", "if (last_look && (!wd1_mark || observe"),
+    ("llk: loads without wd1_mark=1", C, "if (last_look && (!wd1_mark || gates_mark || observe", "if (last_look && (gates_mark || observe"),
+    ("llk: ll_wake=1 loads alone", C, "\tif (ll_wake && !last_look) {", "\tif (ll_wake && !last_look && !ll_wake) {"),
+    ("llk load: FPWM0's word not checked against the never-write list", C, " ||\n\t    e1_never_write(M1_PS_SIO_PAGE + LL_FPWM0)) {", ") {"),
+    ("llk load: the PWM read with FPWM0 off", C, "\tif ((ps & LL_PS_ACTUAL) == LL_PS_ACTUAL)\n\t\tpr_info(", "\tif (ps || !ps)\n\t\tpr_info("),
+    ("llk load: any device tree's PWM", C, "\tif (!np || !of_device_is_compatible(np, \"apple,s5l-fpwm\")) {", "\tif (!np) {"),
+    ("llk: the stage before the commit not its own", C, "\t\tif (last_look)\n\t\t\tb[0] = ll_stage(b[0], ll_wake);\n", ""),
+    ("llk: the last stage not its own", C, "\tif (last_look)\n\t\tb[0] = ll_stage(b[0], ll_wake);\n\tb[1] = m1_wd2_sample(", "\tb[1] = m1_wd2_sample("),
+    ("llk: WD1's count 60 s in the header", LL, "#define LL_WD1_COUNT\t\t(80U * WD1_HZ)", "#define LL_WD1_COUNT\t\t(60U * WD1_HZ)"),
+    ("llk: a time on an edge takes the earlier code", LL, "\t\tif (dt < tps * ms[i] / 1000)", "\t\tif (dt <= tps * ms[i] / 1000)"),
+    ("llk: a hundred returns read as fewer", LL, "\treturn n >= LL_MANY ? 3 : n >= 2 ? 2 : n ? 1 : 0;", "\treturn n > LL_MANY ? 3 : n >= 2 ? 2 : n ? 1 : 0;"),
+    ("llk: 'off' from a word's target", LL, "\treturn !(v & LL_PS_ACTUAL);", "\treturn !(v & 0xfU);"),
+    ("llk: HS_A's bit 31 in bit 24's place", LL, "(hs_a & (1U << 24) ? 1U << 4 : 0)", "(hs_a & (1U << 31) ? 1U << 4 : 0)"),
+    ("llk: the two runs' last stages swapped", LL, "\t\treturn wake ? M1_LLW_STAGE : M1_LL_STAGE;", "\t\treturn wake ? M1_LL_STAGE : M1_LLW_STAGE;"),
+    ("llk: the PWM's control without its output", LL, "#define LL_PWM_GO\t\t0x4021U", "#define LL_PWM_GO\t\t0x0021U"),
+    ("llk: the PMP's bit in ANS2's place", LL, "(pmp ? 1U << 6 : 0) | (ans ? 1U << 5 : 0)", "(pmp ? 1U << 5 : 0) | (ans ? 1U << 6 : 0)"),
+    ("llk decoder: --clear zeroes 0x6008-0x600e after any run", CRUMBS, "crumbs = (CRUMBS[0], LL_CRUMBS) + CRUMBS[1:] if st in LL_STAGES else CRUMBS", "crumbs = (CRUMBS[0], LL_CRUMBS) + CRUMBS[1:]"),
+    ("llk decoder: --clear never zeroes 0x6008-0x600e", CRUMBS, "crumbs = (CRUMBS[0], LL_CRUMBS) + CRUMBS[1:] if st in LL_STAGES else CRUMBS", "crumbs = CRUMBS"),
+    ("llk decoder: the marker's count 60 s", CRUMBS, "    return LL_WD1_COUNT_S if s in LL_STAGES else WD1_COUNT_S", "    return WD1_COUNT_S"),
+    ("llk decoder: the alarm an hour out for run B", CRUMBS, "    return LL_ALARM_SECS if s in LLW_STAGES else ALARM_SECS", "    return ALARM_SECS"),
+    ("llk decoder: the light's bit read as the alarm's", CRUMBS, "        return b[0x16] & ~LL_BLINK_BIT  # ll_wake=1", "        return b[0x16]  # ll_wake=1"),
+    ("llk decoder: bytes read under the stage before the commit", CRUMBS, "    if s in (LL_PRE, LLW_PRE):\n        if any(r):", "    if s in ():\n        if any(r):"),
+    ("llk decoder: bytes read under another run's stage", CRUMBS, "    if s not in LL_STAGES:\n        return out + [\"  NOT READ: the stage", "    if False:\n        return out + [\"  NOT READ: the stage"),
+    ("llk decoder: an early restart not told from the marker's", CRUMBS, "    if s in LL_STAGES and x < unzeroed - 4:", "    if False and x < unzeroed - 4:"),
+    ("llk decoder: 0x0201's 1 read as a boot's", CRUMBS, "what.get(v, \"not a value read here before", "what.get(2 if v == 1 else v, \"not a value read here before"),
+    ("llk decoder: a count over 43 read", CRUMBS, "\": NOT A COUNT e1_hook can send\" if n > 43 else", "\": NOT A COUNT e1_hook can send\" if n > 63 else"),
+    ("llk decoder: FIQ and SError swapped", CRUMBS, "(\"an FIQ\", \"an IRQ\", \"an SError\")", "(\"an SError\", \"an IRQ\", \"an FIQ\")"),
 ]
 
 
@@ -1032,6 +1107,15 @@ def main():
     if len({m[0] for m in MUTANTS}) != len(MUTANTS):
         print("two mutants share a name", file=sys.stderr)
         return 2
+    # Every mutant of the list against the tree first, chosen or not: a rung that moves an older mutant's text hears of it in
+    # a run of its own few, at once, and not an hour into a run of all of them (Pullfrog on #109: 36 had gone stale).
+    texts = {rel: open(os.path.join(E1, rel)).read() for rel in {m[1] for m in MUTANTS}}
+    stale = [m for m in MUTANTS if texts[m[1]].count(m[2]) != 1]
+    for m in stale:
+        print(f"STALE (its text is in {m[1]} {texts[m[1]].count(m[2])} times): fix the list: {m[0]}")
+    if stale:
+        print(f"{len(stale)} of {len(MUTANTS)} mutants are stale: nothing was run")
+        return 1
     bad = 0
     with tempfile.TemporaryDirectory() as base, concurrent.futures.ThreadPoolExecutor(6) as pool:
         # A change that changes nothing has to survive in a copy: if the tests can't finish there (a file the copy doesn't

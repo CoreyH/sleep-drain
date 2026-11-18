@@ -60,11 +60,17 @@ typedef uint32_t u32;
 #define M1_WD1_LEAD		(1U << 1)
 #define M1_WD1_STANDS		(M1_WD1_ARMED | M1_WD1_LEAD)
 
-/* ctl, bite, count: WD1 as read just before the commit. */
-static inline u8 m1_wd1_bits(u32 ctl, u32 bite, u32 count)
+/* ctl, bite, count: WD1 as read just before the commit; mark: the count step 4 wrote. */
+static inline u8 m1_wd1_bits_at(u32 ctl, u32 bite, u32 count, u32 mark)
 {
 	return (u8)(((ctl & WD1_RESET_EN) && bite == WD1_MARK_BITE ? M1_WD1_ARMED : 0) |
-		    (count > WD1_MARK_COUNT && count - WD1_MARK_COUNT <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0));
+		    (count > mark && count - mark <= WD1_MARK_SLACK ? M1_WD1_LEAD : 0));
+}
+
+/* wd1_mark=1's own count, 60 s; last_look=1 writes another (last_look.h). */
+static inline u8 m1_wd1_bits(u32 ctl, u32 bite, u32 count)
+{
+	return m1_wd1_bits_at(ctl, bite, count, WD1_MARK_COUNT);
 }
 
 #endif /* WD1_MARK_H */

@@ -171,6 +171,29 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   (Naeem Malik's second driver); nothing shows T6000 has such a limit. The rest of the ending reads as
   `--m1-gates`'. Run once, 2026-11-14: the byte 0x20 (under 5 ms; none of the five muxes read parked), restart
   at 90 s.
+- `last_look=1` (`run-floor --m1-last-look`, on `wd1_mark=1`, never with `gates_mark=1`, `observe=1`,
+  `position=1`, `recfg_bite=1` or `probe=1`; `e1-hook/last_look.h` has the bytes, the times and the stages) is
+  `--m1-mark`'s run, run 17's, with none of the later steps on B2's ops, and a record of CPU0's own last WFI.
+  Step 4 writes WD1's count as 80 s, not 60: the marker restarts the SoC about 70 s after the screen goes dark.
+  The first time CPU0's WFI returns, CPU0 sends seven bytes to the PMU's 0x6008-0x600e (Corey's OK of
+  2026-11-16; all 0 if it never returned) in three commands, each before the next one's reads: 0x6008, bit 7,
+  the time since the commit in bits 6:4 (under 10 ms, 100 ms, 1 s, 5 s, 15 s, 22 s, 30 s, or more) and a count
+  in bits 1:0 (once, twice or more, a hundred or more; sent again at the second and the hundredth return);
+  0x6009, what was pending (ISR_EL1's F, I, A), whether CPU0's timer was firing, HS_A's bit 24 and HS_B's bits
+  0, 1, 31; 0x600a-0x600c, the low bytes of 0x2922c0040 and 0x2922c0044 and PHASE's low seven bits under a bit 7 that says
+  the command landed whole; 0x600d, how many of SIO's 43
+  power words read off and whether FPWM0's did; 0x600e, the same for the five PCIe words, ANS2 and the PMP.
+  Reads only, but CPU0's timer control, written 0. Nothing is armed that could end the WFI, so a return means
+  a pending source. Stages 0x89, then 0x8b or 0x8a.
+- `ll_wake=1` (`run-floor --m1-last-look-wake`, on `last_look=1`) arms three things in that run: the PMU's
+  alarm 20 s after the commit in place of an hour (an SoC that slept comes out in the boot loader: a restart
+  at about 20 s); CPU0's own timer 25 s after step 10, unmasked (a core still powered returns for it, and the
+  seven bytes are then a look at the engine 25 s in); and, in step 8, the keyboard light set blinking, 100 ms
+  on and 100 ms off: FPWM0's power word (0x28e580190) asked on and, if it reads on within 10 ms, the PWM's on
+  cycles, off cycles and control (0x39b03001c, 0x39b030018, 0x39b030000), four new writes. B2 switches FPWM0
+  off as the tenth of its 43 SIO words, so a light that blinks until the restart says B2 never got that far.
+  Bit 6 of the alarm's byte at 0x6016 says the PWM's writes were made. Stages 0x86, then 0x88 or 0x87.
+  `e1-hook/kbd-blink` (root, awake) makes the PWM's three writes for a few seconds, to see the blink first.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be
@@ -218,7 +241,7 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   `--m1-gates`' only if bits 3, 4 and 5 are set. It normally adds a few ms before the commit and 100 ms while the gate
   stays open, about 5 s at the very worst. A run that stops inside it leaves stage 0xbd with 0x6016 at 0, or the
   byte with none of bits 3 to 5.
-- `run-floor --quick` ahead of any recipe makes the reading 1 minute. `13` is the floor with the CPUs left up.
+- `run-floor --quick` ahead of any recipe makes the reading 1 minute; `--no-reading` in its place takes none (one sample, the save, the suspend). `13` is the floor with the CPUs left up.
 
 ## The probe that isn't a run
 

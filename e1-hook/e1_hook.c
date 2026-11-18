@@ -97,6 +97,8 @@
  *   pkexec e1-hook/run-floor --m1-sio-steps       (--m1-gates' and sio_steps=1: the same)
  *   pkexec e1-hook/run-floor --m1-a2-pre          (--m1-gates' and a2_pre=1: the same)
  *   pkexec e1-hook/run-floor --m1-acc-last        (--m1-gates' and acc_last=1: the same)
+ *   pkexec e1-hook/run-floor --m1-last-look       (--m1-mark's and last_look=1: the same)
+ *   pkexec e1-hook/run-floor --m1-last-look-wake  (that and ll_wake=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -129,6 +131,7 @@
 #include <linux/suspend.h>
 #include <linux/time64.h>
 #include <linux/trace_clock.h>
+#include <clocksource/arm_arch_timer.h>
 #include <asm/apple_m1_pmu.h>
 #include <asm/barrier.h>
 #include <asm/cputype.h>
@@ -150,6 +153,7 @@
 #include "pcie_down.h"
 #include "a2_pre.h"
 #include "acc_last.h"
+#include "last_look.h"
 #include "sio_steps.h"
 #include "wd2_bite.h"
 
@@ -386,6 +390,12 @@ MODULE_PARM_DESC(a2_pre, "With gates_mark=1, never with sio_down=1, pcie_down=1,
 static bool acc_last;
 module_param(acc_last, bool, 0444);
 MODULE_PARM_DESC(acc_last, "With gates_mark=1, never with sio_down=1, pcie_down=1, sio_steps=1, a2_pre=1, observe=1 or probe=1: step 5 leaves out the table's entries 52 to 54, the soc-cluster words of EACC, PACC0 and PACC1 (0x28e098000 := 0, 0x28e098004 := 0x20, 0x28e098008 := 0x20), and step 9 writes them, the same values in the same order, right before the commit; the time from before the first of them to after wd2_bite=1's stage goes to the PMU's 0x6016 as a code in bits 7:5, in the run's last command. Before that, in step 8 and in place of gates_mark=1's reads, the five ClkGen muxes the table parked are read, one bit each in bits 4:0 (set: read 0x80100000). No new address or value. Its stages from step 8 on are its own (0x11, then 0x13 or 0x12) (acc_last.h)");
+static bool last_look;
+module_param(last_look, bool, 0444);
+MODULE_PARM_DESC(last_look, "With wd1_mark=1, never with gates_mark=1, observe=1, position=1, recfg_bite=1 or probe=1: --m1-mark's run with WD1's count at 80 s in place of 60 s (the marker 70 s after step 4), and, the first time CPU0's own last WFI returns, seven bytes to the PMU's 0x6008-0x600e (Corey's OK of 2026-11-16): when and how often it returned, what was pending, the engine's two gate words, PHASE and the handshakes, and how many of B2's power words read off; reads only, but for CPU0's timer control set to 0 (last_look.h)");
+static bool ll_wake;
+module_param(ll_wake, bool, 0444);
+MODULE_PARM_DESC(ll_wake, "With last_look=1: the PMU's alarm 20 s after the commit in place of an hour, CPU0's own timer set to end its WFI 25 s after step 10, and in step 8 FPWM0's power word asked on and the keyboard backlight's PWM set to blink, 100 ms on and 100 ms off (four writes; last_look.h)");
 /* Not a run: the three coprocessor words B2 polls, read in the recipe's state, and the suspend failed (PLAN.md, "The order after run 17"). */
 static bool probe;
 module_param(probe, bool, 0444);
@@ -1603,6 +1613,28 @@ static void e1_after_slpa(void)
  * five mux rows are where a2_pre.h says, and logs the eight words awake. The
  * stages are acl_stage()'s: 0x11, then 0x13 or 0x12 after the release.
  *
+ * last_look=1 (run-floor --m1-last-look; with wd1_mark=1, never with
+ * gates_mark=1, observe=1, position=1, recfg_bite=1 or probe=1) is --m1-mark's
+ * run, run 17's, with a record of CPU0's own last WFI (PLAN.md, the order
+ * after the strategy review; last_look.h has the bytes, the times and the
+ * stages). Step 4 writes WD1's count as 80 s, not 60, so the marker restarts
+ * the SoC 70 s after it. Nothing else changes up to step 10. There
+ * m1_deep_wfi() calls m1_ll_ret() each time CPU0's WFI returns: at the first
+ * return it sends seven bytes to the PMU's 0x6008-0x600e in three commands
+ * (m1_pmu_ok() lets those bytes through only with last_look=1, and K1 and
+ * the undo zero them), at the second and the hundredth the first byte again.
+ * Reads only, but for CPU0's timer control, written 0. ll_wake=1 (run-floor
+ * --m1-last-look-wake; with last_look=1) adds, in step 8, FPWM0's power word
+ * asked on and the keyboard backlight's PWM set to 100 ms on, 100 ms off
+ * (m1_ll_blink(): four writes, the PWM's three only if FPWM0 reads on); in
+ * step 9 the alarm 20 s after the commit's second in place of an hour, with
+ * bit 6 of its byte at 0x6016 saying the PWM's writes were made; and in step
+ * 10 CPU0's own timer set 25 s out and unmasked (m1_ll_timer()). At the load
+ * m1_ll_init() refuses unless the pages are mapped, FPWM0's word is among
+ * SIO's 43, no write is on the never-write list and the PWM is the device
+ * tree's, and logs the words awake. The stages are ll_stage()'s: 0x09, then
+ * 0x0b or 0x0a after the release; with ll_wake=1 0x06, then 0x08 or 0x07.
+ *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
  * gate polled as B2 polls it, and put back (PLAN.md, "The order after the look";
@@ -1925,6 +1957,8 @@ static void __iomem *m1_look_pc, *m1_look_pa, *m1_look_pb;
 static u8 m1_gates;
 /* position=1: CPU0's times of the first and third commit writes, and SIO_CPU's reference. */
 static u64 m1_t_first, m1_t_third;
+static void __iomem *m1_ll_pwm;	/* ll_wake=1: fpwm0's page */
+static bool m1_ll_blinks;	/* ll_wake=1: step 8 made the PWM's three writes */
 static bool m1_sio_ref;
 #define m1_wake_status		(m1_aon + (M1_AON_WAKE_STATUS - M1_AON_WAKE))
 static unsigned int m1_aic_mask, m1_aic_words;
@@ -2065,7 +2099,8 @@ static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n
 		return true;
 	if (addr == 0x6001)
 		return n == 1 && (b[0] == 0x50 || b[0] == 0x30);
-	return (addr >= 0x6004 && end <= 0x6008) || (addr >= 0x6010 && end <= 0x6017);
+	/* last_look=1: 0x6008-0x600e too (last_look.h). */
+	return (addr >= 0x6004 && end <= (last_look ? LL_AT + LL_N : 0x6008)) || (addr >= 0x6010 && end <= 0x6017);
 }
 
 /* The kernel's SPMI path, through the PMU's nvmem: sleeps, so prepare_late only. */
@@ -2099,6 +2134,8 @@ static int m1_pmu_start(void)
 	ret = m1_kwrite(0x6004, zero, 4);
 	if (!ret)
 		ret = m1_kwrite(0x6010, zero, 7);
+	if (!ret && last_look)
+		ret = m1_kwrite(LL_AT, zero, LL_N);
 	if (ret)
 		return ret;
 	m1_sent_50 = true;
@@ -2144,6 +2181,10 @@ static void m1_pmu_undo(void)
 	ret = ret ?: err;
 	err = m1_kwrite(0x6010, zero, 7);
 	ret = ret ?: err;
+	if (last_look) {
+		err = m1_kwrite(LL_AT, zero, LL_N);
+		ret = ret ?: err;
+	}
 	m1_undo = ret;
 	pr_emerg("m1: boot stage 0x30 again and the breadcrumbs zeroed: %d\n", ret);
 }
@@ -2375,7 +2416,7 @@ static bool m1_wd1_set(void __iomem *wdt)
 	if (was)
 		writel(0, wdt + WD1_CTRL);
 	writel(WD1_MARK_BITE, wdt + WD1_BITE);
-	writel(WD1_MARK_COUNT, wdt + WD1_COUNT);
+	writel(last_look ? LL_WD1_COUNT : WD1_MARK_COUNT, wdt + WD1_COUNT);	/* last_look=1: 80 s, the marker at 70 s (last_look.h) */
 	writel(WD1_RESET_EN, wdt + WD1_CTRL);
 	dsb(sy);
 	return was;
@@ -2461,12 +2502,161 @@ static void m1_arm_deep_sleep(void)
 }
 
 /*
+ * last_look=1: CPU0's WFI with x18 to x30 kept on its stack across it, as the kernel's own apple_cpu_deep_wfi() keeps
+ * them (cpuidle-apple.c: "Deep WFI will clobber FP state, among other things"). A core that comes back at the next
+ * instruction may come back without its registers, and what follows the WFI here is C: m1_deep_wfi()'s flags and
+ * m1_ll_ret()'s pointers must not be live in a register across it. A call, so the compiler takes x0 to x17 as lost.
+ * The barriers are m1_deep_wfi()'s own.
+ */
+asm(
+	".pushsection .text, \"ax\"\n"
+	".type m1_ll_wfi, @function\n"
+	"m1_ll_wfi:\n"
+	"	str x30, [sp, #-16]!\n"
+	"	stp x28, x29, [sp, #-16]!\n"
+	"	stp x26, x27, [sp, #-16]!\n"
+	"	stp x24, x25, [sp, #-16]!\n"
+	"	stp x22, x23, [sp, #-16]!\n"
+	"	stp x20, x21, [sp, #-16]!\n"
+	"	stp x18, x19, [sp, #-16]!\n"
+	"	dsb sy\n"
+	"	isb\n"
+	"	wfi\n"
+	"	ldp x18, x19, [sp], #16\n"
+	"	ldp x20, x21, [sp], #16\n"
+	"	ldp x22, x23, [sp], #16\n"
+	"	ldp x24, x25, [sp], #16\n"
+	"	ldp x26, x27, [sp], #16\n"
+	"	ldp x28, x29, [sp], #16\n"
+	"	ldr x30, [sp], #16\n"
+	"	ret\n"
+	".size m1_ll_wfi, . - m1_ll_wfi\n"
+	".popsection\n"
+);
+void m1_ll_wfi(void);
+
+/* last_look=1: one command to the PMU's bytes and its vectors acked, as after every SPMI command before a deep WFI. */
+static void m1_ll_send(unsigned int addr, const u8 *b, unsigned int n)
+{
+	unsigned int i;
+
+	m1_crumb(addr, b, n);
+	for (i = 0; i < M1_SPMI_WORDS; i++)
+		writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));
+	dsb(sy);
+	isb();
+}
+
+/*
+ * last_look=1, CPU0 alone, each time its own last WFI returns, every exception
+ * masked (last_look.h has the bytes and why). The first return: the clock and
+ * what is pending first, CPU0's timer off, then three commands, each sent
+ * before the next one's reads so that a read that hangs loses only what comes
+ * after it: when (0x6008); the engine's page and the handshake (0x6009-0x600c);
+ * B2's power words (0x600d, 0x600e). The second and the hundredth return send
+ * 0x6008 again. Reads of words this module has read in this state before
+ * (position=1's sample, sio_down=1's and pcie_down=1's lists, the probe's ANS2
+ * and PMP words); the PMP's word is only ever read.
+ */
+static void m1_ll_ret(void)
+{
+	static const u16 sio[SIOD_N] = SIOD_OFFS, pcie[PCD_N] = PCD_OFFS;
+	static u32 n;
+	static u8 b0;
+	void __iomem *hs_a = post_map[ARRAY_SIZE(e1_post_slpa) - 1] + M1_POS_HS_A;
+	u8 b[LL_N - 1], off = 0, pc = 0, isr;
+	u32 ctl, hsa, hsb, fpwm, ans, pmp;
+	unsigned int i;
+	u64 now;
+
+	if (n <= LL_MANY)	/* stops at LL_MANY + 1: the hundredth return is sent once */
+		n++;
+	if (n == 2 || n == LL_MANY) {
+		b0 = (u8)((b0 & ~3U) | ll_count_code(n));
+		m1_ll_send(LL_AT, &b0, 1);
+	}
+	if (n != 1)
+		return;
+	now = m1_now();
+	isr = (read_sysreg(isr_el1) >> 6) & 7;
+	ctl = read_sysreg(cntp_ctl_el0);
+	write_sysreg(0, cntp_ctl_el0);	/* ll_wake=1's timer: it ended this WFI, and mustn't end the next */
+	isb();
+	b0 = ll_b0(n, ll_time_code(now - m1_t_third, m1_tps));
+	m1_ll_send(LL_AT, &b0, 1);
+	/* Each read into its own variable, in this order: an argument list has none. */
+	hsa = readl(hs_a);
+	hsb = readl(m1_pos + LL_HS_B);
+	b[0] = ll_b1(isr, ctl & ARCH_TIMER_CTRL_IT_STAT, hsa, hsb);
+	b[1] = (u8)readl(m1_pos + M1_POS_GATE40);
+	b[2] = (u8)readl(m1_pos + M1_POS_GATE44);
+	b[3] = ll_b4(readl(m1_pos + M1_POS_PHASE));	/* the command's last byte: its bit 7 says the four landed */
+	m1_ll_send(LL_AT + 1, b, 4);
+	for (i = 0; i < SIOD_N; i++)
+		off += ll_off(readl(m1_sio + sio[i]));
+	fpwm = readl(m1_sio + LL_FPWM0);
+	b[4] = ll_b5(off, ll_off(fpwm));
+	for (i = 0; i < PCD_N; i++)
+		pc |= ll_off(readl(m1_ps + pcie[i])) ? BIT(i) : 0;
+	ans = readl(m1_sio + M1_PS_ANS2);
+	pmp = readl(m1_ps + M1_PS_PMP_RO);
+	b[5] = ll_b6(pc, ll_off(ans), ll_off(pmp));
+	m1_ll_send(LL_AT + 5, b + 4, 2);
+}
+
+/*
+ * ll_wake=1, step 10, CPU0's last act before its deep WFI: its own timer (the
+ * host's physical timer, CNTHP at EL2, which m1_quiet_core() stopped), set to
+ * fire LL_TIMER_S later and left unmasked. A pending FIQ ends a WFI with every
+ * exception masked. Whether a core that went down in this state still comes
+ * back for it isn't known: Linux's own deep idle on this chip is ended by the
+ * core's timer, with other override bits than this recipe's.
+ */
+static void m1_ll_timer(void)
+{
+	write_sysreg(LL_TIMER_S * m1_tps, cntp_tval_el0);
+	write_sysreg(ARCH_TIMER_CTRL_ENABLE, cntp_ctl_el0);
+	isb();
+}
+
+/*
+ * ll_wake=1, step 8, SError still unmasked: FPWM0's power word asked on as the
+ * power-state driver asks (its target to f; bits 28 and 12:8 written 0, bit 11
+ * among them, the hardware's busy bit, which is never written back: m1_ps_off()'s
+ * mask), up to 10 ms for its actual state, and only then the PWM's three writes,
+ * in pwm-apple's order: on cycles, off cycles, then the control that latches
+ * them; dsb and isb, so that a write that faulted panics here and not under
+ * step 9's mask. True if they were made.
+ */
+static bool m1_ll_blink(void)
+{
+	void __iomem *ps = m1_sio + LL_FPWM0;
+	u64 t0;
+
+	writel((readl(ps) & ~(BIT(28) | BIT(12) | BIT(11) | BIT(10) | BIT(9) | BIT(8))) | 0xf, ps);
+	dsb(sy);
+	t0 = m1_now();
+	while ((readl(ps) & LL_PS_ACTUAL) != LL_PS_ACTUAL) {
+		if (m1_now() - t0 > m1_tps / 100)
+			return false;
+		cpu_relax();
+	}
+	writel(LL_BLINK_CYCLES, m1_ll_pwm + LL_PWM_ON);
+	writel(LL_BLINK_CYCLES, m1_ll_pwm + LL_PWM_OFF);
+	writel(LL_PWM_GO, m1_ll_pwm + LL_PWM_CTRL);
+	dsb(sy);
+	isb();
+	return true;
+}
+
+/*
  * CYC_OVRD as e1_cpu_down() sets it, then WFI for good, with Naeem's and
  * XNU's ISB. With mark (CPU0, observe=1), each WFI that returns counts in
  * mark's wfi_ret, cleaned for CPU7: Naeem's test 8 reads a WFI that returns
- * as a core that wasn't power-gated.
+ * as a core that wasn't power-gated. With look (CPU0 alone, last_look=1),
+ * each return goes to m1_ll_ret().
  */
-static void __noreturn m1_deep_wfi(struct m1_core *mark)
+static void __noreturn m1_deep_wfi(struct m1_core *mark, bool look)
 {
 	u64 cyc;
 
@@ -2475,11 +2665,16 @@ static void __noreturn m1_deep_wfi(struct m1_core *mark)
 	cyc |= 0x3000001ULL;
 	asm volatile("msr s3_5_c15_c5_0, %0; isb" : : "r"(cyc));
 	for (;;) {
-		asm volatile("dsb sy; isb; wfi" : : : "memory");
+		if (look)
+			m1_ll_wfi();	/* the same three instructions, with the registers kept */
+		else
+			asm volatile("dsb sy; isb; wfi" : : : "memory");
 		if (mark) {
 			WRITE_ONCE(mark->wfi_ret, READ_ONCE(mark->wfi_ret) + 1);
 			m1_clean(mark);
 		}
+		if (look)
+			m1_ll_ret();
 	}
 }
 
@@ -2640,7 +2835,7 @@ static void __noreturn m1_observe(struct m1_core *c)
 	isb();
 	if (READ_ONCE(c->arm))
 		m1_arm_deep_sleep();
-	m1_deep_wfi(NULL);
+	m1_deep_wfi(NULL, false);
 }
 
 /*
@@ -2691,7 +2886,7 @@ static void m1_park(void *data)
 	}
 	if (READ_ONCE(c->arm))
 		m1_arm_deep_sleep();
-	m1_deep_wfi(NULL);
+	m1_deep_wfi(NULL, false);
 }
 
 /*
@@ -2706,7 +2901,7 @@ static void m1_park(void *data)
  */
 static void m1_alarm_arm(const u8 *rtc)
 {
-	u8 res = BIT(7), ev = 0, v;
+	u8 res = BIT(7) | (m1_ll_blinks ? LL_BLINK_BIT : 0), ev = 0, v;
 	unsigned int i;
 	u32 secs;
 
@@ -2722,7 +2917,7 @@ static void m1_alarm_arm(const u8 *rtc)
 			goto fail;
 	}
 	res |= BIT(2);
-	secs += M1_ALARM_SECS;
+	secs += ll_wake ? LL_ALARM_SECS : M1_ALARM_SECS;
 	if (m1_spmi_raw(true, M1_PMU_ALARM, (u8 *)&secs, 4))
 		goto fail;
 	res |= BIT(3);
@@ -3202,6 +3397,8 @@ static void m1_wd2_out(void)
 		b[0] = a2p_stage(b[0]);
 	if (acc_last)
 		b[0] = acl_stage(b[0]);
+	if (last_look)
+		b[0] = ll_stage(b[0], ll_wake);
 	b[1] = m1_wd2_sample(pre, m1_wd2_bite_awake, ctl, post, after, c0, c1, phase);
 	m1_crumb(0x6004, b, 2);
 	for (i = 0; i < M1_SPMI_WORDS; i++)
@@ -3778,7 +3975,8 @@ static void __noreturn m1_after_slpa(void)
 	m1_crumb(0x6010, b, 7);
 	/* wd1_mark=1: does the marker stand? The last look before the commit: nothing here touches WD1 after it. */
 	if (wd1_mark)
-		wd1 = m1_wd1_bits(readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_BITE), readl(m1_wdt + WD1_COUNT));
+		wd1 = m1_wd1_bits_at(readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_BITE), readl(m1_wdt + WD1_COUNT),
+				     last_look ? LL_WD1_COUNT : WD1_MARK_COUNT);
 	if (pmgr_late) {
 		b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;
 		if (gates_mark)
@@ -3793,6 +3991,8 @@ static void __noreturn m1_after_slpa(void)
 			b[0] = a2p_stage(b[0]);
 		if (acc_last)
 			b[0] = acl_stage(b[0]);
+		if (last_look)
+			b[0] = ll_stage(b[0], ll_wake);
 		b[1] = parked | (obs ? BIT(0) : 0);
 		b[2] = qto;
 		b[3] = fabric_up ? m1_fab_byte(held, fab_pre, fab_set, fab_end, wd1) : hold ? held : down;
@@ -3838,6 +4038,9 @@ static void __noreturn m1_after_slpa(void)
 	/* acc_last=1, in their place: the table's muxes read, one bit each, and the byte with the time's code at "not yet" (acc_last.h). */
 	if (acc_last)
 		m1_gates = m1_acl_pre();
+	/* ll_wake=1: the keyboard light set blinking, the run's last writes before the commit's own (last_look.h). */
+	if (ll_wake)
+		m1_ll_blinks = m1_ll_blink();
 	/* recfg_bite=1: A2's bite word once more, SError still unmasked: a read that faulted panics here, before the commit, not under step 9's mask (the m1 comment). */
 	if (recfg_bite) {
 		sram = readl(m1_recfg + RECFG_BITE);
@@ -3877,7 +4080,7 @@ static void __noreturn m1_after_slpa(void)
 		writel_relaxed(1, commit);
 	}
 	dsb(sy);
-	if (position)
+	if (position || last_look)
 		m1_t_third = m1_now();
 	if (alarm) {
 		/*
@@ -3915,8 +4118,10 @@ static void __noreturn m1_after_slpa(void)
 	}
 
 	/* 10 */
+	if (ll_wake)
+		m1_ll_timer();
 	m1_arm_deep_sleep();
-	m1_deep_wfi(obs ? &m1_core[0] : NULL);
+	m1_deep_wfi(obs ? &m1_core[0] : NULL, last_look);
 }
 
 static void m1_read_mpidr(void *p)
@@ -4987,9 +5192,9 @@ static int __init m1_wd1_init(void)
 		pr_err("m1: wd1_mark: a write would touch the never-write list; refusing\n");
 		return -EPERM;
 	}
-	pr_info("m1: wd1_mark: awake: WD1 ctrl %x count %08x bite %08x (the kernel's, which its suspend stops); step 4 writes bite %08x (150 s), count %08x (60 s), then control %x\n",
-		readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_COUNT), readl(m1_wdt + WD1_BITE), WD1_MARK_BITE, WD1_MARK_COUNT,
-		WD1_RESET_EN);
+	pr_info("m1: wd1_mark: awake: WD1 ctrl %x count %08x bite %08x (the kernel's, which its suspend stops); step 4 writes bite %08x (150 s), count %08x (%u s), then control %x\n",
+		readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_COUNT), readl(m1_wdt + WD1_BITE), WD1_MARK_BITE,
+		last_look ? LL_WD1_COUNT : WD1_MARK_COUNT, (last_look ? LL_WD1_COUNT : WD1_MARK_COUNT) / WD1_HZ, WD1_RESET_EN);
 	return 0;
 }
 
@@ -5245,6 +5450,75 @@ static int __init m1_acl_init(void)
 		v[i] = readl(post_map[ACL_FIRST + i]);
 	pr_info("m1: acc_last: awake: EACC 0x28e098000 %08x; PACC0 0x28e098004 %08x; PACC1 0x28e098008 %08x; the muxes, in the table's order: %08x %08x %08x %08x %08x. Step 5 leaves the three out; step 9 writes 0, 0x20 and 0x20 to them right before the commit, and the time from there to the run's last record goes to 0x6016\n",
 		v[0], v[1], v[2], mux[0], mux[1], mux[2], mux[3], mux[4]);
+	return 0;
+}
+
+static_assert(M1_PS_SIO_PAGE + LL_FPWM0 == 0x28e580190ULL && M1_POS_PAGE + LL_HS_B == 0x2922c010cULL && LL_AT == 0x6008 && LL_N == 7 &&
+	      LL_WD1_COUNT == 0x7270e000U && LL_WD1_COUNT < WD1_MARK_BITE && LL_BLINK_CYCLES == 2400000U && LL_PWM_GO == 0x4021U &&
+	      LL_PWM + LL_PWM_ON == 0x39b03001cULL && LL_PWM + LL_PWM_OFF == 0x39b030018ULL && LL_ALARM_SECS < LL_TIMER_S &&
+	      LL_TIMER_S < (WD1_MARK_BITE - LL_WD1_COUNT) / WD1_HZ);
+
+/*
+ * last_look=1 at load, after m1_wd2_init(), which maps the engine's page: the pages its reads go through are mapped
+ * (wd2_bite=1's, pmgr_late=1's and m1's own), and the words it would read are logged awake, but for HS_A, which nothing here has read awake. With
+ * ll_wake=1: none of the four addresses it writes is on the never-write list, the PWM is the device tree's fpwm at
+ * that address, its page is mapped here, CNTFRQ leaves the timer's value in TVAL's 31 bits, and the PWM's three
+ * registers are logged if FPWM0 reads on (a read behind a gated clock would fault). Reads only.
+ */
+static int __init m1_ll_init(void)
+{
+	static const u16 sio[SIOD_N] = SIOD_OFFS, pcie[PCD_N] = PCD_OFFS;
+	unsigned int i, off = 0, pc = 0;
+	struct device_node *np;
+	bool fpwm = false;
+	u32 ps;
+
+	if (!m1_pos || !m1_sio || !m1_ps || !m1_wdt) {
+		pr_err("m1: last_look: the engine's page, SIO's power page, the first power page or the watchdogs' isn't mapped; refusing\n");
+		return -ENODEV;
+	}
+	for (i = 0; i < SIOD_N; i++) {
+		off += ll_off(readl(m1_sio + sio[i]));
+		fpwm |= sio[i] == LL_FPWM0;
+	}
+	if (!fpwm) {
+		pr_err("m1: last_look: FPWM0's power word isn't among SIO's 43; refusing\n");
+		return -EINVAL;
+	}
+	for (i = 0; i < PCD_N; i++)
+		pc |= ll_off(readl(m1_ps + pcie[i])) ? BIT(i) : 0;
+	ps = readl(m1_sio + LL_FPWM0);
+	pr_info("m1: last_look: awake: 0x2922c0040 %08x, 0x2922c0044 %08x, PHASE %08x, HS_B %08x; %u of SIO's 43 power words read off, FPWM0's %08x, the PCIe five off 0x%02x, ANS2 %08x, the PMP %08x. WD1's count is written as %u s; if CPU0's last WFI returns, seven bytes go to the PMU's 0x%x-0x%x\n",
+		readl(m1_pos + M1_POS_GATE40), readl(m1_pos + M1_POS_GATE44), readl(m1_pos + M1_POS_PHASE), readl(m1_pos + LL_HS_B),
+		off, ps, pc, readl(m1_sio + M1_PS_ANS2), readl(m1_ps + M1_PS_PMP_RO), LL_WD1_COUNT / WD1_HZ, LL_AT, LL_AT + LL_N - 1);
+	if (!ll_wake)
+		return 0;
+	if (e1_never_write(LL_PWM + LL_PWM_CTRL) || e1_never_write(LL_PWM + LL_PWM_OFF) || e1_never_write(LL_PWM + LL_PWM_ON) ||
+	    e1_never_write(M1_PS_SIO_PAGE + LL_FPWM0)) {
+		pr_err("m1: last_look: a write of ll_wake=1 would touch the never-write list; refusing\n");
+		return -EPERM;
+	}
+	np = of_find_node_by_path("/soc/pwm@39b030000");
+	if (!np || !of_device_is_compatible(np, "apple,s5l-fpwm")) {
+		of_node_put(np);
+		pr_err("m1: last_look: /soc/pwm@39b030000 isn't an apple,s5l-fpwm in this device tree; refusing\n");
+		return -ENODEV;
+	}
+	of_node_put(np);
+	if (m1_tps * LL_TIMER_S > S32_MAX) {
+		pr_err("m1: last_look: %u s of this counter don't fit the timer's 31 bits; refusing\n", LL_TIMER_S);
+		return -EINVAL;
+	}
+	m1_ll_pwm = ioremap_np(LL_PWM, PAGE_SIZE);
+	if (!m1_ll_pwm)
+		return -ENOMEM;
+	if ((ps & LL_PS_ACTUAL) == LL_PS_ACTUAL)
+		pr_info("m1: last_look: ll_wake=1: awake: the keyboard PWM's control %08x, off cycles %08x, on cycles %08x. Step 8 asks FPWM0 on and writes %u cycles on, %u off and control 0x%x; the alarm goes %u s out, CPU0's timer %u s\n",
+			readl(m1_ll_pwm + LL_PWM_CTRL), readl(m1_ll_pwm + LL_PWM_OFF), readl(m1_ll_pwm + LL_PWM_ON), LL_BLINK_CYCLES,
+			LL_BLINK_CYCLES, LL_PWM_GO, LL_ALARM_SECS, LL_TIMER_S);
+	else
+		pr_info("m1: last_look: ll_wake=1: awake: FPWM0 doesn't read on, so the PWM's registers aren't read. Step 8 asks it on and writes %u cycles on, %u off and control 0x%x; the alarm goes %u s out, CPU0's timer %u s\n",
+			LL_BLINK_CYCLES, LL_BLINK_CYCLES, LL_PWM_GO, LL_ALARM_SECS, LL_TIMER_S);
 	return 0;
 }
 
@@ -5624,6 +5898,13 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
+	/* After m1_wd2_init(), which maps the engine's page: m1_ll_init() refuses without it. */
+	if (last_look) {
+		int ret = m1_ll_init();
+
+		if (ret)
+			return ret;
+	}
 	/* Last: it reads through pages the initializers above map, the engine's among them (m1_wd2_init()'s here). */
 	if (look) {
 		int ret = m1_look_init();
@@ -5662,6 +5943,8 @@ static void m1_unmap(void)
 		iounmap(m1_cpm);
 	if (m1_pos)
 		iounmap(m1_pos);
+	if (m1_ll_pwm)
+		iounmap(m1_ll_pwm);
 	if (m1_recfg)
 		iounmap(m1_recfg);
 	if (m1_pmp_asc)
@@ -6126,6 +6409,14 @@ static int __init e1_check_params(void)
 		pr_err("acc_last=1 needs gates_mark=1 and none of sio_down=1, pcie_down=1, sio_steps=1, a2_pre=1, observe=1 and probe=1 (it's that run with the three CPU complexes' cluster words written right before the commit, and its byte is at 0x6016 under its own stages)\n");
 		return -EINVAL;
 	}
+	if (last_look && (!wd1_mark || gates_mark || observe || position || recfg_bite || probe)) {
+		pr_err("last_look=1 needs wd1_mark=1 and none of gates_mark=1, observe=1, position=1, recfg_bite=1 and probe=1 (it's --m1-mark's run with WD1's count at 80 s and a record at 0x6008-0x600e if CPU0's last WFI returns, under its own stages)\n");
+		return -EINVAL;
+	}
+	if (ll_wake && !last_look) {
+		pr_err("ll_wake=1 needs last_look=1 (it's that run with the alarm at 20 s, CPU0's timer at 25 s and the keyboard light set blinking)\n");
+		return -EINVAL;
+	}
 	if ((one_commit || smc_idle) && !disp_off) {
 		pr_err("one_commit=1 and smc_idle=1 need disp_off=1 (0x6005's bit 0 says how the notice went, in its stages)\n");
 		return -EINVAL;
@@ -6299,7 +6590,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -6307,7 +6598,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
 		gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;
