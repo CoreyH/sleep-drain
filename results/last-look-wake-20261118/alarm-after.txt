@@ -1,0 +1,2 @@
+$ pmu-alarm status (13:16, after the nights went on again)
+secs=11678 alarm=11276 (-402 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01

@@ -5426,6 +5426,49 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### Run B, the last look with a wake: the light blinked to the end, the alarm fired into nothing (2026-11-18)
+
+`run-floor --no-reading --m1-last-look-wake` in a safe boot, on battery at 98%, loaded 13:07, the nights
+switched off for it (`results/last-look-wake-20261118/`). Run A with three things added: the PMU's alarm 20 s
+after the commit's second, CPU0's own timer 25 s out, and the keyboard's PWM set blinking in step 8 (awake
+it read control 0x4001, off cycles 0x3c0, on cycles 0).
+
+**What Corey saw**, filmed: "it went black and almost at the same time the keyboard started blinking and
+blinked for 70 seconds then I got the apple logo."
+
+**The record.** Stage 0x08, the last. Everything before the commit as in run A (0x6012 = 0xff, 0x6013 =
+0xdf, 0x6007 = 0xf5, 0x6005 = 0x7d: PHASE 4, WD2 counting with its 120 s bite). 0x6016 = 0xfd: the alarm's
+commands acked, and bit 6, the PWM's three writes made. The restart 70 s after the commit (68.8 to 70.8 s).
+0x6008-0x600e all 0. The alarm, read with the stock drivers before anything loaded: 0x1401 = 0x03, its
+event bit set and its enable gone, 0x140c the commit's second + 20. PMU 0x0201 = 0x02.
+
+**What it says.**
+- **B2 never got to its power-downs.** FPWM0 is the tenth of the 43 SIO words B2 switches off, from its op
+  35 on, and the light it clocks blinked until the restart. With WD1's count never zeroed (the restart at
+  70 s again), B2 is held before its tenth SIO word for the whole 70 s: at its first poll (op 1,
+  0x2922c0044's bit 2), at op 3's, in the first handshake, or not started; the light doesn't say which. This is the witness the plan asked for
+  before any more work on B2's later ops: none of the AP-made steps on its power-downs (runs 18 on) could
+  have mattered, because B2 doesn't get there. What rests on an assumption: that B2's write to FPWM0's
+  word would have stopped the PWM though the run had asked the word on.
+- **The SoC wasn't asleep at 20 s.** The alarm fired (0x03) and nothing followed: no restart at 20 s, which
+  is what a sleep the PMU can end would have shown. The clocks ran all 70 s, since the PWM did.
+- **CPU0 didn't come back for its timer** either: no bytes, and the restart came 45 s after the timer's
+  time. By the record's own terms a core that was still powered would have come back, so this is the
+  first sign that the last core does go down; not a proof (a first command that failed reads the same,
+  and a core that deep may not take its timer).
+- So the picture after the commit: seven cores parked and CPU0 in its last WFI (whether it is powered
+  down is a hypothesis, above), the engine in A2 (PHASE 4, 10 ms after the release) with WD2 counting,
+  B2 not as far as its tenth SIO word, and WD1 ending it at 70 s. Which of B2's opening polls or the
+  first handshake holds it isn't shown: nothing sampled the gate's words after CPU0's WFI. Runs 6 to 9
+  sampled them with CPU0 awake, where the awake core may itself hold the gate ("What it doesn't
+  settle", above), so those readings aren't this stall's until something shows the two are the same.
+
+**After the run:** `m1-crumbs --clear` disarmed the alarm (0x1401 = 0x01); the nights went on again at 25,
+and with the alarm driver loaded `pmu-alarm status` reads `ctrl=0x01 event=0x00 mask=0x01`: nothing of
+run B's alarm is left latched. An SMC dump after it is in `results/smc-dump-20261118T131403/` (redacted);
+against the one after run A, outside sensors and the battery's keys: `CLWK`, `SAQw`/`SARw` (0x1600 to
+0x900), `SAQy`/`SARy` (3 to 1), `SEs6` (0 to 0x20) and a few `z` keys. Not read further.
+
 ### Run A, the last look: the restart moved with the marker, and CPU0's WFI didn't return (2026-11-18)
 
 `run-floor --no-reading --m1-last-look` in a safe boot, on battery at 100%, loaded 12:52:30
@@ -5470,7 +5513,8 @@ mostly sensors and the battery's; one that stood out, `CLWK`, a 64-bit count. No
 battery's serial (`BMSN`), the chip's ID (`RECI`) and an ID string (`zSEm`) in it, against the practice of
 11-04, which had itself left `RECI` in three files. They are out of the tree now (`smc-keys redact`, and a
 test that fails on a dump in `results/` that has one); they are still in the history from 8756cd9 and
-0a8234b on, and taking them out of that is Corey's call (it rewrites `main`).
+0a8234b on. Corey, the same day, asked whether to rewrite `main` for it: "you can leave the device identifies, no
+problem." So the history stays as it is.
 
 ### Upstream: the two questions posted, and two results elsewhere (2026-11-18)
 
