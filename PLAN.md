@@ -141,7 +141,8 @@ the PR with that session's work.
        in both posts; a list that comes back from a hypervisor trace needs Corey's word before
        it's used (the open point on traces in CLAUDE.md).
     2. **Built 2026-11-16, to run:** `run-floor --no-reading --m1-last-look` (run A), then
-       `--m1-last-look-wake` (run B, after `e1-hook/kbd-blink` has shown the blink awake);
+       `--m1-last-look-wake` (run B; `e1-hook/kbd-blink` showed the blink awake on 2026-11-18: Corey saw it, five a
+       second, and the light came back as it was);
        RESEARCH.md, "`last_look=1` as built", has the bytes and how each ending reads. The
        cluster status words went to item 3: no bytes for them, and a first read under the mask
        could itself end the WFI. Run A first and alone. After run B the PMU alarm has fired and
