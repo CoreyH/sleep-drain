@@ -5509,7 +5509,8 @@ mostly sensors and the battery's; one that stood out, `CLWK`, a 64-bit count. No
 battery's serial (`BMSN`), the chip's ID (`RECI`) and an ID string (`zSEm`) in it, against the practice of
 11-04, which had itself left `RECI` in three files. They are out of the tree now (`smc-keys redact`, and a
 test that fails on a dump in `results/` that has one); they are still in the history from 8756cd9 and
-0a8234b on, and taking them out of that is Corey's call (it rewrites `main`).
+0a8234b on. Corey, the same day, asked whether to rewrite `main` for it: "you can leave the device identifies, no
+problem." So the history stays as it is.
 
 ### Upstream: the two questions posted, and two results elsewhere (2026-11-18)
 
