@@ -2113,8 +2113,8 @@ static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n
 		return true;
 	if (addr == 0x6001)
 		return n == 1 && (b[0] == 0x50 || b[0] == 0x30);
-	/* obs_gate=1: CPU7's look goes to 0x6008-0x600e, and K1's mark and zeros (last_look.h). */
-	if (obs_gate && addr >= LL_AT && end <= LL_AT + LL_N)
+	/* observe=1: K1's zeros go to 0x6008-0x600e in every observer's run, and obs_gate=1's mark and CPU7's look (last_look.h). */
+	if (observe && addr >= LL_AT && end <= LL_AT + LL_N)
 		return true;
 	/* last_look=1: 0x6008-0x600e too (last_look.h). */
 	return (addr >= 0x6004 && end <= (last_look ? LL_AT + LL_N : 0x6008)) || (addr >= 0x6010 && end <= 0x6017);
@@ -2157,7 +2157,8 @@ static int m1_pmu_start(void)
 		v = LL_ARMED;	/* gate_look=1: a look is to come; its first command writes LL_LOOKED over this */
 		ret = m1_kwrite(LL_AT, &v, 1);
 	}
-	if (!ret && obs_gate)
+	/* Every observer's run, with obs_gate=1 or not: an earlier obs_gate=1 record left there would read as this run's (Pullfrog on #116). */
+	if (!ret && observe)
 		ret = m1_kwrite(LL_AT, zero, LL_N);
 	if (!ret && obs_gate) {
 		v = OG_ARMED;	/* obs_gate=1: CPU7's look is to come; its first command writes over this */
@@ -2212,7 +2213,7 @@ static void m1_pmu_undo(void)
 		err = m1_kwrite(LL_AT, zero, LL_N);
 		ret = ret ?: err;
 	}
-	if (obs_gate) {
+	if (observe) {
 		err = m1_kwrite(LL_AT, zero, LL_N);
 		ret = ret ?: err;
 	}

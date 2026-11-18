@@ -1227,7 +1227,12 @@ def og_lines(s, r):
            " CPU0's and the E complex's power words:"]
     b0 = r[0]
     if b0 == OG_ARMED:
-        return out + [f"  0x6008 = 0x{b0:02x}: obs_gate=1 was set and CPU7's look never landed: K1 writes this byte, and the look's first command"
+        # Every observer's run zeroes these bytes at K1, so under one of CPU7's stages the mark is this run's. Under any other
+        # stage it may be an earlier run's, left uncleared: no other run zeroes them (Pullfrog on #116).
+        whose = ("obs_gate=1 was set and CPU7's look never landed" if s in OG_STAGES else
+                 "the mark of an obs_gate=1 run whose look never landed. This run's if it was one, which stage"
+                 f" 0x{s:02x} doesn't say; otherwise an earlier run's, left uncleared")
+        return out + [f"  0x6008 = 0x{b0:02x}: {whose}: K1 writes this byte, and the look's first command"
                       " would have written over it (CPU7 didn't get that far, or the command failed)"
                       + (f"; 0x6009-0x600e = {r[1:].hex(' ')} aren't shown to be this run's: NOT READ" if any(r[1:]) else "")]
     if s not in OG_STAGES:

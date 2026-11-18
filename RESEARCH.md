@@ -5465,6 +5465,13 @@ its stages. 34 new mutants (`ogl:`), all caught, one after a test was added for 
 up to the code. `tests/e1a_launcher_test.py` for the new option. No full mutant run and no adversarial
 pass: reads on reviewed code.
 
+**What Pullfrog found** (on #116; taken). CPU7's stages are an ordinary `--m1-observe` or `--m1-late`
+run's too, and those runs' K1 left 0x6008-0x600e alone: an `obs_gate=1` record left uncleared would have
+read as the next ordinary observer's. K1 now zeroes the seven bytes in every observer's run (and the undo
+does, and `m1_pmu_ok()` allows it there), and only `obs_gate=1` writes the mark. K1's mark by itself under
+a stage that isn't CPU7's is said to be possibly an earlier run's. A test runs the real `m1_pmu_start()`
+over a retained record for each kind of run, and the decoder on what an ordinary observer then leaves.
+
 ### The gate-look run: 0x2922c0044 reads 0x0b with CPU0 awake, two new bits up and bit 2 still clear (2026-11-18)
 
 `run-floor --no-reading --m1-gate-look` in a safe boot, on battery at about 75%, loaded 14:47, the nights

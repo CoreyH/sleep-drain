@@ -112,7 +112,10 @@
  *   0x600d  0x2922c0044's low byte again, OG_LATER_MS later
  *   0x600e  bit 7 set; bits 6:3 the four power words read off again, in
  *           0x6008's order; bits 1:0 0x2922c0040's bits 1:0 then
- * K1 leaves 0x6008 as OG_ARMED, so a look that never landed shows. Reads only.
+ * K1 leaves 0x6008 as OG_ARMED, so a look that never landed shows, and zeroes
+ * the seven bytes in every observe=1 run, with obs_gate=1 or not: CPU7's stages
+ * are an ordinary observer's too, and a record left there would read as its.
+ * Reads only.
  */
 #ifndef LAST_LOOK_H
 #define LAST_LOOK_H
