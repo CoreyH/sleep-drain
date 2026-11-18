@@ -5426,6 +5426,57 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The observer's gate run: bits 0 and 1 are the two P complexes'; bit 2 isn't the E complex's power word (2026-11-18)
+
+`run-floor --no-reading --m1-obs-gate` in a safe boot, on battery at about 47%, loaded 16:06, the nights
+left on (`results/obs-gate-20261118/`). Run 3's line with CPU7's look added.
+
+**The record.** Stage 0x7f: CPU7 recorded everything, nothing pending. As in run 3: CPU0 read off within
+500 ms of the hand-over and ECPM within 500 ms more, CPU1 to CPU6 off at their release, PCPM0 off, WD2 armed
+with 30 s to go, and the restart 31 s after the commit. 0x6008-0x600e = `87 a8 03 09 84 00 00`.
+
+| | awake | gate-look run: CPU0 awake | this run: CPU7 awake |
+|---|---|---|---|
+| CPU0's and ECPM's power words | on | on (CPU0 running) | **off, off** |
+| PCPM0's | on | off (runs 1, 5, 6) | off |
+| PCPM1's | on | off | **on** (CPU7 in it) |
+| 0x2922c0044, low nibble | 1000 | 1011 | **1001** |
+| 0x2922c0040, low byte | 0x03 | 0x03 | 0x03 |
+| PHASE | 0 | 4 | 4 |
+| HS_A bits 31, 24 | 0, 0 | 1, 0 | 1, 0 |
+| HS_B bits 31, 1, 0 | 1, 0, 0 | 1, 0, 1 | 1, 0, 1 |
+
+**What it says.**
+- **Bit 0 is P complex 0's and bit 1 is P complex 1's**, each set when the complex is off: bit 1 was set
+  with PCPM1 off and is clear with CPU7 awake in it, and bit 0 is set in both. Two readings, one bit
+  changing with the one complex that changed.
+- **Bit 2 is not the E complex's power word.** CPU0's and ECPM's words read off and bit 2 is still clear.
+  So the reading of the gate-look run was half right: a bit per P complex, and bit 2, B2's first poll,
+  is something the E complex going off (as its power word shows it) doesn't set while a P complex is up.
+  0x0d and 0x0e, the outcomes that would have named bit 2 the E complex's, didn't come; nor did 0x0b.
+- What bit 2 is isn't shown. What fits the three readings: all three complexes off together (then it has
+  never been set where anyone could read it, and with every core in its WFI B2 should pass it, which runs
+  A and B say it doesn't in 70 s: so the last complex wouldn't be going off); or the E complex's in a
+  sense its power word doesn't carry (its own sequence's end, or its being the last); or nothing of the
+  CPUs' at all. Bit 3 was set in all three.
+- **The rest is the same with either core up:** PHASE 4, A2 raised and unanswered (HS_A 31 up, 24 clear),
+  HS_B's bit 0 up, 0x2922c0040's bit 1 still set. And this under run 3's recipe as under today's, so
+  the recipe's additions since run 3 don't show in these words.
+
+**The second command didn't land, again, and this time CPU7 went on.** 0x600d and 0x600e read 0, as in the
+gate-look run. Here the commands after it all landed (stages 0x72 and 0x7f, 0x6012, 0x6015), and
+`m1_crumb()` stops at the first command that fails: so the two-byte command to 0x600d was sent and
+acknowledged, and its bytes aren't there at the next boot. Awake, through the kernel's path, all seven bytes
+take a write and read back (`write-test.txt`: each byte alone, the two-byte write to 0x600d, five and seven
+bytes from 0x6008). So either a raw write to those two after the commit doesn't take, or the bytes don't
+outlast the restart: the boot chain may clear them, which would also be why they read 0 in every log
+before 2026-11-16. **This takes back the gate-look run's reading of its own ending:** its lost second
+command is no sign that CPU0 hung in the look, and its 70 s and its light stand as a third instance of
+run B's. Until a restart with test values in them says which bytes survive, a record uses 0x6008-0x600c.
+
+**After the run:** the record cleared, the nights untouched, an SMC dump in
+`results/smc-dump-20261118T161027/`, redacted.
+
 ### `obs_gate=1` as built: the observer reads the gate word with CPU0 and the E complex down (2026-11-18)
 
 **Why.** The gate-look run read 0x2922c0044 as 0x0b with CPU0 awake and the two P complexes off: bits 0
@@ -5516,7 +5567,9 @@ SIO's 43 power words, FPWM0's, the PCIe five, ANS2's and the PMP's, and sends tw
 hung, or the command failed. Which isn't shown, and it matters for what this run's ending is: a CPU0 that
 hung in the look never set its timer or took its WFI, so the 70 s and the light here are the look's own
 ending, not a third instance of run B's (the decoder says so). For a later look after the commit: the
-engine's page reads cleanly with a core up; the power words are not shown to.
+engine's page reads cleanly with a core up; the power words are not shown to. (Taken back the same day,
+"The observer's gate run", above: the two bytes were lost again in a run whose later commands landed, so
+their loss doesn't show a hang.)
 
 **After the run:** the record cleared, the alarm disarmed, the nights on again at 25 (the alarm reads
 `ctrl=0x01 event=0x00 mask=0x01` with the driver loaded), and an SMC dump in
