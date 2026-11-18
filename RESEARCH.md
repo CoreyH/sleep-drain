@@ -5419,6 +5419,13 @@ in 31. The PMU's clock read 1970 again and was set again. Then, in that boot: `p
 alarm drivers in on the running system and the toggle reports rtc0 as the alarm RTC. Not seen yet: the
 drivers loaded by the unit at boot, and a lid closed on battery that ends in a power-off.
 
+**Both seen the same day** (Corey's trial at 2 minutes, lid closed on battery at 100%). The hook's log:
+`12:39:06 pre armed ... minutes=2`, `12:41:06 post power-off why=alarm-time mode=closed now=1795002065
+alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended the sleep in its own second,
+120 s after the close, and the power-off was asked for 5 s later. The next boot (12:42:28) had the unit load
+the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
+power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
+
 ### Upstream: the two questions posted, and two results elsewhere (2026-11-18)
 
 **Posted**, with Corey's OK of 2026-11-18 ("you can post the upstream drafts but maybe check for news and
