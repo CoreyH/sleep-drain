@@ -142,11 +142,19 @@ the PR with that session's work.
        it's used (the open point on traces in CLAUDE.md).
     2. **Run A done 2026-11-18** (RESEARCH.md, "Run A, the last look"): the restart came at 70 s,
        so it is WD1's and moved with the marker; CPU0's last WFI didn't return; B2 doesn't reach
-       its ops 223-224 in 70 s. **Run B is next:** `pkexec /usr/local/bin/sleep-drain-nights off`
-       first (the alarm driver a regular boot loads for the nights disarms the alarm and clears
-       its event before the record can be read), then the safe boot and `run-floor --no-reading
-       --m1-last-look-wake`, the keyboard filmed; after the read, `sleep-drain-nights on 25`.
-       To build after it: the alarm's registers saved before the unit loads the driver, and the
+       its ops 223-224 in 70 s. **Run B done 2026-11-18** (RESEARCH.md, "Run B, the last look with
+       a wake"), with the nights off around it: the keyboard blinked for all 70 s, so B2 never
+       reached its power-downs (FPWM0 is the tenth word of them); the alarm fired at 20 s and
+       nothing followed; CPU0 didn't come back for its timer. **B2 is held at its first gate**
+       (op 1's poll of 0x2922c0044's bit 2, op 3's, or the first handshake), which is the
+       witness the budget rule asked for. So next is what that gate waits on: item 4, and before
+       it a cheaper rung on this recipe, to design: CPU0 doesn't take its last WFI but reads
+       the gate's words (0x2922c0040, 0x2922c0044, PHASE, the handshake words) at set times
+       after the release and sends them to 0x6008-0x600e; runs A and B say the entry is held
+       with CPU0 down just the same, so an awake CPU0 costs no evidence. And this Mac's side of
+       the diff against macOS's commit state (item 1). Any later run that sets the alarm near:
+       the nights off around it, as here, until the snapshot below is built.
+       To build: the alarm's registers saved before the unit loads the driver, and the
        decoder saying when the driver is bound (its "cleared the enable (new)" line was wrong
        for run A's boot). Still to take: an SMC dump after a plain restart, the control for the
        dumps of 11-16 and 11-18; every dump through `smc-keys redact` before it's committed.
