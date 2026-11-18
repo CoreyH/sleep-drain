@@ -132,6 +132,14 @@ the PR with that session's work.
        inhibited (what its last digit is, how fast the screen follows); macOS's `ioreg` and
        `log show` for its platform sleep and quiesce actions (ten minutes in macOS, Corey's); an
        SMC dump either side of a plain restart, as the control for the diff across a run.
+       New 2026-11-18, after aurora-silicon/linux#2075 and Naeem Malik's runs 40 to 43 (RESEARCH.md,
+       "Upstream: the two questions posted"): this Mac's side of a diff against macOS's state at
+       its commit. From what is here already: B2's own power-downs (the decode) set against the
+       94 words that read on awake, 61 of them `apple,always-on` in Linux's tree (the DCS and
+       AMCC words, the AFNC and AFI fabric words, PMS, PMP, the ATC commons); then the same
+       words in the recipe's state, with the generic look of item 3. macOS's side is asked for
+       in both posts; a list that comes back from a hypervisor trace needs Corey's word before
+       it's used (the open point on traces in CLAUDE.md).
     2. **Built 2026-11-16, to run:** `run-floor --no-reading --m1-last-look` (run A), then
        `--m1-last-look-wake` (run B, after `e1-hook/kbd-blink` has shown the blink awake);
        RESEARCH.md, "`last_look=1` as built", has the bytes and how each ending reads. The
@@ -153,7 +161,8 @@ the PR with that session's work.
        `m1-crumbs` prints the PMU's 0x0201 with every record: B2's op 237-238 writes 1 there, a
        boot shows 2, and on Naeem Malik's M1 the engine's value outlasts the restart. Three
        endings to keep apart (his M1 restarts about 5 s after the release with its engine past
-       the gates, under this system firmware; whether that entry finished first isn't shown):
+       the gates, under the 13.5 firmware set this Mac boots Linux with too; whether that entry
+       finished first isn't shown):
        the marker's time, a restart well before it, dark past it.
     3. One returning batch, in a safe boot: CPU0's RVBAR and its lock bit; 0x2922c0200,
        0x2922c0214, 0x2925c0014; the muxes written, read and restored (in place of the one-way mux
@@ -178,10 +187,11 @@ the PR with that session's work.
     with Corey's OK: aurora-silicon's maintainers (is the resume mailbox generic or limited to
     T8140 and later; would T6000 data and ops for their sleep core be taken while the entry still
     resets; has their M1 Pro ever returned a core through the RVBAR); omacom's (will linux-aurora
-    carry the sleep core and m1n1-aurora a mailbox); maralcbr (how his replay ended). Drafted
-    2026-11-16, not posted, on this MacBook: `~/.local/share/sleep-drain/drafts-20261116/` (a
-    comment for omacom/linux-aurora#290, which asks maralcbr too, and a discussion for
-    aurora-silicon/linux).
+    carry the sleep core and m1n1-aurora a mailbox); maralcbr (how his replay ended). **Posted
+    2026-11-18** with Corey's OK: a comment on omacom/linux-aurora#290, which asks maralcbr too,
+    and aurora-silicon/linux#2198 (an issue: nobody uses the discussions there for questions).
+    Both also ask for macOS's power words at its commit on a T600x. Check both for answers at
+    the start of a session; a reply to either still needs Corey's OK.
   - **The nights, beside all of it** (OK'd 2026-11-16: 20 to 30 minutes): suspend, then power off
     after N minutes (the alarm, disarmed on every other way out; the alarm modules loaded at boot
     until #351 merges). Built 2026-11-16 (PR #108: `sleep-drain-off-after`, `sleep-drain-nights`,
@@ -200,9 +210,10 @@ the PR with that session's work.
   - **Asked, waiting:** Naeem Malik's commits cite a working deep sleep on T6000 ("a reference
     driver for the M1 Pro"). It wasn't found in public. Corey had the question posted on
     2026-11-14: malik-na/linux-aurora#77 (which driver, whether it wakes again, whether the
-    52 ms is T8103's). No reply by 2026-11-16. Check it for an answer at the start of a session;
+    52 ms is T8103's). No reply by 2026-11-18. Check it for an answer at the start of a session;
     a reply there, or reading what he points to, still needs Corey's OK. His own runs go on, on
-    the M1 under system firmware 13.5 (`m1power/s2r-rs1-135`, runs 26 to 38).
+    the M1 with the 13.5 firmware (`m1power/s2r-rs1-135`, runs 26 to 43 by 11-17: macOS sleeps
+    and wakes there through the same commit, and he is setting the state that differs).
   - **Tokens:** the one-step-a-session rule of 2026-11-10 is lifted (Corey, 2026-11-16). What
     stays, as practice: a step that only reads gets Pullfrog and its own targeted checks, not the
     full mutant run; write-ups stay short.

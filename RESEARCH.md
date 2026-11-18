@@ -5297,7 +5297,8 @@ no code read today, nothing posted):
     0x0201 04 -> 01 and the power chip's restart counter unchanged: not watchdog 2. Under the earlier
     system firmware the same sequence slept until the alarm, so the restart is new with 13.5 and its
     coprocessor firmware." Run 38 masks every wake source to tell a wake from a reset by firmware. This
-    Mac's system firmware is 13.5 too.
+    Mac's system firmware is 13.5 too. (Not so: its OS firmware set is 13.5, its system firmware 26.6.2;
+    the entry of 2026-11-18 below.)
   - What his sequence 0 waits on is readable from the AP there: "44 device power-state words, bit 11 must
     be 0; five power-manager words, bit 30 must be 1", read "just before the release". Run 18 found one
     busy (`ps_fpwm1`, "never while awake"). Here B2's first poll is one AON word (0x2922c0044 bit 2), and
@@ -5417,6 +5418,66 @@ in 31. The PMU's clock read 1970 again and was set again. Then, in that boot: `p
 `rung/last-look` with main merged in) and `sleep-drain-nights on 25`. The unit started, `load` swapped the
 alarm drivers in on the running system and the toggle reports rtc0 as the alarm RTC. Not seen yet: the
 drivers loaded by the unit at boot, and a lid closed on battery that ends in a power-off.
+
+### Upstream: the two questions posted, and two results elsewhere (2026-11-18)
+
+**Posted**, with Corey's OK of 2026-11-18 ("you can post the upstream drafts but maybe check for news and
+updates first"); the texts as posted are on this MacBook in `~/.local/share/sleep-drain/posted-20261118/`:
+- omacom/linux-aurora#290, a comment (`#issuecomment-6977293933`): where the entry stands, and three
+  questions: maralcbr's own ending on his J314s; macOS's power words at its commit on a T600x; whether
+  linux-aurora means to carry deep sleep on t600x.
+- aurora-silicon/linux#2198, an issue, not the Q&A discussion that was drafted: that category has no post
+  at all, the discussions there are a hardware directory, and questions go in as issues (#1547, #2075).
+  Four questions: macOS's power words at its commit on a T600x; whether anything about T600x keeps a loader
+  from using the resume mailbox (#1769 keeps the mailbox in the shared part of `sleep.c`); whether an M1
+  Pro or Max under aura has come back from a completed entry; whether T6000 data is wanted before an entry
+  completes.
+Against the drafts of 11-16: the question about macOS's commit state is new, after the two results below;
+the firmware line is new and says both versions.
+
+**Nothing new** on malik-na/linux-aurora#77 (no reply), omacom/linux-aurora#351 (no review, no `ci:build`)
+and #454, JJRPF/Aurora-DeepIdle#9; maralcbr/linux was last pushed on 11-05.
+
+**A T6050 with this Mac's symptom, solved** (aurora-silicon/linux#2075, axboe; a K116s, 16-inch M5 Pro, under
+aura; the issue's text only was read, none of its branches). "The whole public entry now completes on this
+board; the SoC then does not sleep": the commit word written, and a reset 5.56 s later, "the commit
+watchdog, not a sleep". The cause, a day later: "iBoot leaves VENC0_SYS on (`0xf0003ff`). The K116s DT has
+the video encoder's power states disabled [...] so nothing turned it off and FAB0_SOC stayed up behind it."
+Found by running macOS as a guest on the same machine with its commit withheld, and a diff of the register
+state at that point against Linux's before its commit word. Power words lowered by hand on the way (the
+PMP's own, SIO's) were not it, and he withdrew them: "not needed and macOS does not lower them". His chip
+and his loader, so a lead here and not a fact about T6000; what carries over is the kind of cause, a word
+left on that holds a fabric up, and the method, which needs macOS's side.
+
+**Naeem Malik's M1, runs 39 to 43** (`m1power/s2r-rs1-135`, to 6bd8eaf6ad of 11-17; commit messages only,
+his words in quotes, T8103's values). "Linux run40 under the m1n1 hypervisor with real S2R restarts ~5 s
+after the commit; macOS 13.5 through the same commit path wakes." So on his M1 the 13.5 firmware does
+sleep, and the restart is Linux's state. "Both systems' state was then read by the same tracer when the
+last core reached its commit (249 power-state, always-on and clock words [...]): 54 differ." Run 41 sets
+those; run 42 puts the DRAM controllers "into the self-gating state macOS runs them in" ("The engine's
+program reads that field": DCSn+0x7b0, 0 under macOS, 3 under Linux); run 43 makes the 130 writes in the
+memory controller's space that macOS makes in the last 50 ms before its commit and Linux didn't. How run
+43 ended isn't in the branch.
+
+**What both say for here.** Two other chips had this ending, a reset a few seconds after a commit that the
+entry reached, and both went on by a diff of the state at the commit against macOS's. Here the reset comes
+at the watchdog's own time and B2 hasn't been shown past its first gate, so the place may be earlier than
+theirs; the kind of cause is the same candidate. This Mac's side of such a diff can be read; macOS's can't
+be had from here without a trace, which is why both posts ask for it.
+
+A first look at this Mac's side, from the reading of 2026-11-04 (`results/sleep-peek-20261104T120619/
+pmgr-awake-2.txt`, 206 power words by macOS's names) against the live device tree: 94 read on awake. Linux
+has a node for every one of them but the seven CPU and cluster words, and none is disabled, so #2075's
+exact case (a word on, its node disabled) isn't here. 61 of the 94 are marked `apple,always-on`, which
+Linux never lowers: the 16 DCS and 4 AMCC words among them (auto flag set, actual f), the AFNC and AFI
+fabric words, PMS, PMP, the ATC commons. Which of them B2 lowers itself, and which macOS has off before
+its commit, is the diff that is still to make.
+
+**A correction.** "This Mac's system firmware is 13.5 too" (the entry of 11-16 above) named the wrong
+property. `/chosen` here has `asahi,system-fw-version` = 26.6.2 and `asahi,os-fw-version` = 13.5 (iBoot2
+iBoot-8422.141.2): Linux boots with the 13.5 firmware set, coprocessor firmware included, under system
+firmware 26.6.2. His "13.5 and its coprocessor firmware" reads as that set; which of the two wrote the
+reconfig engine's sequences on this Mac isn't known.
 
 ### Before the feasibility run: what the desk says (2026-11-09)
 
