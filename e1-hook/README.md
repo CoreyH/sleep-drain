@@ -180,7 +180,8 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   the time since the commit in bits 6:4 (under 10 ms, 100 ms, 1 s, 5 s, 15 s, 22 s, 30 s, or more) and a count
   in bits 1:0 (once, twice or more, a hundred or more; sent again at the second and the hundredth return);
   0x6009, what was pending (ISR_EL1's F, I, A), whether CPU0's timer was firing, HS_A's bit 24 and HS_B's bits
-  0, 1, 31; 0x600a-0x600c, the low bytes of 0x2922c0040, 0x2922c0044 and PHASE; 0x600d, how many of SIO's 43
+  0, 1, 31; 0x600a-0x600c, the low bytes of 0x2922c0040 and 0x2922c0044 and PHASE's low seven bits under a bit 7 that says
+  the command landed whole; 0x600d, how many of SIO's 43
   power words read off and whether FPWM0's did; 0x600e, the same for the five PCIe words, ANS2 and the PMP.
   Reads only, but CPU0's timer control, written 0. Nothing is armed that could end the WFI, so a return means
   a pending source. Stages 0x89, then 0x8b or 0x8a.

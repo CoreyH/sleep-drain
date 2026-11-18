@@ -130,3 +130,5 @@ used to sit in CLAUDE.md, entry for entry):
   check dropped, a bit read wrong) and says which of those `tests/m1_crumbs_test.py` (for the launcher,
   `tests/e1_hook_probe_test.py`) didn't notice. Run it after changing any of them, and give it the
   mutants a new rung calls for. A word as its argument runs only the mutants whose names have it.
+  Either way it first checks the whole list against the tree, in a second, and stops if a mutant's text
+  isn't there exactly once: a rung that moved an older mutant's line fixes the list before anything runs.

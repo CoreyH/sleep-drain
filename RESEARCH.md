@@ -5400,6 +5400,24 @@ places where the decoder said more or less than the bytes do. Open after it, for
 alarm has fired and its event stays latched (`--clear` writes only its control), and nothing here knows
 whether a latched event holds a wake source up at the next run's commit.
 
+**What Pullfrog found** (on #109's first commit; all taken). The same load order. The second command had no
+mark of its own, so a record cut off after 0x6009 read as measured zeros in the gate words and PHASE: bit 7
+of 0x600c is now set with PHASE's low seven bits, and without it 0x6009-0x600c aren't read. The alarm's
+interval in the decoder's reading of the second (20 s in run B, not an hour). Two tests held only for one
+order of evaluating a call's arguments, which C leaves open: the reads now go into locals, one after the
+other. And 37 older mutants had gone stale, their lines moved by this change; they'd have shown only in a
+run of the whole list, about an hour and a half. All 998 are caught again, and `tests/mutants.py` now checks
+the whole list against the tree before it runs anything.
+
+### The nights, switched on after a second flat battery (2026-11-18)
+
+The Mac went to sleep on 2026-11-16 at 13:59 with 98% (the sleep log's last `pre` line), before the nights'
+hook was installed, and was found flat on 2026-11-18: 61 Wh in under 44 hours, which is what about 2 W gives
+in 31. The PMU's clock read 1970 again and was set again. Then, in that boot: `pkexec bash install.sh` (from
+`rung/last-look` with main merged in) and `sleep-drain-nights on 25`. The unit started, `load` swapped the
+alarm drivers in on the running system and the toggle reports rtc0 as the alarm RTC. Not seen yet: the
+drivers loaded by the unit at boot, and a lid closed on battery that ends in a power-off.
+
 ### Before the feasibility run: what the desk says (2026-11-09)
 
 Subagents' work, in parallel with the build; what each rests on is said. None of it is from m1n1 or Aura.

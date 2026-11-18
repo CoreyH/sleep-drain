@@ -1,6 +1,6 @@
 # Plan
 
-Last updated 2026-11-16. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-18. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
@@ -185,10 +185,11 @@ the PR with that session's work.
   - **The nights, beside all of it** (OK'd 2026-11-16: 20 to 30 minutes): suspend, then power off
     after N minutes (the alarm, disarmed on every other way out; the alarm modules loaded at boot
     until #351 merges). Built 2026-11-16 (PR #108: `sleep-drain-off-after`, `sleep-drain-nights`,
-    `sleep-drain-alarm.service`), hardware-free checks only. To do on the Mac: `pkexec bash
-    install.sh`, `pkexec /usr/local/bin/sleep-drain-nights on 2`, one lid close on battery, the
-    log (`/var/log/sleep-drain-off-after.log`), then `on 25` and one restart to see the unit load
-    the drivers at boot. With it on, regular boots run the alarm test drivers; `off` before a
+    `sleep-drain-alarm.service`). Installed and switched on at 25 minutes on 2026-11-18, after a
+    second flat battery (asleep from 11-16 13:59 at 98%). Still to see on the Mac: one lid close
+    on battery that ends in a power-off (a short trial: `pkexec /usr/local/bin/sleep-drain-nights
+    on 2`, close the lid, then the log, `/var/log/sleep-drain-off-after.log`, and `on 25` again),
+    and one restart in which the unit loads the drivers at boot. With it on, regular boots run the alarm test drivers; `off` before a
     night that is meant to be measured. Still wanted, the two numbers nobody has: the draw
     powered off over a night, and lid-open to desktop.
   - **Process, from now:** raw words and one decoder; a generic read-only look that takes an
@@ -248,7 +249,10 @@ State that lives on the MacBook, not in git:
   been run, `sleep-drain-alarm.service` loads them at boot (never in a safe boot).
 - The RTC was set to the real time on 2026-11-02. It had counted from 1970
   since the battery ran flat, and again from 2026-11-15 (the Mac slept from
-  11-14 15:57 at 50% and ran flat overnight) until it was set on 2026-11-16.
+  11-14 15:57 at 50% and ran flat overnight) until it was set on 2026-11-16,
+  and once more after the flat battery of 11-16 to 11-18 (set 2026-11-18).
+- `/etc/sleep-drain/off-after` is 25 (the nights, on since 2026-11-18), so regular boots load
+  the alarm drivers.
 - `/boot/macos-session/`: macOS 26.6.2's IODeviceTree, `pmset` log and
   battery readings from 2026-10-30.
 

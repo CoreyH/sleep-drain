@@ -2565,9 +2565,9 @@ static void m1_ll_ret(void)
 	static u8 b0;
 	void __iomem *hs_a = post_map[ARRAY_SIZE(e1_post_slpa) - 1] + M1_POS_HS_A;
 	u8 b[LL_N - 1], off = 0, pc = 0, isr;
+	u32 ctl, hsa, hsb, fpwm, ans, pmp;
 	unsigned int i;
 	u64 now;
-	u32 ctl;
 
 	if (n <= LL_MANY)	/* stops at LL_MANY + 1: the hundredth return is sent once */
 		n++;
@@ -2584,17 +2584,23 @@ static void m1_ll_ret(void)
 	isb();
 	b0 = ll_b0(n, ll_time_code(now - m1_t_third, m1_tps));
 	m1_ll_send(LL_AT, &b0, 1);
-	b[0] = ll_b1(isr, ctl & ARCH_TIMER_CTRL_IT_STAT, readl(hs_a), readl(m1_pos + LL_HS_B));
+	/* Each read into its own variable, in this order: an argument list has none. */
+	hsa = readl(hs_a);
+	hsb = readl(m1_pos + LL_HS_B);
+	b[0] = ll_b1(isr, ctl & ARCH_TIMER_CTRL_IT_STAT, hsa, hsb);
 	b[1] = (u8)readl(m1_pos + M1_POS_GATE40);
 	b[2] = (u8)readl(m1_pos + M1_POS_GATE44);
-	b[3] = (u8)readl(m1_pos + M1_POS_PHASE);
+	b[3] = ll_b4(readl(m1_pos + M1_POS_PHASE));	/* the command's last byte: its bit 7 says the four landed */
 	m1_ll_send(LL_AT + 1, b, 4);
 	for (i = 0; i < SIOD_N; i++)
 		off += ll_off(readl(m1_sio + sio[i]));
-	b[4] = ll_b5(off, ll_off(readl(m1_sio + LL_FPWM0)));
+	fpwm = readl(m1_sio + LL_FPWM0);
+	b[4] = ll_b5(off, ll_off(fpwm));
 	for (i = 0; i < PCD_N; i++)
 		pc |= ll_off(readl(m1_ps + pcie[i])) ? BIT(i) : 0;
-	b[5] = ll_b6(pc, ll_off(readl(m1_sio + M1_PS_ANS2)), ll_off(readl(m1_ps + M1_PS_PMP_RO)));
+	ans = readl(m1_sio + M1_PS_ANS2);
+	pmp = readl(m1_ps + M1_PS_PMP_RO);
+	b[5] = ll_b6(pc, ll_off(ans), ll_off(pmp));
 	m1_ll_send(LL_AT + 5, b + 4, 2);
 }
 

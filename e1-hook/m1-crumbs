@@ -1231,11 +1231,11 @@ def ll_lines(s, b):
                " shown (Linux's own deep idle on this chip comes back at the next instruction too)"
                + (". A count past one can be the look's own doing: a read of its that faulted leaves an SError pending, masked,"
                   " and every later WFI returns for it" if b0 & 3 > 1 else ""))
-    # The third command is only sent after the second was acked, and both its bytes carry bit 7: with them there, four zeros are data.
+    # The second command's last byte carries bit 7: without it the four aren't shown to have landed whole, and none is read.
     third = bool(r[5] & 0x80 and r[6] & 0x80)
-    if not any(r[1:5]) and not third:
-        return out + ["  0x6009-0x600c read 0 and the third command's bytes aren't there: the second command, the engine's page and the"
-                      " handshake, didn't land (a read that hung, or SPMI): nothing more is read"] + blink
+    if not r[4] & 0x80:
+        return out + [f"  0x6009-0x600c = {r[1:5].hex(' ')}: the second command, the engine's page and the handshake, didn't land whole (bit 7"
+                      " of 0x600c, its last byte: a read that hung, a restart, or SPMI): none of the four is read, and nothing after them"] + blink
     pend = [n for i, n in enumerate(("an FIQ", "an IRQ", "an SError")) if b1 >> i & 1]
     out.append(f"  0x6009 = 0x{b1:02x}: pending at the return (ISR_EL1): {', '.join(pend) or 'nothing'}; CPU0's own timer "
                + ("was firing" if b1 & 8 else "was not firing")
@@ -1244,7 +1244,7 @@ def ll_lines(s, b):
     out.append(f"  0x600a = 0x{r[2]:02x}: 0x2922c0040's low byte (bit 1 {'set' if r[2] & 2 else 'clear: B2 clears it at its ops 4 to 6'})")
     out.append(f"  0x600b = 0x{r[3]:02x}: 0x2922c0044's low byte: bit 2 {'set' if r[3] & 4 else 'clear'} (B2's first poll, op 1, waits for it"
                f" set), bit 3 {'set' if r[3] & 8 else 'clear'} (op 3 waits for it clear)")
-    out.append(f"  0x600c = 0x{r[4]:02x}: PHASE's low byte ({PHASES.get(r[4], 'not a phase on file')})")
+    out.append(f"  0x600c = 0x{r[4]:02x}: PHASE's low seven bits 0x{r[4] & 0x7f:x} ({PHASES.get(r[4] & 0x7f, 'not a phase on file')})")
     if not third:
         return out + [f"  0x600d 0x600e = {r[5]:02x} {r[6]:02x}: the third command, B2's power words, didn't land whole (bit 7 of each): not read"] + blink
     n = r[5] & 0x3f

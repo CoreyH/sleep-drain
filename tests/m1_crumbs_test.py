@@ -7017,6 +7017,8 @@ int main(void)
 					printf("b1 %u %u %x %x %x\n", a, b, hs_a, hs_b, ll_b1((u8)a, b, hs_a, hs_b));
 				}
 	printf("b1isr %x\n", ll_b1(0xff, 0, 0, 0));
+	for (a = 0; a < 256; a++)
+		printf("b4 %x %x %x\n", a, ll_b4(a), ll_b4(a | 0xabcdef00U));
 	for (a = 0; a < sizeof(words) / sizeof(words[0]); a++)
 		printf("off %x %u\n", words[a], ll_off(words[a]));
 	for (a = 0; a < 64; a++)
@@ -7232,6 +7234,8 @@ def last_look_tests(g, src):
           and all(int(v, 16) == int(a) | int(t) << 3 | (int(ha, 16) >> 24 & 1) << 4 | (int(hb, 16) & 1) << 5 | (int(hb, 16) >> 1 & 1) << 6
                   | (int(hb, 16) >> 31) << 7 for a, t, ha, hb, v in b1),
           "ll_b1(): ISR's three bits, the timer's bit, HS_A's bit 24 alone, HS_B's bits 0, 1 and 31 alone", str(b1[:4]))
+    check([r[1:] for r in hdr if r[0] == "b4"] == [[f"{a:x}", f"{0x80 | a & 0x7f:x}", f"{0x80 | a & 0x7f:x}"] for a in range(256)],
+          "ll_b4(): PHASE's low seven bits under bit 7, the second command's mark, and nothing of the word above them")
     check([r[1:] for r in hdr if r[0] == "off"] == [[f"{w:x}", str(int(not w & 0xf0))] for w in (0, 0xf, 0xf0, 0xff, 0x10, 0x80, 0x0f0000ff, 0x1000030f, 0xffffff0f, 0x800)],
           "ll_off(): a power word is off when its actual state, bits 7:4, reads 0, whatever its target and other bits")
     check([r[1:] for r in hdr if r[0] == "b5"] == [[str(n), f"{0x80 | n:x}", f"{0xc0 | n:x}"] for n in range(64)]
@@ -7254,7 +7258,7 @@ def last_look_tests(g, src):
            0x210, 0x238, 0x240, 0x248, 0x250, 0x258, 0x260, 0x268, 0x270, 0x288, 0x290, 0x298, 0x2a0, 0x2a8, 0x2b0, 0x2b8, 0x2c0, 0x2c8, 0x280, 0x1e8,
            0x230, 0x278, 0x180]
     first = (["call 1", "sr isr_el1", "sr cntp_ctl_el0", "sw cntp_ctl_el0 0", "c 6008 e1"] + acks
-             + ["r C 4", "r E 10c", "r E 40", "r E 44", "r E 110", "c 6009 d9 02 0c 04"] + acks
+             + ["r C 4", "r E 10c", "r E 40", "r E 44", "r E 110", "c 6009 d9 02 0c 84"] + acks
              + [f"r S {o:x}" for o in sio] + ["r S 190"] + [f"r P {o:x}" for o in (0x2e8, 0x2f0, 0x320, 0x148, 0x150)] + ["r S 3b8", "r P 2d8",
                                                                                                                          "c 600d cc a5"] + acks)
     want = first + ["call 2", "c 6008 e2"] + acks + [f"call {i}" for i in range(3, 100)] + ["call 100", "c 6008 e3"] + acks + [f"call {i}" for i in range(101, 106)]
@@ -7268,7 +7272,9 @@ def last_look_tests(g, src):
           "m1_ll_ret() writes nothing but nub-spmi0's acks, CPU0's timer control (0, once) and its five commands to the PMU's bytes")
     check(dead == [l for l in want if not l.startswith("c ")],
           "with SPMI already failed the same reads and acks are made and nothing is sent: no command goes out after a failed one", "\n".join(dead[:40]))
-    check(ret_fn.index("now = m1_now();") < ret_fn.index("m1_ll_send(LL_AT, &b0, 1);\n\tb[0]") < ret_fn.index("readl(hs_a)")
+    check(ret_fn.index("now = m1_now();") < ret_fn.index("m1_ll_send(LL_AT, &b0, 1);\n\t/* Each read into its own variable") < ret_fn.index("hsa = readl(hs_a);\n\thsb = readl(m1_pos + LL_HS_B);\n")
+          and "\tfpwm = readl(m1_sio + LL_FPWM0);\n" in ret_fn and "\tans = readl(m1_sio + M1_PS_ANS2);\n\tpmp = readl(m1_ps + M1_PS_PMP_RO);\n" in ret_fn
+          and not re.search(r"\w\([^;]*readl\([^;]*,[^;]*readl\(", ret_fn)
           and ret_fn.index("m1_ll_send(LL_AT + 1, b, 4);") < ret_fn.index("for (i = 0; i < SIOD_N; i++)") < ret_fn.index("m1_ll_send(LL_AT + 5, b + 4, 2);")
           and "static u32 n;" in ret_fn and "if (n <= LL_MANY)\t/* stops at LL_MANY + 1: the hundredth return is sent once */\n\t\tn++;" in ret_fn and "if (n != 1)\n\t\treturn;" in ret_fn
           and "ll_time_code(now - m1_t_third, m1_tps)" in ret_fn and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\(", ret_fn),
@@ -7414,14 +7420,14 @@ def last_look_tests(g, src):
         check(rc == 0 and "wd1_mark=1's marker: 6 s is well before the marker's 70 s: NOT WD1's marker and not WD2's 120 s" in out
               and "The alarm was set" not in out,
               "a restart 6 s after the commit under run A's stage: an ending of its own, with nothing said of an alarm this run didn't set", out + err)
-        rc, out, err, _, _ = dec(0x08, bytes((0xe1, 0xd9, 0x02, 0x0c, 0x04, 0xcc, 0xa5)), b16=0xfd)
+        rc, out, err, _, _ = dec(0x08, bytes((0xe1, 0xd9, 0x02, 0x0c, 0x84, 0xcc, 0xa5)), b16=0xfd)
         check(rc == 0 and "last_look=1 ll_wake=1: fabric_up=1's 0x53" in out
-              and "0x6008-0x600e = e1 d9 02 0c 04 cc a5: last_look=1's record" in out
+              and "0x6008-0x600e = e1 d9 02 0c 84 cc a5: last_look=1's record" in out
               and "  0x6008 = 0xe1: CPU0'S LAST WFI RETURNED, first 22 to 30 s after the commit's last write; once by the last time it was counted" in out
               and "  0x6009 = 0xd9: pending at the return (ISR_EL1): an FIQ; CPU0's own timer was firing (set 25 s out in this run); HS_A bit 24 = 1; HS_B bits 0, 1, 31 = 0, 1, 1" in out
               and "  0x600a = 0x02: 0x2922c0040's low byte (bit 1 set)" in out
               and "  0x600b = 0x0c: 0x2922c0044's low byte: bit 2 set (B2's first poll, op 1, waits for it set), bit 3 set (op 3 waits for it clear)" in out
-              and "  0x600c = 0x04: PHASE's low byte (the entry pair's first (A2))" in out
+              and "  0x600c = 0x84: PHASE's low seven bits 0x4 (the entry pair's first (A2))" in out
               and "  0x600d = 0xcc: 12 of the 43 power words of SIO's subtree read off (actual state 0)" in out and "FPWM0's own, the tenth B2 writes, read off" in out
               and "  0x600e = 0xa5: read off: of the five PCIe words, APCIE_ST_SYS, APCIE_GP_SYS; ANS2 off; the PMP's word on" in out
               and "  0x6016 bit 6: step 8 made the keyboard PWM's three writes" in out
@@ -7436,37 +7442,50 @@ def last_look_tests(g, src):
               and "22 s is well before the marker's 70 s" in out and "The alarm was set 20 s after the commit's second and CPU0's timer 25 s after its last step" in out,
               "run B with nothing returned, no light and a restart at 22 s: each said, and the early restart set beside the alarm's time", out + err)
         for b0, said in ((0xe2, "twice or more, under a hundred times"), (0x83, "a hundred times or more"), (0x81, "first under 10 ms")):
-            rc, out, err, _, _ = dec(0x0b, bytes((b0, 0x01, 0x02, 0x00, 0x04, 0x80, 0x80)))
+            rc, out, err, _, _ = dec(0x0b, bytes((b0, 0x01, 0x02, 0x00, 0x84, 0x80, 0x80)))
             check(rc == 0 and said in out and "CPU0's own timer was not firing (this run sets none)" in out and "of the five PCIe words, none; ANS2 on; the PMP's word on" in out
                   and ("A count past one can be the look's own doing" in out) == (b0 & 3 > 1) and "whether it had been down in between isn't" in out
                   and "0 of the 43 power words" in out and "bit 2 clear" in out,
                   f"0x6008 = 0x{b0:02x}: {said}", out + err)
-        for r, said in ((bytes((0xe1, 0, 0, 0, 0, 0, 0)), "0x6009-0x600c read 0 and the third command's bytes aren't there: the second command"),
-                        (bytes((0xe1, 0, 0, 0, 0, 0x80, 0)), "0x6009-0x600c read 0 and the third command's bytes aren't there: the second command"),
-                        (bytes((0xe1, 0xd9, 2, 0xc, 4, 0, 0)), "0x600d 0x600e = 00 00: the third command, B2's power words, didn't land whole"),
-                        (bytes((0xe1, 0xd9, 2, 0xc, 4, 0xcc, 0x25)), "0x600d 0x600e = cc 25: the third command"),
-                        (bytes((0x61, 0xd9, 2, 0xc, 4, 0xcc, 0xa5)), "0x6008 = 0x61: not a value e1_hook writes"),
-                        (bytes((0xe0, 0xd9, 2, 0xc, 4, 0xcc, 0xa5)), "0x6008 = 0xe0: not a value e1_hook writes"),
-                        (bytes((0xe5, 0xd9, 2, 0xc, 4, 0xcc, 0xa5)), "0x6008 = 0xe5: not a value e1_hook writes"),
-                        (bytes((0xe1, 0xd9, 2, 0xc, 4, 0xec, 0xa5)), "44 of the 43 power words of SIO's subtree read off (actual state 0): NOT A COUNT e1_hook can send")):
+        for r, said in ((bytes((0xe1, 0, 0, 0, 0, 0, 0)), "0x6009-0x600c = 00 00 00 00: the second command, the engine's page and the handshake, didn't land whole"),
+                        (bytes((0x81, 0x01, 0, 0, 0, 0, 0)), "0x6009-0x600c = 01 00 00 00: the second command, the engine's page and the handshake, didn't land whole"),
+                        (bytes((0xe1, 0xd9, 2, 0xc, 4, 0xcc, 0xa5)), "0x6009-0x600c = d9 02 0c 04: the second command, the engine's page and the handshake, didn't land whole"),
+                        (bytes((0xe1, 0xd9, 2, 0xc, 0x84, 0, 0)), "0x600d 0x600e = 00 00: the third command, B2's power words, didn't land whole"),
+                        (bytes((0xe1, 0xd9, 2, 0xc, 0x84, 0xcc, 0x25)), "0x600d 0x600e = cc 25: the third command"),
+                        (bytes((0x61, 0xd9, 2, 0xc, 0x84, 0xcc, 0xa5)), "0x6008 = 0x61: not a value e1_hook writes"),
+                        (bytes((0xe0, 0xd9, 2, 0xc, 0x84, 0xcc, 0xa5)), "0x6008 = 0xe0: not a value e1_hook writes"),
+                        (bytes((0xe5, 0xd9, 2, 0xc, 0x84, 0xcc, 0xa5)), "0x6008 = 0xe5: not a value e1_hook writes"),
+                        (bytes((0xe1, 0xd9, 2, 0xc, 0x84, 0xec, 0xa5)), "44 of the 43 power words of SIO's subtree read off (actual state 0): NOT A COUNT e1_hook can send")):
             rc, out, err, _, _ = dec(0x0b, r)
             check(rc == 0 and said in out, f"a record that stops short or isn't e1_hook's ({r.hex(' ')}): said, and no further than it goes", out + err)
-        rc, out, err, _, _ = dec(0x0b, bytes((0xe1, 0, 0, 0, 0, 0x8c, 0x80)))
-        check(rc == 0 and "pending at the return (ISR_EL1): nothing" in out and "0x600c = 0x00: PHASE's low byte" in out
-              and "12 of the 43 power words" in out and "didn't land" not in out,
-              "four zeros at 0x6009-0x600c with the third command's bytes there are read as data: that command is only sent once the second was acked", out + err)
+        rc, out, err, _, _ = dec(0x0b, bytes((0xe1, 0, 0, 0, 0x80, 0x8c, 0x80)))
+        check(rc == 0 and "pending at the return (ISR_EL1): nothing" in out and "0x600c = 0x80: PHASE's low seven bits 0x0" in out
+              and "bit 1 clear: B2 clears it" in out and "12 of the 43 power words" in out and "didn't land" not in out,
+              "a second command whose sample is all zeros carries its mark and is read as data, and the third after it", out + err)
+        rc, out, err, _, _ = dec(0x0b, bytes((0x81, 0x01, 0, 0, 0, 0, 0)))
+        check(rc == 0 and "didn't land whole" in out and "pending at the return" not in out and "B2 clears it" not in out and "PHASE's low seven" not in out,
+              "a second command of which only its first byte is there (81 01 00 00 00 00 00) is not read: no zero of it is taken as a sample", out + err)
+        # Past one turn of the second's low two bytes, run B's commit is still found through its own alarm, 20 s out.
+        secs = 120000
+        before = bytearray(fake(path, rec(0x08, bytes(7), 0xfd, secs), rtc_secs=190000, alarm=(0x41, secs + 20, 0, 0)))
+        with open(path, "wb") as f:
+            f.write(before)
+        p = run(path, cnt=f"{69930 * 24000000} 24000000")
+        check(p.returncode == 0 and "the SoC restarted about 70 s after the commit" in p.stdout and "0x140c is the commit's second + 20, as the run wrote it" in p.stdout
+              and "185536" not in p.stdout,
+              "run B read 70000 s later, in the same boot: the commit's second is 120000 by its alarm at + 20, and the restart 70 s after it", p.stdout + p.stderr)
         rc, out, err, _, _ = dec(0x06, b16=0xfd)
         check(rc == 0 and "0x6016 = 0xfd (bit 6 is the keyboard light's, below; without it 0xbd): every alarm command was acked" in out
               and "  0x6016 bit 6: step 8 made the keyboard PWM's three writes" in out,
               "run B's stage before the commit with 0xfd at 0x6016: the byte shown whole, and the light's writes said to have been made", out + err)
-        rc, out, err, _, _ = dec(0x09, bytes((0xe1, 0xd9, 2, 0xc, 4, 0xcc, 0xa5)))
+        rc, out, err, _, _ = dec(0x09, bytes((0xe1, 0xd9, 2, 0xc, 0x84, 0xcc, 0xa5)))
         rc2, out2, err2, _, _ = dec(0x06)
         check(rc == 0 and "NOT READ: stage 0x09 is the last before the commit" in out and "CPU0'S LAST WFI RETURNED" not in out
               and rc2 == 0 and "all 0, and the stage is the last before the commit: the run isn't shown to have reached CPU0's WFI" in out2
               and "marker: not read. Stage 0x06 is the last before the commit" in out2 and "restarts by itself about 70 s later" in out2,
               "the stage before the commit: bytes there aren't read, and none there says the run isn't shown to have reached the WFI; the marker's time"
               " is given as 70 s", out + err + out2 + err2)
-        rc, out, err, _, _ = dec(0x0a, bytes((0x81, 0x04, 2, 0, 4, 0x80, 0x80)))
+        rc, out, err, _, _ = dec(0x0a, bytes((0x81, 0x04, 2, 0, 0x84, 0x80, 0x80)))
         check(rc == 0 and "last_look=1: fabric_up=1's 0x51" in out and "pending at the return (ISR_EL1): an SError" in out
               and "marker: not read. CPU0 had an exception pending after its reads" in out,
               "the pending stage 0x8a with a return under 10 ms and an SError pending: read, and the marker's time not read as B2's progress", out + err)
@@ -7478,8 +7497,8 @@ def last_look_tests(g, src):
         check(rc == 0 and after == bytes(want) and "NOT READ: the stage isn't one of last_look=1's" in out
               and "cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros" in out and "0x6008-0x600e aren't all 0 and weren't zeroed" in out,
               "--clear after another run's stage leaves 0x6008-0x600e alone, whatever is there, and says so", out + err)
-        for stage, r, b16 in ((0x0b, bytes((0xe1, 0xd9, 2, 0xc, 4, 0xcc, 0xa5)), 0xbd), (0x08, bytes(7), 0xfd), (0x0a, bytes((0x81, 0, 0, 0, 0, 0, 0)), 0xbd),
-                              (0x07, bytes((0xe3, 0xd9, 2, 0xc, 4, 0xcc, 0xa5)), 0xfd)):
+        for stage, r, b16 in ((0x0b, bytes((0xe1, 0xd9, 2, 0xc, 0x84, 0xcc, 0xa5)), 0xbd), (0x08, bytes(7), 0xfd), (0x0a, bytes((0x81, 0, 0, 0, 0, 0, 0)), 0xbd),
+                              (0x07, bytes((0xe3, 0xd9, 2, 0xc, 0x84, 0xcc, 0xa5)), 0xfd)):
             rc, out, err, before, after = dec(stage, r, b16, clear=True)
             want = bytearray(before)
             want[0x6004:0x600f], want[0x6010:0x6017], want[0x1401] = bytes(11), bytes(7), 0x01

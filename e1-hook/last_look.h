@@ -36,7 +36,9 @@
  *           bits 0, 1 and 31
  *   0x600a  0x2922c0040's low byte (B2 clears its bit 1 at ops 4 to 6)
  *   0x600b  0x2922c0044's low byte (B2 polls its bits 2 and 3 at ops 1 and 3)
- *   0x600c  PHASE's low byte (0x2922c0110)
+ *   0x600c  bit 7 set; bits 6:0 PHASE's low seven bits (0x2922c0110). The
+ *           last byte of the second command: without its bit 7 the command
+ *           isn't shown to have landed whole, and 0x6009-0x600c aren't read
  *   0x600d  bit 7 set; bit 6 FPWM0's power word read off; bits 5:0 how many
  *           of the 43 power words of SIO's subtree read off (sio_down.h's
  *           list, B2's ops 35 on)
@@ -144,6 +146,12 @@ static inline u8 ll_b1(u8 isr, bool tmr, u32 hs_a, u32 hs_b)
 {
 	return (u8)((isr & 7) | (tmr ? 1U << 3 : 0) | (hs_a & (1U << 24) ? 1U << 4 : 0) |
 		    (hs_b & 1 ? 1U << 5 : 0) | (hs_b & 2 ? 1U << 6 : 0) | (hs_b & (1U << 31) ? 1U << 7 : 0));
+}
+
+/* PHASE's low seven bits under the mark: 0x600c, the second command's last byte. */
+static inline u8 ll_b4(u32 phase)
+{
+	return (u8)(LL_MARK | (phase & 0x7f));
 }
 
 /* A power word whose actual state reads 0. */
