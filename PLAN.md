@@ -196,10 +196,9 @@ the PR with that session's work.
     after N minutes (the alarm, disarmed on every other way out; the alarm modules loaded at boot
     until #351 merges). Built 2026-11-16 (PR #108: `sleep-drain-off-after`, `sleep-drain-nights`,
     `sleep-drain-alarm.service`). Installed and switched on at 25 minutes on 2026-11-18, after a
-    second flat battery (asleep from 11-16 13:59 at 98%). Still to see on the Mac: one lid close
-    on battery that ends in a power-off (a short trial: `pkexec /usr/local/bin/sleep-drain-nights
-    on 2`, close the lid, then the log, `/var/log/sleep-drain-off-after.log`, and `on 25` again),
-    and one restart in which the unit loads the drivers at boot. With it on, regular boots run the alarm test drivers; `off` before a
+    second flat battery (asleep from 11-16 13:59 at 98%). Both seen that day in a trial
+    at 2 minutes: a lid close on battery ended in a power-off at the alarm's second, and the next
+    boot's unit loaded the drivers (RESEARCH.md, "The nights, switched on"). With it on, regular boots run the alarm test drivers; `off` before a
     night that is meant to be measured. Still wanted, the two numbers nobody has: the draw
     powered off over a night, and lid-open to desktop.
   - **Process, from now:** raw words and one decoder; a generic read-only look that takes an
