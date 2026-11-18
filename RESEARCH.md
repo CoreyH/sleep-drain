@@ -5455,10 +5455,11 @@ with 30 s to go, and the restart 31 s after the commit. 0x6008-0x600e = `87 a8 0
   is something the E complex going off (as its power word shows it) doesn't set while a P complex is up.
   0x0d and 0x0e, the outcomes that would have named bit 2 the E complex's, didn't come; nor did 0x0b.
 - What bit 2 is isn't shown. What fits the three readings: all three complexes off together (then it has
-  never been set where anyone could read it, and with every core in its WFI B2 should pass it, which runs
-  A and B say it doesn't in 70 s: so the last complex wouldn't be going off); or the E complex's in a
-  sense its power word doesn't carry (its own sequence's end, or its being the last); or nothing of the
-  CPUs' at all. Bit 3 was set in all three.
+  never been set where anyone could read it); or the E complex's in a sense its power word doesn't carry
+  (its own sequence's end, or its being the last); or nothing of the CPUs' at all. Bit 3 was set in all
+  three. None of these says where runs A and B stopped: they bound B2 before its tenth SIO word, which
+  fits B2 past op 1 and held at op 3 or in the first handshake as well as B2 held at op 1, and nothing
+  sampled the word after CPU0's WFI. So nothing here says the last complex stays on (Pullfrog on #117).
 - **The rest is the same with either core up:** PHASE 4, A2 raised and unanswered (HS_A 31 up, 24 clear),
   HS_B's bit 0 up, 0x2922c0040's bit 1 still set. And this under run 3's recipe as under today's, so
   the recipe's additions since run 3 don't show in these words.
@@ -5470,9 +5471,12 @@ acknowledged, and its bytes aren't there at the next boot. Awake, through the ke
 take a write and read back (`write-test.txt`: each byte alone, the two-byte write to 0x600d, five and seven
 bytes from 0x6008). So either a raw write to those two after the commit doesn't take, or the bytes don't
 outlast the restart: the boot chain may clear them, which would also be why they read 0 in every log
-before 2026-11-16. **This takes back the gate-look run's reading of its own ending:** its lost second
-command is no sign that CPU0 hung in the look, and its 70 s and its light stand as a third instance of
-run B's. Until a restart with test values in them says which bytes survive, a record uses 0x6008-0x600c.
+before 2026-11-16. **For the gate-look run this takes back one thing only:** its lost second command is
+no proof that CPU0 hung in the look. It isn't proof that CPU0 got through it either: that look read SIO's,
+the PCIe's, ANS2's and the PMP's power words before the command, not the four CPU words CPU7 read here,
+and that run has no later command to show progress. Whether CPU0 reached its timer and its WFI there stays
+open, as the decoder says (Pullfrog on #117). Until a restart with test values in them says which bytes
+survive, a record uses 0x6008-0x600c.
 
 **After the run:** the record cleared, the nights untouched, an SMC dump in
 `results/smc-dump-20261118T161027/`, redacted.
@@ -5567,9 +5571,9 @@ SIO's 43 power words, FPWM0's, the PCIe five, ANS2's and the PMP's, and sends tw
 hung, or the command failed. Which isn't shown, and it matters for what this run's ending is: a CPU0 that
 hung in the look never set its timer or took its WFI, so the 70 s and the light here are the look's own
 ending, not a third instance of run B's (the decoder says so). For a later look after the commit: the
-engine's page reads cleanly with a core up; the power words are not shown to. (Taken back the same day,
+engine's page reads cleanly with a core up; the power words are not shown to. (Qualified the same day,
 "The observer's gate run", above: the two bytes were lost again in a run whose later commands landed, so
-their loss doesn't show a hang.)
+their loss alone doesn't show a hang; whether CPU0 got through this look stays open.)
 
 **After the run:** the record cleared, the alarm disarmed, the nights on again at 25 (the alarm reads
 `ctrl=0x01 event=0x00 mask=0x01` with the driver loaded), and an SMC dump in
