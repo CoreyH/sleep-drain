@@ -1,0 +1,11 @@
+$ sleep-drain-nights on 25
+Created symlink '/etc/systemd/system/multi-user.target.wants/sleep-drain-alarm.service' → '/etc/systemd/system/sleep-drain-alarm.service'.
+nights: a sleep on battery ends in a power-off after 25 minutes
+alarm: rtc0 is the alarm RTC; no alarm is set
+rc=0
+active
+SPMI driver now: spmi_apple_wake
+
+$ pmu-alarm (after the alarm driver's probe)
+secs=17909 alarm=17321 (-588 s) ctrl=0x01 (en=0 fired=0) event=0x00 mask=0x01
+rc=0

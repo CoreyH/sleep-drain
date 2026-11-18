@@ -164,8 +164,19 @@ the PR with that session's work.
        first byte. The nights off before it and on after the read, as for run B; the keyboard
        filmed. How it reads: 0x600b's bit 2 set takes the cores out of B2's first poll, and
        0x600a, 0x600c, 0x600d then say how far B2 got with CPU0 up; bit 2 clear and bit 3 set
-       again says only that the additions since run 10 didn't open the poll. Any later run that
-       sets the alarm near: the nights off around it, as here, until the snapshot below is built.
+       again says only that the additions since run 10 didn't open the poll. **Run 2026-11-18**
+       (RESEARCH.md, "The gate-look run"): 0x2922c0044 read 0x0b with CPU0 awake: bit 2 still
+       clear and bit 3 set, and bits 0 and 1, which nobody had kept, set where awake they are
+       clear; HS_B's bit 0 up too. The look's second command, after its power-word reads, didn't
+       land. A reading to test before anything is built on it: the three low bits are the three
+       CPU complexes' "down" flags (two P complexes off, the E complex up with CPU0 in it), and
+       B2's first poll is the last complex's. **Next, to design against the notebook first:**
+       the same word read by an observer in another complex after CPU0 and the E complex have
+       gone down, as run 2's CPU7 read their power words (`observe=1` is run 2's recipe alone
+       today): it would show which bit follows which complex, and whether the E complex's bit
+       comes up when CPU0 goes down under today's recipe. No power-word reads after the commit
+       in it. Any later run that sets the alarm near: the nights off around it, as here, until
+       the snapshot below is built.
        To build: the alarm's registers saved before the unit loads the driver, and the
        decoder saying when the driver is bound (its "cleared the enable (new)" line was wrong
        for run A's boot). Still to take: an SMC dump after a plain restart, the control for the
