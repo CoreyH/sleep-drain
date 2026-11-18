@@ -5426,6 +5426,52 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### Run A, the last look: the restart moved with the marker, and CPU0's WFI didn't return (2026-11-18)
+
+`run-floor --no-reading --m1-last-look` in a safe boot, on battery at 100%, loaded 12:52:30
+(`results/last-look-20261118/`: `load.txt`, `crumbs.txt`, `clear-collect.txt`). Run 17's recipe with WD1's
+count written as 80 s and CPU0's record armed; nothing else new, and no alarm near, no timer, no light.
+
+**The record.** Stage 0x0b, the last. Everything before the commit as in run 17: 0x6012 = 0xff, 0x6013 =
+0xdf, 0x6007 = 0xf5 (WD1 stood just before the commit: armed, bite 150 s, its count past 80 s and running),
+0x6005 = 0x7d (WD2's bite written as 120 s, armed and counting, PHASE 4 at CPU0's last read). The restart
+came 70 to 71 s after the commit by the PMU's RTC (69.6 to 71.6 s at the first read, 69.2 to 71.2 s at the
+second); Corey: "around 70 seconds". 0x6008-0x600e all 0. PMU 0x0201 = 0x02. Awake, at load: 0x2922c0040
+= 3, 0x2922c0044 = 8, PHASE 0, HS_B 0x80000000, 26 of SIO's 43 power words off, FPWM0 0xff, two of the
+PCIe five off, ANS2 0x1f0003ff, the PMP 0x1f0f03ff.
+
+**What it says.**
+- **The restart is WD1's.** With the count at 60 s it came at 90 s (runs 17 on); with 80 s, at 70. The
+  other reading of 90 s, a pair that finished and a later A sequence arming WD2 with its own 30 s, has no
+  reason to move with WD1's count, and is out. So is a WD1 that can't reset the SoC in this state. B2
+  doesn't reach its ops 223-224, which zero WD1's count, within 70 s of the commit.
+- **CPU0's last WFI didn't return** in those 70 s, as far as the record goes (it stayed in its WFI or went
+  down; a first command that failed would read the same). Nothing was armed, so nothing pending ends it:
+  the AP isn't what's holding the entry open by coming back. Not a proof that the core was powered off.
+- Still not shown: where B2 stands (its first poll, the first handshake, or its power-down). Run B's light
+  says whether it got to the tenth of SIO's words.
+
+**The alarm's line in this record is wrong for this boot.** The decoder says "the reset or the boot
+firmware cleared the enable (new)": 0x1401 read 0x01 where every run before showed the armed alarm
+surviving the restart. What is new is the nights: `sleep-drain-alarm.service` loads the alarm driver six
+seconds into a regular boot, and its probe disarms the alarm and clears a latched event
+(`rtc-macsmc-alarm.c`, "Firmware can leave the alarm armed or its event latched"). So since 2026-11-18 the
+alarm's registers are no longer the run's by the time the record is read. For run B, whose alarm is part
+of the result, the nights are switched off before the run and on again after the read; switching them on
+also clears the event that run B leaves latched, which was the open point about a run after B. To build:
+the alarm's four registers saved before the unit loads the driver, and a decoder that says when the driver
+is bound.
+
+**An SMC dump after the run** (`results/smc-dump-20261118T125830/`, three minutes into the boot), for the
+diff against 2026-11-16's. Without the control, a dump after a plain restart, the 530 differing keys are
+mostly sensors and the battery's; one that stood out, `CLWK`, a 64-bit count. Not read further yet.
+
+**Three values that name this Mac were in the public repo.** The dump of 2026-11-16 went in with the
+battery's serial (`BMSN`), the chip's ID (`RECI`) and an ID string (`zSEm`) in it, against the practice of
+11-04, which had itself left `RECI` in three files. They are out of the tree now (`smc-keys redact`, and a
+test that fails on a dump in `results/` that has one); they are still in the history from 8756cd9 and
+0a8234b on, and taking them out of that is Corey's call (it rewrites `main`).
+
 ### Upstream: the two questions posted, and two results elsewhere (2026-11-18)
 
 **Posted**, with Corey's OK of 2026-11-18 ("you can post the upstream drafts but maybe check for news and

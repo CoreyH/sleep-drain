@@ -11,7 +11,8 @@ used to sit in CLAUDE.md, entry for entry):
   and `tests/e1_hook_verdict_test.py` runs `e1-hook/verdict` on made-up captures, one fault per case.
 - `tests/sleep_drain_valid_test.py` runs `sleep-drain-log`'s resume summary (drain and validity) on recorded
   snapshots.
-- `tests/peek_decoders_test.py` checks `pmgr-map` and `smc-keys` on synthetic input, and `pmgr-map` on this
+- `tests/peek_decoders_test.py` checks `pmgr-map` and `smc-keys` on synthetic input (and that no dump in
+  `results/` still has the battery's serial, the chip's ID or `zSEm`: `smc-keys redact`), and `pmgr-map` on this
   Mac's ADT dump when it's there.
 - `tests/safe_boot_hook_test.py` runs the safe boot's initramfs hook in mkinitcpio's busybox ash, in a
   bubblewrap sandbox with stub mount and blockdev, one failure per case.

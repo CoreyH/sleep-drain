@@ -140,7 +140,17 @@ the PR with that session's work.
        words in the recipe's state, with the generic look of item 3. macOS's side is asked for
        in both posts; a list that comes back from a hypervisor trace needs Corey's word before
        it's used (the open point on traces in CLAUDE.md).
-    2. **Built 2026-11-16, to run:** `run-floor --no-reading --m1-last-look` (run A), then
+    2. **Run A done 2026-11-18** (RESEARCH.md, "Run A, the last look"): the restart came at 70 s,
+       so it is WD1's and moved with the marker; CPU0's last WFI didn't return; B2 doesn't reach
+       its ops 223-224 in 70 s. **Run B is next:** `pkexec /usr/local/bin/sleep-drain-nights off`
+       first (the alarm driver a regular boot loads for the nights disarms the alarm and clears
+       its event before the record can be read), then the safe boot and `run-floor --no-reading
+       --m1-last-look-wake`, the keyboard filmed; after the read, `sleep-drain-nights on 25`.
+       To build after it: the alarm's registers saved before the unit loads the driver, and the
+       decoder saying when the driver is bound (its "cleared the enable (new)" line was wrong
+       for run A's boot). Still to take: an SMC dump after a plain restart, the control for the
+       dumps of 11-16 and 11-18; every dump through `smc-keys redact` before it's committed.
+       Built 2026-11-16: `run-floor --no-reading --m1-last-look` (run A), then
        `--m1-last-look-wake` (run B; `e1-hook/kbd-blink` showed the blink awake on 2026-11-18: Corey saw it, five a
        second, and the light came back as it was);
        RESEARCH.md, "`last_look=1` as built", has the bytes and how each ending reads. The
@@ -149,7 +159,8 @@ the PR with that session's work.
        its event (0x14c0) stays latched: `m1-crumbs --clear` writes only the alarm's control.
        Whether a latched event holds a wake source up at a later run's commit isn't known, so
        no further one-way run after B until the event has been looked at (the alarm driver of a
-       regular boot may clear it; `pmu-alarm` reads it). As planned:
+       regular boot does clear it at its probe: switching the nights on again after run B's read
+       does that; `pmu-alarm` reads it). As planned:
        One rung, "the last look", on run 17's recipe (`--m1-mark`'s, without the later AP-made B2
        steps): CPU0 records, raw, if its last WFI returns (0x2922c0040's bit 1, PHASE, HS_A, HS_B,
        the first of SIO's words still on, then PCIe, ANS, PMP); the cluster status words

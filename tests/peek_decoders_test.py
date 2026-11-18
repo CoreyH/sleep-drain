@@ -175,6 +175,42 @@ def test_smc_decode():
     return ok
 
 
+def test_smc_redact():
+    """redact takes the three values that name this Mac out of a dump and nothing else, and no dump in results/ has one."""
+    dump = ("# smc-peek key_count=5\n0 #KEY ui32 4 80 00000005\n1 BMSN ch8* 21 84 463859\n2 RECI ui64 8 80 0011223344556677\n"
+            "3 zSEm ch8* 32 80 726a\n4 BMDN ch8* 32 84 6271\n# end keys=5 read=5 errors=0\n")
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "values.txt")
+        with open(p, "w") as f:
+            f.write(dump)
+        ok = check("smc: the three private keys are found in a raw dump", smc_keys.private(p) == ["BMSN", "RECI", "zSEm"], smc_keys.private(p))
+        changed = smc_keys.redact(p)
+        text = open(p).read()
+        want = dump.replace("463859", "redacted").replace("0011223344556677", "redacted").replace("726a", "redacted")
+        ok &= check("smc: redact replaces their values and nothing else", changed == ["BMSN", "RECI", "zSEm"] and text == want, text)
+        ok &= check("smc: a redacted dump has none left, and a second redact changes nothing",
+                    smc_keys.private(p) == [] and smc_keys.redact(p) == [] and open(p).read() == want)
+        keys, _ = smc_keys.load(p)
+        ok &= check("smc: a redacted value loads and decodes as the word", keys["BMSN"]["value"] == "redacted"
+                    and smc_keys.decode("ch8*", keys["BMSN"]["value"], "BMSN") == "redacted" and keys["BMDN"]["value"] == "6271")
+        q = os.path.join(d, "keys.txt")
+        with open(q, "w") as f:
+            f.write("1 BMSN ch8* 21 84 -\n2 RECI ui64 8 80 func\n")
+        ok &= check("smc: a value that wasn't read isn't one to redact", smc_keys.private(q) == [] and smc_keys.redact(q) == [])
+    left = []
+    for top, _, files in os.walk(os.path.join(ROOT, "results")):
+        for name in files:
+            if name.endswith(".txt"):
+                path = os.path.join(top, name)
+                try:
+                    if smc_keys.private(path):
+                        left.append((os.path.relpath(path, ROOT), smc_keys.private(path)))
+                except UnicodeDecodeError:
+                    pass
+    ok &= check("smc: no dump in results/ has the battery's serial, the chip's ID or zSEm (smc-keys redact)", not left, left)
+    return ok
+
+
 if __name__ == "__main__":
-    results = [test_pmgr_synthetic(), test_pmgr_real(), test_ps_decode(), test_smc_decode()]
+    results = [test_pmgr_synthetic(), test_pmgr_real(), test_ps_decode(), test_smc_decode(), test_smc_redact()]
     sys.exit(0 if all(results) else 1)
