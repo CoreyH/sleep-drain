@@ -39,8 +39,8 @@ this section where they differ.
 
 **Next, in this order:**
 1. **The run that is built and waiting for Corey: `run-floor --no-reading --m1-a2-pre-blink`** in a
-   safe boot, on battery, nothing in the USB-C ports, the keyboard filmed; the nights can stay on
-   (no alarm near in this one). It is the run of 2026-11-14, where the AP makes A2's three moves
+   safe boot, on battery, nothing in the USB-C ports, the keyboard filmed, the nights switched off
+   around it (its alarm is an hour out and outlasts the restart). It is the run of 2026-11-14, where the AP makes A2's three moves
    before the commit, with the light added and ATC0's chain lowered (RESEARCH.md, "`blink=1` as
    built", 2026-11-19). The restart comes 90 s after the dark screen. Then `m1-crumbs`, `--clear`,
    `sleep-drain-safe collect`.
@@ -54,7 +54,8 @@ this section where they differ.
      masked too (source 54, the one the recipe leaves open; the M4 drivers name a wake source the
      masks let through as a holder of this gate); the other words on at the commit (DEBUG,
      SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4).
-   - No light from the dark screen: FPWM0 didn't come on; nothing new.
+   - No light from the dark screen: FPWM0 didn't come on, or the PWM doesn't run with A2's moves
+     made; nothing new about B2 either way.
    Beside it, with Corey's OK on the text: a follow-up on aurora-silicon/linux#2198 with what
    2026-11-19 added (each complex's own sequence finishes; the gate word's low bits count the
    complexes down; ATC0's chain lowered and the same ending), asking what held this stretch on

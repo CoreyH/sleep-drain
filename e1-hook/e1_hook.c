@@ -5795,7 +5795,7 @@ static int __init m1_ll_init(void)
  * the four addresses m1_ll_blink() writes is on the never-write list, the PWM is the device tree's fpwm at that address,
  * its page is mapped here, and its three registers are logged if FPWM0 reads on (a read behind a gated clock would
  * fault). Reads only. B2 switches FPWM0's power word off tenth of SIO's 43 (sio_down.h's order; m1_ll_init() checks
- * that where last_look=1 is set, and the static assert below holds the word's address).
+ * that where last_look=1 is set, and the static assert above m1_ll_init() holds the word's address).
  */
 static int __init m1_blink_init(void)
 {

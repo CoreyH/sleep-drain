@@ -5444,8 +5444,9 @@ The light is its own record: it blinks from the dark screen, or the writes weren
 
 `run-floor --m1-a2-pre-blink` is `--m1-a2-pre`'s line with `atc_down=1` and `blink=1`: the run of 2026-11-14
 with macOS's state for ATC0's chain, as every run from here has it, and the light. No alarm at 20 s and no
-timer in this one (the alarm is an hour out, as in `--m1-a2-pre`), so the nights can stay on. WD1's marker is
-at 90 s in this recipe.
+timer in this one, but `alarm=1` still leaves the PMU's alarm armed an hour out across the restart, and
+no run has met the nights' alarm driver with that: the nights off around it, as for every run that sets
+the alarm, and the record read and cleared before the lid closes. WD1's marker is at 90 s in this recipe.
 
 **How it reads** (Corey films the keyboard; the record is `a2_pre=1`'s, with 0x6013's mark `atc_down=1`'s):
 - the light stops before the restart: with A2's moves made, B2 reaches its tenth SIO word. Then the hold
@@ -5453,8 +5454,15 @@ at 90 s in this recipe.
 - the light blinks for the 90 s: B2 still doesn't reach FPWM0. A2's waits are then less likely and not
   excluded (A2 writes and waits again with every core down); B2's ops 1 to 6 and the first handshake
   stay open beside them.
-- no light at all from the dark screen: FPWM0 didn't read on in 10 ms, and the run says nothing new.
+- no light at all from the dark screen: FPWM0 didn't read on in 10 ms, or the writes were made and the
+  PWM doesn't run with A2's moves made (the blink comes after them: its four writes have only been made
+  with the fabric at 3). The record can't tell the two apart, and the run then says nothing about B2.
+- stage 0x99 with its byte whole and a restart at 90 s, no light: a write of the blink's hung, which the
+  decoder's text for that stage doesn't name. One that faults panics, about 10 s after the dark screen.
 Odds that the light stops, mine: one in four.
+
+The blink comes after `a2_pre=1`'s moves on purpose: before them, a move that stopped the PWM would show
+as one flash and read as progress.
 
 **Writes.** The same four as `ll_wake=1`'s, made in runs B, the gate-look run and the `atc_down=1` run:
 FPWM0's power word asked on and three PWM registers, undone by the restart. And `atc_down=1`'s six and
@@ -5462,8 +5470,13 @@ FPWM0's power word asked on and three PWM registers, undone by the restart. And 
 
 **Checked.** `tests/m1_crumbs_test.py`: the load's refusals, `m1_blink_init()` against `m1_ll_init()`'s checks
 and their order, that it writes nothing and reads the PWM only behind FPWM0 on, the one place in step 8,
-that the two options can't meet. `tests/e1a_launcher_test.py` for the new option. The `blink` mutants, and
-one adversarial pass by a subagent.
+that the two options can't meet. `tests/e1a_launcher_test.py` for the new option. 12 `blink` mutants, all
+caught. One adversarial pass by a subagent: no defect in the module or the launcher (the chain of options
+that maps `m1_sio` before the blink can run, that `blink=1` and `ll_wake=1` can't both load, the load's
+checks line by line against `m1_ll_init()`'s, nothing after the blink that touches FPWM0, SIO or the PWM,
+fabricated records through m1-crumbs under `a2_pre=1`'s stages with `atc_down=1`'s mark, the launcher's
+line and checks, nothing new that outlasts a restart). Its two notes are in the text above: what a dark
+keyboard can mean, and the nights off around the run.
 
 ### The `atc_down=1` run: the six read off, and the ending is run B's (2026-11-19)
 
