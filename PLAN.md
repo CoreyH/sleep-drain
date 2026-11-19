@@ -47,7 +47,8 @@ this section where they differ.
    Then `m1-crumbs`, `--clear`, `sleep-drain-safe collect`, the nights on again.
    - The light stops before the restart: B2 got to its tenth SIO word. The first move of the
      ending in 30 runs; the marker's time and 0x0201 say how far. Then: what else B2 needs.
-   - The light blinks to the end: these six aren't it. Next: the other words on at the commit
+   - The light blinks to the end: B2 still doesn't get there with these six off. It doesn't clear
+     them (a light that blinks on can be a false result, one that stops can't). Next: the other words on at the commit
      that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4), one group a run;
      DBGPRCR_EL1's bit 0 read on each core, awake; the commit-state question again upstream with
      the count reading (Corey's OK).

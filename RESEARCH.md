@@ -5455,8 +5455,15 @@ doesn't read off clears its group's bit there, USB_AON's or COMMON's. `m1-crumbs
 **How it reads.** The light is the result (Corey films the keyboard):
 - it stops before the restart: B2 got to its tenth SIO word, further than any run. Then the marker's time
   and 0x0201 say how much further (70 s: short of op 224; later or dark: past it).
-- it blinks to the restart at 70 s: these six aren't what holds B2, with them off as macOS has the others.
-  Next in PLAN.md: the other words on at the commit that B2 doesn't lower.
+- it blinks to the restart at 70 s: with these six off as macOS has the other ports', B2 still doesn't get
+  there. That doesn't clear them: lowering them could take one hold away and leave or add another (on the
+  M4 Pro the engine stalled raising ATC0_COMMON under a fabric that had gated itself, "The M4 Pro's and M4
+  Max's sleep drivers, read"; here macOS's own table has ATC1-3_COMMON off, so the premise stands). A
+  light that stops can't be a false result; one that blinks on can be. Next in PLAN.md: the other words
+  on at the commit that B2 doesn't lower.
+- dark at stage 0x28 (0xa8), no restart at the marker: a write among the 26 power words hung, and the
+  record can't say which: all of them sit between that stage and the next. Run B passed this point
+  without the six, so that ending would point at them as a group.
 - 0x6013's USB_AON or COMMON bit clear: a word didn't go off in 10 ms, and the run didn't test the state
   it meant to.
 Odds that the light stops, mine: one in five.
@@ -5471,8 +5478,11 @@ load refuses if one were. Nothing in the USB-C ports for this run: ATC0's port l
 kind of word stuck on (its group's bit, about 10 ms of polls, every other word still written); the order
 around `m1_pw_write()`; the load's checks; the decoder on the mark, on each outcome, and on run B's own
 record with either mark. The count of the module's MMIO writes is 74, from 73. `tests/e1a_launcher_test.py`
-for the new option. 29 mutants (`atc`), and one adversarial pass by a subagent, as for every build that
-writes to hardware.
+for the new option. 30 mutants (`atc`), all caught. One adversarial pass by a subagent, as for every build
+that writes to hardware: no defect in the writes, their order, the load's checks, the record or the
+launcher (each address checked against the reading of 11-04, the live tree and macOS's; every child before
+its parent by both trees; nothing new that outlasts a restart). Its two points on the wording are the two
+bullets above; its third, that the built module was older than its source, is the rebuild after the merge.
 
 ### The observer's second run: the E complex's sequence finishes, and 0x2922c0044's low bits count the complexes that are down (2026-11-19)
 
