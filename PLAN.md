@@ -38,22 +38,26 @@ this section where they differ.
   differ only by the charger and the battery.
 
 **Next, in this order:**
-1. **The run that is built and waiting for Corey: `run-floor --no-reading --m1-atc-down`** in a safe
-   boot, on battery, **nothing in the USB-C ports**, the nights switched off around it (it sets the
-   alarm 20 s out, as run B did), the keyboard filmed. It is run B with six more power words
-   lowered before the commit (RESEARCH.md, "`atc_down=1` as built", 2026-11-19): the four USB
-   controllers' and ATC0's USB_AON and COMMON, which macOS's table has on only because its trace ran
-   under a hypervisor on that port. The restart comes 70 s after the dark screen, if nothing changes.
-   Then `m1-crumbs`, `--clear`, `sleep-drain-safe collect`, the nights on again.
-   - The light stops before the restart: B2 got to its tenth SIO word. The first move of the
-     ending in 30 runs; the marker's time and 0x0201 say how far. Then: what else B2 needs.
-   - The light blinks to the end: B2 still doesn't get there with these six off. It doesn't clear
-     them (a light that blinks on can be a false result, one that stops can't). Next: the other words on at the commit
-     that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4), one group a run;
-     DBGPRCR_EL1's bit 0 read on each core, awake; the commit-state question again upstream with
-     the count reading (Corey's OK).
-   Not next: the light in an observer's run with a P complex last (macOS's own last core is in the
-   E complex, so little says the last complex's kind matters).
+1. **The next run, to build: `a2_pre=1`'s run with the light** (RESEARCH.md, "The `atc_down=1` run",
+   2026-11-19). The `atc_down=1` run ended as run B did, its six words off. The light has only been
+   in the `last_look=1` family; the rungs that made the engine's steps ahead of it were judged by
+   the marker at op 223 alone. `a2_pre=1` makes A2's three moves before the commit, the steps the
+   engine otherwise has to make itself, with every core down, between B2's first handshake and its
+   power-downs. To build: the blink as an option of its own (`m1_ll_blink()`'s four writes, today
+   only under `ll_wake=1`), needing `wd1_mark=1` and no byte in the record (the light is its own
+   record: it blinks from the dark screen or the writes weren't made), and a launcher option that
+   is `--m1-a2-pre`'s line with it. An adversarial pass: the same four writes in another recipe.
+   - The light stops before the restart (90 s in that recipe): with A2's moves made, B2 reaches
+     its power-downs. Then the stall of runs A and B is A2's own moves with every core down, and
+     the later stall is somewhere the earlier rungs' work applies to after all.
+   - The light blinks to the end: B2 is held before A2's moves matter: at its ops 1 to 6 or in
+     the first handshake. Then: the PMU's wake source masked too (source 54, the one the recipe
+     leaves open; the M4 drivers name a wake source the masks let through as a holder of this
+     gate); the other words on at the commit (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4).
+   Beside it, with Corey's OK on the text: a follow-up on aurora-silicon/linux#2198 with what
+   2026-11-19 added (each complex's own sequence finishes; the gate word's low bits count the
+   complexes down; ATC0's chain lowered and the same ending), asking what held this stretch on
+   T6050 and T8140. And `atc_down=1` joins the line of the later rungs when they are next built on.
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
