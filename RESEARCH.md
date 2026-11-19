@@ -5426,6 +5426,45 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### `blink=1` as built: the light in `a2_pre=1`'s run (2026-11-19)
+
+**Why.** "The `atc_down=1` run", below: the light has only been in the `last_look=1` family, and the rungs that
+made the engine's steps ahead of it were judged by the marker at B2's op 223. `a2_pre=1` makes A2's three
+moves before the commit; the light says whether B2 then gets to its tenth SIO word.
+
+**What it is.** `e1_hook blink=1`: `ll_wake=1`'s light and nothing else of it. In step 8, after `a2_pre=1`'s
+moves and before step 9's mask, `m1_ll_blink()` as run B ran it: FPWM0's power word (0x28e580190) asked on,
+up to 10 ms for it, then the PWM's on cycles, off cycles and control (0x39b03001c, 0x18, 0x00), 100 ms on
+and 100 ms off. It needs `gates_mark=1` and refuses with `sio_down=1` or `sio_steps=1`, which switch FPWM0
+off themselves. `m1_blink_init()` makes at the load the checks `m1_ll_init()` makes for `ll_wake=1`'s light:
+none of the four addresses on the never-write list, the device tree's `apple,s5l-fpwm` at that address, the
+page mapped, the PWM's registers read only if FPWM0 reads on. **Nothing of the light is in the record:** in
+this family 0x6016 is the run's own byte, not the alarm's, so the bit `ll_wake=1` keeps there has no place.
+The light is its own record: it blinks from the dark screen, or the writes weren't made.
+
+`run-floor --m1-a2-pre-blink` is `--m1-a2-pre`'s line with `atc_down=1` and `blink=1`: the run of 2026-11-14
+with macOS's state for ATC0's chain, as every run from here has it, and the light. No alarm at 20 s and no
+timer in this one (the alarm is an hour out, as in `--m1-a2-pre`), so the nights can stay on. WD1's marker is
+at 90 s in this recipe.
+
+**How it reads** (Corey films the keyboard; the record is `a2_pre=1`'s, with 0x6013's mark `atc_down=1`'s):
+- the light stops before the restart: with A2's moves made, B2 reaches its tenth SIO word. Then the hold
+  of runs A and B is A2's own moves with every core down, and when it stops says how soon B2 got there.
+- the light blinks for the 90 s: B2 still doesn't reach FPWM0. A2's waits are then less likely and not
+  excluded (A2 writes and waits again with every core down); B2's ops 1 to 6 and the first handshake
+  stay open beside them.
+- no light at all from the dark screen: FPWM0 didn't read on in 10 ms, and the run says nothing new.
+Odds that the light stops, mine: one in four.
+
+**Writes.** The same four as `ll_wake=1`'s, made in runs B, the gate-look run and the `atc_down=1` run:
+FPWM0's power word asked on and three PWM registers, undone by the restart. And `atc_down=1`'s six and
+`a2_pre=1`'s three, each run before. No new address and no new value.
+
+**Checked.** `tests/m1_crumbs_test.py`: the load's refusals, `m1_blink_init()` against `m1_ll_init()`'s checks
+and their order, that it writes nothing and reads the PWM only behind FPWM0 on, the one place in step 8,
+that the two options can't meet. `tests/e1a_launcher_test.py` for the new option. The `blink` mutants, and
+one adversarial pass by a subagent.
+
 ### The `atc_down=1` run: the six read off, and the ending is run B's (2026-11-19)
 
 `run-floor --no-reading --m1-atc-down` in a safe boot, on battery at about 88%, nothing in the USB-C ports,
