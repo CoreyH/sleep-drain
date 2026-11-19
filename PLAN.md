@@ -50,8 +50,11 @@ this section where they differ.
    - The light stops before the restart (90 s in that recipe): with A2's moves made, B2 reaches
      its power-downs. Then the stall of runs A and B is A2's own moves with every core down, and
      the later stall is somewhere the earlier rungs' work applies to after all.
-   - The light blinks to the end: B2 is held before A2's moves matter: at its ops 1 to 6 or in
-     the first handshake. Then: the PMU's wake source masked too (source 54, the one the recipe
+   - The light blinks to the end: B2 still doesn't reach FPWM0 with A2's moves found made. That
+     makes A2's waits less likely as the hold and doesn't exclude them: A2 writes the three again
+     and waits again, with every core down, and a wait met with a core up may not be met then
+     (the `a2_pre=1` run's own qualification). B2's ops 1 to 6 and the first handshake stay open
+     beside it. Then: the PMU's wake source masked too (source 54, the one the recipe
      leaves open; the M4 drivers name a wake source the masks let through as a holder of this
      gate); the other words on at the commit (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4).
    Beside it, with Corey's OK on the text: a follow-up on aurora-silicon/linux#2198 with what

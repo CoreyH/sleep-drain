@@ -5455,7 +5455,10 @@ that bears on the place the light bounds: between B2's first poll and its tenth 
 polls, B2's first handshake, and A2's own three moves (DCS to 2, the fabric to 2, 0x28e20c400 to 0, each
 waited for with no timeout), after which A2 writes PHASE 5 and B2, which waits for that, starts its
 power-downs. In runs A, B and this one the engine has to make those three moves itself, with every core
-down. With `a2_pre=1` it finds them made. Whether the light then goes out has never been looked at.
+down. With `a2_pre=1` it finds them made, writes them again and waits again. Whether the light then goes
+out has never been looked at. A light that goes out would say that B2 gets to its power-downs with the
+moves made beforehand. One that blinks on would not clear A2's waits: met by the AP with a core up, they
+may still not be met when the engine waits on them with every core down (Pullfrog on #123).
 
 **After the run:** the record cleared, three saves collected, the nights on again at 25 (the alarm reads
 disarmed, its event clear, with the driver loaded).
