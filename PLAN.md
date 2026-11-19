@@ -228,7 +228,9 @@ the PR with that session's work.
        the gates, under the 13.5 firmware set this Mac boots Linux with too; whether that entry
        finished first isn't shown):
        the marker's time, a restart well before it, dark past it.
-    3. One returning batch, in a safe boot: CPU0's RVBAR and its lock bit; 0x2922c0200,
+    3. (CPU0's RVBAR has a tool of its own since 2026-11-19: `rvbar-look` in a safe boot, one
+       command, after aurora-silicon's answer that T6000's isn't locked.)
+       One returning batch, in a safe boot: CPU0's RVBAR and its lock bit; 0x2922c0200,
        0x2922c0214, 0x2925c0014; the muxes written, read and restored (in place of the one-way mux
        run); the cluster status words awake.
     4. If runs A and B leave B2 at its first gate: the commit alone from plain s2idle, the alarm

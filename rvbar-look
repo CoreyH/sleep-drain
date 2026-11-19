@@ -1,0 +1,22 @@
+#!/bin/bash
+# rvbar-look: rvbar-peek's run in a safe boot. It reads each core's RVBAR (rvbar-peek.c says where and why), shows
+# the eight lines, writes them to /var/log/sleep-drain/rvbar-<time>.txt and saves that for the next regular boot
+# (sleep-drain-safe save; collect brings it in). Reads only.
+#
+#   pkexec sleep-drain-safe boot, restart, then:
+#   pkexec /home/corey/src/sleep-drain/rvbar-look
+#
+# These words have never been read on this Mac, so the first read is made where a fault costs nothing: if the Mac
+# goes dark or restarts right after the command, that is the result, and there is nothing to save.
+set -u
+DIR=$(cd "$(dirname "$0")" && pwd)
+die() { echo "rvbar-look: $*" >&2; exit 2; }
+[[ $EUID -eq 0 ]] || die "run as root (pkexec)"
+[[ -e ${RVBAR_LOOK_SAFE:-/run/sleep-drain-safe/active} ]] || die "this isn't a safe boot: pkexec sleep-drain-safe boot, restart, and run it there"
+[[ -x $DIR/rvbar-peek ]] || die "no $DIR/rvbar-peek: cc -O1 -Wall -o $DIR/rvbar-peek $DIR/rvbar-peek.c (in a regular boot)"
+out=/var/log/sleep-drain/rvbar-$(date +%Y%m%dT%H%M%S).txt
+mkdir -p /var/log/sleep-drain || die "couldn't make /var/log/sleep-drain"
+sync
+"$DIR/rvbar-peek" | tee "$out"
+[[ -s $out ]] || die "rvbar-peek printed nothing"
+/usr/local/bin/sleep-drain-safe save "$out" && echo "saved: restart, and tell Claude"

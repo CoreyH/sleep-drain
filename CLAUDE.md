@@ -103,6 +103,9 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   adds the CPU-start block's four words). `pmgr-map` builds its address list
   from macOS's device tree (`/boot/macos-session/iodevicetree.txt`) and
   decodes what it reads.
+- `rvbar-peek.c`: reads each core's RVBAR (cpu-impl-reg + 0x0) through
+  /dev/mem, read-only, on the core itself. `rvbar-look` runs it in a safe boot
+  and saves what it printed. Not installed by `install.sh`.
 - `sleep-peek`: both of the above as root (`pkexec`), awake and around one
   timed s2idle sleep that goes through the hook; writes
   `results/sleep-peek-<time>/`. Not installed by `install.sh`.
