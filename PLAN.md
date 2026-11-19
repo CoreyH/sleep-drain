@@ -38,29 +38,28 @@ this section where they differ.
   differ only by the charger and the battery.
 
 **Next, in this order:**
-1. **The next run, to build: `a2_pre=1`'s run with the light** (RESEARCH.md, "The `atc_down=1` run",
-   2026-11-19). The `atc_down=1` run ended as run B did, its six words off. The light has only been
-   in the `last_look=1` family; the rungs that made the engine's steps ahead of it were judged by
-   the marker at op 223 alone. `a2_pre=1` makes A2's three moves before the commit, the steps the
-   engine otherwise has to make itself, with every core down, between B2's first handshake and its
-   power-downs. To build: the blink as an option of its own (`m1_ll_blink()`'s four writes, today
-   only under `ll_wake=1`), needing `wd1_mark=1` and no byte in the record (the light is its own
-   record: it blinks from the dark screen or the writes weren't made), and a launcher option that
-   is `--m1-a2-pre`'s line with it. An adversarial pass: the same four writes in another recipe.
-   - The light stops before the restart (90 s in that recipe): with A2's moves made, B2 reaches
-     its power-downs. Then the stall of runs A and B is A2's own moves with every core down, and
-     the later stall is somewhere the earlier rungs' work applies to after all.
+1. **The run that is built and waiting for Corey: `run-floor --no-reading --m1-a2-pre-blink`** in a
+   safe boot, on battery, nothing in the USB-C ports, the keyboard filmed, the nights switched off
+   around it (its alarm is an hour out and outlasts the restart). It is the run of 2026-11-14, where the AP makes A2's three moves
+   before the commit, with the light added and ATC0's chain lowered (RESEARCH.md, "`blink=1` as
+   built", 2026-11-19). The restart comes 90 s after the dark screen. Then `m1-crumbs`, `--clear`,
+   `sleep-drain-safe collect`.
+   - The light stops before the restart: with A2's moves made, B2 reaches its power-downs. Then
+     the stall of runs A and B is A2's own moves with every core down, and the later stall is
+     somewhere the earlier rungs' work applies to after all.
    - The light blinks to the end: B2 still doesn't reach FPWM0 with A2's moves found made. That
      makes A2's waits less likely as the hold and doesn't exclude them: A2 writes the three again
-     and waits again, with every core down, and a wait met with a core up may not be met then
-     (the `a2_pre=1` run's own qualification). B2's ops 1 to 6 and the first handshake stay open
-     beside it. Then: the PMU's wake source masked too (source 54, the one the recipe
-     leaves open; the M4 drivers name a wake source the masks let through as a holder of this
-     gate); the other words on at the commit (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4).
+     and waits again, with every core down, and a wait met with a core up may not be met then.
+     B2's ops 1 to 6 and the first handshake stay open beside it. Then: the PMU's wake source
+     masked too (source 54, the one the recipe leaves open; the M4 drivers name a wake source the
+     masks let through as a holder of this gate); the other words on at the commit (DEBUG,
+     SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4).
+   - No light from the dark screen: FPWM0 didn't come on, or the PWM doesn't run with A2's moves
+     made; nothing new about B2 either way.
    Beside it, with Corey's OK on the text: a follow-up on aurora-silicon/linux#2198 with what
    2026-11-19 added (each complex's own sequence finishes; the gate word's low bits count the
    complexes down; ATC0's chain lowered and the same ending), asking what held this stretch on
-   T6050 and T8140. And `atc_down=1` joins the line of the later rungs when they are next built on.
+   T6050 and T8140.
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
@@ -73,7 +72,7 @@ this section where they differ.
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
 
 **As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
-`--m1-atc-down` the latest launcher option; the PMU's record bytes all zero; scratch that must outlast
+`--m1-a2-pre-blink` the latest launcher option; the PMU's record bytes all zero; scratch that must outlast
 a restart in `~/.local/share/sleep-drain/`.
 
 ## Where things stand

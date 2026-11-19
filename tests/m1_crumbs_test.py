@@ -7678,14 +7678,41 @@ def last_look_tests(g, src):
           and re.findall(r"\bm1_deep_wfi\(([^)]*)\)", code_only) == ["struct m1_core *mark, bool look", "NULL, false", "NULL, false", "obs ? &m1_core[0] : NULL, last_look"]
           and len(re.findall(r"\bm1_ll_ret\(", code_only)) == 2,
           "m1_deep_wfi() calls m1_ll_ret() after a WFI that returned, only where its caller asks: CPU0's call passes last_look, the parked cores' false")
-    check(in_order_of(after, ["\tif (acc_last)\n\t\tm1_gates = m1_acl_pre();\n", "\tif (ll_wake)\n\t\tm1_ll_blinks = m1_ll_blink();\n", "\t/* recfg_bite=1",
+    check(in_order_of(after, ["\tif (acc_last)\n\t\tm1_gates = m1_acl_pre();\n", "\tif (ll_wake || blink)\n\t\tm1_ll_blinks = m1_ll_blink();\n", "\t/* recfg_bite=1",
                               "/* 9 */", "\tlocal_daif_mask();", "writel_relaxed(1, commit);", "\tif (position || last_look)\n\t\tm1_t_third = m1_now();\n",
                               "\tif (wd2_bite)\n\t\tm1_wd2_out();\n", "\t/* 10 */\n\tif (gate_look)\n\t\tm1_ll_look();\n\tif (ll_wake)\n\t\tm1_ll_timer();\n\tm1_arm_deep_sleep();\n"
                               "\tm1_deep_wfi(obs ? &m1_core[0] : NULL, last_look);\n}"])
           and len(re.findall(r"\bm1_ll_blink\(", code_only)) == 2 and len(re.findall(r"\bm1_ll_timer\(", code_only)) == 2
           and len(re.findall(r"\bm1_ll_blinks\b", code_only)) == 3,
-          "step 8 sets the light blinking, with ll_wake=1 alone, before step 9's mask; the clock is taken after the commit's last write; the timer is"
+          "step 8 sets the light blinking, with ll_wake=1 or blink=1 alone, before step 9's mask; the clock is taken after the commit's last write; the timer is"
           " set in step 10, with ll_wake=1 alone, right before CPU0's deep WFI; gate_look=1's look comes first in step 10, with gate_look=1 alone")
+    # blink=1: ll_wake=1's light in the gates_mark=1 family, with nothing in the record.
+    blink_init = cut("static int __init m1_blink_init(void)", "\n}\n")
+    ll_init = cut("static int __init m1_ll_init(void)", "\n}\n")
+    guard = ("\tif (e1_never_write(LL_PWM + LL_PWM_CTRL) || e1_never_write(LL_PWM + LL_PWM_OFF) || e1_never_write(LL_PWM + LL_PWM_ON) ||\n"
+             "\t    e1_never_write(M1_PS_SIO_PAGE + LL_FPWM0)) {\n")
+    node = ("\tnp = of_find_node_by_path(\"/soc/pwm@39b030000\");\n\tif (!np || !of_device_is_compatible(np, \"apple,s5l-fpwm\")) {\n\t\tof_node_put(np);\n")
+    check("if (blink && (!gates_mark || sio_down || sio_steps)) {" in src and "module_param(blink, bool, 0444);" in src and "\nstatic bool blink;\n" in src
+          and 'gate_look ? " gate_look=1" : "", blink ? " blink=1" : ""' in src
+          and "\tif (blink) {\n\t\tint ret = m1_blink_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n" in src
+          and in_order_of(blink_init, ["\tif (!m1_sio) {",
+                                       "\tif (e1_never_write(M1_PS_SIO_PAGE + LL_FPWM0) || e1_never_write(LL_PWM + LL_PWM_ON) || e1_never_write(LL_PWM + LL_PWM_OFF) ||\n"
+                                       "\t    e1_never_write(LL_PWM + LL_PWM_CTRL)) {\n", "\t\treturn -EPERM;\n",
+                                       "\tnp = of_find_node_by_path(\"/soc/pwm@39b030000\");\n\tfpwm = np && of_device_is_compatible(np, \"apple,s5l-fpwm\");\n"
+                                       "\tof_node_put(np);\n\tif (!fpwm) {\n", "\t\treturn -ENODEV;\n",
+                                       "\tm1_ll_pwm = ioremap_np(LL_PWM, PAGE_SIZE);\n\tif (!m1_ll_pwm)\n\t\treturn -ENOMEM;\n",
+                                       "\tps = readl(m1_sio + LL_FPWM0);\n\ton = (ps & LL_PS_ACTUAL) == LL_PS_ACTUAL;\n\tif (on)\n", "readl(m1_ll_pwm + LL_PWM_CTRL)", "\telse\n"])
+          and guard in ll_init and node in ll_init and blink_init.count("readl(m1_ll_pwm") == 3
+          and blink_init.index("readl(m1_ll_pwm") > blink_init.index("\tif (on)\n") and blink_init.index("\telse\n") > blink_init.rindex("readl(m1_ll_pwm")
+          and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\(", blink_init)
+          and "if (last_look && (!wd1_mark || gates_mark ||" in src and "if (ll_wake && !last_look) {" in src
+          and "\tif (m1_ll_pwm)\n\t\tiounmap(m1_ll_pwm);\n" in src
+          and "m1_crumb(0x6016, gates_mark ? &m1_gates : &res, 1);" in src
+          and len(re.findall(r"\bblink\b", code_only)) == 7,
+          "blink=1 is off unless asked for, refuses without gates_mark=1 or with either run that switches FPWM0 off, can't be set after the load"
+          " and is named in the load line; it can't meet ll_wake=1 (last_look=1 refuses gates_mark=1), so the PWM's page is mapped once;"
+          " m1_blink_init() makes m1_ll_init()'s never-write and device-tree checks before it maps the PWM, reads the PWM only if FPWM0 reads"
+          " on, and writes nothing; with gates_mark=1 the byte at 0x6016 is that run's own, so the light's bit goes nowhere")
     alarm_fn = cut("static void m1_alarm_arm(const u8 *rtc)", "\n}\n")
     check("u8 res = BIT(7) | (m1_ll_blinks ? LL_BLINK_BIT : 0), ev = 0, v;" in alarm_fn and "\tsecs += ll_wake ? LL_ALARM_SECS : M1_ALARM_SECS;\n" in alarm_fn
           and all(not 0x40 & v for v in (0x80, 0x83, 0x85, 0x87, 0x8d, 0x8f, 0x9d, 0x9f, 0xbd, 0xbf)),
@@ -9373,8 +9400,9 @@ def position_tests(g, src):
     check(("\tif (recfg_bite) {\n\t\tint ret = m1_recfg_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
            "\tif (wd2_bite) {\n\t\tint ret = m1_wd2_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
            "\t/* After m1_wd2_init(), which maps the engine's page: m1_ll_init() refuses without it. */\n"
-           "\tif (last_look) {\n\t\tint ret = m1_ll_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\t/* Last: it reads through pages") in src,
-          "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and then m1_wd2_init(), for wd2_bite=1 alone, with only last_look=1's and the look's start-up"
+           "\tif (last_look) {\n\t\tint ret = m1_ll_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
+           "\tif (blink) {\n\t\tint ret = m1_blink_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\t/* Last: it reads through pages") in src,
+          "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and then m1_wd2_init(), for wd2_bite=1 alone, with only last_look=1's, blink=1's and the look's start-up"
           " after it, and returns their refusals")
 
     # wd2_bite=1: one write to WD2, its bite, by CPU0 after the release, and only if WD2 showed RESET_EN; the sample in one command with its stage.

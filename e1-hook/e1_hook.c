@@ -102,6 +102,7 @@
  *   pkexec e1-hook/run-floor --m1-gate-look       (that and gate_look=1: the same)
  *   pkexec e1-hook/run-floor --m1-obs-gate        (--m1-late's and obs_gate=1: the same)
  *   pkexec e1-hook/run-floor --m1-atc-down        (--m1-last-look-wake's and atc_down=1: the same)
+ *   pkexec e1-hook/run-floor --m1-a2-pre-blink    (--m1-a2-pre's, atc_down=1 and blink=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -402,6 +403,9 @@ MODULE_PARM_DESC(obs_gate, "With observe=1: after CPU7's polls of CPU0's and the
 static bool atc_down;
 module_param(atc_down, bool, 0444);
 MODULE_PARM_DESC(atc_down, "With ps_words=1: at the end of step 5, around m1_pw[]'s words, the six in m1_atc[] written 0x300 as ATC1's to ATC3's are: the four USB controllers' power words (ATC0_USB to ATC3_USB) and ATC0_USB_AON before them, ATC0_COMMON after them. macOS's table has ATC0's on because its trace ran under a hypervisor on that port (the m1 comment)");
+static bool blink;
+module_param(blink, bool, 0444);
+MODULE_PARM_DESC(blink, "With gates_mark=1, never with sio_down=1 or sio_steps=1 (they switch FPWM0 off): in step 8, ll_wake=1's light without the rest of it: FPWM0's power word asked on and the keyboard backlight's PWM set to blink, 100 ms on and 100 ms off (m1_ll_blink()'s four writes; last_look.h). Nothing of it goes to the record: the light blinking from the dark screen is the sign that the writes were made");
 static bool gate_look;
 module_param(gate_look, bool, 0444);
 MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
@@ -4241,8 +4245,8 @@ static void __noreturn m1_after_slpa(void)
 	/* acc_last=1, in their place: the table's muxes read, one bit each, and the byte with the time's code at "not yet" (acc_last.h). */
 	if (acc_last)
 		m1_gates = m1_acl_pre();
-	/* ll_wake=1: the keyboard light set blinking, the run's last writes before the commit's own (last_look.h). */
-	if (ll_wake)
+	/* ll_wake=1 and blink=1: the keyboard light set blinking, the run's last writes before the commit's own (last_look.h). */
+	if (ll_wake || blink)
 		m1_ll_blinks = m1_ll_blink();
 	/* recfg_bite=1: A2's bite word once more, SError still unmasked: a read that faulted panics here, before the commit, not under step 9's mask (the m1 comment). */
 	if (recfg_bite) {
@@ -5786,6 +5790,50 @@ static int __init m1_ll_init(void)
 	return 0;
 }
 
+/*
+ * blink=1 at load, m1_ll_init()'s checks for ll_wake=1's light without its timer's: SIO's power page is mapped, none of
+ * the four addresses m1_ll_blink() writes is on the never-write list, the PWM is the device tree's fpwm at that address,
+ * its page is mapped here, and its three registers are logged if FPWM0 reads on (a read behind a gated clock would
+ * fault). Reads only. B2 switches FPWM0's power word off tenth of SIO's 43 (sio_down.h's order; m1_ll_init() checks
+ * that where last_look=1 is set, and the static assert above m1_ll_init() holds the word's address).
+ */
+static int __init m1_blink_init(void)
+{
+	struct device_node *np;
+	bool fpwm, on;
+	u32 ps;
+
+	if (!m1_sio) {
+		pr_err("m1: blink: SIO's power page isn't mapped; refusing\n");
+		return -ENODEV;
+	}
+	if (e1_never_write(M1_PS_SIO_PAGE + LL_FPWM0) || e1_never_write(LL_PWM + LL_PWM_ON) || e1_never_write(LL_PWM + LL_PWM_OFF) ||
+	    e1_never_write(LL_PWM + LL_PWM_CTRL)) {
+		pr_err("m1: blink: a write of blink=1 would touch the never-write list; refusing\n");
+		return -EPERM;
+	}
+	np = of_find_node_by_path("/soc/pwm@39b030000");
+	fpwm = np && of_device_is_compatible(np, "apple,s5l-fpwm");
+	of_node_put(np);
+	if (!fpwm) {
+		pr_err("m1: blink: /soc/pwm@39b030000 isn't an apple,s5l-fpwm in this device tree; refusing\n");
+		return -ENODEV;
+	}
+	m1_ll_pwm = ioremap_np(LL_PWM, PAGE_SIZE);
+	if (!m1_ll_pwm)
+		return -ENOMEM;
+	ps = readl(m1_sio + LL_FPWM0);
+	on = (ps & LL_PS_ACTUAL) == LL_PS_ACTUAL;
+	if (on)
+		pr_info("m1: blink: awake: FPWM0's power word %08x; the keyboard PWM's control %08x, off cycles %08x, on cycles %08x. Step 8 asks FPWM0 on and writes %u cycles on, %u off and control 0x%x\n",
+			ps, readl(m1_ll_pwm + LL_PWM_CTRL), readl(m1_ll_pwm + LL_PWM_OFF), readl(m1_ll_pwm + LL_PWM_ON), LL_BLINK_CYCLES,
+			LL_BLINK_CYCLES, LL_PWM_GO);
+	else
+		pr_info("m1: blink: awake: FPWM0's power word %08x doesn't read on, so the PWM's registers aren't read. Step 8 asks it on and writes %u cycles on, %u off and control 0x%x\n",
+			ps, LL_BLINK_CYCLES, LL_BLINK_CYCLES, LL_PWM_GO);
+	return 0;
+}
+
 /* fabric_up=1 at load: the word off the never-write list and as it is awake, 0x333, so that 3 is its awake value. Reads only. */
 static int __init m1_fab_init(void)
 {
@@ -6177,6 +6225,12 @@ static int __init m1_init(void)
 	/* After m1_wd2_init(), which maps the engine's page: m1_ll_init() refuses without it. */
 	if (last_look) {
 		int ret = m1_ll_init();
+
+		if (ret)
+			return ret;
+	}
+	if (blink) {
+		int ret = m1_blink_init();
 
 		if (ret)
 			return ret;
@@ -6704,6 +6758,10 @@ static int __init e1_check_params(void)
 		pr_err("ll_wake=1 needs last_look=1 (it's that run with the alarm at 20 s, CPU0's timer at 25 s and the keyboard light set blinking)\n");
 		return -EINVAL;
 	}
+	if (blink && (!gates_mark || sio_down || sio_steps)) {
+		pr_err("blink=1 needs gates_mark=1 and neither sio_down=1 nor sio_steps=1 (it's ll_wake=1's light in that family's runs, whose byte at 0x6016 isn't the alarm's; those two switch FPWM0 off themselves)\n");
+		return -EINVAL;
+	}
 	if (gate_look && !last_look) {
 		pr_err("gate_look=1 needs last_look=1 (it's that run with the return's reads made once before CPU0's last WFI, 1 s after the commit)\n");
 		return -EINVAL;
@@ -6881,7 +6939,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "", obs_gate ? " obs_gate=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -6889,7 +6947,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", atc_down ? " atc_down=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", blink ? " blink=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
 		gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;

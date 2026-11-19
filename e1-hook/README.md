@@ -226,6 +226,12 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   lowers them. 0x6013's top two bits are then 0x40 in place of 0xc0, and a word that doesn't read off clears
   its group's bit there (USB_AON's or COMMON's). The stages are `ll_wake=1`'s; the keyboard's light is the
   result. Run it with nothing in the USB-C ports.
+- `blink=1` (`run-floor --m1-a2-pre-blink`, on `gates_mark=1`, never with `sio_down=1` or `sio_steps=1`; the
+  launcher's line is `--m1-a2-pre`'s with `atc_down=1` and it) is `ll_wake=1`'s light without its alarm and
+  timer: in step 8 FPWM0's power word is asked on and the keyboard's PWM set to blink, `m1_ll_blink()`'s four
+  writes. Nothing of it goes to the record (0x6016 is that family's own byte): the light blinking from the
+  dark screen is the sign the writes were made, and its stopping before the restart the sign that B2 reached
+  its tenth SIO word.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be
