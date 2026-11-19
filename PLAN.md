@@ -38,35 +38,31 @@ this section where they differ.
   differ only by the charger and the battery.
 
 **Next, in this order:**
-1. **The run that is built and waiting for Corey: `run-floor --no-reading --m1-a2-pre-blink`** in a
-   safe boot, on battery, nothing in the USB-C ports, the keyboard filmed, the nights switched off
-   around it (its alarm is an hour out and outlasts the restart). It is the run of 2026-11-14, where the AP makes A2's three moves
-   before the commit, with the light added and ATC0's chain lowered (RESEARCH.md, "`blink=1` as
-   built", 2026-11-19). The restart comes 90 s after the dark screen. Then `m1-crumbs`, `--clear`,
-   `sleep-drain-safe collect`.
-   - The light stops before the restart: with A2's moves made, B2 reaches its power-downs. Then
-     the stall of runs A and B is A2's own moves with every core down, and the later stall is
-     somewhere the earlier rungs' work applies to after all.
-   - The light blinks to the end: B2 still doesn't reach FPWM0 with A2's moves found made. That
-     makes A2's waits less likely as the hold and doesn't exclude them: A2 writes the three again
-     and waits again, with every core down, and a wait met with a core up may not be met then.
-     B2's ops 1 to 6 and the first handshake stay open beside it. Then: the PMU's wake source
-     masked too (source 54, the one the recipe leaves open; the M4 drivers name a wake source the
-     masks let through as a holder of this gate); the other words on at the commit (DEBUG,
-     SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4).
-   - No light from the dark screen: FPWM0 didn't come on, or the PWM doesn't run with A2's moves
-     made; nothing new about B2 either way.
-   Beside it, with Corey's OK on the text: a follow-up on aurora-silicon/linux#2198 with what
-   2026-11-19 added (each complex's own sequence finishes; the gate word's low bits count the
-   complexes down; ATC0's chain lowered and the same ending), asking what held this stretch on
-   T6050 and T8140.
+1. **Nothing is waiting for Corey. At the desk first** (RESEARCH.md, "The `a2_pre=1` run with the
+   light", 2026-11-19): that run ended at 91 s with A2's moves made and ATC0's chain off, and the
+   light was seen blinking but not watched to the end. What is left between the last WFI and B2's
+   power-downs is B2's opening (the count word's bit 2, its bit 3 clear after a delay,
+   0x2922c0040's bit 1) and the first handshake; A2's moves are less likely, not excluded.
+   - Read the answer on aurora-silicon/linux#2198, if one has come: the follow-up of 11-19
+     (`#issuecomment-7014628444`) asks what bit 3 of the gate word is and whether the PMU's wake
+     source should be masked. A reply needs Corey's OK.
+   - The next run's candidates, none built: the PMU's wake source masked too (source 54, the one
+     bit `m1_wake_mask[]` leaves clear), with the light: one value changed, and the M4 Pro's driver
+     names an unmasked pending wake source as a holder of this gate; the other words on at the
+     commit that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4); DBGPRCR_EL1's
+     bit 0 read on each core, awake.
+   - From here every run with the light is filmed, or watched to the restart: the light is the
+     result, and this run's was seen in part.
+   - The runs since the strategy review (11-15): A, B, the gate look, two of the observer's, ATC0's
+     chain, A2's moves with the light: seven of the ten it budgeted. Before the eighth, ask at the
+     desk whether a returning look or the answer from upstream is worth more than another one-way run.
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
    the decoder saying when that driver is bound: until then a run that sets the alarm near needs the
    nights off around it.
-4. Upstream, each reply with Corey's OK: aurora-silicon/linux#2198 (the data and the RVBAR reading
-   are posted; an answer to "bit 0 set here, not locked there" may come), omacom/linux-aurora#351
+4. Upstream, each reply with Corey's OK: aurora-silicon/linux#2198 (the data, the RVBAR reading and
+   the follow-up of 11-19 are posted; answers may come), omacom/linux-aurora#351
    with #454 and #504 stacked on it (no maintainer review yet), #290, malik-na/linux-aurora#77.
 5. The nights on the charger (installed 2026-11-19) haven't been seen on the Mac: the log will show
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.

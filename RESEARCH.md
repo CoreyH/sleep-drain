@@ -5426,6 +5426,41 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The `a2_pre=1` run with the light: the moves made, the same 91 s, and a light seen only in part (2026-11-19)
+
+`run-floor --no-reading --m1-a2-pre-blink` in a safe boot, on battery at about 60%, nothing in the USB-C
+ports, the nights off around it, loaded 17:17 (`results/a2-pre-blink-20261119/`; the module built at 9f2bcfe).
+Corey, at the end of the day: "I turned away but I believe it flashed as before".
+
+**The record.** Stage 0x9b, the run's last by design, and every byte as on 2026-11-14 but 0x6013, which has
+`atc_down=1`'s mark: 0x5f, the six off. 0x6016 = 0xff: A2's three moves took and read as A2 waits for them
+at the last read before the commit (and the five muxes didn't all read parked, as then). The restart 91 s
+after the commit (90.0 to 92.0 s), WD1's marker. 0x0201 = 0x02. The load had FPWM0 on awake (0xff), so the
+blink's writes had what they need; whether they were made isn't in the record, by design.
+
+**What it says, and how far.** The light did blink from the dark screen (so the blink runs with A2's moves
+made, which the adversarial pass had left open), and it was not seen to stop: but it was not watched for the
+whole 90 s. Read with that weight: with A2's moves found made and ATC0's chain off, B2 still doesn't reach
+its tenth SIO word, as far as an observation made in part can say. A light that went out late and
+unseen isn't excluded by it; the marker says only that B2 didn't reach op 223. If this run's reading
+comes to carry a decision, it is run again, filmed.
+
+**Where that leaves the stretch between the last WFI and B2's power-downs:** A2's moves are less likely as
+the hold (not excluded: A2 writes and waits again with every core down), and what stays is B2's opening
+(the count word's bit 2, then its bit 3 clear after a delay, then 0x2922c0040's bit 1) and the first
+handshake. None of it can be read by a core.
+
+**Upstream, the same evening.** With Corey's OK ("you can follow up on the threads and post as me if you
+want to. go ahead"), a follow-up on aurora-silicon/linux#2198 (`#issuecomment-7014628444`; the text is on
+this MacBook in `~/.local/share/sleep-drain/drafts-20261119/4-aurora-silicon-2198-followup.md`): each
+complex's own sequence finishes; the gate word's low bits read as a count, which corrects the table of the
+data comment ("bit 0 follows P complex 0, bit 1 P complex 1"); ATC0's chain lowered and the same ending;
+and two questions: what bit 3 of that word is, and whether the PMU's wake source, the one this recipe's
+mask leaves open, should be masked too. Nothing new was on the other threads.
+
+**After the run:** the record cleared (the alarm, armed an hour out, with it), two saves collected, the
+nights on again at 25.
+
 ### `blink=1` as built: the light in `a2_pre=1`'s run (2026-11-19)
 
 **Why.** "The `atc_down=1` run", below: the light has only been in the `last_look=1` family, and the rungs that
