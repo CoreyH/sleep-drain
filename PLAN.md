@@ -4,6 +4,56 @@ Last updated 2026-11-19. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
+## Pick up here (2026-11-19)
+
+Read this first. "Where things stand" below is the long record and its order of work is superseded by
+this section where they differ.
+
+**What is known about the entry** (RESEARCH.md, the sections dated 2026-11-18 and -19):
+- The replay commits and the engine starts A2 at once: phase 4, its first handshake raised and
+  unanswered. The restart is the engine's watchdog and nothing else: WD2 at 30 s, or WD1's marker at
+  70 s (90 s with the older count) where a run arms it. B2 never zeroes WD1's count.
+- B2 never reaches its power-downs: the keyboard's PWM, behind the tenth word B2 switches off, blinked
+  for all 70 s (run B). So B2 is held in its ops 1 to 6 or in the first handshake; which isn't shown.
+- 0x2922c0044, B2's first poll (bit 2 set, then bit 3 clear): bit 0 is P complex 0 off, bit 1 is P
+  complex 1 off (1000 awake, 1011 with CPU0 up and both P complexes off, 1001 with CPU7 up and CPU0,
+  ECPM and PCPM0 off). Bit 2 is not ECPM's power word reading off; it has never been read set; with
+  every core in its WFI nothing can read it. Bit 3 was set in every reading.
+- With every core in its WFI: the alarm fires at its time and nothing follows; CPU0 doesn't come back
+  for its own timer; the restart comes at the marker's time all the same.
+- CPU0's RVBAR reads 0x00100100059e4001 under m1n1-aurora: bit 0 set, the address 0x100059e4000. The
+  other seven have the same address with bit 0 clear (`results/rvbar-20261119/`).
+- Nobody has macOS's commit state for a T600x, and no M1 Pro or Max has come back from a completed
+  entry anywhere (aurora-silicon/linux#2198, answered 2026-11-19). T6000 data is welcome there; the
+  entry's data went up as a comment on 2026-11-19.
+- A record's bytes: 0x6008-0x600c have carried across the restart every time; 0x600d and 0x600e were
+  lost in both runs that wrote them, though awake they take a write. Use the first five.
+- The SMC's keys across a one-way run say nothing: after four runs and after a plain restart they
+  differ only by the charger and the battery.
+
+**Next, in this order:**
+1. At the desk, against the notebook, before anything is built (see the memory note on proposing
+   runs): which run names what bit 2 of 0x2922c0044 waits for, or where B2 is held. Candidates, none
+   chosen: (a) the keyboard's light in an observer's run, where a P complex is last and not the E
+   complex: does B2 reach its power-downs then (`obs_gate=1` and `ll_wake=1`'s blink exist; they
+   aren't combinable today). (b) The engine's page around 0x2922c0044 read whole by a look that
+   returns, awake and in the recipe's state, then the words that differ read by the observer after
+   the commit. (c) The same observer's look under today's recipe and not run 3's.
+2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
+   shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
+3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
+   the decoder saying when that driver is bound: until then a run that sets the alarm near needs the
+   nights off around it.
+4. Upstream, each reply with Corey's OK: aurora-silicon/linux#2198 (the data and the RVBAR reading
+   are posted; an answer to "bit 0 set here, not locked there" may come), omacom/linux-aurora#351
+   with #454 and #504 stacked on it (no maintainer review yet), #290, malik-na/linux-aurora#77.
+5. The nights on the charger (installed 2026-11-19) haven't been seen on the Mac: the log will show
+   `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
+
+**As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
+`--m1-obs-gate` the latest launcher option; the PMU's record bytes all zero; scratch that must outlast
+a restart in `~/.local/share/sleep-drain/`.
+
 ## Where things stand
 
 - **The drain is not fixed.** s2idle draws about 1.97 W (the aurora14
@@ -228,7 +278,9 @@ the PR with that session's work.
        the gates, under the 13.5 firmware set this Mac boots Linux with too; whether that entry
        finished first isn't shown):
        the marker's time, a restart well before it, dark past it.
-    3. One returning batch, in a safe boot: CPU0's RVBAR and its lock bit; 0x2922c0200,
+    3. (CPU0's RVBAR has a tool of its own since 2026-11-19: `rvbar-look` in a safe boot, one
+       command, after aurora-silicon's answer that T6000's isn't locked.)
+       One returning batch, in a safe boot: CPU0's RVBAR and its lock bit; 0x2922c0200,
        0x2922c0214, 0x2925c0014; the muxes written, read and restored (in place of the one-way mux
        run); the cluster status words awake.
     4. If runs A and B leave B2 at its first gate: the commit alone from plain s2idle, the alarm

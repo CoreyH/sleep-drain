@@ -1,0 +1,34 @@
+#!/bin/bash
+# rvbar-look: rvbar-peek's run in a safe boot. It reads each core's RVBAR (rvbar-peek.c says where and why), shows
+# the eight lines, writes them to /var/log/sleep-drain/rvbar-<time>.txt and saves that for the next regular boot
+# (sleep-drain-safe save; collect brings it in). Reads only.
+#
+#   pkexec sleep-drain-safe boot, restart, then:
+#   pkexec /home/corey/src/sleep-drain/rvbar-look
+#
+# These words have never been read on this Mac, so the first read is made where a fault costs nothing: if the Mac
+# goes dark or restarts right after the command, that is the result, and there is nothing to save.
+set -u
+DIR=$(cd "$(dirname "$0")" && pwd)
+die() { echo "rvbar-look: $*" >&2; exit 2; }
+[[ $EUID -eq 0 || -n ${RVBAR_LOOK_TEST:-} ]] || die "run as root (pkexec)"
+[[ -e ${RVBAR_LOOK_SAFE:-/run/sleep-drain-safe/active} ]] || die "this isn't a safe boot: pkexec sleep-drain-safe boot, restart, and run it there"
+PEEK=${RVBAR_LOOK_PEEK:-$DIR/rvbar-peek}
+[[ -x $PEEK ]] || die "no $PEEK: cc -O1 -Wall -o $DIR/rvbar-peek $DIR/rvbar-peek.c (in a regular boot)"
+LOGDIR=${RVBAR_LOOK_DIR:-/var/log/sleep-drain}
+out=$LOGDIR/rvbar-$(date +%Y%m%dT%H%M%S).txt
+mkdir -p "$LOGDIR" || die "couldn't make $LOGDIR"
+sync
+# Its errors go into the file too, and a reader or a tee that failed is said there and in the exit status: lines
+# from the cores before it are kept, and are not a whole capture.
+"$PEEK" 2>&1 | tee "$out"
+st=("${PIPESTATUS[@]}")
+failed=0
+if ((st[0] != 0 || st[1] != 0)); then
+  failed=1
+  echo "rvbar-look: NOT A WHOLE CAPTURE: rvbar-peek exited ${st[0]}, tee ${st[1]}" | tee -a "$out" >&2
+fi
+[[ -s $out ]] || die "rvbar-peek printed nothing"
+"${RVBAR_LOOK_SAVE:-/usr/local/bin/sleep-drain-safe}" save "$out" || die "the save failed: $out is in this boot's RAM only"
+((!failed)) || die "saved what there was; restart, and tell Claude it stopped short"
+echo "saved: restart, and tell Claude"
