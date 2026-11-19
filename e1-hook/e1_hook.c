@@ -397,7 +397,7 @@ module_param(last_look, bool, 0444);
 MODULE_PARM_DESC(last_look, "With wd1_mark=1, never with gates_mark=1, observe=1, position=1, recfg_bite=1 or probe=1: --m1-mark's run with WD1's count at 80 s in place of 60 s (the marker 70 s after step 4), and, the first time CPU0's own last WFI returns, seven bytes to the PMU's 0x6008-0x600e (Corey's OK of 2026-11-16): when and how often it returned, what was pending, the engine's two gate words, PHASE and the handshakes, and how many of B2's power words read off; reads only, but for CPU0's timer control set to 0 (last_look.h)");
 static bool obs_gate;
 module_param(obs_gate, bool, 0444);
-MODULE_PARM_DESC(obs_gate, "With observe=1: after CPU7's polls of CPU0's and the E complex's power words, CPU7 reads the engine's two gate words, PHASE, the handshake words and the four CPU power words (CPU0, ECPM, PCPM0, PCPM1), and the gate words and the four again 500 ms later, and sends them to the PMU's 0x6008-0x600e. Reads only");
+MODULE_PARM_DESC(obs_gate, "With observe=1: after CPU7's polls of CPU0's and the E complex's power words, CPU7 reads the four CPU power words (CPU0, ECPM, PCPM0, PCPM1), EACC's and PACC0's soc-cluster words, 0x2922c0044 and the E complex's and P complex 0's state words (0x28e09a000, 0x28e09a004), and the E complex's again 500 ms later, and sends them to the PMU's 0x6008-0x600e. Reads only (last_look.h)");
 static bool gate_look;
 module_param(gate_look, bool, 0444);
 MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
@@ -1833,6 +1833,7 @@ static void e1_after_slpa(void)
 #define M1_SOC_CLUSTERS		0x28e098000ULL
 #define M1_SOC_EACC		0x0
 #define M1_SOC_PACC0		0x4
+#define M1_SOC_PACC1		0x8
 /*
  * cluster_ack=1: the table's entries for ANE0's, AFR's and AVEMSR's words (checked at load: these addresses, 4 bytes,
  * the table's value 0, each with a cluster wait), and what step 5 writes there instead: target 0, and 1 to bit 5, the
@@ -2795,16 +2796,20 @@ static void m1_time_clusters(u8 *te, u8 *tp, u64 t_go)
 /*
  * obs_gate=1, on CPU7 in m1_observe(), after its polls of CPU0's and the E
  * complex's power words and its first record (last_look.h has the bytes and
- * why): the four CPU power words, then the handshake words, the engine's two
- * gate words and PHASE, sent as one command; OG_LATER_MS later the gate words
- * and the four again, a second command. Reads only: the power words are the
- * ones m1_observe() and m1_hold_release() poll, the engine's page and HS_A the
- * ones position=1 and gate_look=1 read after the commit with a core up.
+ * why): the four CPU power words, EACC's and PACC0's soc-cluster words and
+ * 0x2922c0044, sent as one command; then the E complex's and P complex 0's
+ * state words, a second command; OG_LATER_MS later the E complex's state word,
+ * EACC's word and 0x2922c0044 again, a third. Reads only: the power words are
+ * the ones m1_observe() and m1_hold_release() poll, the soc-cluster words the
+ * ones CPU7 reads below and in m1_time_clusters(), 0x2922c0044 the word
+ * position=1, gate_look=1 and this look's first form read after the commit
+ * with a core up. The two state words are in the soc-cluster words' page and
+ * are read here for the first time after a commit: m1_og_init() read them
+ * awake, and the first command is out before they're touched.
  */
 static void m1_og_look(void)
 {
-	void __iomem *hs_a = post_map[ARRAY_SIZE(e1_post_slpa) - 1] + M1_POS_HS_A;
-	u32 hsa, hsb, g40, g44, phase;
+	u32 eacc, pacc0, g44, se, sp0;
 	bool c0, ec, p0, p1;
 	u8 b[LL_N];
 	u64 t0;
@@ -2814,28 +2819,26 @@ static void m1_og_look(void)
 	ec = !m1_ps_state(M1_PS_ECPM);
 	p0 = !m1_ps_state(M1_PS_PCPM0);
 	p1 = !m1_ps_state(M1_PS_PCPM1);
-	hsa = readl(hs_a);
-	hsb = readl(m1_pos + LL_HS_B);
-	g40 = readl(m1_pos + M1_POS_GATE40);
+	eacc = readl(m1_soc + M1_SOC_EACC);
+	pacc0 = readl(m1_soc + M1_SOC_PACC0);
 	g44 = readl(m1_pos + M1_POS_GATE44);
-	phase = readl(m1_pos + M1_POS_PHASE);
-	b[0] = og_b0(c0, ec, p0, p1);
-	b[1] = ll_b1(0, hsa & BIT(31), hsa, hsb);
-	b[2] = (u8)g40;
-	b[3] = (u8)g44;
-	b[4] = ll_b4(phase);	/* the command's last byte: its bit 7 says the five landed */
-	m1_crumb(LL_AT, b, 5);
+	b[0] = og_b0(c0, ec, p0, p1) | OG_CLUS;
+	b[1] = og_c1(eacc);	/* the command's last byte: its bit 7 says the two landed */
+	m1_crumb(LL_AT, b, 2);
+	se = readl(m1_soc + OG_ST_E);
+	sp0 = readl(m1_soc + OG_ST_P0);
+	b[2] = (u8)se;
+	b[3] = (u8)sp0;
+	b[4] = og_c4(og_wide(eacc, pacc0, se, sp0), pacc0, g44);	/* its bit 7 says the three landed */
+	m1_crumb(LL_AT + 2, b + 2, 3);
 	t0 = m1_now();
 	while (m1_now() - t0 < m1_tps * OG_LATER_MS / 1000)
 		cpu_relax();
-	c0 = !m1_ps_state(M1_PS_CPU0);
-	ec = !m1_ps_state(M1_PS_ECPM);
-	p0 = !m1_ps_state(M1_PS_PCPM0);
-	p1 = !m1_ps_state(M1_PS_PCPM1);
+	se = readl(m1_soc + OG_ST_E);
+	eacc = readl(m1_soc + M1_SOC_EACC);
 	g44 = readl(m1_pos + M1_POS_GATE44);
-	g40 = readl(m1_pos + M1_POS_GATE40);
-	b[5] = (u8)g44;
-	b[6] = og_b6(g40, c0, ec, p0, p1);
+	b[5] = (u8)se;
+	b[6] = og_c6(eacc, g44);
 	m1_crumb(LL_AT + 5, b + 5, 2);
 }
 
@@ -2909,7 +2912,7 @@ static void __noreturn m1_observe(struct m1_core *c)
 	       (READ_ONCE(m1_core[0].wfi_ret) ? BIT(7) : 0);
 	b[3] = min(left, 255U);
 	m1_crumb(0x6004, b, 4);
-	/* obs_gate=1: the engine's gate words beside the power words, now that CPU0's and ECPM's polls are over. */
+	/* obs_gate=1: the complexes' own words beside the power words, now that CPU0's and ECPM's polls are over. */
 	if (obs_gate)
 		m1_og_look();
 
@@ -4344,19 +4347,25 @@ static int __init m1_pmp_init(void)
 
 /*
  * obs_gate=1 at load: the engine's page mapped, if no other option mapped it,
- * and the words CPU7's look reads logged awake (but HS_A, read only after the
- * commit). Reads only.
+ * and the words CPU7's look reads logged awake, the three complexes' state
+ * words first among them: nothing here has read those before, and a read that
+ * faults is to fault now, awake in a safe boot, with nothing changed yet.
+ * Reads only.
  */
 static int __init m1_og_init(void)
 {
 	if (!m1_pos)
 		m1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);
-	if (!m1_pos || !m1_ps) {
-		pr_err("m1: obs_gate: the engine's page or the first power page isn't mapped; refusing\n");
+	if (!m1_pos || !m1_ps || !m1_soc) {
+		pr_err("m1: obs_gate: the engine's page, the first power page or the soc-cluster page isn't mapped; refusing\n");
 		return -ENOMEM;
 	}
-	pr_info("m1: obs_gate: awake: 0x2922c0040 %08x, 0x2922c0044 %08x, PHASE %08x, HS_B %08x; CPU0 %08x, ECPM %08x, PCPM0 %08x, PCPM1 %08x. After its two polls CPU7 reads them, and the gate words and the four again %u ms later, and sends seven bytes to the PMU's 0x%x-0x%x\n",
-		readl(m1_pos + M1_POS_GATE40), readl(m1_pos + M1_POS_GATE44), readl(m1_pos + M1_POS_PHASE), readl(m1_pos + LL_HS_B),
+	pr_info("m1: obs_gate: awake: the complexes' state words, read for the first time: next the E complex's (0x28e09a000), P complex 0's (0x28e09a004) and P complex 1's (0x28e09a008)\n");
+	pr_info("m1: obs_gate: awake: state words: E complex %08x, P complex 0 %08x, P complex 1 %08x; soc-cluster words: EACC %08x, PACC0 %08x, PACC1 %08x\n",
+		readl(m1_soc + OG_ST_E), readl(m1_soc + OG_ST_P0), readl(m1_soc + OG_ST_P1),
+		readl(m1_soc + M1_SOC_EACC), readl(m1_soc + M1_SOC_PACC0), readl(m1_soc + M1_SOC_PACC1));
+	pr_info("m1: obs_gate: awake: 0x2922c0040 %08x, 0x2922c0044 %08x, PHASE %08x; CPU0 %08x, ECPM %08x, PCPM0 %08x, PCPM1 %08x. After its two polls CPU7 reads the four, EACC's and PACC0's words, 0x2922c0044 and the E complex's and P complex 0's state words, the E complex's again %u ms later, and sends seven bytes to the PMU's 0x%x-0x%x\n",
+		readl(m1_pos + M1_POS_GATE40), readl(m1_pos + M1_POS_GATE44), readl(m1_pos + M1_POS_PHASE),
 		readl(m1_ps + M1_PS_CPU0), readl(m1_ps + M1_PS_ECPM), readl(m1_ps + M1_PS_PCPM0), readl(m1_ps + M1_PS_PCPM1),
 		OG_LATER_MS, LL_AT, LL_AT + LL_N - 1);
 	return 0;
@@ -5608,6 +5617,9 @@ static_assert(M1_PS_SIO_PAGE + LL_FPWM0 == 0x28e580190ULL && M1_POS_PAGE + LL_HS
 	      LL_TIMER_S < (WD1_MARK_BITE - LL_WD1_COUNT) / WD1_HZ);
 /* obs_gate=1's two marks are apart, and its four power words are in the first power page. */
 static_assert(OG_MARK == 0x80 && OG_ARMED == 0x40 && M1_PS_CPU0 == 0x00 && M1_PS_ECPM == 0x60 && M1_PS_PCPM0 == 0x68 && M1_PS_PCPM1 == 0x70);
+/* Its second form's bit is neither mark, and the three state words are 0x28e09a000, + 4 and + 8, inside the soc-cluster words' mapping. */
+static_assert(OG_CLUS == 0x10 && M1_SOC_CLUSTERS + OG_ST_E == 0x28e09a000ULL && OG_ST_P0 == OG_ST_E + 4 * (M1_SOC_PACC0 / 4) &&
+	      OG_ST_P1 == OG_ST_E + 4 * (M1_SOC_PACC1 / 4) && OG_ST_P1 + 4 <= PAGE_SIZE && M1_SOC_EACC == 0);
 /* gate_look=1's bit is none of the return's in 0x6008, and its look comes before the alarm's time. */
 static_assert(LL_LOOKED == 0x08 && LL_ARMED == 0x04 && !((LL_LOOKED | LL_ARMED) & (LL_MARK | 7U << LL_T_SHIFT | 3U)) &&
 	      LL_LOOK_MS < LL_ALARM_SECS * 1000);

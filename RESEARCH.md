@@ -5426,6 +5426,89 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The desk step: the E complex's own sequence has never been looked at, and `obs_gate=1` now reads it (2026-11-19)
+
+Corey, after the session was compacted: "okay lets continue with the 'pick up here' in the plan.md file". Its
+first item is a desk step: which run names what bit 2 of 0x2922c0044 waits for. Nothing upstream had moved
+(aurora-silicon/linux#2198, omacom/linux-aurora#351, #454, #504, #290, malik-na/linux-aurora#77, read the
+same hour).
+
+**Read again in the SRAM's decode** (the local listings; the bytes, not new reads):
+- **Each CPU complex's down sequence**, in the clusters' sequencer's table and not in the entry pair:
+  0x2922800b0 := 0xf; wait, untimed, for bit 6 of the complex's soc-cluster word (0x28e098000 + 4n); write
+  0x51 to its state word (0x28e09a000 + 4n); wait, untimed, for bit 5 of that to clear; 0x28e09a024 + 4n := 1
+  and a counted wait on a ClkGen word; the state word through 0x53, 0x5b and 0x1b; the complex's clock mux
+  parked in four steps; 0x2922800b0 := 0x1f0000ff; and last the state word := 0x1a. An up sequence takes
+  the state word through 0x5b, 0x53, 0x51 and 0x41 and ends on 0x40. The E complex's and the two P
+  complexes' are the same but for their addresses. None of the six touches the engine's page 0x2922c0000.
+- **0x2922c0040 is raised by nothing in the wake but B1's last ops** (:= 1, wait for bit 1 set, then
+  0x2922c0008 := 1), and lowered by nothing but B2's ops 4 to 6. So it is the last thing the wake switches
+  on and the first thing the entry switches off, right behind the gate.
+- **B1 polls 0x2922c0044 too**: bit 1 clear, with no timeout, right after it raises 0x2922c003c (0x7b1c).
+  So in the wake that bit is waited for clear before any P complex is brought up by anything on file:
+  "bit 1 is P complex 1 off" is what two readings here show, not all the bit is.
+
+**What the observer's runs did and didn't see of the E complex.** Runs 2 and 3 and the gate run of 11-18
+read CPU0's and ECPM's *power words* off. Of EACC's soc-cluster word CPU7 has only ever kept bit 4 (a change
+asked for and not finished), which read clear at its first read: never seen pending, so "pending, then
+done" can't be told from "never pending" (said under run 3). Bits 5 and 6 were never recorded. EACC reads
+0x0f awake, state bits 0 ("down or never cycled": iBoot brought the complex up, not the sequencer), where
+PACC0 and PACC1 read 0x2f. The table writes EACC := 0 and the two PACCs := 0x20. And the state words,
+0x28e09a000 + 4n, have never been read at all: put off on 11-10 and again on 11-16.
+
+**So the reading of 11-18 has a hole.** "Bit 2 is clear with the E complex's power word off" doesn't say the
+E complex's own sequence ran: if the sequencer never took the E complex down (its soc-cluster word already
+says "down"), or is held at one of its two untimed waits, the power word can read off while the state word
+still reads up. Bits 0 and 1 of 0x2922c0044 would then be the P complexes' sequences done, and bit 2 the E
+complex's, after all: in a sense its power word doesn't carry, the second of the three readings left open
+on 11-18. That is checkable with a core up, which "all three off together" is not.
+
+**Checked against the notebook before proposing it** (the memory note): no run has read a state word; CPU7
+has read EACC's word after a commit, for bit 4 alone; the engine's page is the first form's. Not a repeat.
+
+**The other two candidates, and why they come after.** (a) The keyboard's light in an observer's run says
+whether B2 gets further when a P complex is last: worth a run once the E complex's sequence is shown to
+finish (then the last complex is the question), and it needs the blink taken out of `ll_wake=1`, four writes
+and a review. (c) The observer under today's recipe: `observe=1` excludes `hold=1`, `alarm=1` and
+everything built on them, so that is a larger build. What it would take away is DISPLAY's cluster word,
+still pending at the end of CPU7's watch in run 3's recipe (0x6015 = 0xa4 on 11-18). That it holds the E
+complex's sequence up isn't likely: AVEMSR's, written after DISPLAY's, finishes with DISPLAY's pending, and
+PACC0's with PACC1's pending, so the sequences don't queue behind one another (inferred from the order of
+the table's writes).
+
+**`obs_gate=1`'s second form, as built** (`run-floor --m1-obs-gate`, the same option and the same run, run 3's
+line: `replay=15 oneway=1 quiet=1 m1=1 observe=1 pmgr_late=1 obs_gate=1`). After its two polls and its first
+record CPU7 reads the four power words, EACC's and PACC0's soc-cluster words and 0x2922c0044, and sends
+0x6008-0x6009; then the E complex's and P complex 0's state words, and sends 0x600a-0x600c; 500 ms later the
+E complex's state word, EACC's word and 0x2922c0044 again, 0x600d-0x600e (the two bytes that haven't
+outlasted a restart yet: nothing rests on them). `e1-hook/last_look.h` has the bytes. Bit 4 of 0x6008 marks
+the form, and `m1-crumbs` reads both. The first form's words (HS_A, HS_B, 0x2922c0040, PHASE) read the same
+in every run with a core up and are left out; of 0x2922c0044 its low three bits are kept.
+
+**What each outcome says** (the E complex's state word against P complex 0's, the complex that reads off):
+- the same value, and EACC's word settled (about 45%, mine): the E complex's sequence finishes with CPU0
+  down as P complex 0's does, and bit 2 isn't it. Then bit 2 needs all three, or isn't the CPUs', no core
+  can see it, and the next run is the light with a P complex last.
+- another value, or EACC's bit 4 or bit 6 standing (about 45%): the E complex's sequence hasn't run to its
+  end with its power word off, and the bytes say where it is: not started (the awake value), at its first
+  wait (bit 6 of EACC's word), or at its second (0x51 with bit 5). That is a wait with a name and an
+  address, which the entry has not had before.
+- the first command and not the second (about 10%): a state word doesn't read after a commit.
+If P complex 0's own value isn't the down sequence's last (0x1a), the words don't mean what the sequences'
+writes suggest, and the comparison is all there is.
+
+**Reads only.** No register is written. The two state words are in the soc-cluster words' page, which CPU7
+reads after every commit; they are read for the first time here, awake at the load (with P complex 1's),
+logged, before K1 changes anything: if such a read faults, it faults in the safe boot with nothing done. To
+the PMU: the same seven bytes as the first form, the same commands' path. No adversarial pass: reads, on
+reviewed code.
+
+**Checked.** `tests/m1_crumbs_test.py`: `m1_og_look()` compiled as it stands against pages that log every
+access (a seventh page for the soc clusters'), the order of its reads and its three commands, the header's
+four new functions over every input that reaches a field, the decoder on the second form whole and stopped
+short at each command, and on the first form's record of 11-18, which it still reads. The `ogl:` mutants
+brought up to the new code.
+
 ### CPU0's RVBAR is locked here, the data posted, and the SMC's keys say nothing about a run (2026-11-19)
 
 **RVBAR, read** (`rvbar-look` in a safe boot at 13:07, Corey's run; `results/rvbar-20261119/rvbar.txt`). Each

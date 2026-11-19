@@ -6993,10 +6993,17 @@ int main(void)
 	printf("fpwm0 %x\n", sio[9]);
 	printf("look %x %x %u\n", LL_LOOKED, LL_ARMED, LL_LOOK_MS);
 	printf("og %x %x %u\n", OG_MARK, OG_ARMED, OG_LATER_MS);
+	printf("ogc %x %x %x %x\n", OG_CLUS, OG_ST_E, OG_ST_P0, OG_ST_P1);
 	for (a = 0; a < 16; a++)
-		for (b = 0; b < 8; b++)
-			printf("ogb %u %u %x %x\n", a, b, og_b0(a & 1, a >> 1 & 1, a >> 2 & 1, a >> 3 & 1),
-			       og_b6(b | 0xfffffff8U * (b & 4 ? 1 : 0), a & 1, a >> 1 & 1, a >> 2 & 1, a >> 3 & 1));
+		printf("ogb %u %x\n", a, og_b0(a & 1, a >> 1 & 1, a >> 2 & 1, a >> 3 & 1));
+	for (a = 0; a < 512; a++) {
+		/* a word with every bit above the low nine set or clear, by a's top bit */
+		u32 w = (a & 0xff) | (a & 0x100 ? 0xffffff00U : 0);
+
+		printf("ogw %x %x %x %x %x %u %u %u %u\n", w, og_c1(w), og_c4(false, w, w), og_c4(true, w, w), og_c6(w, w),
+		       og_wide(w, 0, 0, 0), og_wide(0, w, 0, 0), og_wide(0, 0, w, 0), og_wide(0, 0, 0, w));
+	}
+	printf("ogx %x %x\n", og_c4(false, 0x70, 0), og_c6(0x0f, 0xfffffff0U));
 	for (a = 0; a < 3; a++)
 		for (dt = 0; dt < 40 * tps[a]; dt += tps[a] / 1000 ? tps[a] / 1000 : 1) {
 			static u8 last = 0xff;
@@ -7059,8 +7066,8 @@ static u64 isr_el1, cntp_ctl_el0, cntp_tval_el0;
 #define read_sysreg(r) (printf("sr %s\n", #r), r)
 #define write_sysreg(v, r) do { r = (v); printf("sw %s %llx\n", #r, (unsigned long long)r); } while (0)
 /* Six pages, each a word array; every access logged with its page's letter. */
-static u32 pg[6][0x1000];
-static const char letters[] = "ESPACW";	/* the engine's, SIO's power words, the first power page, SPMI's acks, the commit's, the PWM's */
+static u32 pg[7][0x1000];
+static const char letters[] = "ESPACWK";	/* the engine's, SIO's power words, the first power page, SPMI's acks, the commit's, the PWM's, the soc clusters' */
 static void *m1_pos = pg[0], *m1_sio = pg[1], *m1_ps = pg[2], *m1_spmi = pg[3], *m1_ll_pwm = pg[5];
 static const struct { int x; } e1_post_slpa[74];
 static void *post_map[74];
@@ -7071,7 +7078,7 @@ static int where(const void *p, unsigned long *off)
 {
 	int i;
 
-	for (i = 0; i < 6; i++)
+	for (i = 0; i < 7; i++)
 		if ((const u32 *)p >= pg[i] && (const u32 *)p < pg[i] + 0x1000) {
 			*off = (unsigned long)((const unsigned char *)p - (const unsigned char *)pg[i]);
 			return i;
@@ -7230,11 +7237,14 @@ int main(int argc, char **argv)
 	pg[2][M1_PS_ECPM / 4] = 0x00000300;
 	pg[2][M1_PS_PCPM0 / 4] = 0x0000000f;
 	pg[2][M1_PS_PCPM1 / 4] = 0x000001f0;
-	pg[0][M1_POS_GATE40 / 4] = 0xabc00101;
 	pg[0][M1_POS_GATE44 / 4] = 0x1230000d;
-	pg[0][M1_POS_PHASE / 4] = 0x00000104;
-	pg[0][LL_HS_B / 4] = 0x80000001;
-	pg[4][M1_POS_HS_A / 4] = 0x80010000;
+	/* EACC's word, PACC0's, and the two state words, each unlike the others in the bits the record keeps. */
+	pg[6][M1_SOC_EACC / 4] = 0x00000050;
+	pg[6][M1_SOC_PACC0 / 4] = 0x00000020;
+	pg[6][OG_ST_E / 4] = 0x00000051;
+	pg[6][OG_ST_P0 / 4] = 0x0000001a;
+	if (!strcmp(sc, "wide"))
+		pg[6][OG_ST_P0 / 4] = 0x0000011a;
 	clk = 0;
 	step = 5000000;
 	m1_og_look();
@@ -7256,7 +7266,8 @@ def last_look_tests(g, src):
     code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
     defs = "".join(line + "\n" for line in src.splitlines()
                    if re.match(r"#define (M1_SPMI_WORDS|M1_SPMI_ACK\(w\)|M1_POS_(GATE40|GATE44|PHASE|HS_A)|M1_PS_ANS2|M1_PS_PMP_RO)\s", line))
-    og_defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define M1_PS_(CPU0|ECPM|PCPM0|PCPM1)\s", line))
+    og_defs = ("".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PS_(CPU0|ECPM|PCPM0|PCPM1)|M1_SOC_(EACC|PACC0))\s", line))
+               + "static void *m1_soc = pg[6];\n")
     og_fn, ps_state_fn = cut("static void m1_og_look(void)", "\n}\n"), cut("static unsigned int m1_ps_state(unsigned int off)", "\n}\n")
     send_fn, ret_fn, timer_fn, blink_fn = (cut("static void m1_ll_send(", "\n}\n"), cut("static void m1_ll_ret(void)", "\n}\n"),
                                            cut("static void m1_ll_timer(void)", "\n}\n"), cut("static bool m1_ll_blink(void)", "\n}\n"))
@@ -7278,9 +7289,9 @@ def last_look_tests(g, src):
         ret, dead, timer = lines(fn, "ret"), lines(fn, "dead"), lines(fn, "timer")
         look, look_dead, ret_look = lines(fn, "look"), lines(fn, "lookdead"), lines(fn, "retlook")
         ogfn = build("ogfn", LL_FN_PRELUDE + defs + og_defs + "static void m1_use(void) { (void)m1_sio; (void)m1_spmi; (void)m1_ll_pwm; (void)writel;"
-                     " (void)isr_el1; (void)cntp_ctl_el0; (void)cntp_tval_el0; (void)follow; (void)gate_look; (void)m1_t_third; }\n" + ps_state_fn + og_fn
+                     " (void)isr_el1; (void)cntp_ctl_el0; (void)cntp_tval_el0; (void)follow; (void)gate_look; (void)m1_t_third; (void)post_map; (void)e1_post_slpa; }\n" + ps_state_fn + og_fn
                      + OG_FN_MAIN.replace("post_map[73] = pg[4];", "post_map[73] = pg[4];\n\tm1_use();"))
-        og, og_dead = lines(ogfn), lines(ogfn, "dead")
+        og, og_dead, og_wide = lines(ogfn), lines(ogfn, "dead"), lines(ogfn, "wide")
         blink_on, blink_auto, blink_never, blink_busy = lines(fn, "blink"), lines(fn, "blinka"), lines(fn, "blinkn"), lines(fn, "blinkb")
         ok = [tuple(int(x, 16) if i == 2 else int(x) for i, x in enumerate(l.split()[1:]))
               for l in lines(build("llok", "#include <stdio.h>\n#include <stdbool.h>\n#include <stdint.h>\ntypedef uint8_t u8;\n"
@@ -7406,28 +7417,44 @@ def last_look_tests(g, src):
 
     # obs_gate=1: CPU7's look, in observe=1's run.
     four = ["r P 0", "r P 60", "r P 68", "r P 70"]
-    og_want = four + ["r C 4", "r E 10c", "r E 40", "r E 44", "r E 110", "c 6008 87 a8 01 0d 84"] + four + ["r E 44", "r E 40", "c 600d 0d b9", "clk 20000000"]
+    first = four + ["r K 0", "r K 4", "r E 44", "c 6008 97 d0"]
+    og_want = first + ["r K 2000", "r K 2004", "c 600a 51 1a 95", "r K 2000", "r K 0", "r E 44", "c 600d 51 dd", "clk 20000000"]
     check(og == og_want,
-          "m1_og_look(): CPU0's, ECPM's, PCPM0's and PCPM1's power words read, then HS_A, HS_B, 0x2922c0040, 0x2922c0044 and PHASE, and 0x6008-0x600c"
-          " sent as one command (0x87: the first three off and PCPM1 on; 0xa8; 0x01; 0x0d; 0x84); 500 ms of the counter and no more; the four,"
-          " 0x2922c0044 and 0x2922c0040 again, and 0x600d-0x600e sent (0x0d, 0xb9)", "\n".join(og))
-    check(og_dead == [l for l in og_want if not l.startswith("c ")] and not [l for l in og if l.startswith(("w ", "sw ", "sr "))] and "r X 0" not in og,
-          "m1_og_look() writes nothing and touches no system register; with SPMI already failed it sends nothing")
+          "m1_og_look(): CPU0's, ECPM's, PCPM0's and PCPM1's power words read, then EACC's and PACC0's soc-cluster words and 0x2922c0044, and"
+          " 0x6008-0x6009 sent (0x97: the second form, the first three off and PCPM1 on; 0xd0: EACC's 0x50 under the mark); only then the E"
+          " complex's and P complex 0's state words, and 0x600a-0x600c sent (0x51, 0x1a, 0x95: PACC0's bits 6:4 010, the gate word's 101);"
+          " 500 ms of the counter and no more; the E complex's state word, EACC's word and 0x2922c0044 again, and 0x600d-0x600e sent (0x51, 0xdd)",
+          "\n".join(og))
+    check(og_dead == [l for l in og_want if not l.startswith("c ")] and not [l for l in og if l.startswith(("w ", "sw ", "sr "))] and "r X 0" not in og
+          and og_wide == [l.replace("c 600a 51 1a 95", "c 600a 51 1a d5") for l in og_want],
+          "m1_og_look() writes nothing and touches no system register; with SPMI already failed it sends nothing; a state word with a bit"
+          " above its byte sets bit 6 of 0x600c and changes nothing else", "\n".join(og_wide))
     check(in_order_of(og_fn, ["c0 = !m1_ps_state(M1_PS_CPU0);\n\tec = !m1_ps_state(M1_PS_ECPM);\n\tp0 = !m1_ps_state(M1_PS_PCPM0);\n\tp1 = !m1_ps_state(M1_PS_PCPM1);\n"
-                              "\thsa = readl(hs_a);\n\thsb = readl(m1_pos + LL_HS_B);\n\tg40 = readl(m1_pos + M1_POS_GATE40);\n\tg44 = readl(m1_pos + M1_POS_GATE44);\n",
-                              "b[0] = og_b0(c0, ec, p0, p1);", "b[1] = ll_b1(0, hsa & BIT(31), hsa, hsb);", "b[4] = ll_b4(phase);", "m1_crumb(LL_AT, b, 5);",
-                              "\twhile (m1_now() - t0 < m1_tps * OG_LATER_MS / 1000)\n\t\tcpu_relax();\n", "b[6] = og_b6(g40, c0, ec, p0, p1);",
-                              "m1_crumb(LL_AT + 5, b + 5, 2);\n}"])
+                              "\teacc = readl(m1_soc + M1_SOC_EACC);\n\tpacc0 = readl(m1_soc + M1_SOC_PACC0);\n\tg44 = readl(m1_pos + M1_POS_GATE44);\n",
+                              "b[0] = og_b0(c0, ec, p0, p1) | OG_CLUS;", "b[1] = og_c1(eacc);", "m1_crumb(LL_AT, b, 2);\n",
+                              "\tse = readl(m1_soc + OG_ST_E);\n\tsp0 = readl(m1_soc + OG_ST_P0);\n\tb[2] = (u8)se;\n\tb[3] = (u8)sp0;\n",
+                              "b[4] = og_c4(og_wide(eacc, pacc0, se, sp0), pacc0, g44);", "m1_crumb(LL_AT + 2, b + 2, 3);\n",
+                              "\twhile (m1_now() - t0 < m1_tps * OG_LATER_MS / 1000)\n\t\tcpu_relax();\n",
+                              "\tse = readl(m1_soc + OG_ST_E);\n\teacc = readl(m1_soc + M1_SOC_EACC);\n\tg44 = readl(m1_pos + M1_POS_GATE44);\n\tb[5] = (u8)se;\n",
+                              "b[6] = og_c6(eacc, g44);", "m1_crumb(LL_AT + 5, b + 5, 2);\n}"])
           and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\(", og_fn) and "sysreg" not in og_fn
+          and len(re.findall(r"\bOG_ST_\w+\b", og_fn)) == 3 and "OG_ST_P1" not in og_fn
           and not re.search(r"\w\([^;]*(readl|m1_ps_state)\([^;]*,[^;]*(readl|m1_ps_state)\(", og_fn),
-          "m1_og_look() reads each word into its own variable, sends the first sample before it waits, and has no write to a register")
-    ogb = [r[1:] for r in hdr if r[0] == "ogb"]
-    check([r for r in hdr if r[0] == "og"] == [["og", "80", "40", "500"]] and len(ogb) == 128
-          and all(int(b0, 16) == 0x80 | int(a) and int(b6, 16) == 0x80 | int(a) << 3 | (int(b) & 3) for a, b, b0, b6 in ogb)
-          and g["OG_MARK"] == 0x80 and g["OG_ARMED"] == 0x40 and g["OG_LATER_MS"] == 500 and g["OG_STAGES"] == (0x61, 0x62, 0x6e, 0x6f, 0x71, 0x72, 0x7e, 0x7f)
-          and not set(g["OG_STAGES"]) & set(g["LL_STAGES"]),
-          "og_b0() and og_b6(): bit 7, the four power words in bits 3:0 or 6:3, 0x2922c0040's bits 1:0 alone in the second; K1's mark is bit 6;"
-          " m1-crumbs has the marks, the 500 ms and CPU7's stages, none of them last_look=1's")
+          "m1_og_look() reads each word into its own variable, sends the words read after a commit before ahead of its first read of a state"
+          " word, sends those before it waits, never reads P complex 1's state word, and has no write to a register")
+    ogb, ogw = [r[1:] for r in hdr if r[0] == "ogb"], [[int(x, 16) for x in r[1:6]] + [int(x) for x in r[6:]] for r in hdr if r[0] == "ogw"]
+    check([r for r in hdr if r[0] == "og"] == [["og", "80", "40", "500"]] and len(ogb) == 16 and all(int(b0, 16) == 0x80 | int(a) for a, b0 in ogb)
+          and [r for r in hdr if r[0] == "ogc"] == [["ogc", "10", "2000", "2004", "2008"]] and len(ogw) == 512
+          and all(c1 == 0x80 | (w & 0x7f) and c4 == 0x80 | (w >> 4 & 7) << 3 | (w & 7) and c4w == c4 | 0x40 and c6 == 0x80 | (w >> 4 & 7) << 4 | (w & 0xf)
+                  and wa == wb == int(w > 0x7f) and wc == wd == int(w > 0xff) for w, c1, c4, c4w, c6, wa, wb, wc, wd in ogw)
+          and [r for r in hdr if r[0] == "ogx"] == [["ogx", "b8", "80"]]
+          and g["OG_MARK"] == 0x80 and g["OG_ARMED"] == 0x40 and g["OG_CLUS"] == 0x10 and g["OG_LATER_MS"] == 500
+          and g["OG_STAGES"] == (0x61, 0x62, 0x6e, 0x6f, 0x71, 0x72, 0x7e, 0x7f) and not set(g["OG_STAGES"]) & set(g["LL_STAGES"])
+          and sorted(g["OG_ST"]) == [0x1a, 0x1b, 0x40, 0x41, 0x51, 0x53, 0x5b],
+          "og_b0(): bit 7 and the four power words in bits 3:0; og_c1(): EACC's bits 6:0 under bit 7; og_c4(): bit 7, og_wide() in bit 6, PACC0's"
+          " bits 6:4 in bits 5:3, the gate word's bits 2:0; og_c6(): bit 7, EACC's bits 6:4, the gate word's low nibble; og_wide(): a soc-cluster"
+          " word above bit 6 or a state word above bit 7; the second form's bit is bit 4 and the state words are at 0x2000, + 4 and + 8 of the"
+          " page; m1-crumbs has the marks, the 500 ms, CPU7's stages, none of them last_look=1's, and the seven values the sequences write")
     observe_fn = cut("static void __noreturn m1_observe(struct m1_core *c)", "\n}\n")
     start = cut("static int m1_pmu_start(void)", "\n}\n")
     check(in_order_of(observe_fn, ["while (m1_ps_state(M1_PS_ECPM) && m1_now() - t0 < m1_tps / 2) {", "\tb[3] = min(left, 255U);\n\tm1_crumb(0x6004, b, 4);\n",
@@ -7445,12 +7472,19 @@ def last_look_tests(g, src):
           and 'observe ? " observe=1" : "", obs_gate ? " obs_gate=1" : ""' in src
           and "\tif (obs_gate) {\n\t\tint ret = m1_og_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n" in src
           and src.index("int ret = m1_observe_init();") < src.index("int ret = m1_og_init();")
-          and "\tif (!m1_pos)\n\t\tm1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);\n\tif (!m1_pos || !m1_ps) {" in og_init
+          and "\tif (!m1_pos)\n\t\tm1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);\n\tif (!m1_pos || !m1_ps || !m1_soc) {" in og_init
           and not re.search(r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\(", og_init) and "hs_a" not in og_init and "M1_POS_HS_A" not in og_init
+          and in_order_of(og_init, ["read for the first time: next the E complex's (0x28e09a000)", "readl(m1_soc + OG_ST_E), readl(m1_soc + OG_ST_P0), readl(m1_soc + OG_ST_P1),",
+                                    "readl(m1_pos + M1_POS_GATE40)"])
           and "static_assert(OG_MARK == 0x80 && OG_ARMED == 0x40 && M1_PS_CPU0 == 0x00 && M1_PS_ECPM == 0x60 && M1_PS_PCPM0 == 0x68 && M1_PS_PCPM1 == 0x70);" in src
+          and "static_assert(OG_CLUS == 0x10 && M1_SOC_CLUSTERS + OG_ST_E == 0x28e09a000ULL && OG_ST_P0 == OG_ST_E + 4 * (M1_SOC_PACC0 / 4) &&\n"
+              "\t      OG_ST_P1 == OG_ST_E + 4 * (M1_SOC_PACC1 / 4) && OG_ST_P1 + 4 <= PAGE_SIZE && M1_SOC_EACC == 0);" in src
+          and "#define M1_SOC_CLUSTERS\t\t0x28e098000ULL\n#define M1_SOC_EACC\t\t0x0\n#define M1_SOC_PACC0\t\t0x4\n#define M1_SOC_PACC1\t\t0x8\n" in src
+          and "m1_soc = ioremap_np(M1_SOC_CLUSTERS, PAGE_SIZE);" in src
           and len(re.findall(r"\bobs_gate\b", code_only)) == 8,
           "obs_gate=1 is off unless asked for, refuses without observe=1, can't be set after the load and is named in the load line; m1_og_init()"
-          " maps the engine's page if nothing else did, refuses without it, writes nothing and doesn't read HS_A awake")
+          " maps the engine's page if nothing else did, refuses without it or the soc-cluster page, writes nothing, doesn't read HS_A awake, and"
+          " reads the three state words awake, saying so first; the three are 0x28e09a000, + 4 and + 8, inside the soc-cluster words' one page")
 
     # ll_wake=1: the timer and the light.
     check(timer == [f"sw cntp_tval_el0 {25 * 24000000:x}", "sw cntp_ctl_el0 1"],
@@ -7787,10 +7821,11 @@ def last_look_tests(g, src):
                   and "  0x600d = 0x0d: 0x2922c0044's low byte 500 ms later: bit 0 set, bit 1 clear, bit 2 set" in out
                   and "  0x600e = 0xb9: then: CPU0 off, ECPM (the E complex) off, PCPM0 (P complex 0) off, PCPM1 (P complex 1, CPU7's own) on; 0x2922c0040's bits 1:0 = 1" in out
                   and "last_look=1's record" not in out,
-                  f"CPU7's record under its stage 0x{stage:02x}, the harness's own bytes: every field read back as m1_og_look() packed it", out + err)
+                  f"CPU7's record in its first form (the run of 2026-11-18) under its stage 0x{stage:02x}: every field still read", out + err)
         for r, said, more in ((bytes((0x40, 0, 0, 0, 0, 0, 0)), "  0x6008 = 0x40: obs_gate=1 was set and CPU7's look never landed: K1 writes this byte", False),
                               (bytes((0x40, 0xa8, 1, 0xd, 0x84, 0xd, 0xb9)), "0x6009-0x600e = a8 01 0d 84 0d b9 aren't shown to be this run's: NOT READ", False),
-                              (bytes((0x97, 0xa8, 1, 0xd, 0x84, 0xd, 0xb9)), "  0x6008 0x6009 = 97 a8: not values e1_hook writes here", False),
+                              (bytes((0xa7, 0xa8, 1, 0xd, 0x84, 0xd, 0xb9)), "  0x6008 0x6009 = a7 a8: not values e1_hook writes here", False),
+                              (bytes((0xb7, 0xa8, 1, 0xd, 0x84, 0xd, 0xb9)), "  0x6008 0x6009 = b7 a8: not values e1_hook writes here", False),
                               (bytes((0x87, 0xa9, 1, 0xd, 0x84, 0xd, 0xb9)), "  0x6008 0x6009 = 87 a9: not values e1_hook writes here", False),
                               (bytes((0x87, 0xa8, 1, 0xd, 0x04, 0xd, 0xb9)), "  0x6008-0x600c = 87 a8 01 0d 04: the first command didn't land whole", False),
                               (bytes((0x87, 0xa8, 1, 0xd, 0x84, 0, 0)), "  0x600d 0x600e = 00 00: the second command, 500 ms after the first, didn't land whole", True),
@@ -7798,6 +7833,46 @@ def last_look_tests(g, src):
             rc, out, err, _, _ = og_dec(0x7f, r)
             check(rc == 0 and said in out and ("(B2's first poll, op 1, waits for it set)" in out) == more and "500 ms later" not in out,
                   f"CPU7's record that stops short or isn't e1_hook's ({r.hex(' ')}): said, and no further than it goes", out + err)
+        cfull = bytes((0x97, 0xd0, 0x51, 0x1a, 0x95, 0x51, 0xdd))
+        for stage in (0x7f, 0x6f, 0x71, 0x62):
+            rc, out, err, _, _ = og_dec(stage, cfull)
+            check(rc == 0 and "0x6008-0x600e = 97 d0 51 1a 95 51 dd: obs_gate=1's record: the complexes' own words read by CPU7, the observer" in out
+                  and "  0x6008 = 0x97: the power words, read right before the words below: CPU0 off, ECPM (the E complex) off, PCPM0 (P complex 0) off,"
+                      " PCPM1 (P complex 1, CPU7's own) on" in out
+                  and "  0x6009 = 0xd0: EACC's soc-cluster word (0x28e098000), bits 6:0 = 0x50: target 0x0, bit 4 set (a change asked for and not finished),"
+                      " bit 5 clear (the up-done flag), bit 6 set (what a down sequence waits for first, with no timeout). Awake it reads 0x0f" in out
+                  and "  0x600a = 0x51: the E complex's state word (0x28e09a000), low byte: 0x51, a value both sequences write on the way: the down"
+                      " sequence's first, after its wait for bit 6 of the soc-cluster word; bit 5 clear" in out
+                  and "  0x600b = 0x1a: P complex 0's (0x28e09a004), the complex that reads off, to compare: 0x1a, the value a down sequence ends on; bit 5"
+                      " clear. NOT the same value as the E complex's" in out
+                  and "  0x600c = 0x95: PACC0's soc-cluster word, bits 6:4 = 010 (EACC's are 101); 0x2922c0044's bits 2:0 = 101 (bit 2, B2's first poll, SET;"
+                      " the first form's run read 001 in this state)" in out and "ABOVE WHAT ITS BYTE CARRIES" not in out
+                  and "  0x600d = 0x51: the E complex's state word 500 ms later: 0x51, a value both sequences write on the way" in out
+                  and "  0x600e = 0xdd: then: EACC's bits 6:4 = 101; 0x2922c0044's low nibble = 1101" in out
+                  and "the engine's gate words read by CPU7" not in out and "HS_A" not in out and "last_look=1's record" not in out,
+                  f"CPU7's record in its second form under its stage 0x{stage:02x}, the harness's own bytes: every field read back as m1_og_look() packed it",
+                  out + err)
+        for r, said, state, later in (
+                (bytes((0x97, 0x50, 0x51, 0x1a, 0x95, 0x51, 0xdd)), "  0x6008 0x6009 = 97 50: the first command didn't land whole (bit 7 of 0x6009, its last byte)", False, False),
+                (bytes((0x97, 0xd0, 0, 0, 0, 0, 0)), "  0x600a-0x600c = 00 00 00: the second command didn't land whole (bit 7 of 0x600c, its last byte): the two state", False, False),
+                (bytes((0x97, 0xd0, 0x51, 0x1a, 0x15, 0x51, 0xdd)), "  0x600a-0x600c = 51 1a 15: the second command didn't land whole", False, False),
+                (bytes((0x97, 0xd0, 0x51, 0x1a, 0x95, 0, 0)), "  0x600d 0x600e = 00 00: the third command, 500 ms on, didn't land whole or didn't outlast the restart", True, False),
+                (bytes((0x97, 0xd0, 0x51, 0x1a, 0x95, 0x51, 0x5d)), "  0x600d 0x600e = 51 5d: the third command, 500 ms on, didn't land whole or didn't outlast the restart", True, False),
+                (bytes((0x97, 0xd0, 0x1a, 0x1a, 0xd1, 0x1a, 0x81)), "  0x600b = 0x1a: P complex 0's (0x28e09a004), the complex that reads off, to compare: 0x1a, the value a down"
+                 " sequence ends on; bit 5 clear. the same value as the E complex's", True, True),
+                (bytes((0x97, 0xd0, 0x77, 0x1a, 0xd1, 0x1a, 0x81)), "  0x600a = 0x77: the E complex's state word (0x28e09a000), low byte: 0x77, not a value either sequence"
+                 " writes; bit 5 set", True, True)):
+            rc, out, err, _, _ = og_dec(0x7f, r)
+            check(rc == 0 and said in out and ("the E complex's state word (0x28e09a000), low byte" in out) == state and ("500 ms later" in out) == later
+                  and ("ONE OF THE FOUR WORDS HAS A BIT ABOVE WHAT ITS BYTE CARRIES (bit 6)" in out) == (state and bool(r[4] & 0x40))
+                  and ("bit 2, B2's first poll, clear" in out) == (state and not r[4] & 4),
+                  f"CPU7's second-form record that stops short, or with other values ({r.hex(' ')}): said, and no further than it goes", out + err)
+        for stage, r in ((0x7f, cfull), (0x6e, bytes((0x97, 0xd0, 0, 0, 0, 0, 0)))):
+            rc, out, err, before, after = og_dec(stage, r, clear=True)
+            want = bytearray(before)
+            want[0x6004:0x600f], want[0x6010:0x6017] = bytes(11), bytes(7)
+            check(rc == 0 and after == bytes(want) and "cleared: 0x6004-0x600e and 0x6010-0x6016 read back as zeros" in out,
+                  f"--clear after the second form's record under stage 0x{stage:02x}: 0x6008-0x600e zeroed with the rest, nothing else", out + err)
         rc, out, err, _, _ = og_dec(0x70, full)
         rc2, out2, err2, _, _ = og_dec(0x30, bytes((0x40, 0, 0, 0, 0, 0, 0)))
         rc3, out3, err3, _, _ = og_dec(0x7f, bytes((0x40, 0, 0, 0, 0, 0, 0)))

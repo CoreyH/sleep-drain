@@ -32,13 +32,23 @@ this section where they differ.
   differ only by the charger and the battery.
 
 **Next, in this order:**
-1. At the desk, against the notebook, before anything is built (see the memory note on proposing
-   runs): which run names what bit 2 of 0x2922c0044 waits for, or where B2 is held. Candidates, none
-   chosen: (a) the keyboard's light in an observer's run, where a P complex is last and not the E
-   complex: does B2 reach its power-downs then (`obs_gate=1` and `ll_wake=1`'s blink exist; they
-   aren't combinable today). (b) The engine's page around 0x2922c0044 read whole by a look that
-   returns, awake and in the recipe's state, then the words that differ read by the observer after
-   the commit. (c) The same observer's look under today's recipe and not run 3's.
+1. **The run that is built and waiting for Corey: `run-floor --no-reading --m1-obs-gate`** in a safe
+   boot, the nights left on (no alarm in it). It is the observer's run of 11-18 with other words read
+   (RESEARCH.md, "The desk step", 2026-11-19): the E complex's own state word (0x28e09a000) and
+   EACC's soc-cluster word, with P complex 0's beside them, read by CPU7 after CPU0 and ECPM read
+   off. The desk step found that no run has looked at whether the E complex's own down sequence
+   runs to its end; its power word reading off doesn't say. The load reads the three state words
+   awake first (never read before): a freeze or a restart at the load, before the screen goes dark,
+   is a result too. The restart comes about 30 s after the dark screen. Then `m1-crumbs`, `--clear`,
+   `sleep-drain-safe collect`, and the load's lines (`m1: obs_gate: awake: state words`).
+   - The E complex's state word like P complex 0's: its sequence finishes; bit 2 isn't it. Next: the
+     keyboard's light in an observer's run, a P complex last (the blink split from `ll_wake=1`: four
+     writes, a review).
+   - Not like it, or EACC's bit 4 or 6 standing: the bytes name the wait the E complex's sequence is
+     at. Next: at the desk, what meets that wait (the soc-cluster word's write, its order against
+     CPU0's WFI, the up-done flag), then that rung.
+   - The first command alone: the state words don't read after a commit; back to the light.
+   Not chosen now: the observer under today's recipe (`observe=1` excludes `hold=1` and all after it).
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
@@ -51,7 +61,7 @@ this section where they differ.
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
 
 **As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
-`--m1-obs-gate` the latest launcher option; the PMU's record bytes all zero; scratch that must outlast
+`--m1-obs-gate` the latest launcher option (since 2026-11-19 its look is the second form); the PMU's record bytes all zero; scratch that must outlast
 a restart in `~/.local/share/sleep-drain/`.
 
 ## Where things stand
