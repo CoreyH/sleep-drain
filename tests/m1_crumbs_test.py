@@ -1641,8 +1641,8 @@ def mark_tests(g, src):
     # 68 since acc_last=1 (acc_last_tests() has its two: the three cluster words' own write, moved, and the acks after its last command).
     # 73 since last_look=1 (last_look_tests() has its five: the acks after each of its commands, and ll_wake=1's four, FPWM0's power
     # word and the PWM's three).
-    check(len(re.findall(wr, code_only)) == 73 and len(re.findall(wr, after_code)) == 11,
-          "e1_hook.c makes 73 MMIO write calls, 11 of them in m1_after_slpa() itself: none has been added without this count",
+    check(len(re.findall(wr, code_only)) == 74 and len(re.findall(wr, after_code)) == 11,
+          "e1_hook.c makes 74 MMIO write calls (the last added: m1_atc_write()'s one), 11 of them in m1_after_slpa() itself: none has been added without this count",
           f"{len(re.findall(wr, code_only))} {len(re.findall(wr, after_code))}")
     check("\tif (!m1_fab_awake(v)) {\n\t\tpr_err(" in cut("static int __init m1_fab_init(void)", "\n}\n")
           and "if (e1_never_write(FAB_PS)) {" in src and "m1_never(WD1_WDT + WD1_COUNT, 1) || m1_never(WD1_WDT + WD1_BITE, 1) || m1_never(WD1_WDT + WD1_CTRL, 1)" in src,
@@ -7254,6 +7254,148 @@ int main(int argc, char **argv)
 """
 
 
+ATC_HARNESS = r"""
+#include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdlib.h>
+typedef uint8_t u8;
+typedef uint32_t u32;
+typedef uint64_t u64;
+#define __iomem
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define BIT(n) (1U << (n))
+#define cpu_relax() do { } while (0)
+#define dsb(x) printf("dsb\n")
+struct m1_pw {
+	u64 addr;
+	u32 val;
+	u8 grp;
+};
+/* One word per entry: its actual state follows its target at once, but for the one that is stuck on. */
+static u32 word[8];
+static int stuck = -1;
+static u64 clk, m1_tps = 24000000;
+static u64 m1_now(void) { clk += 24000; return clk; }	/* 1 ms a call */
+static u32 readl(const void *p)
+{
+	int i = (int)((const u32 *)p - word);
+
+	printf("r %d\n", i);
+	return word[i];
+}
+static void writel(u32 v, void *p)
+{
+	int i = (int)((u32 *)p - word);
+
+	printf("w %d %x\n", i, v);
+	word[i] = i == stuck ? v | 0xf0 : v & ~0xf0U;
+}
+"""
+ATC_MAIN = r"""
+int main(int argc, char **argv)
+{
+	unsigned int i;
+	u8 a, b;
+
+	stuck = argc > 1 ? atoi(argv[1]) : -1;
+	for (i = 0; i < ARRAY_SIZE(m1_atc); i++) {
+		word[i] = 0x000000ff;
+		m1_atc_map[i] = &word[i];
+	}
+	a = m1_atc_write(0, M1_ATC_FIRST);
+	printf("first %x\n", a);
+	b = m1_atc_write(M1_ATC_FIRST, ARRAY_SIZE(m1_atc));
+	printf("second %x\n", b);
+	printf("n %u first %u ms %llu\n", (unsigned int)ARRAY_SIZE(m1_atc), M1_ATC_FIRST, (unsigned long long)(clk / 24000));
+	return 0;
+}
+"""
+
+
+def atc_down_tests(src, pw):
+    """atc_down=1: m1_atc[] against the six words as RESEARCH.md has them, m1_atc_write() compiled as it stands against words that
+    log every access, and the places in e1_hook.c that use them. pw: m1_pw[]'s words, as parsed."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    table = cut("static const struct m1_pw m1_atc[] = {", "\n};\n")
+    atc = [(int(a, 16), int(v, 16), g[len("M1_PW_"):]) for a, v, g in re.findall(r"\{ 0x([0-9a-f]+)ULL, 0x([0-9a-f]{8}), (M1_PW_\w+) \},", table)]
+    want = [(0x2922800d0, 0x300, "USB_AON"), (0x2922800d8, 0x300, "USB_AON"), (0x2922800e0, 0x300, "USB_AON"), (0x2922800e8, 0x300, "USB_AON"),
+            (0x292280088, 0x300, "USB_AON"), (0x28e080238, 0x300, "COMMON")]
+    check(atc == want and table.count("{ 0x") == 6 and "#define M1_ATC_FIRST\t\t5\n" in src,
+          "m1_atc[] is the four USB controllers' words, ATC0_USB_AON and ATC0_COMMON, each 0x300, the controllers first and ATC0_COMMON last;"
+          " the first five go out before m1_pw[]'s", repr(atc))
+    mine, theirs = {a for a, _, _ in atc}, {a for a, _, _ in pw}
+    check(not {a & ~7 for a in mine} & {0x28e0802d8, 0x28e700000} and 0x28e0802e0 not in mine and len(mine) == 6 and not mine & theirs
+          and {0x292280090, 0x292280098, 0x2922800a0, 0x28e080240, 0x28e0802f8, 0x28e080300, 0x28e080330} <= theirs
+          and "if (e1_never_write(m1_atc[i].addr)) {" in cut("static int __init m1_atc_init(void)", "\n}\n"),
+          "m1_atc[] has neither the PMP's word, nor 0x28e700000, nor PMS_SRAM, no word twice and none of m1_pw[]'s, which has the other three"
+          " ports' USB_AON and COMMON words and ATC0_PCIE; the never-write check covers it at load", repr(atc))
+    defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PW_\w+|M1_ATC_FIRST)\s", line))
+    with tempfile.TemporaryDirectory() as tmp:
+        c = os.path.join(tmp, "atc.c")
+        with open(c, "w") as f:
+            f.write(ATC_HARNESS + defs.replace("#define M1_ATC_FIRST\t\t5\n", "") + table + "#define M1_ATC_FIRST\t\t5\nstatic void __iomem *m1_atc_map[ARRAY_SIZE(m1_atc)];\n"
+                    + cut("static u8 m1_atc_write(unsigned int from, unsigned int to)", "\n}\n") + ATC_MAIN)
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-o", os.path.join(tmp, "atc"), c], check=True)
+        runs = {k: subprocess.run([os.path.join(tmp, "atc")] + ([str(k)] if k is not None else []), capture_output=True, text=True, check=True).stdout.splitlines()
+                for k in (None, 0, 3, 4, 5)}
+    clean = []
+    for i in range(6):
+        clean += [f"w {i} 300", "dsb", f"r {i}"] + (["first 0"] if i == 4 else [])
+    clean += ["second 0", "n 6 first 5 ms 6"]
+    check(runs[None] == clean,
+          "m1_atc_write(): each word written 0x300, flushed, and read once when it reads off at once; the first five in the first call and"
+          " ATC0_COMMON in the second; nothing else touched", "\n".join(runs[None]))
+    for k, first, second in ((0, 4, 0), (3, 4, 0), (4, 4, 0), (5, 0, 0x10)):
+        out = runs[k]
+        writes = [l for l in out if l.startswith("w ")]
+        ms = int(out[-1].split()[-1])
+        check(writes == [f"w {i} 300" for i in range(6)] and f"first {first:x}" in out and f"second {second:x}" in out
+              and out.count(f"r {k}") in (10, 11, 12) and all(out.count(f"r {i}") == 1 for i in range(6) if i != k) and 15 <= ms <= 19,
+              f"m1_atc_write() with word {k} stuck on: its group's bit and no other (USB_AON's for the first five, COMMON's for the last), about"
+              " 10 ms of polls for it and no more, and every other word still written", "\n".join(out[-4:]) + f" reads {out.count(f'r {k}')}")
+    check(in_order_of(src, ["b[0] = 0x28;", "m1_crumb(0x6004, b, 3);", "\tif (atc_down)\n\t\tm1_atc_bad = m1_atc_write(0, M1_ATC_FIRST);\n",
+                         "\tif (ps_words)\n\t\tm1_pw_bits = m1_pw_write();\n",
+                         "\tif (atc_down)\n\t\tm1_pw_bits &= ~(m1_atc_bad | m1_atc_write(M1_ATC_FIRST, ARRAY_SIZE(m1_atc)));\n", "/* 6: release (hold=1"])
+          and len(re.findall(r"\bm1_atc_write\(", code_only)) == 3 and len(re.findall(r"\bm1_atc_bad\b", code_only)) == 3,
+          "the six go out at the end of step 5, after the table and stage 0x28 and before the stop bits: the first five, then m1_pw[]'s words,"
+          " then ATC0_COMMON; a word that didn't read off takes its group's bit out of 0x6013's; m1_atc_write() has no other caller")
+    check("if (atc_down && !ps_words) {" in src and "module_param(atc_down, bool, 0444);" in src and "\nstatic bool atc_down;\n" in src
+          and 'ps_words ? " ps_words=1" : "", atc_down ? " atc_down=1" : ""' in src
+          and "\tif (atc_down) {\n\t\tint ret = m1_atc_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n" in src
+          and src.index("int ret = m1_pw_init();") < src.index("int ret = m1_atc_init();")
+          and "for (i = 0; i < ARRAY_SIZE(m1_atc_map); i++)\n\t\tif (m1_atc_map[i])\n\t\t\tiounmap(" in src
+          and "#define M1_ATC_MARK\t\t0x40" in src and "ATC_MARK = 0x40" in open(TOOL).read()
+          and len(re.findall(r"\batc_down\b", code_only)) == 9,
+          "atc_down=1 is off unless asked for, refuses without ps_words=1, can't be set after the load and is named in the load line; its words"
+          " are mapped at the load and unmapped at the exit; the decoder's mark is the module's")
+
+
+    # Run B's own record (results/last-look-wake-20261118/), and the same with atc_down=1's mark: the bytes that hang on 0x6013's
+    # marker (fabric_up=1's at 0x6007, the steps' outcomes) are read with either.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+        outs = {}
+        for m in (0xdf, 0x5f, 0x9f):
+            sc = bytearray.fromhex("00300050887d00f5 0000000000000000 f82bffdf908efd00 0000000000000000")
+            sc[0x13] = m
+            fake(path, bytes(sc), rtc_secs=11437, alarm=(0x03, 11276, 0, 0))
+            p = run(path)
+            outs[m] = p.stdout if p.returncode == 0 else "FAILED " + p.stderr
+    byte = "0x6007 = 0xf5: fabric_up=1's byte, in place of the cores that held:\n"
+    check(byte in outs[0xdf] and "0x6013 = 0xdf: ps_words=1 wrote the 20 power words, after the table:\n" in outs[0xdf] and "atc_down" not in outs[0xdf]
+          and byte in outs[0x5f] and "0x6013 = 0x5f: ps_words=1 wrote the 20 power words, after the table, and atc_down=1 its six around them" in outs[0x5f]
+          and "  ATC1-3_COMMON, and ATC0_COMMON (atc_down=1's): read actual 0 within 10 ms each\n" in outs[0x5f]
+          and outs[0x5f].replace("5f", "df").count("\n") == outs[0xdf].count("\n") + 0
+          and byte not in outs[0x9f] and "the steps' outcomes didn't land" in outs[0x9f],
+          "run B's record through m1-crumbs with ps_words=1's mark and with atc_down=1's: the same lines but for 0x6013's, and with neither"
+          " mark the bytes that hang on it aren't read", outs[0x5f] + outs[0x9f])
+
+
 def last_look_tests(g, src):
     """last_look=1 and ll_wake=1: last_look.h against an independent reading of it; m1_ll_ret(), m1_ll_blink(), m1_ll_timer() and
     m1_pmu_ok() compiled as they stand against pages that log every access; the places in e1_hook.c that use them; and the
@@ -8250,7 +8392,7 @@ def position_tests(g, src):
               "sio_stop=1: a recorded all-zero outcome is still an outcome", out + err)
         for stage, prog in ((0xcf, (0, 0)), (0xce, (0x01, 0x00)), (0xcf, (0xff, 0xa4)), (0xcf, (0xff, 0xbf)), (0xcf, (0xff, 0x80))):
             rc, out, err = dec(stage, dict(run10, prog=prog))
-            check(rc == 0 and f"0x6012 0x6013 = {prog[0]:02x} {prog[1]:02x}: the steps' outcomes didn't land (0x6013 is neither their marker, 0xa5, nor ps_words=1's, 0xc0 and up):" in out
+            check(rc == 0 and f"0x6012 0x6013 = {prog[0]:02x} {prog[1]:02x}: the steps' outcomes didn't land (0x6013 is neither their marker, 0xa5, nor ps_words=1's, 0xc0 and up, nor atc_down=1's, 0x40 to 0x7f):" in out
                   and "TIMED OUT" not in out and "NOT acked" not in out and "the steps before the commit:" not in out
                   and "from its low two bytes and the run's alarm: 121544" in out,
                   f"sio_stop=1's 0x{stage:02x}, no marker at 0x6013 ({prog[0]:02x} {prog[1]:02x}): no outcomes reported as facts", out + err)
@@ -8273,6 +8415,24 @@ def position_tests(g, src):
         check(rc == 0 and "fields read back as written\n" in out and out.count("NOT all read actual 0") == 5, "ps_words=1: bit 5 is the fabric words'", out + err)
         rc, out, err = dec(0xcf, run10)
         check(rc == 0 and "ps_words=1" not in out, "sio_stop=1 alone says nothing of the power words", out + err)
+        # atc_down=1: 0x6013 is 0x40 | the same bits, and two of the groups have its six words with them.
+        ALINE = ("0x6013 = 0x{:02x}: ps_words=1 wrote the 20 power words, after the table, and atc_down=1 its six around them (ATC0_USB to ATC3_USB and"
+                 " ATC0_USB_AON before, ATC0_COMMON after):\n")
+        rc, out, err = dec(0xcf, dict(run10, prog=(0xff, 0x7f)))
+        check(rc == 0 and ALINE.format(0x7f) in out and "0x6012 = 0xff, the steps before the commit:\n" in out and "NOT all" not in out and "didn't land" not in out
+              and all(f"  {g}: read actual 0 within 10 ms each\n" in out for g in (
+                  "the five UARTs", "MSG", "ATC1-3_USB_AON, and ATC0_USB_AON and ATC0-3_USB (atc_down=1's)", "ATC0-3_PCIE", "ATC1-3_COMMON, and ATC0_COMMON (atc_down=1's)"))
+              and "  PCIE0_REF, APCIE_GP_SYS, AFNC1_LW2, AFNC2_LW1: target and auto fields read back as written\n" in out,
+              "atc_down=1, every group as asked: its mark, and its six words named with the groups they count in", out + err)
+        rc, out, err = dec(0xcf, dict(run10, prog=(0xff, 0x5b)))
+        check(rc == 0 and ALINE.format(0x5b) in out and "  ATC1-3_USB_AON, and ATC0_USB_AON and ATC0-3_USB (atc_down=1's): NOT all read actual 0 within 10 ms each\n" in out
+              and "  ATC1-3_COMMON, and ATC0_COMMON (atc_down=1's): read actual 0 within 10 ms each\n" in out and out.count("NOT all read actual 0") == 1,
+              "atc_down=1: a word of the USB group that didn't read off takes that group's bit and no other", out + err)
+        rc, out, err = dec(0xcf, dict(run10, prog=(0xff, 0x40)))
+        check(rc == 0 and ALINE.format(0x40) in out and out.count("NOT all read actual 0") == 5 and "didn't land" not in out,
+              "atc_down=1, no group as asked: an outcome, not a lost record", out + err)
+        rc, out, err = dec(0xcf, dict(run10, prog=(0xff, 0xdf)))
+        check(rc == 0 and "atc_down" not in out and "  ATC1-3_USB_AON: read actual 0 within 10 ms each\n" in out, "ps_words=1's own mark says nothing of atc_down=1's words", out + err)
         rc, out, err = dec(0xb9, dict(run10, prog=None))
         check(rc == 0 and "RTC second at the replay's start (K1): 121544," in out and "the steps before the commit:" not in out and "didn't land" not in out,
               "the stage before sio_stop=1's 0x4e: 0x6012 is still the second's, read whole", out + err)
@@ -9125,7 +9285,7 @@ def position_tests(g, src):
           "SIO's firmware is stopped at the first prepare of the suspend that will replay, after the DCPs", "")
     check(in_order(src, ["b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;",
                          "m1_crumb(0x6004, b, 4);\n\t\tif (sio_stop) {",
-                         "b[0] = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;\n\t\t\tb[1] = ps_words ? M1_W_MARK | m1_pw_bits : M1_K_MARK;\n\t\t\tm1_crumb(0x6012, b, 2);"])
+                         "b[0] = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;\n\t\t\tb[1] = ps_words ? (atc_down ? M1_ATC_MARK : M1_W_MARK) | m1_pw_bits : M1_K_MARK;\n\t\t\tm1_crumb(0x6012, b, 2);"])
           and "m1_stage(sio_stop ? 0x4f : 0x5b);" in src and "#define M1_K_MARK\t\t0xa5" in src and "K_MARK = 0xa5" in open(TOOL).read(),
           "sio_stop=1 records the steps' outcomes after stage 0x4e, in one command with their marker, and the decoder's marker is the module's")
     # ps_words=1: exactly what Corey OK'd on 2026-11-09, in this order.
@@ -9148,6 +9308,7 @@ def position_tests(g, src):
           and "writel(m1_pw[i].val, p);\n\t\tdsb(sy);" in src and "u8 res = GENMASK(M1_PW_FABRIC, 0);" in src,
           "each word: the value as listed, then its check, 10 ms at most", "")
     check("#define M1_W_MARK\t\t0xc0" in src and "W_MARK = 0xc0" in open(TOOL).read(), "the decoder's power-word mark is the module's", "")
+    atc_down_tests(src, got)
     check('#define M1_SIO_ASC\t\t0x39bc00000ULL' in src and '#define M1_SIO_MBOX_NODE\t"/soc/mbox@39bc08000"' in src
           and "m1_never(M1_SIO_ASC + M1_ASC_CPU_CONTROL, 1)" in src, "SIO's ASC and mailbox are this Mac's, and the load checks the never-write list")
     check(0x39bc00044 not in (0x28e0802d8, 0x28e700000), "SIO's RUN word isn't on the never-write list")
