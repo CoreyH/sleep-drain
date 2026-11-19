@@ -18,9 +18,16 @@
 # can be years apart: this kernel never writes the system time back to the RTC,
 # and the RTC starts from 1970 after the PMU has lost power.
 #
-#   pre     On battery, with the alarm RTC there and no alarm of somebody
-#           else's set: arm the alarm for the deadline (now + N minutes) and
-#           write the state file. An alarm that isn't ours is a timed test
+#   pre     On battery, or on the charger with the lid closed, with the alarm RTC
+#           there and no alarm of somebody else's set: arm the alarm for the
+#           deadline (now + N minutes) and write the state file. The charger
+#           can be pulled while the Mac sleeps (2026-11-18: closed at 76% on the
+#           charger, unplugged asleep, found at 41% nineteen hours later). On
+#           the charger the alarm then ends the sleep every N minutes: post
+#           clears while the charger is still there, logind suspends again for
+#           the closed lid, and the first of those wakes that finds the Mac on
+#           battery powers it off. A lid that is open on the charger isn't
+#           armed: that sleep would end by itself with nobody asking. An alarm that isn't ours is a timed test
 #           (rtcwake -m no -s 900): it is left alone, and so is that sleep.
 #           A wake before the alarm with the lid closed makes logind suspend
 #           again. That sleep keeps the deadline of the one before, if it
@@ -193,8 +200,10 @@ pre() {
   fi
 
   # A sleep that isn't armed must not leave an older state for post to act on.
+  # On the charger only a closed lid is armed (the header says why), and only
+  # when the charger reads 1: one that can't be read is left as it was.
   ac=$(cat "$AC" 2> /dev/null)
-  if [[ $ac != 0 ]]; then
+  if [[ $ac != 0 ]] && ! { [[ $ac == 1 ]] && [[ $(lid) == true ]]; }; then
     clear
     say "not-armed why=on-charger ac_online=${ac:-unknown}"
     return 0
@@ -219,7 +228,8 @@ pre() {
   fi
 
   state_load
-  if num "$last_post" && num "$deadline" && ((now >= last_post && now - last_post <= KEEP_WITHIN)); then
+  # On the charger the deadline is always a new one: an older one was a sleep on battery's.
+  if [[ $ac == 0 ]] && num "$last_post" && num "$deadline" && ((now >= last_post && now - last_post <= KEEP_WITHIN)); then
     kept=yes
   else
     deadline=$((now + minutes * 60)) tries=0
@@ -249,7 +259,7 @@ pre() {
     return 0
   fi
   say "armed now=$now deadline=$deadline alarm_at=$alarm_at minutes=$minutes" \
-    "deadline_kept=$kept tries=$tries lid_closed=$lid_pre"
+    "deadline_kept=$kept tries=$tries lid_closed=$lid_pre ac_online=$ac"
 }
 
 # The lid reads closed for RECHECKS seconds more. logind may not have seen it

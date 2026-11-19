@@ -32,8 +32,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
 - `sleep-drain-off-after`: a second systemd-sleep hook (installed beside
   `sleep-drain-log`). With `/etc/sleep-drain/off-after` there (its content is
   the minutes, default 25), it arms the PMU's RTC alarm before a suspend on
-  battery, and powers off when the alarm ends the sleep with the lid still
-  closed. The session is lost: Corey OK'd that on 2026-11-16. It leaves a
+  battery, or on the charger with the lid closed, and powers off when the
+  alarm ends the sleep on battery with the lid still closed. On the charger
+  that sleep is ended and started again every N minutes, so that a charger
+  pulled while the Mac sleeps is noticed. The session is lost: Corey OK'd that on 2026-11-16. It leaves a
   timed test's alarm (`rtcwake -m no`) and that sleep alone, clears its alarm
   on every other way out, does nothing in a safe boot, and without the alarm
   RTC the sleep goes on as before. Its times are the alarm RTC's, not the

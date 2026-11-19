@@ -211,14 +211,19 @@ def test_not_armed():
     check(w.calls() == [] and w.state() is not None, "safe boot: post leaves even a state alone, no power-off",
           w.dump(r))
 
-    w = world(ac="1")
-    r = w.pre()
-    check(w.wake() == "" and w.state() is None and "not-armed why=on-charger" in w.logged(),
-          "on the charger: nothing armed", w.dump(r))
+    for lid in ("false", "who knows"):
+        w = world(ac="1", lid=lid)
+        r = w.pre()
+        check(w.wake() == "" and w.state() is None and "not-armed why=on-charger ac_online=1" in w.logged(),
+              f"on the charger with the lid {'open' if lid == 'false' else 'unknown'}: nothing armed", w.dump(r))
     w = world()
     os.remove(w.ac)
     r = w.pre()
-    check(w.wake() == "" and w.state() is None, "charger unreadable: nothing armed", w.dump(r))
+    check(w.wake() == "" and w.state() is None and "not-armed why=on-charger ac_online=unknown" in w.logged(),
+          "charger unreadable, lid closed: nothing armed", w.dump(r))
+    w = world(ac="2")
+    r = w.pre()
+    check(w.wake() == "" and w.state() is None, "a charger value that is neither 0 nor 1, lid closed: nothing armed", w.dump(r))
 
     w = world()
     os.remove(os.path.join(w.rtc, "device/driver/module"))
@@ -460,6 +465,52 @@ def test_power_off():
     check(w.calls() == [] and w.state() is None, "lid unknown before, open now: no power-off", w.dump(r))
 
 
+def test_charger_lid_closed():
+    """A lid closed on the charger is armed too: the charger can be pulled while the Mac sleeps (2026-11-18)."""
+    w = world(ac="1")
+    r = w.pre()
+    s = w.state() or {}
+    check(r.returncode == 0 and w.wake() == str(T + 1500) and s.get("deadline") == str(T + 1500) and s.get("lid_pre") == "true"
+          and "pre armed" in w.logged() and "ac_online=1" in w.logged().strip().splitlines()[-1],
+          "on the charger with the lid closed: armed, 25 minutes ahead, and the log says it was on the charger", w.dump(r))
+    # Still on the charger at the alarm: cleared, no power-off; logind suspends again and that sleep is armed afresh.
+    w.fire()
+    r = w.post(T + 1500)
+    check(w.calls() == [] and w.state() is None and "post cleared why=on-charger" in w.logged(),
+          "the alarm's time, still on the charger: cleared, no power-off", w.dump(r))
+    r = w.pre(T + 1510)
+    s = w.state() or {}
+    check(w.wake() == str(T + 1510 + 1500) and s.get("deadline") == str(T + 1510 + 1500) and s.get("tries") == "0",
+          "the sleep after it, still on the charger: armed again, a new 25 minutes", w.dump(r))
+    # The charger pulled during that sleep: the alarm's wake finds the Mac on battery, lid closed, and powers off.
+    w.set("ac", "0")
+    w.fire()
+    r = w.post(T + 1510 + 1500)
+    check(w.calls() == POWERED_OFF and "post power-off why=alarm-time mode=closed" in w.logged(),
+          "the charger pulled while it slept: the next alarm's wake powers off", w.dump(r))
+
+    # Pulled, and then an early wake: the deadline is kept, as for a sleep that started on battery.
+    w = world(ac="1")
+    w.pre()
+    w.set("ac", "0")
+    r = w.post(T + 600)
+    check(w.calls() == [1, 2, 3, 4, 5] or w.state() is not None, "(an early wake on battery keeps the state)", w.dump(r))
+    s = w.state() or {}
+    check(s.get("deadline") == str(T + 1500) and "kept why=early-wake" in w.logged(),
+          "the charger pulled, then an early wake with the lid closed: the deadline armed on the charger is kept", w.dump(r))
+    w.reset_calls()
+    r = w.pre(T + 610)
+    check(w.wake() == str(T + 1500) and "deadline_kept=yes" in w.logged().strip().splitlines()[-1] and "ac_online=0" in w.logged().strip().splitlines()[-1],
+          "and the sleep after it, on battery, keeps that deadline", w.dump(r))
+
+    # The lid opened on the charger before the alarm: cleared, as ever.
+    w = world(ac="1")
+    w.pre()
+    w.set("lid", "false")
+    r = w.post(T + 300)
+    check(w.calls() == [] and w.state() is None and w.wake() == "0", "the lid opened on the charger: cleared, no alarm left", w.dump(r))
+
+
 def test_charger_at_post():
     for when, t in (("before the alarm's time", 600), ("at the alarm's time", 1500)):
         w = world()
@@ -493,7 +544,28 @@ def test_stale_state():
     w.set("ac", "1")
     w.reset_calls()
     r = w.pre(T + 630)
-    check(w.state() is None and w.wake() == "0", "a sleep that starts on the charger drops the older state and alarm",
+    s = w.state() or {}
+    check(w.wake() == str(T + 630 + 1500) and s.get("deadline") == str(T + 630 + 1500) and s.get("tries") == "0"
+          and "deadline_kept=no" in w.logged().strip().splitlines()[-1],
+          "a sleep that starts on the charger with the lid closed drops the older deadline and is armed afresh", w.dump(r))
+    w.set("ac", "0")
+    r = w.post(T + 1500)
+    check(not [c for c in w.calls() if c.startswith(("detach", "poweroff"))] and (w.state() or {}).get("deadline") == str(T + 630 + 1500),
+          "so its post can't power off at the old deadline: that is an early wake now, and the new deadline stands", w.dump(r))
+    w.reset_calls()
+    w.fire()
+    r = w.post(T + 630 + 1500)
+    check(w.calls() == POWERED_OFF, "and at the new deadline, on battery with the lid closed, it powers off", w.dump(r))
+
+    # The same with the lid open on the charger: not armed, and the older state and alarm go.
+    w = world()
+    w.pre()
+    w.post(T + 600)
+    w.set("ac", "1")
+    w.set("lid", "false")
+    w.reset_calls()
+    r = w.pre(T + 630)
+    check(w.state() is None and w.wake() == "0", "a sleep that starts on the charger with the lid open drops the older state and alarm",
           w.dump(r))
     w.set("ac", "0")
     r = w.post(T + 1500)
@@ -995,6 +1067,7 @@ def main():
     test_write_fails()
     test_early_wake()
     test_power_off()
+    test_charger_lid_closed()
     test_charger_at_post()
     test_stale_state()
     test_recheck()

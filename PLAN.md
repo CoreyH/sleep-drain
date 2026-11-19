@@ -1,6 +1,6 @@
 # Plan
 
-Last updated 2026-11-18. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-19. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
@@ -255,9 +255,16 @@ the PR with that session's work.
     2026-11-18** with Corey's OK: a comment on omacom/linux-aurora#290, which asks maralcbr too,
     and aurora-silicon/linux#2198 (an issue: nobody uses the discussions there for questions).
     Both also ask for macOS's power words at its commit on a T600x. Check both for answers at
-    the start of a session; a reply to either still needs Corey's OK.
-  - **The nights, beside all of it** (OK'd 2026-11-16: 20 to 30 minutes): suspend, then power off
-    after N minutes (the alarm, disarmed on every other way out; the alarm modules loaded at boot
+    the start of a session; a reply to either still needs Corey's OK. **Answered 2026-11-19**
+    on aurora-silicon/linux#2198 (RESEARCH.md, "Answers from aurora-silicon"): nobody has
+    macOS's commit state for T600x; the mailbox is whatever the loader publishes, and aura
+    publishes it on T6000, whose RVBAR is by that account not locked (to read here: item 3);
+    no M1 Pro or Max has come back from a completed entry; and T6000 data is welcome there
+    now. **Owed, with Corey's look first:** one comment on #2198 with the entry pair op by op,
+    its polls and gates, what each run ruled out and how it was measured.
+  - **The nights, beside all of it** (OK'd 2026-11-16: 20 to 30 minutes; since 2026-11-19 a lid
+    closed on the charger is armed too, after a night the charger was pulled asleep): suspend,
+    then power off after N minutes (the alarm, disarmed on every other way out; the alarm modules loaded at boot
     until #351 merges). Built 2026-11-16 (PR #108: `sleep-drain-off-after`, `sleep-drain-nights`,
     `sleep-drain-alarm.service`). Installed and switched on at 25 minutes on 2026-11-18, after a
     second flat battery (asleep from 11-16 13:59 at 98%). Both seen that day in a trial
