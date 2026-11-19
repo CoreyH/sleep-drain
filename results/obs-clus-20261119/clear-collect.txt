@@ -1,0 +1,31 @@
+$ pkexec e1-hook/m1-crumbs --clear
+0x6000: 00 30 00 50 7f ff 04 1e  97 80 1a 1a 83 00 00 00
+0x6010: af 98 50 c0 90 a4 95 00  00 00 00 00 00 00 00 00
+boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (the stage the last unclean end found; sticky, so it says nothing about this boot by itself; this boot's journal says, macsmc-reboot's "PMU logged N boot error(s)")
+stage 0x6004 = 0x7f (pmgr_late=1): observe: CPU7 recorded everything, with nothing pending; next came nub-spmi0's acks and its own deep WFI
+  (the last breadcrumb that reached the PMU: the run got at least that far)
+0x6005 = 0xff: CPU0 read off within 500 ms of the hand-over; the E complex (ECPM) read off within 500 ms more; read off at their release: CPU1,CPU2,CPU3,CPU4,CPU5,CPU6
+0x6006 = 0x04: after the commit, WD2 control 4 (RESET_EN); WD1 control 0 (off); WD0 not armed to reset; CPU0's last WFI had not returned
+0x6007 = 30: 30 s until the first armed watchdog's reset, as CPU7 read it
+RTC second just before the commit, from its low two bytes: 104623, 207 s before now (104830); right if this read comes within 18 h of the commit
+0x6014 = 0x90: CPU0 had nothing pending before the commit; PCPM0 off, PCPM1 not checked (CPU7 kept up); WD1 was off; K3's kernel-path write after slpa worked
+0x6012 = 0x50: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58); SIO_CPU's power state (61)
+0x6013 = 0xc0: EACC's power-down first read clear under 5 ms after the hand-over; PACC0's first read clear under 5 ms after the hand-over; PACC0's was STILL PENDING just before the commit (CPU0's read)
+0x6015 = 0xa4: soc clusters still busy at the end of CPU7's watch: PACC1,DISPLAY (PACC1 expected, CPU7 being up); SIO_CPU's actual state NOT off
+0x6016 = 0x95: DCS's p-state at CPU0's last wait before the commit (after entry 50): actual 5, target 5, busy bit 31 clear (settled at 5); SIO's actual state off after the commit
+the SoC restarted about 31 s after the commit (30.1 to 32.1 s: the PMU's RTC counts whole seconds); its counter (CNTVCT) is 175.9 s old. Right only in the first boot after the run
+0x6008-0x600e = 97 80 1a 1a 83 00 00: obs_gate=1's record: the complexes' own words read by CPU7, the observer, after its polls of CPU0's and the E complex's power words:
+  0x6008 = 0x97: the power words, read right before the words below: CPU0 off, ECPM (the E complex) off, PCPM0 (P complex 0) off, PCPM1 (P complex 1, CPU7's own) on
+  0x6009 = 0x80: EACC's soc-cluster word (0x28e098000), bits 6:0 = 0x00: target 0x0, bit 4 clear (a change asked for and not finished), bit 5 clear (the up-done flag), bit 6 clear (what a down sequence waits for first, with no timeout). Awake it reads 0x0f
+  0x600d 0x600e = 00 00: the second command, the E complex's state word right then, didn't land whole or didn't outlast the restart (bit 7 of 0x600e): not read. These two bytes were lost in both earlier runs that wrote them
+  0x600a = 0x1a: the E complex's state word 500 ms later: 0x1a, the value a down sequence ends on; bit 5 clear
+  0x600b = 0x1a: P complex 0's (0x28e09a004) then, the complex that reads off, to compare: 0x1a, the value a down sequence ends on; bit 5 clear. the same value as the E complex's
+  0x600c = 0x83: then: EACC's bits 6:4 = 000 (at first 000); 0x2922c0044's bits 2:0 = 011 (bit 2, B2's first poll, clear; the first form's run read 001 in this state)
+PMU alarm: 0x1401 = 0x01 (not armed), 0x140c = 104801, 0x14c0 event 0x00, 0x14c2 mask 0x01
+PMU 0x0201 = 0x02: what every boot here has shown: no sign that B2 reached its PMU command (ops 237-238), if the engine's 1 outlasts a restart, as it does on Naeem Malik's M1; whether it does here isn't known
+cleared: 0x6004-0x600e and 0x6010-0x6016 read back as zeros
+rc=0
+
+$ pkexec sleep-drain-safe collect
+collected 20261119T150316
+rc=0

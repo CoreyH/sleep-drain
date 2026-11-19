@@ -5426,6 +5426,86 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The observer's second run: the E complex's sequence finishes, and 0x2922c0044's low bits count the complexes that are down (2026-11-19)
+
+`run-floor --no-reading --m1-obs-gate` in a safe boot, on battery at 100%, loaded 15:03, the nights left on
+(`results/obs-clus-20261119/`; the module built at fcca811). Corey: "was about 30 sec of sleep".
+
+**The load, awake** (the state words' first read on this Mac; no fault): the E complex's 0x28e09a000 reads
+0x44, P complex 0's and P complex 1's 0x40, the value an up sequence ends on. EACC's soc-cluster word 0x0f,
+the two PACCs' 0x2f. 0x2922c0044 0x08, 0x2922c0040 0x03.
+
+**The record.** Stage 0x7f, as on 11-18: CPU0 off within 500 ms of the hand-over, ECPM within 500 ms more,
+WD2 armed with 30 s to go, the restart 31 s after the commit, 0x6015 = 0xa4 (PACC1's and DISPLAY's words
+still pending at the end of CPU7's watch). 0x6008-0x600e = `97 80 1a 1a 83 00 00`:
+
+| | awake | first sample | 500 ms later |
+|---|---|---|---|
+| CPU0, ECPM, PCPM0, PCPM1 power words | on | off, off, off, **on** | not read again |
+| EACC's soc-cluster word, bits 6:0 | 0x0f | **0x00** | bits 6:4 000 |
+| the E complex's state word | 0x44 | lost (0x600d) | **0x1a** |
+| P complex 0's state word | 0x40 | not read | **0x1a** |
+| 0x2922c0044, bits 2:0 | 000 | lost (0x600e) | **011** |
+
+**What it says.**
+- **The E complex's own down sequence runs to its end with CPU0 down.** Its state word reads 0x1a, the
+  value the sequence ends on, the same as P complex 0's, and EACC's word reads 0 with nothing pending
+  (bits 4, 5 and 6 clear). The hole of the desk step is closed: the E complex goes down in the sequencer's
+  sense too, not only by its power word. The first of the three outcomes.
+- **Bit 1 of 0x2922c0044 is not P complex 1's.** It reads set here with CPU7 running in P complex 1 and
+  that complex's power word on. On 11-18, in the same run right after ECPM's poll, the word read 001.
+- **What fits all four readings: the low bits count the complexes that are down**, one more bit for each:
+  000 awake; 011 with the two P complexes down and CPU0 up (the gate-look run); 001 with P complex 0 down
+  and the E complex's sequence still on its way, right after ECPM's power word read off (11-18; inferred:
+  that sample read no state word); 011 with P complex 0 and the E complex down and P complex 1 up (here).
+  No assignment of one bit to one complex fits both 011s. Then **bit 2, B2's first poll, is the third
+  complex down: all three**, and no core can ever read it set. That is a fit, not a reading: 001 and 011
+  come from two runs, and this run's own first sample was in the two bytes that don't last.
+- So the question left by run 6 is answered as far as a core can answer it: with a core up the gate is
+  closed because the core is up. Each complex goes down by itself when its cores are gone (P complex 0 in
+  every run, P complex 1 with CPU0 up, the E complex with CPU7 up). What the three do together, with the
+  last core gone, nothing here has seen.
+- **Where runs A and B stopped, then:** either the last complex's sequence doesn't finish when no core is
+  left (bit 2 never sets), or it does, B2 passes its first poll, and is held before its tenth SIO word:
+  at op 3 (bit 3 of the same word clear, after a delay), at op 6 (0x2922c0040's bit 1 clear), or in the
+  first handshake. Bit 3 has read set in every reading that kept it. A word that is still on and holds
+  something up behind the CPUs is the kind of cause aurora-silicon/linux#2075 found on T6050.
+
+**0x600d and 0x600e were lost a third time**, in a run where every other command landed. The later sample
+was in the bytes that last, as built for.
+
+**Checked in XNU after the run, and closed** (xnu-12377.121.6, `osfmk/arm64/cpu.c`, `ml_arm_sleep()`): every
+core clears bit 0 of its EDPRCR ("tell debugger to not prevent power gating") before its last WFI, a write
+this recipe doesn't make. But `configure_coresight_registers()` maps that block only on chips that aren't
+production-fused ("Skip debug-only registers on production chips"), so macOS doesn't make it on this Mac
+either. `arm64_prepare_for_sleep()`'s ACC_OVRD and CYC_OVRD fields are the ones the recipe sets. What a
+core can still read for nothing: DBGPRCR_EL1's bit 0 on each core, awake (not read yet).
+
+**The diff that was "still to make" on 11-18, made at the desk** (the 206 power words of
+`results/sleep-peek-20261104T120619/`, B2's 53 written words from the local listing, `m1_pw[]`): 108 words
+read on awake; B2 writes 53, the SIO subtree, the PCIe words, ANS2, the PMP, AIC, GPIO and DWI. Of the
+rest, what the recipe leaves on at the commit, apart from the DRAM's and the fabric's words and the AON
+blocks:
+- **ATC0's chain is on, where ATC1's to ATC3's are lowered.** `ps_words=1` writes ATC1-3_COMMON and
+  ATC1-3_USB_AON to 0x300, macOS's values in maralcbr's table. ATC0_COMMON (0x28e080238) and ATC0_USB_AON
+  (0x292280088) aren't in that table, and the entry of 2026-11-04 already says why: the trace ran under
+  m1n1's hypervisor, which keeps the USB port it talks over powered, with its parents. So the table's "on"
+  for ATC0 is the tracer's, not macOS's, and the recipe has copied it since run 12. They read 0xff awake
+  and after a sleep: on, never gated.
+- **ATC0_USB, ATC1_USB and ATC2_USB (0x2922800d0, 0xd8, 0xe0) are on through Linux's suspend** (the finding
+  of October: the wakeup-enabled glue device keeps each `atcN_usb` domain on; 0xff after a sleep, never
+  gated). Nothing in the recipe lowers them, and B2 doesn't. Whether macOS has them off at its commit isn't
+  in the table either way; with their parents off they can't be on.
+- Also on and untouched, with nothing known about macOS's side: DEBUG (0x292280058, 0x2ff), SOC_DPE,
+  NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4.
+A power word left on that holds something up behind it is what stalled T6050's entry
+(aurora-silicon/linux#2075), and ATC0's two are in the AON block beside NUB_FABRIC, the word every
+complex's down sequence raises first and releases last. That the stall here is of that kind isn't shown;
+it is the one difference from macOS's state that is on file, explained, and never tried.
+
+**After the run:** the record cleared, the save collected (`safe-journal-20261119T150316.txt`), the nights
+untouched.
+
 ### The desk step: the E complex's own sequence has never been looked at, and `obs_gate=1` now reads it (2026-11-19)
 
 Corey, after the session was compacted: "okay lets continue with the 'pick up here' in the plan.md file". Its
