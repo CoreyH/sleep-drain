@@ -16,9 +16,10 @@ this section where they differ.
 - B2 never reaches its power-downs: the keyboard's PWM, behind the tenth word B2 switches off, blinked
   for all 70 s (run B). So B2 is held in its ops 1 to 6 or in the first handshake; which isn't shown.
 - 0x2922c0044, B2's first poll (bit 2 set, then bit 3 clear): its low bits count the complexes that
-  are down (a fit to four readings: 000 awake, 011 with CPU0 up and both P complexes down, 001 and
-  half a second later 011 with CPU7 up and P complex 0 and the E complex down). So bit 2 is all
-  three down, and no core can read it set. Each complex's own down sequence runs to its end when
+  are down (a fit to four readings from four runs: 000 awake; 011 with CPU0 up and both P complexes
+  down; with CPU7 up and CPU0's and ECPM's power words off, 001 right after ECPM's poll on 11-18
+  and 011 half a second after it on 11-19, whose own first sample was lost: no run has seen the
+  word change). So bit 2 would be all three down, and no core can read it set. Each complex's own down sequence runs to its end when
   its cores are gone (state word 0x1a; the E complex's too, read 2026-11-19). Bit 3 was set in
   every reading that kept it.
 - So with a core up the gate is closed because the core is up, and the stall of runs A and B is in
