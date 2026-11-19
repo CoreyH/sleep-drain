@@ -15,10 +15,15 @@ this section where they differ.
   70 s (90 s with the older count) where a run arms it. B2 never zeroes WD1's count.
 - B2 never reaches its power-downs: the keyboard's PWM, behind the tenth word B2 switches off, blinked
   for all 70 s (run B). So B2 is held in its ops 1 to 6 or in the first handshake; which isn't shown.
-- 0x2922c0044, B2's first poll (bit 2 set, then bit 3 clear): bit 0 is P complex 0 off, bit 1 is P
-  complex 1 off (1000 awake, 1011 with CPU0 up and both P complexes off, 1001 with CPU7 up and CPU0,
-  ECPM and PCPM0 off). Bit 2 is not ECPM's power word reading off; it has never been read set; with
-  every core in its WFI nothing can read it. Bit 3 was set in every reading.
+- 0x2922c0044, B2's first poll (bit 2 set, then bit 3 clear): its low bits count the complexes that
+  are down (a fit to four readings: 000 awake, 011 with CPU0 up and both P complexes down, 001 and
+  half a second later 011 with CPU7 up and P complex 0 and the E complex down). So bit 2 is all
+  three down, and no core can read it set. Each complex's own down sequence runs to its end when
+  its cores are gone (state word 0x1a; the E complex's too, read 2026-11-19). Bit 3 was set in
+  every reading that kept it.
+- So with a core up the gate is closed because the core is up, and the stall of runs A and B is in
+  the state no core sees: the last complex's sequence not finishing, or B2 past its first poll and
+  held at op 3, op 6 or the first handshake, before its tenth SIO word (the light).
 - With every core in its WFI: the alarm fires at its time and nothing follows; CPU0 doesn't come back
   for its own timer; the restart comes at the marker's time all the same.
 - CPU0's RVBAR reads 0x00100100059e4001 under m1n1-aurora: bit 0 set, the address 0x100059e4000. The
@@ -32,23 +37,22 @@ this section where they differ.
   differ only by the charger and the battery.
 
 **Next, in this order:**
-1. **The run that is built and waiting for Corey: `run-floor --no-reading --m1-obs-gate`** in a safe
-   boot, the nights left on (no alarm in it). It is the observer's run of 11-18 with other words read
-   (RESEARCH.md, "The desk step", 2026-11-19): the E complex's own state word (0x28e09a000) and
-   EACC's soc-cluster word, with P complex 0's beside them, read by CPU7 after CPU0 and ECPM read
-   off. The desk step found that no run has looked at whether the E complex's own down sequence
-   runs to its end; its power word reading off doesn't say. The load reads the three state words
-   awake first (never read before): a freeze or a restart at the load, before the screen goes dark,
-   is a result too. The restart comes about 30 s after the dark screen. Then `m1-crumbs`, `--clear`,
-   `sleep-drain-safe collect`, and the load's lines (`m1: obs_gate: awake: state words`).
-   - The E complex's state word like P complex 0's: its sequence finishes; bit 2 isn't it. Next: the
-     keyboard's light in an observer's run, a P complex last (the blink split from `ll_wake=1`: four
-     writes, a review).
-   - Not like it, or EACC's bit 4 or 6 standing: the bytes name the wait the E complex's sequence is
-     at. Next: at the desk, what meets that wait (the soc-cluster word's write, its order against
-     CPU0's WFI, the up-done flag), then that rung.
-   - The first command alone: the state words don't read after a commit; back to the light.
-   Not chosen now: the observer under today's recipe (`observe=1` excludes `hold=1` and all after it).
+1. **The next run: run B's, with ATC0's chain and the three USB controllers' words lowered too**
+   (RESEARCH.md, "The observer's second run", 2026-11-19, the desk diff). The recipe copies macOS's
+   power words from a trace made under m1n1's hypervisor, which kept ATC0's USB port up: ATC0_COMMON
+   and ATC0_USB_AON are on at the commit where ATC1-3's are at 0x300, and ATC0-2_USB stay on through
+   Linux's suspend. To build: one option on `--m1-last-look-wake`'s line (the light, the alarm at
+   20 s, the marker at 70 s) that, with `ps_words=1`'s writes, lowers ATC0-3_USB, then ATC0_USB_AON
+   and ATC0_COMMON (children first, each read back, a byte for what read off). Power-word writes
+   of the kind run 12 made, undone by the restart: an adversarial pass before it merges. The light
+   is the result: stopping before the restart means B2 got to its tenth SIO word, further than any
+   run; blinking to the end means these words aren't what holds it. Odds of the first, mine: one in
+   five. The nights off around it (the alarm is set).
+   After it, if the light blinks on: the other words on at the commit that B2 doesn't lower (DEBUG,
+   SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4), one group a run; DBGPRCR_EL1's bit 0 read on each
+   core, awake; the commit-state question again upstream with the count reading (Corey's OK).
+   Not next: the light in an observer's run with a P complex last (macOS's own last core is in the
+   E complex, so little says the last complex's kind matters).
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
