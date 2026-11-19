@@ -5426,6 +5426,46 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### Answers from aurora-silicon, a fourth PMU for the alarm, and a night the nights didn't cover (2026-11-19)
+
+**aurora-silicon/linux#2198, answered** (RyanTheTide, 2026-11-19, "from `integration/aurora` 0abc2f385e54
+and aura main"; his words in quotes):
+1. macOS's commit state on T600x: "We don't have it. No PMGR power-word dump at macOS's commit has been
+   taken on an M1 Pro or Max [...] The J813 and K116s lists are from other SoCs and won't carry over." So
+   the diff of 2026-11-18's plan has no other side, from anyone.
+2. The mailbox: "Nothing in `sleep.c` is T600x-specific about `/chosen/aurora,s2r-mailbox`. The kernel uses
+   whatever the loader publishes. aura publishes it on SoCs whose RVBAR is not locked (aura#217), and that
+   includes T6000: on an M1 Pro under aura the node is published and the boot core parks. Under m1n1-aurora
+   nothing publishes the node [...] A loader that wants to send the boot core back through it needs the
+   same RVBAR setup aura#217 does." This notebook had CPU0's RVBAR as locked by iBoot, from XNU's words and
+   never from a read here: by his account it isn't on this chip. Still to read on this Mac.
+3. A completed entry on T600x: "No. No M1 Pro or Max has come back through the reset vector after a
+   completed entry. `sleep.c` has SoC operations only for T8140, T8132, T8142 and T6050 [...] on T6000 the
+   J314s qualification covers s2idle only."
+4. Data: "T6000 data is welcome now, here: the entry pair's structure, its polls and gates, and what was
+   ruled out. It doesn't need to wait for a completed entry. A `t6000` SoC entry in `sleep.c` needs one".
+Replied the same day with Corey's OK ("yes, go ahead, thank you"; `#issuecomment-7008106882`): thanks,
+the data to follow in that issue as one comment, the two results of 11-18 (B2 never at its power-downs;
+0x2922c0044's bits against the complexes), and whether the word is known from another SoC. The data
+comment itself is still to write and to show Corey first.
+
+**omacom/linux-aurora#351** (enriquebv, 2026-11-18): the series' rtc-macsmc works on a fourth PMU, Sera,
+on a J293, with a T8103 description in #504 on top; T8103's nub-spmi numbers its own events from 0xc0 as
+T6000's does, so `apple,t8103-spmi` needs `apple_spmi_t6000`, a one-line change he carries in #504. About
+0.8 W in s2idle there. Replied with Corey's OK (`#issuecomment-7008107415`): keep it in #504, as with
+#454. Still no maintainer review and no `ci:build` on #351. Nothing on omacom/linux-aurora#290 or
+malik-na/linux-aurora#77.
+
+**The night of 11-18 to 11-19: the nights weren't armed.** The lid was closed at 17:00 at 76% on the
+charger (`pre not-armed why=on-charger`), the charger was pulled while the Mac slept, and it was opened
+at 12:33 the next day at 41%: 70,365 s in one s2idle. By design the hook left a sleep that starts on the
+charger alone; a laptop taken off its charger asleep is exactly the case it was built for. Changed the
+same day: on the charger a closed lid is armed too, with a deadline of its own. The alarm then ends that
+sleep every N minutes; while the charger is still there post clears and logind suspends again; the first
+of those wakes that finds the Mac on battery with the lid closed powers it off. A lid open on the charger
+isn't armed (that sleep would end by itself with nobody asking), nor a charger that can't be read. Cost:
+a Mac asleep on its charger with the lid closed wakes for a few seconds every 25 minutes.
+
 ### The observer's gate run: bits 0 and 1 are the two P complexes'; bit 2 isn't the E complex's power word (2026-11-18)
 
 `run-floor --no-reading --m1-obs-gate` in a safe boot, on battery at about 47%, loaded 16:06, the nights
