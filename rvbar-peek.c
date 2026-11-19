@@ -1,17 +1,20 @@
 // rvbar-peek (J314s, as root): each core's RVBAR, read-only, as one aligned 64-bit
 // load through /dev/mem, made on the core itself (the process is moved to it first).
 //
-//   cc -O1 -Wall -o rvbar-peek rvbar-peek.c && pkexec ./rvbar-peek
+//   cc -O1 -Wall -o rvbar-peek rvbar-peek.c     (build; it doesn't run it)
+//   pkexec ./rvbar-look                         (in a safe boot: the read, shown and saved)
 //
 // macOS's device tree gives each core a cpu-impl-reg block, with RVBAR at + 0x0
 // (RESEARCH.md, "The CPUs"): 0x210050000 and 0x210150000 for the two E cores,
 // 0x211050000, 0x211150000, 0x211250000 and 0x212050000, 0x212150000, 0x212250000
 // for the P cores, in Linux's cpu0 to cpu7. XNU's sleep path has the reconfig
 // engine bring the boot core out of reset at this vector; whether iBoot leaves it
-// locked on this chip (bit 0) decides who can point it somewhere. These words have
-// never been read on this Mac, so the first read is made in a safe boot
-// (PLAN.md's rule for a first read). Nothing is written. It refuses anything but a
-// J314s, and a core whose block isn't in the list.
+// locked on this chip (bit 0) decides who can point it somewhere. The first read
+// was made in a safe boot, through rvbar-look, on 2026-11-19 (PLAN.md's rule for
+// a first read): all eight read cleanly (results/rvbar-20261119/). Run it through
+// rvbar-look; by that rule a word read cleanly in this state may also be read from
+// a regular boot, as pkexec ./rvbar-peek. Nothing is written. It refuses anything
+// but a J314s.
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <sched.h>

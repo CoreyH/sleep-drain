@@ -11,12 +11,24 @@
 set -u
 DIR=$(cd "$(dirname "$0")" && pwd)
 die() { echo "rvbar-look: $*" >&2; exit 2; }
-[[ $EUID -eq 0 ]] || die "run as root (pkexec)"
+[[ $EUID -eq 0 || -n ${RVBAR_LOOK_TEST:-} ]] || die "run as root (pkexec)"
 [[ -e ${RVBAR_LOOK_SAFE:-/run/sleep-drain-safe/active} ]] || die "this isn't a safe boot: pkexec sleep-drain-safe boot, restart, and run it there"
-[[ -x $DIR/rvbar-peek ]] || die "no $DIR/rvbar-peek: cc -O1 -Wall -o $DIR/rvbar-peek $DIR/rvbar-peek.c (in a regular boot)"
-out=/var/log/sleep-drain/rvbar-$(date +%Y%m%dT%H%M%S).txt
-mkdir -p /var/log/sleep-drain || die "couldn't make /var/log/sleep-drain"
+PEEK=${RVBAR_LOOK_PEEK:-$DIR/rvbar-peek}
+[[ -x $PEEK ]] || die "no $PEEK: cc -O1 -Wall -o $DIR/rvbar-peek $DIR/rvbar-peek.c (in a regular boot)"
+LOGDIR=${RVBAR_LOOK_DIR:-/var/log/sleep-drain}
+out=$LOGDIR/rvbar-$(date +%Y%m%dT%H%M%S).txt
+mkdir -p "$LOGDIR" || die "couldn't make $LOGDIR"
 sync
-"$DIR/rvbar-peek" | tee "$out"
+# Its errors go into the file too, and a reader or a tee that failed is said there and in the exit status: lines
+# from the cores before it are kept, and are not a whole capture.
+"$PEEK" 2>&1 | tee "$out"
+st=("${PIPESTATUS[@]}")
+failed=0
+if ((st[0] != 0 || st[1] != 0)); then
+  failed=1
+  echo "rvbar-look: NOT A WHOLE CAPTURE: rvbar-peek exited ${st[0]}, tee ${st[1]}" | tee -a "$out" >&2
+fi
 [[ -s $out ]] || die "rvbar-peek printed nothing"
-/usr/local/bin/sleep-drain-safe save "$out" && echo "saved: restart, and tell Claude"
+"${RVBAR_LOOK_SAVE:-/usr/local/bin/sleep-drain-safe}" save "$out" || die "the save failed: $out is in this boot's RAM only"
+((!failed)) || die "saved what there was; restart, and tell Claude it stopped short"
+echo "saved: restart, and tell Claude"

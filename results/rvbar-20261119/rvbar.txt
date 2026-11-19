@@ -1,0 +1,8 @@
+cpu0: RVBAR at 0x210050000 = 0x00100100059e4001 (bit 0 set), read on cpu0
+cpu1: RVBAR at 0x210150000 = 0x00111100059e4000 (bit 0 clear), read on cpu1
+cpu2: RVBAR at 0x211050000 = 0x01100100059e4000 (bit 0 clear), read on cpu2
+cpu3: RVBAR at 0x211150000 = 0x01121100059e4000 (bit 0 clear), read on cpu3
+cpu4: RVBAR at 0x211250000 = 0x01132100059e4000 (bit 0 clear), read on cpu4
+cpu5: RVBAR at 0x212050000 = 0x02100100059e4000 (bit 0 clear), read on cpu5
+cpu6: RVBAR at 0x212150000 = 0x02111100059e4000 (bit 0 clear), read on cpu6
+cpu7: RVBAR at 0x212250000 = 0x02122100059e4000 (bit 0 clear), read on cpu7

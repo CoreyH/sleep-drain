@@ -5426,6 +5426,38 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### CPU0's RVBAR is locked here, the data posted, and the SMC's keys say nothing about a run (2026-11-19)
+
+**RVBAR, read** (`rvbar-look` in a safe boot at 13:07, Corey's run; `results/rvbar-20261119/rvbar.txt`). Each
+core's cpu-impl-reg + 0x0, one 64-bit load made on the core itself. All eight read cleanly:
+
+| Core | RVBAR |
+|---|---|
+| cpu0 (E) | 0x00100100059e4001 |
+| cpu1 (E) | 0x00111100059e4000 |
+| cpu2, cpu3, cpu4 (P0) | 0x01100100059e4000, 0x01121100059e4000, 0x01132100059e4000 |
+| cpu5, cpu6, cpu7 (P1) | 0x02100100059e4000, 0x02111100059e4000, 0x02122100059e4000 |
+
+One address in all eight, 0x100059e4000 (in RAM, 0x59e4000 above its base: the boot object's entry, by
+Asahi's boot protocol; not checked against m1n1-aurora's load address), bit 0 set on the boot core alone,
+and upper bits that differ by core (the complex in bits 59:56, a per-core field below it: not decoded).
+Bit 0 as the lock is Asahi's reading of this register. So the notebook's "iBoot locks CPU0's RVBAR" holds
+on this boot chain, and aurora-silicon's "T6000's RVBAR isn't locked" is about another chain, or about
+another bit. What it means for the way back: after a completed entry the engine would bring the boot core
+out of reset at m1n1-aurora's entry, and what happens there is the loader's.
+
+**Posted**, with Corey's OK ("please post the comments"): the entry's data as one comment on
+aurora-silicon/linux#2198 (`#issuecomment-7008916763`; the text is on this MacBook in
+`~/.local/share/sleep-drain/drafts-20261119/3-aurora-silicon-2198-data.md`): how it's measured, the SRAM's
+tables and the entry pair, nine measured points, what was tried, what isn't known, and this table.
+
+**The SMC's keys across a run** (the strategy review's "never diffed"). A dump after a plain restart
+(`results/smc-dump-20261119T131936/`, the boot after `rvbar-look`'s safe boot, on the charger) against the
+four taken after one-way runs on 2026-11-18: 86 keys that aren't floats read the same after all four runs
+and differently after the plain restart, and every one is the charger's or the battery's (`AC-*`, `CH*`,
+`D3*` for the port the charger is on, `B0*`, `BC*`, `CM*`, the `zS*` counters, `KIN*`, `LCAD`). No key
+that names how the last boot ended. That lead is spent.
+
 ### Answers from aurora-silicon, a fourth PMU for the alarm, and a night the nights didn't cover (2026-11-19)
 
 **aurora-silicon/linux#2198, answered** (RyanTheTide, 2026-11-19, "from `integration/aurora` 0abc2f385e54
