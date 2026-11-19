@@ -5479,10 +5479,13 @@ the table's writes).
 **`obs_gate=1`'s second form, as built** (`run-floor --m1-obs-gate`, the same option and the same run, run 3's
 line: `replay=15 oneway=1 quiet=1 m1=1 observe=1 pmgr_late=1 obs_gate=1`). After its two polls and its first
 record CPU7 reads the four power words, EACC's and PACC0's soc-cluster words and 0x2922c0044, and sends
-0x6008-0x6009; then the E complex's and P complex 0's state words, and sends 0x600a-0x600c; 500 ms later the
-E complex's state word, EACC's word and 0x2922c0044 again, 0x600d-0x600e (the two bytes that haven't
-outlasted a restart yet: nothing rests on them). `e1-hook/last_look.h` has the bytes. Bit 4 of 0x6008 marks
-the form, and `m1-crumbs` reads both. The first form's words (HS_A, HS_B, 0x2922c0040, PHASE) read the same
+0x6008-0x6009; then the E complex's state word, and sends 0x600d-0x600e, the two bytes that haven't
+outlasted a restart yet; 500 ms later the E complex's and P complex 0's state words, EACC's word and
+0x2922c0044 again, and sends 0x600a-0x600c. The bytes that have always come through carry the later sample
+on purpose: P complex 0's cluster word was seen pending for up to half a second after its cores went
+(T6020, and run 3's buckets), so a sample taken right after ECPM's power word reads off could catch the E
+complex's sequence on its way, and a sequence that is only slow must not read as one that is held.
+`e1-hook/last_look.h` has the bytes. Bit 4 of 0x6008 marks the form, and `m1-crumbs` reads both. The first form's words (HS_A, HS_B, 0x2922c0040, PHASE) read the same
 in every run with a core up and are left out; of 0x2922c0044 its low three bits are kept.
 
 **What each outcome says** (the E complex's state word against P complex 0's, the complex that reads off):
@@ -5507,7 +5510,7 @@ reviewed code.
 access (a seventh page for the soc clusters'), the order of its reads and its three commands, the header's
 four new functions over every input that reaches a field, the decoder on the second form whole and stopped
 short at each command, and on the first form's record of 11-18, which it still reads. The `ogl:` mutants
-brought up to the new code.
+brought up to the new code (68, all caught).
 
 ### CPU0's RVBAR is locked here, the data posted, and the SMC's keys say nothing about a run (2026-11-19)
 

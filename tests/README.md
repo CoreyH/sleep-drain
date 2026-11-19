@@ -61,8 +61,8 @@ used to sit in CLAUDE.md, entry for entry):
   but the acks) and `m1_ll_ret()` after a look (0x6008 alone, bit 3 kept), and the look's form of the record
   through m1-crumbs: the look with and without a return, K1's mark alone, records that stop short. For
   obs_gate=1 it runs `m1_og_look()` against the same pages and one more for the soc clusters' (the four
-  power words, the two soc-cluster words and the gate word, the first command, only then the two state
-  words, the second, 500 ms, the third), `m1_pmu_ok()` with it, and CPU7's record through m1-crumbs under
+  power words, the two soc-cluster words and the gate word, the first command, only then the E complex's
+  state word, the second, 500 ms, both state words, the third), `m1_pmu_ok()` with it, and CPU7's record through m1-crumbs under
   each of its stages, in both of its forms, with `--clear`. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
   writing-out of A2's ops 11 to 16 (every pairing of each word's two bits at every count of moves made, and 400
   drawn cases), and runs `m1_a2_pre()` with the module's own table of waits against a model of the p-state page

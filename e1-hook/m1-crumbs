@@ -1235,21 +1235,22 @@ def og_clus_lines(r, words):
                 " read, and nothing after them"]
     out = [f"  0x6008 = 0x{r[0]:02x}: the power words, read right before the words below: {words(r[0])}",
            f"  0x6009 = 0x{r[1]:02x}: EACC's soc-cluster word (0x28e098000), bits 6:0 = 0x{r[1] & 0x7f:02x}: {acc(r[1])}. Awake it reads 0x0f"]
+    if r[6] & OG_MARK:
+        out += [f"  0x600d = 0x{r[5]:02x}: the E complex's state word (0x28e09a000), low byte, right then: {state(r[5])}",
+                f"  0x600e = 0x{r[6]:02x}: with it: PACC0's soc-cluster word, bits 6:4 = {r[6] >> 4 & 7:03b}; 0x2922c0044's low nibble = {r[6] & 0xf:04b}"]
+    else:
+        out.append(f"  0x600d 0x600e = {r[5]:02x} {r[6]:02x}: the second command, the E complex's state word right then, didn't land whole or didn't"
+                   " outlast the restart (bit 7 of 0x600e): not read. These two bytes were lost in both earlier runs that wrote them")
     if not r[4] & OG_MARK:
-        return out + [f"  0x600a-0x600c = {r[2:5].hex(' ')}: the second command didn't land whole (bit 7 of 0x600c, its last byte): the two state"
-                      " words, read there for the first time after a commit, aren't read here, and nothing after them. Whether a read of them"
-                      " hung or the command failed isn't shown"]
+        return out + [f"  0x600a-0x600c = {r[2:5].hex(' ')}: the third command, {OG_LATER_MS} ms on, didn't land whole (bit 7 of 0x600c, its last byte): the"
+                      " state words as they were then aren't read here. Whether a read of them hung or a command failed isn't shown"]
     same = "the same value" if r[2] == r[3] else "NOT the same value"
-    out += [f"  0x600a = 0x{r[2]:02x}: the E complex's state word (0x28e09a000), low byte: {state(r[2])}",
-            f"  0x600b = 0x{r[3]:02x}: P complex 0's (0x28e09a004), the complex that reads off, to compare: {state(r[3])}. {same} as the E complex's",
-            f"  0x600c = 0x{r[4]:02x}: PACC0's soc-cluster word, bits 6:4 = {r[4] >> 3 & 7:03b} (EACC's are {r[1] >> 4 & 7:03b}); 0x2922c0044's bits 2:0 ="
-            f" {r[4] & 7:03b} (bit 2, B2's first poll, {'SET' if r[4] & 4 else 'clear'}; the first form's run read 001 in this state)"
-            + ("; ONE OF THE FOUR WORDS HAS A BIT ABOVE WHAT ITS BYTE CARRIES (bit 6): the bytes aren't the whole words" if r[4] & 0x40 else "")]
-    if not r[6] & OG_MARK:
-        return out + [f"  0x600d 0x600e = {r[5]:02x} {r[6]:02x}: the third command, {OG_LATER_MS} ms on, didn't land whole or didn't outlast the restart"
-                      " (bit 7 of 0x600e): not read. These two bytes were lost in both earlier runs that wrote them"]
-    return out + [f"  0x600d = 0x{r[5]:02x}: the E complex's state word {OG_LATER_MS} ms later: {state(r[5])}",
-                  f"  0x600e = 0x{r[6]:02x}: then: EACC's bits 6:4 = {r[6] >> 4 & 7:03b}; 0x2922c0044's low nibble = {r[6] & 0xf:04b}"]
+    return out + [f"  0x600a = 0x{r[2]:02x}: the E complex's state word {OG_LATER_MS} ms later: {state(r[2])}",
+                  f"  0x600b = 0x{r[3]:02x}: P complex 0's (0x28e09a004) then, the complex that reads off, to compare: {state(r[3])}. {same} as the E"
+                  " complex's",
+                  f"  0x600c = 0x{r[4]:02x}: then: EACC's bits 6:4 = {r[4] >> 3 & 7:03b} (at first {r[1] >> 4 & 7:03b}); 0x2922c0044's bits 2:0 ="
+                  f" {r[4] & 7:03b} (bit 2, B2's first poll, {'SET' if r[4] & 4 else 'clear'}; the first form's run read 001 in this state)"
+                  + ("; ONE OF THE FOUR WORDS HAS A BIT ABOVE WHAT ITS BYTE CARRIES (bit 6): the bytes aren't the whole words" if r[4] & 0x40 else "")]
 
 
 def og_lines(s, r):

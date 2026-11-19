@@ -130,18 +130,22 @@
  *   0x6008  bit 7 and OG_CLUS set; bits 0 to 3 as in the first form
  *   0x6009  bit 7 set; EACC's soc-cluster word (0x28e098000), bits 6:0. The
  *           first command's last byte: words CPU7 has read after a commit
- *           before, sent before the two new ones are touched
- *   0x600a  the E complex's state word, 0x28e09a000, low byte
- *   0x600b  P complex 0's, 0x28e09a004, low byte
+ *           before, sent before a state word is touched
+ *   0x600d  the E complex's state word, 0x28e09a000, low byte, right then
+ *   0x600e  bit 7 set; bits 6:4 PACC0's soc-cluster word's bits 6:4; bits 3:0
+ *           0x2922c0044's, both as read for the first command. The second
+ *           command's last byte
+ *   0x600a  the E complex's state word again, OG_LATER_MS later
+ *   0x600b  P complex 0's, 0x28e09a004, low byte, then
  *   0x600c  bit 7 set; bit 6: one of the four words has a bit above what its
- *           byte carries (og_wide()); bits 5:3 PACC0's soc-cluster word's
- *           bits 6:4; bits 2:0 0x2922c0044's. The second command's last byte
- *   0x600d  the E complex's state word again, OG_LATER_MS later
- *   0x600e  bit 7 set; bits 6:4 EACC's bits 6:4 then; bits 3:0 0x2922c0044's
- * The state words have never been read on this Mac: the module reads them
- * awake at its load first, where a read that faults costs a safe boot and
- * nothing else. 0x600d and 0x600e were lost across the restart in both runs
- * that wrote them, so nothing rests on the third command.
+ *           byte carries (og_wide()); bits 5:3 EACC's bits 6:4 then; bits 2:0
+ *           0x2922c0044's then. The third command's last byte
+ * 0x600d and 0x600e were lost across the restart in both runs that wrote
+ * them, so they get the first sample and the five that have always come
+ * through get the later one: a sequence that is only slow must not read as
+ * one that is held. The state words have never been read on this Mac: the
+ * module reads them awake at its load first, where a read that faults costs a
+ * safe boot and nothing else.
  * K1 leaves 0x6008 as OG_ARMED, so a look that never landed shows, and zeroes
  * the seven bytes in every observe=1 run, with obs_gate=1 or not: CPU7's stages
  * are an ordinary observer's too, and a record left there would read as its.
@@ -225,16 +229,16 @@ static inline bool og_wide(u32 eacc, u32 pacc0, u32 st_e, u32 st_p0)
 	return ((eacc | pacc0) >> 7) || ((st_e | st_p0) >> 8);
 }
 
-/* 0x600c: the mark, og_wide(), PACC0's bits 6:4, and 0x2922c0044's bits 2:0. */
-static inline u8 og_c4(bool wide, u32 pacc0, u32 gate44)
+/* 0x600c: the mark, og_wide(), EACC's bits 6:4, and 0x2922c0044's bits 2:0, at the later sample. */
+static inline u8 og_c4(bool wide, u32 eacc, u32 gate44)
 {
-	return (u8)(OG_MARK | (wide ? 1U << 6 : 0) | (pacc0 >> 4 & 7) << 3 | (gate44 & 7));
+	return (u8)(OG_MARK | (wide ? 1U << 6 : 0) | (eacc >> 4 & 7) << 3 | (gate44 & 7));
 }
 
-/* 0x600e: the mark, EACC's bits 6:4, and 0x2922c0044's low nibble. */
-static inline u8 og_c6(u32 eacc, u32 gate44)
+/* 0x600e: the mark, PACC0's bits 6:4, and 0x2922c0044's low nibble, at the first sample. */
+static inline u8 og_c6(u32 pacc0, u32 gate44)
 {
-	return (u8)(OG_MARK | (eacc >> 4 & 7) << 4 | (gate44 & 0xf));
+	return (u8)(OG_MARK | (pacc0 >> 4 & 7) << 4 | (gate44 & 0xf));
 }
 
 /* dt: ticks since the commit's last write; tps: ticks a second. */

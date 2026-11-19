@@ -212,9 +212,10 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   the engine's two gate words and PHASE, and the gate words and the four again 500 ms later; it read
   0x2922c0044 as 0x09 with CPU0 and the E complex off and P complex 1 up. The second, what the module does
   since 2026-11-19: the four power words, EACC's and PACC0's soc-cluster words and 0x2922c0044 (0x6008,
-  0x6009); then the E complex's and P complex 0's state words, 0x28e09a000 and 0x28e09a004, which the
-  complexes' own down sequences step and nothing here had read (0x600a-0x600c); 500 ms later the E complex's
-  again (0x600d, 0x600e). The load reads the three state words awake first and logs them. It is to see
+  0x6009); then the E complex's state word, 0x28e09a000, which the complex's own down sequence steps and
+  nothing here had read (0x600d, 0x600e, the two bytes that haven't outlasted a restart yet); 500 ms later
+  that again with P complex 0's, 0x28e09a004, EACC's word and 0x2922c0044 (0x600a-0x600c: the later sample
+  is in the bytes that last). The load reads the three state words awake first and logs them. It is to see
   whether the E complex's own sequence runs to its end with CPU0 down, as P complex 0's does. Reads only;
   the stages are run 3's, and the restart comes at WD2's 30 s, with no marker.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;

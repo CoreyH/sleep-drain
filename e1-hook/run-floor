@@ -215,8 +215,8 @@
 # --m1-last-look-wake's; its label is floor-m1-gate-look. Run it with --no-reading, and film the keyboard.
 # --m1-obs-gate (PLAN.md, after the gate-look run; e1-hook/last_look.h) is --m1-late's run, run 3's, with one look
 # added (obs_gate=1): after CPU7, the observer, has polled CPU0's and the E complex's power words, it reads the
-# four CPU power words, EACC's and PACC0's soc-cluster words, 0x2922c0044 and the E complex's and P complex 0's
-# state words (0x28e09a000, 0x28e09a004), and the E complex's again 500 ms later, and sends them to the PMU's
+# four CPU power words, EACC's and PACC0's soc-cluster words, 0x2922c0044 and the E complex's state word
+# (0x28e09a000), and 500 ms later that again with P complex 0's (0x28e09a004), and sends them to the PMU's
 # 0x6008-0x600e (the look's second form, since 2026-11-19; the first read the engine's words). The load reads the
 # state words awake first. Reads only. Run 3's recipe has no marker and no
 # moved bite: the restart comes about 30 s after the screen goes dark. Its stages are --m1-late's; its label is
