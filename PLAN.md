@@ -38,20 +38,20 @@ this section where they differ.
   differ only by the charger and the battery.
 
 **Next, in this order:**
-1. **The next run: run B's, with ATC0's chain and the three USB controllers' words lowered too**
-   (RESEARCH.md, "The observer's second run", 2026-11-19, the desk diff). The recipe copies macOS's
-   power words from a trace made under m1n1's hypervisor, which kept ATC0's USB port up: ATC0_COMMON
-   and ATC0_USB_AON are on at the commit where ATC1-3's are at 0x300, and ATC0-2_USB stay on through
-   Linux's suspend. To build: one option on `--m1-last-look-wake`'s line (the light, the alarm at
-   20 s, the marker at 70 s) that, with `ps_words=1`'s writes, lowers ATC0-3_USB, then ATC0_USB_AON
-   and ATC0_COMMON (children first, each read back, a byte for what read off). Power-word writes
-   of the kind run 12 made, undone by the restart: an adversarial pass before it merges. The light
-   is the result: stopping before the restart means B2 got to its tenth SIO word, further than any
-   run; blinking to the end means these words aren't what holds it. Odds of the first, mine: one in
-   five. The nights off around it (the alarm is set).
-   After it, if the light blinks on: the other words on at the commit that B2 doesn't lower (DEBUG,
-   SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4), one group a run; DBGPRCR_EL1's bit 0 read on each
-   core, awake; the commit-state question again upstream with the count reading (Corey's OK).
+1. **The run that is built and waiting for Corey: `run-floor --no-reading --m1-atc-down`** in a safe
+   boot, on battery, **nothing in the USB-C ports**, the nights switched off around it (it sets the
+   alarm 20 s out, as run B did), the keyboard filmed. It is run B with six more power words
+   lowered before the commit (RESEARCH.md, "`atc_down=1` as built", 2026-11-19): the four USB
+   controllers' and ATC0's USB_AON and COMMON, which macOS's table has on only because its trace ran
+   under a hypervisor on that port. The restart comes 70 s after the dark screen, if nothing changes.
+   Then `m1-crumbs`, `--clear`, `sleep-drain-safe collect`, the nights on again.
+   - The light stops before the restart: B2 got to its tenth SIO word. The first move of the
+     ending in 30 runs; the marker's time and 0x0201 say how far. Then: what else B2 needs.
+   - The light blinks to the end: B2 still doesn't get there with these six off. It doesn't clear
+     them (a light that blinks on can be a false result, one that stops can't). Next: the other words on at the commit
+     that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4), one group a run;
+     DBGPRCR_EL1's bit 0 read on each core, awake; the commit-state question again upstream with
+     the count reading (Corey's OK).
    Not next: the light in an observer's run with a P complex last (macOS's own last core is in the
    E complex, so little says the last complex's kind matters).
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
@@ -66,7 +66,7 @@ this section where they differ.
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
 
 **As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
-`--m1-obs-gate` the latest launcher option (since 2026-11-19 its look is the second form); the PMU's record bytes all zero; scratch that must outlast
+`--m1-atc-down` the latest launcher option; the PMU's record bytes all zero; scratch that must outlast
 a restart in `~/.local/share/sleep-drain/`.
 
 ## Where things stand

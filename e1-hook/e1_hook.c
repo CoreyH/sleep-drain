@@ -101,6 +101,7 @@
  *   pkexec e1-hook/run-floor --m1-last-look-wake  (that and ll_wake=1: the same)
  *   pkexec e1-hook/run-floor --m1-gate-look       (that and gate_look=1: the same)
  *   pkexec e1-hook/run-floor --m1-obs-gate        (--m1-late's and obs_gate=1: the same)
+ *   pkexec e1-hook/run-floor --m1-atc-down        (--m1-last-look-wake's and atc_down=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -398,6 +399,9 @@ MODULE_PARM_DESC(last_look, "With wd1_mark=1, never with gates_mark=1, observe=1
 static bool obs_gate;
 module_param(obs_gate, bool, 0444);
 MODULE_PARM_DESC(obs_gate, "With observe=1: after CPU7's polls of CPU0's and the E complex's power words, CPU7 reads the four CPU power words (CPU0, ECPM, PCPM0, PCPM1), EACC's and PACC0's soc-cluster words, 0x2922c0044 and the E complex's state word (0x28e09a000), and 500 ms later that again with P complex 0's (0x28e09a004), EACC's word and 0x2922c0044, and sends them to the PMU's 0x6008-0x600e. Reads only (last_look.h)");
+static bool atc_down;
+module_param(atc_down, bool, 0444);
+MODULE_PARM_DESC(atc_down, "With ps_words=1: at the end of step 5, around m1_pw[]'s words, the six in m1_atc[] written 0x300 as ATC1's to ATC3's are: the four USB controllers' power words (ATC0_USB to ATC3_USB) and ATC0_USB_AON before them, ATC0_COMMON after them. macOS's table has ATC0's on because its trace ran under a hypervisor on that port (the m1 comment)");
 static bool gate_look;
 module_param(gate_look, bool, 0444);
 MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
@@ -1379,6 +1383,25 @@ static void e1_after_slpa(void)
  * (M1_PW_*), set if the whole group did, in place of M1_K_MARK (the second's top byte
  * can't reach 0xc0 either: that's 102 years).
  *
+ * atc_down=1 (run-floor --m1-atc-down; with ps_words=1) lowers six more, m1_atc[]
+ * (RESEARCH.md, "The observer's second run", 2026-11-19). lab_ps_off has ATC1's to
+ * ATC3's COMMON and USB_AON words off and not ATC0's, and RESEARCH.md said why on
+ * 2026-11-04: maralcbr's trace ran under m1n1's hypervisor, which keeps the USB port
+ * it talks over powered, with its parents. So ATC0_COMMON and ATC0_USB_AON on at the
+ * commit is the tracer's state and not macOS's, and the recipe has copied it since
+ * run 12. And the three USB-C ports' controller words, ATC0_USB to ATC2_USB, stay on
+ * through Linux's suspend (a wakeup-enabled glue device holds each domain), children
+ * of the words ps_words=1 lowers; nothing lowers them, the engine's B2 neither. A
+ * word left on that holds something up behind it stalled T6050's entry
+ * (aurora-silicon/linux#2075). The four controllers' words and ATC0_USB_AON go out
+ * before m1_pw[]'s, the children first; ATC0_COMMON after them, once ATC0_PCIE is
+ * off. Each to 0x300, the value lab_ps_off has for the other ports' (target 0), up to
+ * 10 ms for actual 0. A word that doesn't get there clears its group's bit in
+ * 0x6013, USB_AON's for the first five and COMMON's for the last, and 0x6013's top
+ * two bits are then 0x40 (M1_ATC_MARK) in place of 0xc0, so that the record says the
+ * six went out (the second's top byte doesn't reach 0x40 for 34 years). Power words
+ * of the kind ps_words=1 writes, undone by the restart; none on the never-write list.
+ *
  * recfg_bite=1 (run-floor --m1-recfg-bite; with ps_words=1) is the feasibility run
  * for instrumenting the engine (RESEARCH.md, "A different approach"). The engine's
  * entry sequence, A2, in the reconfig SRAM, opens by arming WD2 with a 30 s bite.
@@ -2016,6 +2039,7 @@ static bool m1_smc_acked;
 #define M1_SIO_ASC		0x39bc00000ULL
 #define M1_K_MARK		0xa5	/* 0x6013, with the steps' outcomes at 0x6012 (the m1 comment) */
 #define M1_W_MARK		0xc0	/* ps_words=1: 0x6013's top two bits, in place of M1_K_MARK */
+#define M1_ATC_MARK		0x40	/* atc_down=1: in place of M1_W_MARK */
 #define M1_RECFG_STAGE		0x47	/* recfg_bite=1: in place of 0x4f, after the release, with the sample at 0x6005 (the m1 comment) */
 #define M1_RECFG_STAGE_PEND	0x46	/* the same, with an exception pending on CPU0 after the sample's reads */
 #define M1_RECFG_MAP		0x4000	/* the SRAM's start: table A and A2's opening are in it */
@@ -2068,6 +2092,21 @@ static const struct m1_pw {
 };
 static void __iomem *m1_pw_map[ARRAY_SIZE(m1_pw)];
 static u8 m1_pw_bits;
+/*
+ * atc_down=1: the words lab_ps_off doesn't have and nothing lowers (the m1 comment), with the value it has for the other
+ * ports'. The first M1_ATC_FIRST go out before m1_pw[]'s: each controller's word hangs under its port's USB_AON and COMMON.
+ */
+static const struct m1_pw m1_atc[] = {
+	{ 0x2922800d0ULL, 0x00000300, M1_PW_USB_AON },	/* ATC0_USB */
+	{ 0x2922800d8ULL, 0x00000300, M1_PW_USB_AON },	/* ATC1_USB */
+	{ 0x2922800e0ULL, 0x00000300, M1_PW_USB_AON },	/* ATC2_USB */
+	{ 0x2922800e8ULL, 0x00000300, M1_PW_USB_AON },	/* ATC3_USB */
+	{ 0x292280088ULL, 0x00000300, M1_PW_USB_AON },	/* ATC0_USB_AON */
+	{ 0x28e080238ULL, 0x00000300, M1_PW_COMMON },	/* ATC0_COMMON: after m1_pw[], which lowers ATC0_PCIE */
+};
+#define M1_ATC_FIRST		5
+static void __iomem *m1_atc_map[ARRAY_SIZE(m1_atc)];
+static u8 m1_atc_bad;
 static struct platform_device *m1_sio_mbox_pdev;
 static struct apple_rtkit *m1_sio_rtk;
 static void __iomem *m1_sio_asc;
@@ -3447,6 +3486,33 @@ static u8 m1_pw_write(void)
 }
 
 /*
+ * atc_down=1, at the end of step 5, around m1_pw_write(): m1_atc[]'s words from
+ * index from up to to, each written and given up to 10 ms to read actual 0, as
+ * m1_pw_write() does for a word that isn't the fabric's. Goes on past a word that
+ * doesn't finish. Returns the group bits of the words that didn't.
+ */
+static u8 m1_atc_write(unsigned int from, unsigned int to)
+{
+	u8 bad = 0;
+	unsigned int i;
+
+	for (i = from; i < to; i++) {
+		void __iomem *p = m1_atc_map[i];
+		u64 t0;
+		bool ok;
+
+		writel(m1_atc[i].val, p);
+		dsb(sy);
+		t0 = m1_now();
+		while (!(ok = !(readl(p) & 0xf0)) && m1_now() - t0 <= m1_tps / 100)
+			cpu_relax();
+		if (!ok)
+			bad |= BIT(m1_atc[i].grp);
+	}
+	return bad;
+}
+
+/*
  * recfg_bite=1, CPU0 once it has let the others go: what the engine made of the
  * changed word (the m1 comment has the order and why; recfg_bite.h the byte). Reads
  * only, each wait bounded. One command carries the stage and the byte, then its
@@ -4040,9 +4106,15 @@ static void __noreturn m1_after_slpa(void)
 		m1_stage(0x20);
 	}
 
+	/* atc_down=1: the USB controllers' words and ATC0_USB_AON, ahead of the words they hang under (the m1 comment) */
+	if (atc_down)
+		m1_atc_bad = m1_atc_write(0, M1_ATC_FIRST);
 	/* ps_words=1: macOS's remaining power words (the m1 comment); a hang here leaves stage 0x28 */
 	if (ps_words)
 		m1_pw_bits = m1_pw_write();
+	/* atc_down=1: ATC0_COMMON, now that ATC0_PCIE is off; a word of the six that didn't read off takes its group's bit */
+	if (atc_down)
+		m1_pw_bits &= ~(m1_atc_bad | m1_atc_write(M1_ATC_FIRST, ARRAY_SIZE(m1_atc)));
 	/* fabric_up=1: is the fabric still where it was put, after the park and PLL-off? */
 	if (fabric_up)
 		fab_end = m1_fab_awake(readl(m1_fab()));
@@ -4131,7 +4203,7 @@ static void __noreturn m1_after_slpa(void)
 		if (sio_stop) {
 			/* After the stage that says they're there; a failed command above stops this one (the m1 comment). */
 			b[0] = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;
-			b[1] = ps_words ? M1_W_MARK | m1_pw_bits : M1_K_MARK;
+			b[1] = ps_words ? (atc_down ? M1_ATC_MARK : M1_W_MARK) | m1_pw_bits : M1_K_MARK;
 			m1_crumb(0x6012, b, 2);
 		}
 	} else {
@@ -4504,6 +4576,28 @@ static int __init m1_pw_init(void)
 		}
 		m1_pw_map[i] += m1_pw[i].addr & ~PAGE_MASK;
 		pr_info("m1: ps_words: %#llx awake %08x, will write %08x\n", m1_pw[i].addr, readl(m1_pw_map[i]), m1_pw[i].val);
+	}
+	return 0;
+}
+
+/* atc_down=1 at load: each of the six off the never-write list and mapped, and its awake value logged as the baseline. */
+static int __init m1_atc_init(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(m1_atc); i++) {
+		if (e1_never_write(m1_atc[i].addr)) {
+			pr_err("m1: atc_down: %#llx is on the never-write list; refusing\n", m1_atc[i].addr);
+			return -EINVAL;
+		}
+		m1_atc_map[i] = ioremap_np(m1_atc[i].addr & PAGE_MASK, PAGE_SIZE);
+		if (!m1_atc_map[i]) {
+			pr_err("m1: atc_down: a mapping failed; refusing\n");
+			return -ENOMEM;
+		}
+		m1_atc_map[i] += m1_atc[i].addr & ~PAGE_MASK;
+		pr_info("m1: atc_down: %#llx awake %08x, will write %08x %s m1_pw[]'s words\n", m1_atc[i].addr, readl(m1_atc_map[i]), m1_atc[i].val,
+			i < M1_ATC_FIRST ? "before" : "after");
 	}
 	return 0;
 }
@@ -6032,6 +6126,12 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
+	if (atc_down) {
+		int ret = m1_atc_init();
+
+		if (ret)
+			return ret;
+	}
 	if (sio_stop) {
 		int ret = m1_sio_stop_init();
 
@@ -6132,6 +6232,9 @@ static void m1_unmap(void)
 	for (i = 0; i < ARRAY_SIZE(m1_pw_map); i++)
 		if (m1_pw_map[i])
 			iounmap((void __iomem *)((unsigned long)m1_pw_map[i] & PAGE_MASK));
+	for (i = 0; i < ARRAY_SIZE(m1_atc_map); i++)
+		if (m1_atc_map[i])
+			iounmap((void __iomem *)((unsigned long)m1_atc_map[i] & PAGE_MASK));
 	if (m1_sio_asc)
 		iounmap(m1_sio_asc);
 	if (m1_sio_mbox_pdev)
@@ -6501,6 +6604,10 @@ static int __init e1_check_params(void)
 		pr_err("ps_words=1 needs sio_stop=1 (0x6013 has its outcome in that layout)\n");
 		return -EINVAL;
 	}
+	if (atc_down && !ps_words) {
+		pr_err("atc_down=1 needs ps_words=1 (its six words go out around that run's, and their outcome is in its byte at 0x6013)\n");
+		return -EINVAL;
+	}
 	if (recfg_bite && !ps_words) {
 		pr_err("recfg_bite=1 needs ps_words=1 (stages 0x46 and 0x47 and their byte at 0x6005 are in that run's layout)\n");
 		return -EINVAL;
@@ -6774,13 +6881,13 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "", obs_gate ? " obs_gate=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
 		pmp_out && !pmp_stop ? " pmp_stop=0" : "", position ? " position=1" : "", sio_on ? " sio_on=1" : "",
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
-		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", recfg_bite ? " recfg_bite=1" : "",
+		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", atc_down ? " atc_down=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
 		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
 		gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :

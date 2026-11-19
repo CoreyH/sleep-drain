@@ -63,7 +63,9 @@ used to sit in CLAUDE.md, entry for entry):
   obs_gate=1 it runs `m1_og_look()` against the same pages and one more for the soc clusters' (the four
   power words, the two soc-cluster words and the gate word, the first command, only then the E complex's
   state word, the second, 500 ms, both state words, the third), `m1_pmu_ok()` with it, and CPU7's record through m1-crumbs under
-  each of its stages, in both of its forms, with `--clear`. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
+  each of its stages, in both of its forms, with `--clear`. For atc_down=1 it checks `m1_atc[]` against the six words, runs
+  `m1_atc_write()` against words that log every access (clean, and with each kind of word stuck on), the order
+  around `m1_pw_write()`, and the decoder on its mark and on run B's own record with either mark. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
   writing-out of A2's ops 11 to 16 (every pairing of each word's two bits at every count of moves made, and 400
   drawn cases), and runs `m1_a2_pre()` with the module's own table of waits against a model of the p-state page
   and the muxes' page in 29 scenarios (a write dropped, a word that settles late or never or keeps bit 31, DCS put

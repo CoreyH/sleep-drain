@@ -5426,6 +5426,64 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### `atc_down=1` as built: ATC0's chain and the USB controllers' words lowered with the others (2026-11-19)
+
+**Why.** The desk diff under "The observer's second run", below: the recipe's power words are macOS's from a
+trace made under m1n1's hypervisor, which kept ATC0's port up, so ATC0_COMMON and ATC0_USB_AON are on at
+the commit where the other three ports' are at 0x300; and ATC0_USB, ATC1_USB and ATC2_USB stay on through
+Linux's suspend, children of words `ps_words=1` lowers. Nothing lowers them, B2 neither. The stall of runs
+A and B is in the state no core sees, before B2's tenth SIO word, and a word left on that holds something
+up is what stalled T6050's entry. One difference from macOS's state that is on file and was never tried.
+
+**What it is.** `e1_hook atc_down=1`, with `ps_words=1`; `run-floor --m1-atc-down` is `--m1-last-look-wake`'s
+line with it, run B's: the light blinking, the alarm 20 s out, CPU0's timer at 25 s, WD1's marker at 70 s.
+At the end of step 5, interrupts off, six more words go to 0x300, the value `lab_ps_off` has for the other
+ports' (target 0), each with up to 10 ms to read actual 0, as `m1_pw_write()` gives a word:
+
+| Word | Address | When |
+|---|---|---|
+| ATC0_USB, ATC1_USB, ATC2_USB, ATC3_USB | 0x2922800d0, 0xd8, 0xe0, 0xe8 | before `m1_pw[]`'s words: each hangs under its port's USB_AON and COMMON |
+| ATC0_USB_AON | 0x292280088 | after the four, before `m1_pw[]`'s |
+| ATC0_COMMON | 0x28e080238 | after `m1_pw[]`'s, which lower ATC0_PCIE |
+
+The live device tree has the parents: `atcN_usb` under `atcN_usb_aon` and `atcN_common`; `atc0_common` over
+`atc0_usb`, `atc0_cio` (off awake, with its two children) and `atc0_pcie`. ATC3_USB is off after Linux's
+suspend already (0x3ff after a sleep on 11-04); it is written with the others so that all four stand the
+same. The record: 0x6013's top two bits are 0x40 in place of `ps_words=1`'s 0xc0, and a word of the six that
+doesn't read off clears its group's bit there, USB_AON's or COMMON's. `m1-crumbs` reads the mark.
+
+**How it reads.** The light is the result (Corey films the keyboard):
+- it stops before the restart: B2 got to its tenth SIO word, further than any run. Then the marker's time
+  and 0x0201 say how much further (70 s: short of op 224; later or dark: past it).
+- it blinks to the restart at 70 s: with these six off as macOS has the other ports', B2 still doesn't get
+  there. That doesn't clear them: lowering them could take one hold away and leave or add another (on the
+  M4 Pro the engine stalled raising ATC0_COMMON under a fabric that had gated itself, "The M4 Pro's and M4
+  Max's sleep drivers, read"; here macOS's own table has ATC1-3_COMMON off, so the premise stands). A
+  light that stops can't be a false result; one that blinks on can be. Next in PLAN.md: the other words
+  on at the commit that B2 doesn't lower.
+- dark at stage 0x28 (0xa8), no restart at the marker: a write among the 26 power words hung, and the
+  record can't say which: all of them sit between that stage and the next. Run B passed this point
+  without the six, so that ending would point at them as a group.
+- 0x6013's USB_AON or COMMON bit clear: a word didn't go off in 10 ms, and the run didn't test the state
+  it meant to.
+Odds that the light stops, mine: one in five.
+
+**Writes.** Six power words to target 0, of the kind `ps_words=1` has written since run 12 (Corey's OK of
+2026-11-09 for those; these under the standing go-ahead of 2026-11-10), in a one-way run in a safe boot,
+undone by the restart. None is on the never-write list (0x28e0802d8, 0x28e700000) or beside it, and the
+load refuses if one were. Nothing in the USB-C ports for this run: ATC0's port loses its PHY's power.
+
+**Checked.** `tests/m1_crumbs_test.py`: `m1_atc[]` against the six words and their values, none of them
+`m1_pw[]`'s; `m1_atc_write()` compiled as it stands against words that log every access, clean and with each
+kind of word stuck on (its group's bit, about 10 ms of polls, every other word still written); the order
+around `m1_pw_write()`; the load's checks; the decoder on the mark, on each outcome, and on run B's own
+record with either mark. The count of the module's MMIO writes is 74, from 73. `tests/e1a_launcher_test.py`
+for the new option. 30 mutants (`atc`), all caught. One adversarial pass by a subagent, as for every build
+that writes to hardware: no defect in the writes, their order, the load's checks, the record or the
+launcher (each address checked against the reading of 11-04, the live tree and macOS's; every child before
+its parent by both trees; nothing new that outlasts a restart). Its two points on the wording are the two
+bullets above; its third, that the built module was older than its source, is the rebuild after the merge.
+
 ### The observer's second run: the E complex's sequence finishes, and 0x2922c0044's low bits count the complexes that are down (2026-11-19)
 
 `run-floor --no-reading --m1-obs-gate` in a safe boot, on battery at 100%, loaded 15:03, the nights left on

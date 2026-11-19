@@ -94,6 +94,8 @@ LAUNCHERS = (
      "floor-m1-last-look-wake", ("--m1-last-look-wake",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 last_look=1 ll_wake=1 gate_look=1",
      "floor-m1-gate-look", ("--m1-gate-look",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 last_look=1 ll_wake=1 atc_down=1",
+     "floor-m1-atc-down", ("--m1-atc-down",)),
 )
 
 failed = 0
@@ -107,7 +109,7 @@ def is_m1(launcher):
     """--m1, --m1-observe, --m1-late, --m1-alarm, the two --m1-hold, the two --m1-pmp and --m1-position: all load m1=1."""
     return any(a in ("--m1", "--m1-observe", "--m1-late", "--m1-alarm", "--m1-hold", "--m1-hold-nowatch", "--m1-pmp",
                      "--m1-pmp-idle", "--m1-position", "--m1-sio-pmp", "--m1-disp-off", "--m1-macos-end", "--m1-sio-stop",
-                     "--m1-power-words", "--m1-recfg-bite", "--m1-wd2-bite", "--m1-cluster-ack", "--m1-fabric-up", "--m1-mark", "--m1-gates", "--m1-sio-down", "--m1-pcie-down", "--m1-sio-steps", "--m1-a2-pre", "--m1-acc-last", "--m1-last-look", "--m1-last-look-wake", "--m1-gate-look", "--m1-obs-gate") for a in launcher[4])
+                     "--m1-power-words", "--m1-recfg-bite", "--m1-wd2-bite", "--m1-cluster-ack", "--m1-fabric-up", "--m1-mark", "--m1-gates", "--m1-sio-down", "--m1-pcie-down", "--m1-sio-steps", "--m1-a2-pre", "--m1-acc-last", "--m1-last-look", "--m1-last-look-wake", "--m1-gate-look", "--m1-obs-gate", "--m1-atc-down") for a in launcher[4])
 
 
 def is_siodown(launcher):
@@ -136,8 +138,13 @@ def is_lastlook(launcher):
 
 
 def is_llwake(launcher):
-    """--m1-last-look-wake and --m1-gate-look: that run with ll_wake=1."""
-    return "--m1-last-look-wake" in launcher[4] or is_gatelook(launcher)
+    """--m1-last-look-wake, --m1-gate-look and --m1-atc-down: that run with ll_wake=1."""
+    return "--m1-last-look-wake" in launcher[4] or is_gatelook(launcher) or is_atcdown(launcher)
+
+
+def is_atcdown(launcher):
+    """--m1-atc-down: --m1-last-look-wake's run with atc_down=1."""
+    return "--m1-atc-down" in launcher[4]
 
 
 def is_obsgate(launcher):
@@ -207,7 +214,7 @@ PARMS = {
              "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
              "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
              "alarm:With m1=1 and pmgr_late=1 (bool)\nhold:With alarm=1 (bool)\nhold_nowatch:With hold=1 only (bool)\n"
-             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\none_commit:With disp_off=1 (bool)\nsmc_idle:With disp_off=1 (bool)\nsio_stop:With disp_off=1 (bool)\nps_words:With sio_stop=1 (bool)\nrecfg_bite:With ps_words=1 (bool)\nwd2_bite:With ps_words=1 (bool)\ncluster_ack:With wd2_bite=1 (bool)\nfabric_up:With cluster_ack=1 (bool)\nwd1_mark:With fabric_up=1 (bool)\ngates_mark:With wd1_mark=1 (bool)\nsio_down:With gates_mark=1 (bool)\npcie_down:With gates_mark=1 (bool)\nsio_steps:With gates_mark=1 (bool)\na2_pre:With gates_mark=1 (bool)\nacc_last:With gates_mark=1 (bool)\nlast_look:With wd1_mark=1 (bool)\nll_wake:With last_look=1 (bool)\ngate_look:With last_look=1 (bool)\nobs_gate:With observe=1 (bool)\nreplay:LAB ONLY (uint)\n",
+             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\none_commit:With disp_off=1 (bool)\nsmc_idle:With disp_off=1 (bool)\nsio_stop:With disp_off=1 (bool)\nps_words:With sio_stop=1 (bool)\nrecfg_bite:With ps_words=1 (bool)\nwd2_bite:With ps_words=1 (bool)\ncluster_ack:With wd2_bite=1 (bool)\nfabric_up:With cluster_ack=1 (bool)\nwd1_mark:With fabric_up=1 (bool)\ngates_mark:With wd1_mark=1 (bool)\nsio_down:With gates_mark=1 (bool)\npcie_down:With gates_mark=1 (bool)\nsio_steps:With gates_mark=1 (bool)\na2_pre:With gates_mark=1 (bool)\nacc_last:With gates_mark=1 (bool)\nlast_look:With wd1_mark=1 (bool)\nll_wake:With last_look=1 (bool)\ngate_look:With last_look=1 (bool)\natc_down:With ps_words=1 (bool)\nobs_gate:With observe=1 (bool)\nreplay:LAB ONLY (uint)\n",
     "floor-nosiostop": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                        "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
                        "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
@@ -285,6 +292,7 @@ PARMS["floor-noacclast"] = PARMS["floor"].replace("acc_last:With gates_mark=1 (b
 PARMS["floor-nolastlook"] = PARMS["floor"].replace("last_look:With wd1_mark=1 (bool)\n", "")
 PARMS["floor-nollwake"] = PARMS["floor"].replace("ll_wake:With last_look=1 (bool)" + "\n", "")
 PARMS["floor-nogatelook"] = PARMS["floor"].replace("gate_look:With last_look=1 (bool)" + "\n", "")
+PARMS["floor-noatcdown"] = PARMS["floor"].replace("atc_down:With ps_words=1 (bool)" + "\n", "")
 PARMS["floor-noobsgate"] = PARMS["floor"].replace("obs_gate:With observe=1 (bool)" + "\n", "")
 
 
@@ -294,7 +302,7 @@ def sysctl(tmp):
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
           takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
-          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, takes_gates=True, takes_siodown=True, takes_pciedown=True, takes_siosteps=True, takes_a2pre=True, takes_acclast=True, takes_lastlook=True, takes_llwake=True, takes_gatelook=True, takes_obsgate=True, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
+          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, takes_gates=True, takes_siodown=True, takes_pciedown=True, takes_siosteps=True, takes_a2pre=True, takes_acclast=True, takes_lastlook=True, takes_llwake=True, takes_gatelook=True, takes_obsgate=True, takes_atcdown=True, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -365,6 +373,7 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     quiet += f' last_look=1) echo Y > {moddir}/parameters/last_look ;;' if takes_lastlook else ""
     quiet += f' ll_wake=1) echo Y > {moddir}/parameters/ll_wake ;;' if takes_llwake else ""
     quiet += f' gate_look=1) echo Y > {moddir}/parameters/gate_look ;;' if takes_gatelook else ""
+    quiet += f' atc_down=1) echo Y > {moddir}/parameters/atc_down ;;' if takes_atcdown else ""
     quiet += f' obs_gate=1) echo Y > {moddir}/parameters/obs_gate ;;' if takes_obsgate else ""
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
               f' oneway=1) echo Y > {moddir}/parameters/oneway ;;{quiet} esac; done\n') if takes else ""
@@ -753,11 +762,13 @@ def test_floor_refusals(launcher):
         cases.append(("a build without ll_wake", dict(build="floor-nollwake"), None, "without last_look and ll_wake"))
     if is_gatelook(launcher):
         cases.append(("a build without gate_look", dict(build="floor-nogatelook"), None, "without gate_look"))
+    if is_atcdown(launcher):
+        cases.append(("a build without atc_down", dict(build="floor-noatcdown"), None, "without atc_down"))
     if obsgate:
         cases.append(("a build without obs_gate", dict(build="floor-noobsgate"), None, "without obs_gate"))
     if plain:
         # The floor's build before quiet still runs the floor itself.
-        usage = "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate]"
+        usage = "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down]"
         cases += [("an unknown argument", {}, ["--loud"], usage),
                   ("a second argument", {}, ["--quiet", "--quiet"], usage),
                   ("--quiet and --m1 together", {}, ["--quiet", "--m1"], usage),
@@ -795,6 +806,7 @@ def test_floor_refusals(launcher):
                   ("--acc-last alone", {}, ["--acc-last"], usage),
                   ("--m1-last-look and --m1-last-look-wake together", {}, ["--m1-last-look", "--m1-last-look-wake"], usage),
                   ("--m1-last-look-wake and --m1-gate-look together", {}, ["--m1-last-look-wake", "--m1-gate-look"], usage),
+                  ("--m1-gate-look and --m1-atc-down together", {}, ["--m1-gate-look", "--m1-atc-down"], usage),
                   ("--m1-late and --m1-obs-gate together", {}, ["--m1-late", "--m1-obs-gate"], usage),
                   ("--m1-acc-last and --m1-last-look together", {}, ["--m1-acc-last", "--m1-last-look"], usage),
                   ("--no-reading after the recipe", {}, ["--m1-last-look", "--no-reading"], usage),
@@ -873,6 +885,8 @@ def test_floor_refusals(launcher):
         ignored.append(("ll_wake", dict(takes_llwake=False)))
     if is_gatelook(launcher):
         ignored.append(("gate_look", dict(takes_gatelook=False)))
+    if is_atcdown(launcher):
+        ignored.append(("atc_down", dict(takes_atcdown=False)))
     if is_obsgate(launcher):
         ignored.append(("obs_gate", dict(takes_obsgate=False)))
     for what, kw in ignored:

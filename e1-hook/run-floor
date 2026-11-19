@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down]
 #
 # --quick, ahead of the recipe, makes the reading 1 minute instead of 10, with no need to wait
 # 20 minutes off the charger: for a run whose question is how it ends. If one ever goes dark for
@@ -221,6 +221,12 @@
 # state words awake first. Reads only. Run 3's recipe has no marker and no
 # moved bite: the restart comes about 30 s after the screen goes dark. Its stages are --m1-late's; its label is
 # floor-m1-obs-gate. Run it with --no-reading.
+# --m1-atc-down (PLAN.md, after the observer's second run; e1_hook.c's m1 comment) is --m1-last-look-wake's run with
+# six more power words lowered at the end of step 5 (atc_down=1): the four USB controllers' (ATC0_USB to ATC3_USB),
+# ATC0_USB_AON and ATC0_COMMON, to 0x300 as --m1-power-words has the other ports'. macOS's table has ATC0's on because
+# its trace ran under a hypervisor on that port, and the controllers' stay on through Linux's suspend. The light is the
+# result: if it stops before the restart, B2 got to its tenth SIO word. Its stages are --m1-last-look-wake's; its label
+# is floor-m1-atc-down. Run it with --no-reading, nothing in the USB-C ports, and film the keyboard.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
@@ -351,6 +357,7 @@ acclast=0
 lastlook=0
 llwake=0
 gatelook=0
+atcdown=0
 obsgate=0
 quick=()
 label=floor
@@ -685,7 +692,7 @@ elif (($# == 1)) && [[ $1 == --m1-acc-last ]]; then
   gates=1
   acclast=1
   label=floor-m1-acc-last
-elif (($# == 1)) && [[ $1 == --m1-last-look || $1 == --m1-last-look-wake || $1 == --m1-gate-look ]]; then
+elif (($# == 1)) && [[ $1 == --m1-last-look || $1 == --m1-last-look-wake || $1 == --m1-gate-look || $1 == --m1-atc-down ]]; then
   quiet=1
   m1=1
   late=1
@@ -713,8 +720,13 @@ elif (($# == 1)) && [[ $1 == --m1-last-look || $1 == --m1-last-look-wake || $1 =
     gatelook=1
     label=floor-m1-gate-look
   fi
+  if [[ $1 == --m1-atc-down ]]; then
+    llwake=1
+    atcdown=1
+    label=floor-m1-atc-down
+  fi
 elif (($# != 0)); then
-  die "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate]"
+  die "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -766,6 +778,7 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!acclast)) || [[ $parms == *$'\n'acc_last:* ]] || die "$ko is an older build, without acc_last: make -C $here"
 ((!lastlook)) || [[ $parms == *$'\n'last_look:* && $parms == *$'\n'll_wake:* ]] || die "$ko is an older build, without last_look and ll_wake: make -C $here"
 ((!gatelook)) || [[ $parms == *$'\n'gate_look:* ]] || die "$ko is an older build, without gate_look: make -C $here"
+((!atcdown)) || [[ $parms == *$'\n'atc_down:* ]] || die "$ko is an older build, without atc_down: make -C $here"
 # sleep-drain-pmp's module is built by install.sh for one kernel. After a kernel update it's the old kernel's until
 # install.sh runs again, which a safe boot can't do: better to say so now than after the load.
 ((!sio)) || [[ $(modinfo -F vermagic "$PMP_KO" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] ||
@@ -819,6 +832,7 @@ wd2opt=--m1-wd2-bite
 ((!lastlook)) || wd2opt=--m1-last-look
 ((!llwake)) || wd2opt=--m1-last-look-wake
 ((!gatelook)) || wd2opt=--m1-gate-look
+((!atcdown)) || wd2opt=--m1-atc-down
 reader=
 disarm() {
   local again
@@ -971,6 +985,7 @@ params=(replay=15 oneway=1)
 ((!lastlook)) || params+=(last_look=1)
 ((!llwake)) || params+=(ll_wake=1)
 ((!gatelook)) || params+=(gate_look=1)
+((!atcdown)) || params+=(atc_down=1)
 armed=1
 if ! insmod "$ko" "${params[@]}"; then
   # The module says why in the kernel log, which a safe boot loses at the restart: show it now, and keep it.
@@ -1012,7 +1027,8 @@ fi
   { ((!acclast)) || [[ $(cat "$MODDIR/parameters/acc_last") == Y ]]; } &&
   { ((!lastlook)) || [[ $(cat "$MODDIR/parameters/last_look") == Y ]]; } &&
   { ((!llwake)) || [[ $(cat "$MODDIR/parameters/ll_wake") == Y ]]; } &&
-  { ((!gatelook)) || [[ $(cat "$MODDIR/parameters/gate_look") == Y ]]; } ||
+  { ((!gatelook)) || [[ $(cat "$MODDIR/parameters/gate_look") == Y ]]; } &&
+  { ((!atcdown)) || [[ $(cat "$MODDIR/parameters/atc_down") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
 # --m1-sio-pmp: the PMP's display report requests withdrawn at this suspend's noirq (Corey's pick of 2026-11-09), as
 # T8140's driver does before it idles the PMP. A reboot undoes it; the module stays loaded on the ways out here.

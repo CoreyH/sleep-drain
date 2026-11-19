@@ -442,7 +442,9 @@ PHASES = {0: "pair 0's", 2: "pair 1's", 3: "pair 1's last", 4: "the entry pair's
 STATE_WORDS = ("0xa03 (a sequence's start)", "1 (a sequence's end)", "0xa02 (A1's close)", "some other value")
 K_MARK = 0xa5  # e1_hook's M1_K_MARK: 0x6013, when 0x6012 has sio_stop=1's outcomes
 W_MARK = 0xc0  # e1_hook's M1_W_MARK: 0x6013's top two bits in a ps_words=1 run, one bit per group below them
+ATC_MARK = 0x40  # e1_hook's M1_ATC_MARK: the same with atc_down=1, whose six words count with two of the groups
 W_GROUPS = ("the five UARTs", "MSG", "ATC1-3_USB_AON", "ATC0-3_PCIE", "ATC1-3_COMMON")  # bits 0-4; e1_hook's M1_PW_*
+ATC_GROUPS = {2: ", and ATC0_USB_AON and ATC0-3_USB (atc_down=1's)", 4: ", and ATC0_COMMON (atc_down=1's)"}  # m1_atc[]'s groups
 BITE_CLASSES = ("another value", "the new value, 45 s", "the old value, 30 s", "its awake value")  # recfg_bite.h's M1_BITE_*
 # wd2_bite.h's M1_WD2_PRE_*: 30 s is every A sequence's, and A2's only while PHASE reads 4 or 5
 WD2_PRE = ("another value", "30 s, an A sequence's opening's", "the new value, 120 s", "the value it read awake at load")
@@ -589,17 +591,21 @@ def k_lines(b):
     """sio_stop=1: 0x6012, the steps before the commit, if 0x6013 says it landed (e1_hook.c's m1 comment has the layout)."""
     k = b[0x12]
     m = b[0x13]
-    words = m & W_MARK == W_MARK
+    atc = m & W_MARK == ATC_MARK
+    words = m & W_MARK == W_MARK or atc
     if m != K_MARK and not words:
         return [f"0x6012 0x6013 = {k:02x} {m:02x}: the steps' outcomes didn't land (0x6013 is neither their marker, 0x{K_MARK:02x}, nor"
-                f" ps_words=1's, 0x{W_MARK:02x} and up): nothing here says how the DCPs, the SMC's notice, SIO or any power word went"]
+                f" ps_words=1's, 0x{W_MARK:02x} and up, nor atc_down=1's, 0x{ATC_MARK:02x} to 0x{ATC_MARK | 0x3f:02x}): nothing here says how the"
+                " DCPs, the SMC's notice, SIO or any power word went"]
     out = [f"0x6012 = 0x{k:02x}, the steps before the commit:",
             f"  internal DCP: {DCP_CODES[k & 3]}; external DCP: {DCP_CODES[k >> 2 & 3]}; the domains of the DCPs that stopped:"
             f" {'all read off' if k & 0x10 else 'NOT all read off, or none stopped'}",
             f"  SMC's AP idle notice: {'acked within 200 ms' if k & 0x20 else 'NOT acked'}; SIO's firmware: {SIO_CODES[k >> 6]}"]
     if words:
-        out.append(f"0x6013 = 0x{m:02x}: ps_words=1 wrote the 20 power words, after the table:")
-        out += [f"  {g}: " + ("read actual 0 within 10 ms each" if m >> i & 1 else "NOT all read actual 0 within 10 ms each") for i, g in enumerate(W_GROUPS)]
+        out.append(f"0x6013 = 0x{m:02x}: ps_words=1 wrote the 20 power words, after the table"
+                   + (", and atc_down=1 its six around them (ATC0_USB to ATC3_USB and ATC0_USB_AON before, ATC0_COMMON after):" if atc else ":"))
+        groups = tuple(g + ATC_GROUPS.get(i, "") for i, g in enumerate(W_GROUPS)) if atc else W_GROUPS
+        out += [f"  {g}: " + ("read actual 0 within 10 ms each" if m >> i & 1 else "NOT all read actual 0 within 10 ms each") for i, g in enumerate(groups)]
         out.append("  PCIE0_REF, APCIE_GP_SYS, AFNC1_LW2, AFNC2_LW1: target and auto fields "
                    + ("read back as written" if m & 0x20 else "NOT all read back as written"))
     return out
@@ -1142,7 +1148,7 @@ def fab_landed(b):
     """fabric_up=1: is 0x6007 the run's byte? Step 7 leaves the cores that held there (0xff as a rule), and stage 0x52's command
     puts the byte in its place, last of four. The steps' outcomes at 0x6012 go out right after that command and only if it
     didn't fail, so their marker at 0x6013 says the command landed whole. Without it the byte may still be step 7's."""
-    return b[0x13] == K_MARK or b[0x13] & W_MARK == W_MARK
+    return b[0x13] == K_MARK or b[0x13] & W_MARK in (W_MARK, ATC_MARK)
 
 
 def mark_reading(x, s, v):

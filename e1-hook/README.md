@@ -218,6 +218,14 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   is in the bytes that last). The load reads the three state words awake first and logs them. It is to see
   whether the E complex's own sequence runs to its end with CPU0 down, as P complex 0's does. Reads only;
   the stages are run 3's, and the restart comes at WD2's 30 s, with no marker.
+- `atc_down=1` (`run-floor --m1-atc-down`, on `ps_words=1`; the launcher's line is `--m1-last-look-wake`'s with
+  it) lowers six more power words at the end of step 5, each to 0x300 with up to 10 ms to read actual 0: the
+  four USB controllers' (ATC0_USB to ATC3_USB, 0x2922800d0 to 0xe8) and ATC0_USB_AON (0x292280088) before
+  `ps_words=1`'s, ATC0_COMMON (0x28e080238) after them. macOS's table has ATC0's two on because its trace ran
+  under a hypervisor on that port, and the controllers' words stay on through Linux's suspend; nothing else
+  lowers them. 0x6013's top two bits are then 0x40 in place of 0xc0, and a word that doesn't read off clears
+  its group's bit there (USB_AON's or COMMON's). The stages are `ll_wake=1`'s; the keyboard's light is the
+  result. Run it with nothing in the USB-C ports.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be
