@@ -205,13 +205,19 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   own (the stages are `ll_wake=1`'s).
 - `obs_gate=1` (`run-floor --m1-obs-gate`, on `observe=1`; the launcher sets `pmgr_late=1` with it, run 3's
   line) uses the same seven PMU bytes in the observer's run: after CPU7 has polled CPU0's and the E complex's
-  power words and sent its first record, it reads the four CPU power words (CPU0, ECPM, PCPM0, PCPM1), HS_A,
-  HS_B, the engine's two gate words and PHASE, and sends 0x6008-0x600c; 500 ms later the gate words and the
-  four again, 0x600d and 0x600e. K1 zeroes the seven bytes in every `observe=1` run, so that an earlier
-  record can't read as a later observer's, and leaves 0x6008 as 0x40 with `obs_gate=1`. The gate-look run read 0x2922c0044 as 0x0b with
-  CPU0 awake and the P complexes off; this reads it with CPU0 and the E complex off and P complex 1 up, to
-  see which bit follows which complex. Reads only; the stages are run 3's, and the restart comes at WD2's
-  30 s, with no marker.
+  power words and sent its first record, it makes a look and sends it there. K1 zeroes the seven bytes in
+  every `observe=1` run, so that an earlier record can't read as a later observer's, and leaves 0x6008 as 0x40
+  with `obs_gate=1`. The look has had two forms, and `m1-crumbs` reads both (bit 4 of 0x6008 marks the
+  second). The first (the run of 2026-11-18): the four CPU power words (CPU0, ECPM, PCPM0, PCPM1), HS_A, HS_B,
+  the engine's two gate words and PHASE, and the gate words and the four again 500 ms later; it read
+  0x2922c0044 as 0x09 with CPU0 and the E complex off and P complex 1 up. The second, what the module does
+  since 2026-11-19: the four power words, EACC's and PACC0's soc-cluster words and 0x2922c0044 (0x6008,
+  0x6009); then the E complex's state word, 0x28e09a000, which the complex's own down sequence steps and
+  nothing here had read (0x600d, 0x600e, the two bytes that haven't outlasted a restart yet); 500 ms later
+  that again with P complex 0's, 0x28e09a004, EACC's word and 0x2922c0044 (0x600a-0x600c: the later sample
+  is in the bytes that last). The load reads the three state words awake first and logs them. It is to see
+  whether the E complex's own sequence runs to its end with CPU0 down, as P complex 0's does. Reads only;
+  the stages are run 3's, and the restart comes at WD2's 30 s, with no marker.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be

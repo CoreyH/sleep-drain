@@ -141,6 +141,12 @@ LL_ARMED = 0x04  # 0x6008 as K1 leaves it with gate_look=1, until the look's fir
 LL_LOOK_MS = 1000  # last_look.h's: the look, after the commit's last write
 # obs_gate=1 (last_look.h): the same seven bytes in observe=1's run, CPU7's look at the engine's gate words
 OG_MARK, OG_ARMED, OG_LATER_MS = 0x80, 0x40, 500
+OG_CLUS = 0x10  # 0x6008's bit 4: the record's second form, the complexes' own words (what e1_hook sends since 2026-11-19)
+# The state word's values as the complexes' own sequences in the reconfig SRAM write them (0x28e09a000 + 4n)
+OG_ST = {0x40: "the value an up sequence ends on", 0x1a: "the value a down sequence ends on",
+         0x51: "a value both sequences write on the way: the down sequence's first, after its wait for bit 6 of the soc-cluster word",
+         0x53: "a value both sequences write on the way", 0x5b: "a value both sequences write on the way",
+         0x1b: "the down sequence's last value but one", 0x41: "the up sequence's last value but one"}
 OG_STAGES = (0x61, 0x62, 0x6e, 0x6f, 0x71, 0x72, 0x7e, 0x7f)  # CPU7's stages from its first record on: the look follows that record
 OG_WORDS = ("CPU0", "ECPM (the E complex)", "PCPM0 (P complex 0)", "PCPM1 (P complex 1, CPU7's own)")
 
@@ -1213,6 +1219,40 @@ def og_record(s, r):
     return s not in LL_STAGES and (r[0] == OG_ARMED or (s in OG_STAGES and bool(r[0] & OG_MARK)))
 
 
+def og_clus_lines(r, words):
+    """obs_gate=1's second form (last_look.h): EACC's and PACC0's soc-cluster words and the E complex's and P complex 0's state
+    words, read by CPU7 with CPU0 and its complex gone. Fields as read; what they add up to is PLAN.md's to say."""
+    def state(v):
+        return f"0x{v:02x}, {OG_ST.get(v, 'not a value either sequence writes')}; bit 5 {'set' if v & 0x20 else 'clear'}"
+
+    def acc(v):
+        return (f"target 0x{v & 0xf:x}, bit 4 {'set' if v & 0x10 else 'clear'} (a change asked for and not finished), bit 5"
+                f" {'set' if v & 0x20 else 'clear'} (the up-done flag), bit 6 {'set' if v & 0x40 else 'clear'} (what a down sequence waits for first,"
+                " with no timeout)")
+
+    if not r[1] & OG_MARK:
+        return [f"  0x6008 0x6009 = {r[0]:02x} {r[1]:02x}: the first command didn't land whole (bit 7 of 0x6009, its last byte): neither is"
+                " read, and nothing after them"]
+    out = [f"  0x6008 = 0x{r[0]:02x}: the power words, read right before the words below: {words(r[0])}",
+           f"  0x6009 = 0x{r[1]:02x}: EACC's soc-cluster word (0x28e098000), bits 6:0 = 0x{r[1] & 0x7f:02x}: {acc(r[1])}. Awake it reads 0x0f"]
+    if r[6] & OG_MARK:
+        out += [f"  0x600d = 0x{r[5]:02x}: the E complex's state word (0x28e09a000), low byte, right then: {state(r[5])}",
+                f"  0x600e = 0x{r[6]:02x}: with it: PACC0's soc-cluster word, bits 6:4 = {r[6] >> 4 & 7:03b}; 0x2922c0044's low nibble = {r[6] & 0xf:04b}"]
+    else:
+        out.append(f"  0x600d 0x600e = {r[5]:02x} {r[6]:02x}: the second command, the E complex's state word right then, didn't land whole or didn't"
+                   " outlast the restart (bit 7 of 0x600e): not read. These two bytes were lost in both earlier runs that wrote them")
+    if not r[4] & OG_MARK:
+        return out + [f"  0x600a-0x600c = {r[2:5].hex(' ')}: the third command, {OG_LATER_MS} ms on, didn't land whole (bit 7 of 0x600c, its last byte): the"
+                      " state words as they were then aren't read here. Whether a read of them hung or a command failed isn't shown"]
+    same = "the same value" if r[2] == r[3] else "NOT the same value"
+    return out + [f"  0x600a = 0x{r[2]:02x}: the E complex's state word {OG_LATER_MS} ms later: {state(r[2])}",
+                  f"  0x600b = 0x{r[3]:02x}: P complex 0's (0x28e09a004) then, the complex that reads off, to compare: {state(r[3])}. {same} as the E"
+                  " complex's",
+                  f"  0x600c = 0x{r[4]:02x}: then: EACC's bits 6:4 = {r[4] >> 3 & 7:03b} (at first {r[1] >> 4 & 7:03b}); 0x2922c0044's bits 2:0 ="
+                  f" {r[4] & 7:03b} (bit 2, B2's first poll, {'SET' if r[4] & 4 else 'clear'}; the first form's run read 001 in this state)"
+                  + ("; ONE OF THE FOUR WORDS HAS A BIT ABOVE WHAT ITS BYTE CARRIES (bit 6): the bytes aren't the whole words" if r[4] & 0x40 else "")]
+
+
 def og_lines(s, r):
     """obs_gate=1: 0x6008-0x600e, what CPU7, the observer, read of the engine's gate words and the four CPU power words after its
     polls of CPU0's and the E complex's (e1-hook/last_look.h has the bytes). Fields as read, each named."""
@@ -1223,9 +1263,11 @@ def og_lines(s, r):
         return (f"bit 0 {'set' if v & 1 else 'clear'}, bit 1 {'set' if v & 2 else 'clear'}, bit 2 {'set' if v & 4 else 'clear'} (B2's first poll,"
                 f" op 1, waits for it set), bit 3 {'set' if v & 8 else 'clear'} (op 3 waits for it clear)")
 
-    out = [f"0x6008-0x600e = {r.hex(' ')}: obs_gate=1's record: the engine's gate words read by CPU7, the observer, after its polls of"
-           " CPU0's and the E complex's power words:"]
     b0 = r[0]
+    clus = b0 != OG_ARMED and b0 & 0x70 == OG_CLUS
+    out = [f"0x6008-0x600e = {r.hex(' ')}: obs_gate=1's record: "
+           + ("the complexes' own words" if clus else "the engine's gate words") + " read by CPU7, the observer, after its polls of"
+           " CPU0's and the E complex's power words:"]
     if b0 == OG_ARMED:
         # Every observer's run zeroes these bytes at K1, so under one of CPU7's stages the mark is this run's. Under any other
         # stage it may be an earlier run's, left uncleared: no other run zeroes them (Pullfrog on #116).
@@ -1237,6 +1279,8 @@ def og_lines(s, r):
                       + (f"; 0x6009-0x600e = {r[1:].hex(' ')} aren't shown to be this run's: NOT READ" if any(r[1:]) else "")]
     if s not in OG_STAGES:
         return out + [f"  NOT READ: stage 0x{s:02x} isn't one CPU7 sends from its first record on, and the look follows that record"]
+    if clus:
+        return out + og_clus_lines(r, words)
     if not b0 & OG_MARK or b0 & 0x70 or r[1] & 7:
         return out + [f"  0x6008 0x6009 = {b0:02x} {r[1]:02x}: not values e1_hook writes here (bit 7 of the first with bits 6:4 clear; bits 2:0 of"
                       " the second clear): NOT READ"]

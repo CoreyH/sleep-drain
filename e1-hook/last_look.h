@@ -99,9 +99,12 @@
  * watches CPU0's and the E complex's power words read off (PLAN.md, after the
  * gate-look run). That run read 0x2922c0044 as 0x0b with CPU0 awake, bits 0
  * and 1 up where awake they are clear, and bit 2, B2's first poll, clear: a
- * fit for one bit per CPU complex, set when the complex is down. Here the
- * observer sits in another complex (P1) and reads the same word after CPU0
- * and its complex have gone, with the four power words beside it, twice:
+ * fit for one bit per CPU complex, set when the complex is down. The observer
+ * sits in another complex (P1) and looks after CPU0 and its complex have
+ * gone. Its record has had two forms.
+ *
+ * The first (the run of 2026-11-18; m1-crumbs still reads it; bits 6:4 of
+ * 0x6008 clear), the engine's words beside the four power words, twice:
  *   0x6008  bit 7 set; bits 0 to 3: CPU0's, ECPM's, PCPM0's and PCPM1's power
  *           words read off (actual state 0), read right before the words below
  *   0x6009  ll_b1()'s byte with nothing in bits 2:0: bit 3 HS_A's bit 31, bit
@@ -112,6 +115,37 @@
  *   0x600d  0x2922c0044's low byte again, OG_LATER_MS later
  *   0x600e  bit 7 set; bits 6:3 the four power words read off again, in
  *           0x6008's order; bits 1:0 0x2922c0040's bits 1:0 then
+ * It read 0x09: bit 0 P complex 0's, bit 1 P complex 1's, and bit 2 clear
+ * with CPU0's and ECPM's power words off.
+ *
+ * The second, what the module sends now (OG_CLUS, bit 4 of 0x6008): the
+ * complexes' own words. Each CPU complex has a down sequence in the reconfig
+ * SRAM, run by the clusters' sequencer and not by the entry pair: it waits,
+ * untimed, for bit 6 of the complex's soc-cluster word, writes 0x51 to the
+ * complex's state word (0x28e09a000 + 4n), waits, untimed, for bit 5 of that
+ * to clear, steps it through 0x53, 0x5b and 0x1b, and ends by writing 0x1a.
+ * An up sequence ends by writing 0x40. So the state word says whether a
+ * complex's own sequence ran to its end, which its power word doesn't, and
+ * P complex 0, which reads off, is there to compare the E complex with:
+ *   0x6008  bit 7 and OG_CLUS set; bits 0 to 3 as in the first form
+ *   0x6009  bit 7 set; EACC's soc-cluster word (0x28e098000), bits 6:0. The
+ *           first command's last byte: words CPU7 has read after a commit
+ *           before, sent before a state word is touched
+ *   0x600d  the E complex's state word, 0x28e09a000, low byte, right then
+ *   0x600e  bit 7 set; bits 6:4 PACC0's soc-cluster word's bits 6:4; bits 3:0
+ *           0x2922c0044's, both as read for the first command. The second
+ *           command's last byte
+ *   0x600a  the E complex's state word again, OG_LATER_MS later
+ *   0x600b  P complex 0's, 0x28e09a004, low byte, then
+ *   0x600c  bit 7 set; bit 6: one of the four words has a bit above what its
+ *           byte carries (og_wide()); bits 5:3 EACC's bits 6:4 then; bits 2:0
+ *           0x2922c0044's then. The third command's last byte
+ * 0x600d and 0x600e were lost across the restart in both runs that wrote
+ * them, so they get the first sample and the five that have always come
+ * through get the later one: a sequence that is only slow must not read as
+ * one that is held. The state words have never been read on this Mac: the
+ * module reads them awake at its load first, where a read that faults costs a
+ * safe boot and nothing else.
  * K1 leaves 0x6008 as OG_ARMED, so a look that never landed shows, and zeroes
  * the seven bytes in every observe=1 run, with obs_gate=1 or not: CPU7's stages
  * are an ordinary observer's too, and a record left there would read as its.
@@ -171,6 +205,11 @@ typedef uint64_t u64;
 #define OG_MARK			(1U << 7)
 #define OG_ARMED		(1U << 6)	/* 0x6008 as K1 leaves it with obs_gate=1, until CPU7's first command */
 #define OG_LATER_MS		500		/* the second sample, after the first */
+#define OG_CLUS			(1U << 4)	/* 0x6008: the record's second form, the complexes' own words */
+/* The complexes' state words, from the soc-cluster page (0x28e098000): 0x28e09a000 + 4n. P complex 1's is read awake only. */
+#define OG_ST_E			0x2000
+#define OG_ST_P0		0x2004
+#define OG_ST_P1		0x2008
 
 /* The four power words, each true if it read off: 0x6008. */
 static inline u8 og_b0(bool cpu0, bool ecpm, bool pcpm0, bool pcpm1)
@@ -178,10 +217,28 @@ static inline u8 og_b0(bool cpu0, bool ecpm, bool pcpm0, bool pcpm1)
 	return (u8)(OG_MARK | (cpu0 ? 1U : 0) | (ecpm ? 1U << 1 : 0) | (pcpm0 ? 1U << 2 : 0) | (pcpm1 ? 1U << 3 : 0));
 }
 
-/* The second sample's last byte: the four again, and 0x2922c0040's bits 1:0. */
-static inline u8 og_b6(u32 gate40, bool cpu0, bool ecpm, bool pcpm0, bool pcpm1)
+/* 0x6009: EACC's soc-cluster word, bits 6:0, under the mark. */
+static inline u8 og_c1(u32 eacc)
 {
-	return (u8)(OG_MARK | (og_b0(cpu0, ecpm, pcpm0, pcpm1) & 0xf) << 3 | (gate40 & 3));
+	return (u8)(OG_MARK | (eacc & 0x7f));
+}
+
+/* Whether one of the four words has a bit above what its byte carries: bits 6:0 of a soc-cluster word, 7:0 of a state word. */
+static inline bool og_wide(u32 eacc, u32 pacc0, u32 st_e, u32 st_p0)
+{
+	return ((eacc | pacc0) >> 7) || ((st_e | st_p0) >> 8);
+}
+
+/* 0x600c: the mark, og_wide(), EACC's bits 6:4, and 0x2922c0044's bits 2:0, at the later sample. */
+static inline u8 og_c4(bool wide, u32 eacc, u32 gate44)
+{
+	return (u8)(OG_MARK | (wide ? 1U << 6 : 0) | (eacc >> 4 & 7) << 3 | (gate44 & 7));
+}
+
+/* 0x600e: the mark, PACC0's bits 6:4, and 0x2922c0044's low nibble, at the first sample. */
+static inline u8 og_c6(u32 pacc0, u32 gate44)
+{
+	return (u8)(OG_MARK | (pacc0 >> 4 & 7) << 4 | (gate44 & 0xf));
 }
 
 /* dt: ticks since the commit's last write; tps: ticks a second. */
