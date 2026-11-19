@@ -5426,6 +5426,43 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The `atc_down=1` run: the six read off, and the ending is run B's (2026-11-19)
+
+`run-floor --no-reading --m1-atc-down` in a safe boot, on battery at about 88%, nothing in the USB-C ports,
+the nights off around it, loaded 16:11 (`results/atc-down-20261119/`; the module built at a5449f5). Corey:
+"keyboard blinked for 70 seconds with the screen off and then rebooted".
+
+**The record.** Stage 0x88, every byte as in run B but one: **0x6013 = 0x5f**, `atc_down=1`'s mark with every
+group's bit but the fabric's set. So ATC0_USB to ATC3_USB, ATC0_USB_AON and ATC0_COMMON each read actual 0
+within 10 ms of its write, as the twenty did (the load had them at 0xff awake, ATC3_USB at 0x2ff). The
+restart 70 s after the commit (69.4 to 71.4 s), WD1's marker. The alarm fired at its second (0x1401 =
+0x03, 0x140c the commit's second + 20) and nothing followed. 0x6008-0x600e all 0: no return of CPU0's WFI
+recorded. 0x0201 = 0x02.
+
+**What it says.** With ATC0's chain and the four controllers off, as the table has the other ports', B2
+still doesn't reach its tenth SIO word, and the ending doesn't move by a second. The one difference from
+macOS's power words that was on file and explained is spent. It isn't proof that the six are without
+effect (the as-built entry below says why a light that blinks on can't be); it is the state the next runs
+start from: `atc_down=1` stays in the line of any run built on `ps_words=1` from here, being macOS's state
+as far as it is known.
+
+**Where that leaves the entry, and what the light hasn't been pointed at.** The light has only ever been
+in the `last_look=1` family, run 17's recipe. The rungs that made the engine's own steps ahead of it
+(`sio_down=1`, `pcie_down=1`, `sio_steps=1`, `a2_pre=1`, `acc_last=1`) were all judged by WD1's marker
+alone, which B2 passes at its op 223; the light goes out at about op 44. So "the same 90 s" in those
+runs says B2 stopped short of op 223, not that it stopped where runs A and B did. `a2_pre=1` is the one
+that bears on the place the light bounds: between B2's first poll and its tenth SIO word lie the gate's
+polls, B2's first handshake, and A2's own three moves (DCS to 2, the fabric to 2, 0x28e20c400 to 0, each
+waited for with no timeout), after which A2 writes PHASE 5 and B2, which waits for that, starts its
+power-downs. In runs A, B and this one the engine has to make those three moves itself, with every core
+down. With `a2_pre=1` it finds them made, writes them again and waits again. Whether the light then goes
+out has never been looked at. A light that goes out would say that B2 gets to its power-downs with the
+moves made beforehand. One that blinks on would not clear A2's waits: met by the AP with a core up, they
+may still not be met when the engine waits on them with every core down (Pullfrog on #123).
+
+**After the run:** the record cleared, three saves collected, the nights on again at 25 (the alarm reads
+disarmed, its event clear, with the driver loaded).
+
 ### `atc_down=1` as built: ATC0's chain and the USB controllers' words lowered with the others (2026-11-19)
 
 **Why.** The desk diff under "The observer's second run", below: the recipe's power words are macOS's from a
