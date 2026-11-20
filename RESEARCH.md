@@ -5436,9 +5436,10 @@ needs masking and has no answer. One run closes the class.
 
 **What it is.** `e1_hook wake_all=1` changes the value of step 7's seven writes and nothing else: each of
 0x292004008 to 0x292004020 is written 0xffffffff where `m1_wake_mask[]` has 0xffbfffff in word 1 and
-0x00001fff in word 6. No address is new. Right after, still in step 7, `m1_wa_look()` reads the seven back
-and the seven words after them (0x292004024 on, inferred to be the AP's wake status) and sends one byte to
-the PMU's 0x6008:
+0x00001fff in word 6. No address is new. Right after, still in step 7, `m1_wa_read()` reads the seven back
+and the seven words after them (0x292004024 on, inferred to be the AP's wake status) into one byte, which
+goes to the PMU's 0x6008 after step 8's record (0x6010-0x6016), so that a command that fails there costs
+nothing already sent; the family's stage and `a2_pre=1`'s own bytes still come after it:
 
 | bits | |
 |---|---|
@@ -5450,9 +5451,22 @@ the PMU's 0x6008:
 
 K1 zeroes 0x6008-0x600e and leaves 0x20 at 0x6008 until that byte, so one that never landed shows. It needs
 `gates_mark=1` and refuses `observe=1`, whose record is in the same bytes. `m1-crumbs` reads the byte under
-that family's stages and under step 7's own (0x39, what the record keeps if the byte lands and nothing
-after it does), and `--clear` takes it with the rest. At the load `m1_wa_init()` logs both sets of seven as
-they read awake.
+that family's stages and under step 7's own (0x39, still the stage when the byte goes out: what the record
+keeps if the byte lands and nothing after it does), and `--clear` takes the byte or the mark with the rest
+when the six bytes after it are zero. At the load `m1_wa_init()` logs both sets of seven as they read awake.
+
+**One change to every run: K1 and the undo now zero 0x6008-0x600e whatever the options** (seven zeros, the
+only write `m1_pmu_ok()` lets a run without a record of its own make there). The family shares its stages,
+and step 7's 0x39 is shared wider still, so a byte or a mark left by a run that wasn't cleared would have
+read as the next run's (Pullfrog on #127 and the adversarial pass, the case of #116 for observers). Those
+bytes are the ones Corey OK'd on 2026-11-16 for the run's record; zeros at a run's start are part of keeping
+that record honest, and no run's other writes change.
+
+**The reads are new in this state.** The seven masks have been written in the recipe's state by every run and
+read only awake, at the load; the status words were read around a commit only in observer runs, which lack
+`hold=1`, `sio_stop=1`, `ps_words=1` and `atc_down=1`. A read that faults would panic with SError unmasked:
+stage 0xb9 with 0x20 at 0x6008, and a restart about 10 s after the dark screen where 90 s is expected
+(judgment: unlikely, the same page takes writes two lines before in every run).
 
 `run-floor --m1-wake-all` is `--m1-a2-pre-blink`'s line with `wake_all=1`: A2's three moves made by the AP,
 ATC0's chain lowered, the keyboard light set blinking in step 8, WD1's marker at 90 s, and now no wake source
@@ -5477,15 +5491,27 @@ values again after every run so far). One new PMU byte, 0x6008, within Corey's O
 0x6008-0x600e. Everything else is `--m1-a2-pre-blink`'s.
 
 **Checked.** Built by a subagent from a written brief, in its own worktree, then read line by line here.
-`tests/m1_crumbs_test.py` (1,270 ok): `wa_byte()` and `m1_wa_look()` compiled in user space against fake
+`tests/m1_crumbs_test.py` (1,311 ok): `wa_byte()` and `m1_wa_read()` compiled in user space against fake
 pages (all ones; word 6 reading 0x00001fff back; a word that doesn't take; status words non-zero), step 7's
-writes in both modes (the first test of `m1_wake_mask[]`'s values at all), K1's zeros and mark, the undo,
-`m1_pmu_ok()` over every address and length, the refusals, the decoder over landed, armed and junk bytes
-and over the stages where the byte is and isn't the run's. `tests/e1a_launcher_test.py` (2,817 ok). 63 `wa`
-mutants, none missed; `tests/mutants.py` can now mutate `run-floor`, and the launcher test takes option names
-to run only those. What it had to change beyond the brief: `m1_pmu_ok()` let 0x6008-0x600e through only
-with `last_look=1` or `observe=1`, so K1's zeros would have been refused and the replay never started; it now
-lets 0x6008 alone and the seven from it through with `wake_all=1`.
+writes in both modes (the first test of `m1_wake_mask[]`'s values at all), the byte's place after step 8's
+record with the module's own `m1_crumb()` over a stub for the PMU's answer, the real `m1_pmu_start()` and
+`m1_pmu_undo()` behind the real `m1_pmu_ok()` (every address, length and a set of contents, four kinds of
+run), a plain family run's K1 over a byte and a mark left behind, the refusals, the decoder over landed,
+armed and junk bytes and over the stages where the byte is and isn't the run's. `tests/e1a_launcher_test.py`
+(2,817 ok at the first commit; the launcher's logic didn't change after, and its two options' 224 checks
+were run again). 91 `wa` mutants and the 13 older ones inside the three PMU functions, none missed;
+`tests/mutants.py` can now mutate `run-floor`, and the launcher test takes option names to run only those.
+
+**The two reviews.** Pullfrog: the stale byte under a later run's stages, above. One adversarial pass by a
+subagent that was given the code and the four claims to break (the module does only this on hardware; every
+other run is unchanged; the decoder never gives bytes to the wrong run and `--clear` never zeroes what isn't
+a run's; the launcher loads `--m1-a2-pre-blink`'s line and `wake_all=1`): nothing against the module or the
+launcher (step 7 and the raw SPMI path, `m1_pmu_ok()`, K1 and the undo, the parameter chain that keeps
+0x6008 from any other record, the load line's 37 arguments, the failure path's unmapping); three defects in
+the decoder, all needing bytes left by an earlier run: the stale byte again, K1's mark read as "never
+landed" under stages no such run sends, and `--clear` zeroing six bytes it had just called not a run's. All
+taken, with its notes: the byte sent after step 8's record, the reads' precedent said as it is, a test
+that had exercised its own mock, a check that couldn't be reached.
 
 **Upstream, the same day, with Corey's OK ("post both please").** To Naeem Malik, on our open question in
 his repository: whether the tracer behind his commit-state comparison could be run on a J314s given T6000's
