@@ -5434,7 +5434,7 @@ one-way run since the strategy review.
 
 - **Corey:** "the keyboard blinked for all 90 seconds from what I can see." Watched to the restart.
 - **The record is whole**, and but for one byte it is the `a2_pre=1` run's of 11-19: stage 0x9b, every step's
-  outcome as before, 0x6013 = 0x5f (the 22 words written 0x300 read actual 0, `atc_down=1`'s six among them;
+  outcome as before, 0x6013 = 0x5f (the 22 words that aren't the fabric's read actual 0, `atc_down=1`'s six among them;
   the four fabric words, written target f, didn't all read back as written, as in every run since 12), 0x6016 = 0xff (A2's three moves took and settled),
   WD2 armed and counting with the 120 s bite, `PHASE` 4, the restart 89.3 to 91.3 s after the commit: WD1's
   marker. 0x0201 = 0x02.
