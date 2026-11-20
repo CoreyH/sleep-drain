@@ -162,22 +162,32 @@
  * masks let through is what holds the engine before its power-downs, that
  * closes every one. Right after, still in step 7, CPU0 reads the seven back,
  * then the seven words after them (0x292004024 on: the AP's wake status,
- * inferred), and sends:
+ * inferred). The byte they make goes out in step 8, after that step's own
+ * record (the RTC's second and 0x6010-0x6016): a command that fails stops
+ * every later one, and this one is new. It is:
  *   0x6008  bits 7:6 set (WA_MARK); bit 5 (WA_NAMED): words 0 to 5 read back
  *           0xffffffff and word 6's bits 12:0 read back all set, every id
  *           with a name; bit 4 (WA_UNNAMED): word 6's bits 31:13 read back
  *           all set too (whether those bits exist isn't known: macOS's value
  *           leaves them clear); bit 3 always 0; bits 2:0 how many of the
  *           seven status words read non-zero then (which ones isn't kept)
- * K1 zeroes the seven bytes, as in an observer's run, and leaves 0x6008 as
- * WA_ARMED, so a byte that never landed shows; 0x6009-0x600e stay 0. The
- * byte's two top bits tell it from K1's three marks (0x04, 0x20, 0x40); the
- * stage tells it from the other two records, whose first byte has bit 7 too.
+ * K1 zeroes the seven bytes and leaves 0x6008 as WA_ARMED, so a byte that
+ * never landed shows; 0x6009-0x600e stay 0. (K1 zeroes them in every run
+ * since this option, with it or not: a byte or a mark an earlier run left
+ * would read as a later run's under the stages the two share.) The byte's two
+ * top bits tell it from K1's three marks (0x04, 0x20, 0x40); the stage tells
+ * it from the other two records, whose first byte has bit 7 too. wa_ok() is
+ * all that m1_pmu_ok() lets a wake_all=1 run write there, beside the zeros.
  * With every source masked, a Mac whose entry completed would wake for no
- * key and no lid: it comes back only by holding the power button. Reads only,
- * apart from the PMU's byte: the masks are words the load reads awake, the
- * status words ones CPU0 has read right before a commit and CPU7 after one
- * (observe=1).
+ * key and no lid: it comes back only by holding the power button.
+ * Reads only, apart from the PMU's byte, but neither read has been made in
+ * this state before. Every m1 run has written the seven masks in step 7, and
+ * they have been read only awake, at the load. The status words have been
+ * read around the commit only in observe=1's runs, which have none of
+ * hold=1, sio_stop=1, ps_words=1 and atc_down=1. A read that faulted would
+ * panic there, SError still unmasked: the record would be step 7's stage
+ * (0x39; 0xb9 with pmp_out=1's bit) with WA_ARMED at 0x6008, and the restart
+ * would come about 10 s later, if the panic's restart works.
  */
 #ifndef LAST_LOOK_H
 #define LAST_LOOK_H
@@ -241,7 +251,7 @@ typedef uint64_t u64;
 
 #define WA_WORDS			7		/* the AP wake-mask words, and the status words after them */
 #define WA_W6_NAMED		0x00001fffU	/* word 6's ids with a name: bits 12:0, macOS's own value for the word */
-#define WA_ARMED		(1U << 5)	/* 0x6008 as K1 leaves it with wake_all=1, until step 7's command */
+#define WA_ARMED		(1U << 5)	/* 0x6008 as K1 leaves it with wake_all=1, until the byte's command in step 8 */
 #define WA_MARK			0xc0U		/* 0x6008, wake_all=1's byte: bits 7:6, both */
 #define WA_NAMED		(1U << 5)	/* under WA_MARK: words 0 to 5 and word 6's bits 12:0 read back all set */
 #define WA_UNNAMED		(1U << 4)	/* under WA_MARK: word 6's bits 31:13 read back all set too */
@@ -253,6 +263,12 @@ typedef uint64_t u64;
 static inline u8 wa_byte(bool named, bool unnamed, unsigned int status)
 {
 	return (u8)(WA_MARK | (named ? WA_NAMED : 0) | (unnamed ? WA_UNNAMED : 0) | (status > 7 ? 7 : status));
+}
+
+/* What a wake_all=1 run may write to 0x6008 by itself: K1's mark, or a byte wa_byte() makes (bits 7:6 set, bit 3 clear). */
+static inline bool wa_ok(u8 v)
+{
+	return v == WA_ARMED || ((v & WA_MARK) == WA_MARK && !(v & (1U << 3)));
 }
 
 /* The four power words, each true if it read off: 0x6008. */

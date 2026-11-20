@@ -238,15 +238,29 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   where the recipe leaves source 54 (the PMU's interrupt, word 1's bit 22) and word 6's bits 31:13 (ids 0xcd
   to 0xdf, none with a name; the word is macOS's own 0x00001fff) open. It asks whether a pending wake source
   that the masks let through holds the engine before its power-downs. No address is new. Right after, still
-  in step 7, `m1_wa_look()` reads the seven back and the seven words after them (0x292004024 on, the AP's wake
-  status, inferred) and sends one byte to the PMU's 0x6008. K1 zeroes 0x6008-0x600e first, as in an
-  observer's run, and writes its mark. So 0x6008 reads one of three ways after such a run: 0x00, the run
-  didn't get as far as K1; 0x20, K1's mark, step 7's byte never landed; or the byte, bits 7:6 both set, with
+  in step 7, `m1_wa_read()` reads the seven back and the seven words after them (0x292004024 on, the AP's wake
+  status, inferred); their byte goes to the PMU's 0x6008 in step 8, right after that step's record at 0x6010
+  and before its stage, so that a command that failed there couldn't cost the run that record (a failed
+  command stops every later one; the stage, the outcomes and `a2_pre=1`'s byte still follow it). Neither read
+  has been made in this state: every m1 run has written the masks in step 7, and they have only been read
+  awake, at the load; the status words have been read around the commit only in `observe=1`'s runs, which
+  have none of `hold=1`, `sio_stop=1`, `ps_words=1` and `atc_down=1`. A read that faulted would panic there,
+  SError still unmasked: stage 0xb9 with 0x20 at 0x6008, and a restart about 10 s after the dark screen. K1
+  zeroes 0x6008-0x600e first and writes its mark; since this option K1 and the undo zero those seven bytes in
+  every m1 run, whatever its options, so that a byte or a mark an earlier run left can't read as a later
+  run's under the stages they share, and `m1_pmu_ok()` lets through there seven zeros in any run and, with
+  `wake_all=1`, one byte at 0x6008 that is the mark or has bits 7:6 set and bit 3 clear. So 0x6008 reads one
+  of three ways after such a run: 0x00, the run
+  didn't get as far as K1; 0x20, K1's mark, the byte never landed; or the byte, bits 7:6 both set, with
   bit 5 saying words 0 to 5 read back 0xffffffff and word 6's bits 12:0 all set, bit 4 that word 6's bits
   31:13 read back all set too (whether those bits exist isn't known), bit 3 always 0, and bits 2:0 how many
-  of the seven status words read non-zero. `m1-crumbs` reads the byte under that family's stages and K1's
-  mark under any stage that isn't `last_look=1`'s or an observer's, and `--clear` zeroes the seven bytes
-  after either. The load logs both sets of seven awake. The stages are `a2_pre=1`'s and the keyboard's light
+  of the seven status words read non-zero. `m1-crumbs` reads the byte under that family's stages and under
+  step 7's own, 0x39, which is still the stage when the byte goes out. K1's mark it reads by the stage: one
+  the run can be at before its byte (the run stopped before the byte's command, or that command failed), one
+  of the family's (the command was acked and the byte didn't land), or another run's (a mark an earlier run
+  left: not read). `--clear` zeroes the seven bytes after the byte or the mark only if the six after it are 0
+  and bit 3 is clear; anything else there it leaves, and says so. The load logs both sets of seven awake. The
+  stages are `a2_pre=1`'s and the keyboard's light
   is the witness, as in `--m1-a2-pre-blink`. With every wake source masked, a Mac whose entry completed would
   not wake for a key, the lid or the PMU's alarm: it comes back only by holding the power button. Run it
   with `--no-reading`, the nights off around it and nothing in the USB-C ports.

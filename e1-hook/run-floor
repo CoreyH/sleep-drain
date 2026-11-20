@@ -237,8 +237,11 @@
 # --m1-wake-all (PLAN.md, after the a2_pre=1 run with the light; e1-hook/last_look.h has the byte) is --m1-a2-pre-blink's
 # run with one change in step 7 (wake_all=1): all seven AP wake-mask words are written 0xffffffff, where the recipe
 # leaves the PMU's interrupt (source 54) and word 6's bits 31:13 open. It tests whether an AP wake source that the
-# masks leave open holds the engine before its power-downs. CPU0 reads the seven back and the seven status words
-# after them, and sends one byte to the PMU's 0x6008 (K1 leaves 0x20 there until it lands). The keyboard light is the
+# masks leave open holds the engine before its power-downs. In step 7 CPU0 reads the seven back and the seven status
+# words after them, and after step 8's record it sends one byte to the PMU's 0x6008 (K1 leaves 0x20 there until it
+# lands). Neither read has been made in this recipe's state: the masks were only ever read awake, the status words
+# around the commit only in the observer's runs. If one faults, the kernel panics there and the Mac restarts about
+# 10 s after the screen goes dark, not 90: m1-crumbs then shows stage 0xb9 with 0x20 at 0x6008. The keyboard light is the
 # witness, as in --m1-a2-pre-blink: one that stops before the restart says B2 reached its tenth SIO word. With every
 # wake source masked, a Mac whose entry completed would not wake for a key or the lid, nor for the alarm: it comes
 # back only by holding the power button (the dark ending's steps, below). Its stages are --m1-a2-pre's; its label is

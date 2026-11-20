@@ -67,17 +67,27 @@ used to sit in CLAUDE.md, entry for entry):
   `m1_atc_write()` against words that log every access (clean, and with each kind of word stuck on), the order
   around `m1_pw_write()`, and the decoder on its mark and on run B's own record with either mark. For blink=1: the load's refusals,
   `m1_blink_init()`'s checks and their order against `m1_ll_init()`'s, and its one place in step 8. For wake_all=1 it compiles
-  `last_look.h`'s `wa_byte()` against a second writing-out of the byte, and runs step 7's own lines (the masks' loop with
-  `m1_wake_mask[]`, the enables' loop, the look's call), `m1_wa_look()` and `m1_wa_init()` as they stand against words that
-  log every access: the table's values without it and nothing read, 0xffffffff seven times with it, the seven read back and
-  the seven status words, and the byte for every part that doesn't take (word 6 reading 0x00001fff back, its bit 12, 13 or
-  31 alone, a bit of words 0, 1 or 5, both parts) and for one, two and seven status words set; nothing sent once SPMI has
-  failed, the load's log and its refusal without the page. Then the step's order (after nub-spmi0's enables, before step 8),
-  the one write to the masks, K1's zeros and mark and the undo, `m1_pmu_ok()` with it (0x6008 by itself or the seven from
-  it, nothing else new), the refusals, and the byte through m1-crumbs on the a2_pre=1 run with the light's own record: each
-  field, under each stage of the gates_mark=1 family, K1's mark before and after step 7's stage, junk in the other six
-  bytes, bit 3, never as wake_all=1's under one of last_look=1's stages or an observer's, obs_gate=1's mark and record as
-  before, and `--clear`. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
+  `last_look.h`'s `wa_byte()` and `wa_ok()` against a second writing-out of them, and runs the module's own lines of steps 7
+  and 8 (the masks' loop with `m1_wake_mask[]`, the enables' loop, the read's call; the record at 0x6010 and the byte after
+  it), `m1_wa_read()`, `m1_crumb()` and `m1_wa_init()` as they stand against words that log every access and a stub for the
+  raw SPMI command under `m1_crumb()`: the table's values without it, nothing read and no byte; 0xffffffff seven times with
+  it, the seven read back and the seven status words in step 7, the byte after step 8's record and before the stage; the
+  byte for every part that doesn't take (word 6 reading 0x00001fff back, its bit 12, 13 or 31 alone, a bit of words 0, 1 or
+  5, both parts) and for one, two and seven status words set; a byte whose command isn't acked (the record is out, the
+  stage after it isn't sent), a record whose command isn't acked, and raw SPMI off beforehand. (The stub stands for the
+  PMU's answer; `m1_spmi_raw()` itself isn't run.) Then the two steps' order in the source, the one write to the masks, and
+  K1 and the undo compiled behind the real `m1_pmu_ok()` in each kind of run over what a wake_all=1 run leaves at
+  0x6008-0x600e: zeroed in every run, the mark written with wake_all=1 alone, no write refused; a family run without
+  wake_all=1 after one with it then decodes with nothing of it (Pullfrog on #127). `m1_pmu_ok()` over every address and
+  length with eight contents and, at 0x6008, every value of one byte: seven zeros in any run and nothing else there
+  without last_look=1 or observe=1; with wake_all=1 one byte more, the mark or a byte with bits 7:6 set and bit 3 clear.
+  The load's log (`m1_wa_init()` refuses nothing: `m1_init()` has returned by then if the page didn't map), the refusals,
+  and the byte through m1-crumbs on the a2_pre=1 run with the light's own record: each field, under each stage of the
+  gates_mark=1 family and under step 7's own; K1's mark under a stage the run sends after the byte, one it can be at before
+  it, and fourteen other runs' stages, where it is not read; junk in the other six bytes, bit 3; never as wake_all=1's
+  under one of last_look=1's stages or an observer's, obs_gate=1's mark and record as before; and `--clear`, which zeroes
+  the seven only after a byte or a mark with six zeros behind it and bit 3 clear, under stage 0x00 and the probe's too.
+  For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
   writing-out of A2's ops 11 to 16 (every pairing of each word's two bits at every count of moves made, and 400
   drawn cases), and runs `m1_a2_pre()` with the module's own table of waits against a model of the p-state page
   and the muxes' page in 29 scenarios (a write dropped, a word that settles late or never or keeps bit 31, DCS put
