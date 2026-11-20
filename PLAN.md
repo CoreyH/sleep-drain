@@ -36,6 +36,9 @@ this section where they differ.
   lost in both runs that wrote them, though awake they take a write. Use the first five.
 - The SMC's keys across a one-way run say nothing: after four runs and after a plain restart they
   differ only by the charger and the battery.
+- No AP wake source that the masks left open is the hold: with all seven mask words written ones
+  (every named source read back masked, the PMU's included) the light blinked to the marker's
+  restart (`results/wake-all-20261120/`).
 - Linux's own deep idle ("CPU PD": retention on, ACC_OVRD untouched) moved no complex's state word
   and not the gate word in 12 s of samples awake (`results/idle-watch-20261120/`). Bit 0 of CYC_OVRD,
   which the recipe sets as macOS does, is "disable WFI retention": a core down that way has only its
@@ -46,43 +49,36 @@ this section where they differ.
   2026-11-16).
 
 **Next, in this order:**
-1. **Corey's turn: the eighth run since the review, every AP wake source masked** (`run-floor
-   --no-reading --m1-wake-all`; RESEARCH.md, "`wake_all=1` as built", 2026-11-20). It is
-   `--m1-a2-pre-blink`'s run with all seven wake-mask words written 0xffffffff, where the recipe leaves
-   the PMU's source (54) and word 6's unnamed ids open, and one byte at 0x6008 for the read-back. The
-   light is the result: filmed, or watched to the restart. Odds that it stops: one in twenty; it
-   closes the class the M4 Pro's driver names and the follow-up upstream asked about. The nights off
-   around it; if the light stops and no restart comes, the power button held is the only way back.
-   After it: `m1-crumbs`, `--clear`, the collect, the nights on, one prompt.
-   - Upstream on 2026-11-20: the ask to Naeem for his commit-state tracer or a T600x snapshot is posted
-     (malik-na/linux-aurora#77). The ask to maralcbr is drafted and not posted: their repository is
-     archived; omacom/linux-aurora#290 with a mention is the place left, and needs Corey's word.
-   - After it two of the review's ten one-way runs are left, and nothing on file is a better bet than
-     this one. What is worth more than a ninth run is macOS's commit state for T6000, which takes the
-     m1n1 hypervisor: someone else's capture (maralcbr traced a J314s; Naeem's lab,
-     malik-na/m1-power-lab, is public), or one Corey makes here. Claude doesn't build that tool; asking
-     for a capture is Corey's call. Put this to Corey with the run's result.
-   - Read the answer on aurora-silicon/linux#2198, if one has come (`#issuecomment-7014628444`: what
-     bit 3 of the gate word is, whether the PMU's wake source should be masked). A reply needs Corey's OK.
-   - Kept as ideas, not built: CPU0's last WFI with retention left on (CYC_OVRD's bit 0 clear) and
-     its timer at 25 s, one bit changed in run B's recipe, whose `m1_ll_ret()` records a return, with
-     the E complex's state word added to that record (0x44 until the sequencer has cycled it; the gate
-     word says nothing once CPU0 is up again): the best of the three for a ninth run; a secondary core
-     as the last one down with its RVBAR at a stub of ours
+1. **Nothing is waiting for Corey. At the desk** (RESEARCH.md, "The `wake_all=1` run", 2026-11-20): with
+   every named wake source masked (read back) the light blinked to the restart at 90 s. A source the
+   masks let through isn't the hold. Eight of the review's ten one-way runs are used.
+   - **Read the answers first.** Three asks are out: aurora-silicon/linux#2198 (the follow-up of 11-19:
+     what bit 3 of the gate word is), malik-na/linux-aurora#77 (11-20: Naeem's commit-state tracer for a
+     J314s, or one snapshot under macOS on a T600x) and omacom/linux-aurora#290 (11-20: maralcbr's
+     J314s trace or a dump near the commit). Each reply needs Corey's OK.
+   - **macOS's commit state is the thing to get.** If a script or a capture comes back: Corey can run
+     m1n1 on this Mac from their Linux desktop (A3 and A4 below; a second volume with an older macOS,
+     since the installed 26.6.2 can't be the guest). Claude writes no m1n1 code; whether Claude may read
+     a capture is Corey's decision, still open. Claude's part that is free of both: T6000's address list
+     as a plain file, and this Mac's own state at the commit read by the look.
+   - **The ninth run, if one is built before an answer:** CPU0's last WFI with retention left on
+     (CYC_OVRD's bit 0 clear) and its timer at 25 s, one bit changed in run B's recipe with ATC0's chain
+     lowered, and the E complex's state word added to the return's record (0x44 until the sequencer has
+     cycled it; the gate word says nothing once CPU0 is up again). A return with the state word at 0x40
+     or 0x2922c0040 changed is a look into the dark state; a return with both as found, or no return,
+     closes the idea.
+   - Kept as ideas, not built: a secondary core as the last one down with its RVBAR at a stub of ours
      and an interrupt to start it with no core up (two unknown mechanisms); the other words on at the
      commit that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4: macOS's table
-     doesn't lower them either). DBGPRCR_EL1's bit 0 is dropped: the cores' power words read
-     off and the complexes' sequences finish.
-   - `e1_hook.c`'s comments call CYC_OVRD's bit 0 "disable WFI return"; it is "disable WFI retention".
-     Fix the wording with the next change there.
+     doesn't lower them either).
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
    the decoder saying when that driver is bound: until then a run that sets the alarm near needs the
    nights off around it.
 4. Upstream, each reply with Corey's OK: aurora-silicon/linux#2198 (the data, the RVBAR reading and
-   the follow-up of 11-19 are posted; answers may come), malik-na/linux-aurora#77 (the ask of 11-20
-   for his tracer or a T600x snapshot), omacom/linux-aurora#351
+   the follow-up of 11-19 are posted; answers may come), malik-na/linux-aurora#77 and omacom/linux-aurora#290 (the asks of 11-20
+   for macOS's commit state), omacom/linux-aurora#351
    with #454 and #504 stacked on it (no maintainer review yet), #290.
 5. The nights on the charger (installed 2026-11-19) haven't been seen on the Mac: the log will show
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.

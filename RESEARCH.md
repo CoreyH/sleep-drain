@@ -5426,6 +5426,44 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The `wake_all=1` run: every named source masked, the light to the end, the same 90 s (2026-11-20)
+
+`run-floor --no-reading --m1-wake-all` in a safe boot, on battery at about 80%, nothing in the USB-C ports,
+the nights off around it, loaded 12:58 (`results/wake-all-20261120/`; the module built at 00892e9). The eighth
+one-way run since the strategy review.
+
+- **Corey:** "the keyboard blinked for all 90 seconds from what I can see." Watched to the restart.
+- **The record is whole**, and but for one byte it is the `a2_pre=1` run's of 11-19: stage 0x9b, every step's
+  outcome as before, 0x6013 = 0x5f (the 22 words that aren't the fabric's read actual 0, `atc_down=1`'s six among them;
+  the four fabric words, written target f, didn't all read back as written, as in every run since 12), 0x6016 = 0xff (A2's three moves took and settled),
+  WD2 armed and counting with the 120 s bite, `PHASE` 4, the restart 89.3 to 91.3 s after the commit: WD1's
+  marker. 0x0201 = 0x02.
+- **The byte, 0x6008 = 0xe0:**
+  - bit 5 set: words 0 to 5 read back 0xffffffff and word 6's low 13 bits all set. So **source 54, the one
+    the recipe had left open, was masked at the commit**, with every other named source.
+  - bit 4 clear: word 6's bits 31:13 didn't all read back set after a write of ones. They are the ids 0xcd to
+    0xdf, which have no name and which macOS's own value leaves clear: most likely bits that don't exist
+    (inferred; a source that exists and can't be masked would read the same).
+  - bits 2:0 = 0: none of the seven words inferred to be the wake status read non-zero after the masks.
+- **The reads were new in this state and went through:** the seven masks and the seven words after them, in
+  `hold=1`'s recipe with SIO's firmware stopped and the power words lowered.
+
+**What it shows.** With no named wake source open, B2 still doesn't reach its tenth SIO word, and the restart
+is the marker's. A pending source that the masks let through is not what holds the engine, as far as this
+register can mask one. The follow-up of 11-19 asked upstream whether the PMU's source should be masked: for
+the stall it makes no difference. (For a wake it will matter: with source 54 masked nothing would bring a
+sleeping Mac back.)
+
+**What is left, unchanged:** B2's opening in the state no core reads (the count word's bit 2, its bit 3
+clear after the delay, 0x2922c0040's bit 1) and the first handshake. Eight of the review's ten one-way runs
+are used. The three asks out are for macOS's state at its commit, not for more writes to copy.
+
+**Upstream, after the as-built section was written, with Corey's OK** ("I think you can post the comment to
+maralcbr"): the ask to maralcbr went up as a comment on our own drain issue with a mention of them, for the
+J314s trace or a register dump near the commit, or one snapshot taken with T6000's address list
+([omacom/linux-aurora#290](https://github.com/omacom/linux-aurora/issues/290#issuecomment-7038912610)).
+So two asks for the commit state are posted on 11-20, to Naeem (#77 in his repository) and to maralcbr.
+
 ### `wake_all=1` as built: every AP wake source masked, and the ask for macOS's commit state (2026-11-20)
 
 **Why.** "The desk step of 2026-11-20", below: the recipe's wake masks leave two things open, source 54
