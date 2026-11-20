@@ -1,10 +1,10 @@
 # Plan
 
-Last updated 2026-11-19. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-20. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
-## Pick up here (2026-11-19)
+## Pick up here (2026-11-20)
 
 Read this first. "Where things stand" below is the long record and its order of work is superseded by
 this section where they differ.
@@ -36,26 +36,40 @@ this section where they differ.
   lost in both runs that wrote them, though awake they take a write. Use the first five.
 - The SMC's keys across a one-way run say nothing: after four runs and after a plain restart they
   differ only by the charger and the battery.
+- Linux's own deep idle ("CPU PD": retention on, ACC_OVRD untouched) moved no complex's state word
+  and not the gate word in 12 s of samples awake (`results/idle-watch-20261120/`). Bit 0 of CYC_OVRD,
+  which the recipe sets as macOS does, is "disable WFI retention": a core down that way has only its
+  reset vector to come back to. Untried: a last core with ACC_OVRD's deep-sleep fields and retention
+  left on, which might go down in the engine's sense and still return to look.
+- macOS's *state* at its commit has never been read on a T600x; the recipe copies its writes. On T8103
+  that state, read under the m1n1 hypervisor in both systems, showed 54 words differing (Naeem Malik,
+  2026-11-16).
 
 **Next, in this order:**
-1. **Nothing is waiting for Corey. At the desk first** (RESEARCH.md, "The `a2_pre=1` run with the
-   light", 2026-11-19): that run ended at 91 s with A2's moves made and ATC0's chain off, and the
-   light was seen blinking but not watched to the end. What is left between the last WFI and B2's
-   power-downs is B2's opening (the count word's bit 2, its bit 3 clear after a delay,
-   0x2922c0040's bit 1) and the first handshake; A2's moves are less likely, not excluded.
-   - Read the answer on aurora-silicon/linux#2198, if one has come: the follow-up of 11-19
-     (`#issuecomment-7014628444`) asks what bit 3 of the gate word is and whether the PMU's wake
-     source should be masked. A reply needs Corey's OK.
-   - The next run's candidates, none built: the PMU's wake source masked too (source 54, the one
-     bit `m1_wake_mask[]` leaves clear), with the light: one value changed, and the M4 Pro's driver
-     names an unmasked pending wake source as a holder of this gate; the other words on at the
-     commit that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4); DBGPRCR_EL1's
-     bit 0 read on each core, awake.
-   - From here every run with the light is filmed, or watched to the restart: the light is the
-     result, and this run's was seen in part.
-   - The runs since the strategy review (11-15): A, B, the gate look, two of the observer's, ATC0's
-     chain, A2's moves with the light: seven of the ten it budgeted. Before the eighth, ask at the
-     desk whether a returning look or the answer from upstream is worth more than another one-way run.
+1. **The eighth run since the review: every AP wake source masked** (`wake_all=1`, `run-floor
+   --m1-wake-all`: being built on 2026-11-20; RESEARCH.md, "The desk step of 2026-11-20"). It is
+   `--m1-a2-pre-blink`'s run with all seven wake-mask words written 0xffffffff, where the recipe leaves
+   the PMU's source (54) and word 6's unnamed ids open, and one byte at 0x6008 for the read-back. The
+   light is the result: filmed, or watched to the restart. Odds that it stops: one in twenty; it
+   closes the class the M4 Pro's driver names and the follow-up upstream asked about.
+   - After it two of the review's ten one-way runs are left, and nothing on file is a better bet than
+     this one. What is worth more than a ninth run is macOS's commit state for T6000, which takes the
+     m1n1 hypervisor: someone else's capture (maralcbr traced a J314s; Naeem's lab,
+     malik-na/m1-power-lab, is public), or one Corey makes here. Claude doesn't build that tool; asking
+     for a capture is Corey's call. Put this to Corey with the run's result.
+   - Read the answer on aurora-silicon/linux#2198, if one has come (`#issuecomment-7014628444`: what
+     bit 3 of the gate word is, whether the PMU's wake source should be masked). A reply needs Corey's OK.
+   - Kept as ideas, not built: CPU0's last WFI with retention left on (CYC_OVRD's bit 0 clear) and
+     its timer at 25 s, one bit changed in run B's recipe, whose `m1_ll_ret()` records a return, with
+     the E complex's state word added to that record (0x44 until the sequencer has cycled it; the gate
+     word says nothing once CPU0 is up again): the best of the three for a ninth run; a secondary core
+     as the last one down with its RVBAR at a stub of ours
+     and an interrupt to start it with no core up (two unknown mechanisms); the other words on at the
+     commit that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4: macOS's table
+     doesn't lower them either). DBGPRCR_EL1's bit 0 is dropped: the cores' power words read
+     off and the complexes' sequences finish.
+   - `e1_hook.c`'s comments call CYC_OVRD's bit 0 "disable WFI return"; it is "disable WFI retention".
+     Fix the wording with the next change there.
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
