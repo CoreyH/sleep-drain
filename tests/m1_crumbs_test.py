@@ -1124,7 +1124,7 @@ def main():
     check(defs.get("M1_PMU_ALARM_CTRL") == g["ALARM_CTRL"] and defs.get("M1_PMU_ALARM") == g["ALARM"]
           and defs.get("M1_PMU_ALARM_EVENT") == g["ALARM_EVENT"] and defs.get("M1_PMU_ALARM_MASK") == g["ALARM_MASK"]
           and defs.get("M1_ALARM_SECS") == g["ALARM_SECS"]
-          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x15, 0x19, 0x11, 0x09, 0x06, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b, 0x12, 0x13, 0x0a, 0x0b, 0x07, 0x08)
+          and g["ALARM_STAGES"] == (0x59, 0x5f, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x15, 0x19, 0x11, 0x09, 0x06, 0x14, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b, 0x12, 0x13, 0x0a, 0x0b, 0x07, 0x08, 0x18, 0x1c)
           and "alarm ? 0x59 : 0x58" in src and "m1_stage(0x5f)" in src and "hold ? 0x5a : alarm ? 0x59 : 0x58" in src
           and "m1_stage(sio_stop ? 0x4f : 0x5b)" in src and "b[0] = 0x5c" in src and "? 0x5d : 0x5e" in src and "hold ? 0x39 :" in src
           and "hold ? 0x31 :" in src,
@@ -1146,6 +1146,7 @@ def main():
     acc_last_tests(g, src)
     last_look_tests(g, src)
     wake_all_tests(g, src)
+    ll_retn_tests(g, src)
     sio_steps_tests(g, src)
     with tempfile.TemporaryDirectory() as tmp:
         ppath = os.path.join(tmp, "nvmem")
@@ -1370,7 +1371,7 @@ def cluster_ack_tests(g, src):
     # 0x31-0x37 and 0x39 for hold=1's stop requests, 0x4e before the commit, wd2_bite=1's two after it; and fabric_up=1's and
     # gates_mark=1's in place of those three.
     check(g["ACK_EARLY"] == (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39)
-          and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53, 0x4b, 0x54, 0x55, 0x3d, 0x3e, 0x3f, 0x1d, 0x1e, 0x1f, 0x15, 0x16, 0x17, 0x19, 0x1a, 0x1b, 0x11, 0x12, 0x13, 0x09, 0x0a, 0x0b, 0x06, 0x07, 0x08)
+          and g["ACK_MARKED"] == (0x4e, 0x56, 0x57, 0x52, 0x51, 0x53, 0x4b, 0x54, 0x55, 0x3d, 0x3e, 0x3f, 0x1d, 0x1e, 0x1f, 0x15, 0x16, 0x17, 0x19, 0x1a, 0x1b, 0x11, 0x12, 0x13, 0x09, 0x0a, 0x0b, 0x06, 0x07, 0x08, 0x14, 0x18, 0x1c)
           and "b[0] = 0x28;" in after and "m1_stage((hold ? 0x31 : pmgr_late ? 0x29 : 0x21) + i);" in after
           and "b[0] = hold ? 0x39 : pmgr_late ? 0x38 : 0x30;" in after and "b[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;" in after
           and "else if (!recfg_bite && !wd2_bite)\n\t\t\tm1_stage(sio_stop ? 0x4f : 0x5b);" in after
@@ -1834,7 +1835,7 @@ def gates_mark_tests(g, src):
     # Step 8: after stage 0x4b's command and the outcomes, the reads, dsb and isb, then the byte, all before step 9's mask and the commit.
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
     check(in_order_of(after, ["\t\tb[0] = fabric_up ? M1_FAB_STAGE_PRE : sio_stop ? 0x4e : hold ? 0x5a : alarm ? 0x59 : 0x58;\n"
-                              "\t\tif (gates_mark)\n\t\t\tb[0] = gates_stage(b[0]);\n\t\tif (sio_down)\n\t\t\tb[0] = siod_stage(b[0]);\n\t\tif (pcie_down)\n\t\t\tb[0] = pcd_stage(b[0]);\n\t\tif (sio_steps)\n\t\t\tb[0] = sst_stage(b[0]);\n\t\tif (a2_pre)\n\t\t\tb[0] = a2p_stage(b[0]);\n\t\tif (acc_last)\n\t\t\tb[0] = acl_stage(b[0]);\n\t\tif (last_look)\n\t\t\tb[0] = ll_stage(b[0], ll_wake);\n\t\tb[1] = parked",
+                              "\t\tif (gates_mark)\n\t\t\tb[0] = gates_stage(b[0]);\n\t\tif (sio_down)\n\t\t\tb[0] = siod_stage(b[0]);\n\t\tif (pcie_down)\n\t\t\tb[0] = pcd_stage(b[0]);\n\t\tif (sio_steps)\n\t\t\tb[0] = sst_stage(b[0]);\n\t\tif (a2_pre)\n\t\t\tb[0] = a2p_stage(b[0]);\n\t\tif (acc_last)\n\t\t\tb[0] = acl_stage(b[0]);\n\t\tif (last_look)\n\t\t\tb[0] = ll_stage(b[0], ll_wake, ll_retn);\n\t\tb[1] = parked",
                               "\t\tm1_crumb(0x6004, b, 4);\n", "\t\t\tm1_crumb(0x6012, b, 2);\n",
                               "\tif (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre && !acc_last) {\n\t\tu32 g[GATES_N], lane;\n\n\t\tm1_gates_read(g, &lane);\n\t\tdsb(sy);\n\t\tisb();\n"
                               "\t\tm1_gates = gates_byte(g, lane);\n\t\tm1_crumb(GATES_AT, &m1_gates, 1);\n\t}\n",
@@ -1847,7 +1848,7 @@ def gates_mark_tests(g, src):
     wout = cut("static void m1_wd2_out(void)", "\n}\n")
     check("done:\n\tm1_crumb(0x6016, gates_mark ? &m1_gates : &res, 1);\n}" in alarm_fn and alarm_fn.count("m1_crumb(") == 1
           and in_order_of(wout, ["\telse\n\t\tb[0] = fabric_up ? M1_FAB_STAGE : M1_WD2_STAGE;\n",
-                                 "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)\n\t\tb[0] = ll_stage(b[0], ll_wake);\n\tb[1] = m1_wd2_sample("]),
+                                 "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)\n\t\tb[0] = ll_stage(b[0], ll_wake, ll_retn);\n\tb[1] = m1_wd2_sample("]),
           "after the commit: the alarm's one command to the PMU sends the gate byte in its result's place, and the last stage is the run's own",
           alarm_fn + wout)
     # No register written: no MMIO write names the gate pages, and the count of MMIO writes is mark_tests()' as it was.
@@ -2481,7 +2482,7 @@ def sio_down_tests(g, src):
                               "\tif (sio_down)\n\t\tm1_gates = m1_sio_down();\n", "\t/* recfg_bite=1", "/* 9 */", "\tlocal_daif_mask();",
                               "writel_relaxed(1, commit);", "m1_alarm_arm(rtc);"])
           and after.count("m1_sio_down(") == 1 and len(re.findall(r"\bsiod_stage\(", code_only)) == 2
-          and "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)\n\t\tb[0] = ll_stage(b[0], ll_wake);\n\tb[1] = m1_wd2_sample(" in src,
+          and "\tif (gates_mark)\n\t\tb[0] = gates_stage(b[0]);\n\tif (sio_down)\n\t\tb[0] = siod_stage(b[0]);\n\tif (pcie_down)\n\t\tb[0] = pcd_stage(b[0]);\n\tif (sio_steps)\n\t\tb[0] = sst_stage(b[0]);\n\tif (a2_pre)\n\t\tb[0] = a2p_stage(b[0]);\n\tif (acc_last)\n\t\tb[0] = acl_stage(b[0]);\n\tif (last_look)\n\t\tb[0] = ll_stage(b[0], ll_wake, ll_retn);\n\tb[1] = m1_wd2_sample(" in src,
           "step 8: after the stage and the outcomes, in place of gates_mark=1's reads and before step 9's mask and the commit; its byte is"
           " what the alarm's last command sends; the stage is mapped in two places", after[-4500:])
     params = cut("static int __init e1_check_params(void)", "\n}\n")
@@ -7042,8 +7043,8 @@ int main(void)
 			printf("b6 %u %u %x\n", a, b, ll_b6((u8)a, b & 1, b >> 1));
 	printf("b6hi %x\n", ll_b6(0xff, 0, 0));
 	for (a = 0; a < 256; a++)
-		if (ll_stage((u8)a, 0) != a || ll_stage((u8)a, 1) != a)
-			printf("stage %x %x %x\n", a, ll_stage((u8)a, 0), ll_stage((u8)a, 1));
+		if (ll_stage((u8)a, 0, 0) != a || ll_stage((u8)a, 1, 0) != a)
+			printf("stage %x %x %x\n", a, ll_stage((u8)a, 0, 0), ll_stage((u8)a, 1, 0));
 	return 0;
 }
 """
@@ -7381,6 +7382,14 @@ def atc_down_tests(src, pw):
           " mark the bytes that hang on it aren't read", outs[0x5f] + outs[0x9f])
 
 
+def llr_defs(src):
+    """What m1_llr_look() needs beside LL_FN_PRELUDE's pages: the soc-cluster page's pointer (the seventh page, K), EACC's offset and
+    the count of empty returns as e1_hook.c have them, and the run's flag."""
+    lines = [line + "\n" for line in src.splitlines() if re.match(r"#define M1_SOC_EACC\s|static u32 m1_llr_empties;", line)]
+    assert len(lines) == 2, lines
+    return "".join(lines) + "static void *m1_soc = pg[6];\nstatic int ll_retn;\n"
+
+
 def last_look_tests(g, src):
     """last_look=1 and ll_wake=1: last_look.h against an independent reading of it; m1_ll_ret(), m1_ll_blink(), m1_ll_timer() and
     m1_pmu_ok() compiled as they stand against pages that log every access; the places in e1_hook.c that use them; and the
@@ -7399,6 +7408,8 @@ def last_look_tests(g, src):
     send_fn, ret_fn, timer_fn, blink_fn = (cut("static void m1_ll_send(", "\n}\n"), cut("static void m1_ll_ret(void)", "\n}\n"),
                                            cut("static void m1_ll_timer(void)", "\n}\n"), cut("static bool m1_ll_blink(void)", "\n}\n"))
     look_fn = cut("static void m1_ll_look(void)", "\n}\n")
+    # ll_retn=1's look, which m1_ll_ret() calls for its first return in that run alone: compiled in, and not called here (ll_retn 0).
+    llr_part = llr_defs(src) + cut("static u8 m1_llr_look(void)", "\n}\n")
     okdefs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_ALARM_ON|M1_PMU_RTC)\s", line))
     with tempfile.TemporaryDirectory() as tmp:
         def build(name, code):
@@ -7412,7 +7423,7 @@ def last_look_tests(g, src):
             return subprocess.run([exe, *args], capture_output=True, text=True, check=True).stdout.splitlines()
 
         hdr = [l.split() for l in lines(build("llhdr", LL_HDR))]
-        fn = build("llfn", LL_FN_PRELUDE + defs + send_fn + ret_fn + look_fn + timer_fn + blink_fn + LL_FN_MAIN)
+        fn = build("llfn", LL_FN_PRELUDE + defs + send_fn + llr_part + ret_fn + look_fn + timer_fn + blink_fn + LL_FN_MAIN)
         ret, dead, timer = lines(fn, "ret"), lines(fn, "dead"), lines(fn, "timer")
         look, look_dead, ret_look = lines(fn, "look"), lines(fn, "lookdead"), lines(fn, "retlook")
         ogfn = build("ogfn", LL_FN_PRELUDE + defs + og_defs + "static void m1_use(void) { (void)m1_sio; (void)m1_spmi; (void)m1_ll_pwm; (void)writel;"
@@ -7469,10 +7480,12 @@ def last_look_tests(g, src):
     check(g["LL_PRE"] == 0x09 and g["LL_WD2"] == (0x0a, 0x0b) and g["LLW_PRE"] == 0x06 and g["LLW_WD2"] == (0x07, 0x08)
           and g["LL_WD1_COUNT_S"] == 80 and g["LL_ALARM_SECS"] == 20 and g["LL_TIMER_S"] == 25 and g["LL_BLINK_BIT"] == 0x40
           and g["LL_CRUMBS"] == (0x6008, 7) and g["R0201"] == 0x0201 and len(g["LL_T"]) == 8 and len(g["LL_PCIE"]) == 5
-          and not set(g["LL_STAGES"]) & (set(g["STAGES"]) - set(g["LL_STAGES"])) and len(set(g["LL_STAGES"])) == 6
+          and not set(g["LL_STAGES"]) & (set(g["STAGES"]) - set(g["LL_STAGES"])) and len(set(g["LL_STAGES"])) == 9
+          and g["LL_STAGES"] == (0x09, 0x0a, 0x0b, 0x06, 0x07, 0x08, 0x14, 0x18, 0x1c) and g["LLW_STAGES"] == (0x06, 0x07, 0x08, 0x14, 0x18, 0x1c)
           and all(s not in g["GATES_STAGES"] + g["SIOD_STAGES"] + g["PCD_STAGES"] + g["SST_STAGES"] + g["A2P_STAGES"] + g["ACL_STAGES"] + g["POSITION"]
                   + (g["PROBE_STAGE"], g["LOOK_STAGE"], g["FAB_PRE"]) + g["FAB_WD2"] for s in g["LL_STAGES"]),
-          "m1-crumbs has the header's stages, count, alarm, timer and bit, and the six stages are no other run's")
+          "m1-crumbs has the header's stages, count, alarm, timer and bit, and the nine stages (ll_retn=1's three among them, which count as"
+          " ll_wake=1's for the alarm, the timer and the light) are no other run's")
 
     # m1_ll_ret(): the first return's three commands, each sent before the next one's reads, then the second and the hundredth.
     acks = [f"w A {0x60 + 4 * i:x} ffffffff" for i in range(9)]
@@ -7540,7 +7553,7 @@ def last_look_tests(g, src):
                               "\tif (!ret && gate_look) {\n\t\tv = LL_ARMED;", "\t\tret = m1_kwrite(LL_AT, &v, 1);\n\t}\n\tif (ret)\n\t\treturn ret;\n"])
           and "if (gate_look && !last_look) {" in src and "module_param(gate_look, bool, 0444);" in src and "\nstatic bool gate_look;\n" in src
           and 'll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : ""' in src
-          and len(re.findall(r"\bm1_ll_look\(", code_only)) == 2 and len(re.findall(r"\bgate_look\b", code_only)) == 10,
+          and len(re.findall(r"\bm1_ll_look\(", code_only)) == 2 and len(re.findall(r"\bgate_look\b", code_only)) == 11,  # 11: ll_retn=1 refuses it
           "gate_look=1 is off unless asked for, refuses without last_look=1, can't be set after the load and is named in the load line; K1 writes"
           " its mark over the zeroed 0x6008 through the kernel's path; m1_ll_look() has one caller")
 
@@ -7685,7 +7698,7 @@ def last_look_tests(g, src):
           and len(re.findall(r"\bm1_ll_wfi\(", code_only)) == 2,
           "CPU0's WFI with last_look=1 keeps x18 to x30 on the stack across it, as the kernel's deep idle does, pushed before the barriers and"
           " the WFI and popped after in the reverse order; every other core's WFI is the three instructions as before")
-    check("\t\tif (look)\n\t\t\tm1_ll_ret();\n\t}\n}" in wfi and wfi.index("m1_ll_wfi();") < wfi.index("m1_ll_ret();")
+    check("\t\tif (look)\n\t\t\tm1_ll_ret();\n\t\tif (retn) {\n" in wfi and wfi.index("m1_ll_wfi();") < wfi.index("m1_ll_ret();")
           and re.findall(r"\bm1_deep_wfi\(([^)]*)\)", code_only) == ["struct m1_core *mark, bool look", "NULL, false", "NULL, false", "obs ? &m1_core[0] : NULL, last_look"]
           and len(re.findall(r"\bm1_ll_ret\(", code_only)) == 2,
           "m1_deep_wfi() calls m1_ll_ret() after a WFI that returned, only where its caller asks: CPU0's call passes last_look, the parked cores' false")
@@ -8503,7 +8516,7 @@ def wake_all_tests(g, src):
                                "\tif (wake_all && (!gates_mark || observe)) {\n\t\tpr_err(\"wake_all=1 needs gates_mark=1 and no observe=1 (it's that family's run with all"
                                " seven AP wake-mask words written 0xffffffff in step 7 and one byte at 0x6008;", "\t\treturn -EINVAL;\n\t}\n\tif (gate_look && !last_look) {\n"])
           and "\nstatic bool wake_all;\nmodule_param(wake_all, bool, 0444);\nMODULE_PARM_DESC(wake_all, \"With gates_mark=1, never with observe=1:" in src
-          and 'blink ? " blink=1" : "", wake_all ? " wake_all=1" : "", pre_test ?' in src
+          and 'blink ? " blink=1" : "", wake_all ? " wake_all=1" : "", ll_retn ?' in src
           and not re.search(r"\bwake_all\s*=[^=]", code_only) and len(re.findall(r"\bwake_all\b", code_only)) == 14
           and "if (last_look && (!wd1_mark || gates_mark ||" in src,
           "wake_all=1 is off unless asked for, refuses without gates_mark=1 or with observe=1, can't be set after the load and is named in the"
@@ -8688,6 +8701,762 @@ def wake_all_tests(g, src):
                   f"--clear with {(r + bytes(7))[:7].hex(' ')} at 0x6008-0x600e under stage 0x{stage:02x}: not what a wake_all=1 run leaves (something in the six"
                   " after it, bit 3, or the byte under another run's stage), so the seven are left as they are, and said to be",
                   out + err + f"\n{after_[0x6000:0x6020].hex(' ')}")
+
+
+LLR_HDR = r"""
+#include <stdio.h>
+#include "last_look.h"
+int main(void)
+{
+	static const u32 top[4] = { 0xff, 3, 0xf, 0x7f };	/* the most each word may read with nothing above what the bytes carry */
+	unsigned int a, w, k;
+
+	printf("const %x %x %x %llx %llx %llx %u %x %x\n", M1_LLR_STAGE_PRE, M1_LLR_STAGE_PEND, M1_LLR_STAGE, (unsigned long long)LLR_CYC_DEEP,
+	       (unsigned long long)LLR_CYC_NO_RETN, (unsigned long long)LLR_CYC_RETN, LLR_SPURIOUS_MAX, LLR_EMPTY, LLR_WIDE);
+	for (a = 0; a < 1024; a++) {
+		/* a word with a's ten bits lowest, and every bit above them clear or set */
+		u32 hi = a | 0xfffffc00U;
+
+		printf("b2 %x %x %x\n", a, llr_b2(a), llr_b2(hi));
+		printf("b4 %x %x %x %x %x\n", a, llr_b4(a, 0), llr_b4(0, a), llr_b4(hi, 0), llr_b4(0, hi));
+	}
+	for (a = 0; a < 64; a++)
+		for (w = 0; w < 16; w++)
+			for (k = 0; k < 4; k++)
+				printf("b3 %x %x %u %x %x\n", a, w, k, llr_b3(a, w, k & 1, k >> 1), llr_b3(a | 0xffffffc0U, w | 0xfffffff0U, k & 1, k >> 1));
+	/* llr_wide(): each of the four words alone, one bit at a time, then at the most it may read, then all four there. */
+	for (w = 0; w < 4; w++) {
+		for (k = 0; k < 32; k++)
+			printf("wide %u %u %u\n", w, k, llr_wide(w == 0 ? 1U << k : 0, w == 1 ? 1U << k : 0, w == 2 ? 1U << k : 0, w == 3 ? 1U << k : 0));
+		printf("top %u %u\n", w, llr_wide(w == 0 ? top[0] : 0, w == 1 ? top[1] : 0, w == 2 ? top[2] : 0, w == 3 ? top[3] : 0));
+	}
+	printf("tops %u %u\n", llr_wide(top[0], top[1], top[2], top[3]), llr_wide(0, 0, 0, 0));
+	for (a = 0; a < 256; a++)
+		for (k = 0; k < 4; k++)
+			if (ll_stage((u8)a, k & 1, k >> 1) != a)
+				printf("stage %x %u %u %x\n", a, k & 1, k >> 1, ll_stage((u8)a, k & 1, k >> 1));
+	return 0;
+}
+"""
+# What stands in for the hardware under m1_deep_wfi(), m1_llr_empty(), m1_llr_look(), m1_ll_ret() and m1_llr_init(), beside
+# LL_FN_PRELUDE's logged pages, system registers and PMU commands. CYC_OVRD is a variable: m1_deep_wfi()'s three inline-asm
+# statements are replaced in its text, by exact match, with calls that log (its mrs by cyc_read(), its two msr-and-isb by
+# cyc_write(), the other cores' dsb-isb-wfi by wfi_plain()), and m1_ll_wfi(), the module's asm function, is a stub. Each WFI
+# "returns" by the script: what ISR_EL1 and CPU0's timer read then, and the time; past the script's end it never returns.
+# So what is run is the C around the instructions, not the instructions: that the registers survive a WFI is the build's
+# and the Mac's to show.
+LLR_FN_MOCKS = r"""
+#include <stdlib.h>
+#define __noreturn __attribute__((noreturn))
+#define __init
+#define GENMASK_ULL(h, l) ((~0ULL >> (63 - (h))) & (~0ULL << (l)))
+#define BIT_ULL(n) (1ULL << (n))
+#define READ_ONCE(x) (x)
+#define WRITE_ONCE(x, v) ((x) = (v))
+#define PAGE_SIZE 0x4000UL
+#define ENOMEM 12
+#define pr_err(...) printf("err " __VA_ARGS__)
+#define pr_info(...) printf("info " __VA_ARGS__)
+struct m1_core {
+	u32 wfi_ret;
+};
+static void m1_clean(struct m1_core *c)
+{
+	printf("clean %u\n", c->wfi_ret);
+}
+static int map_fails;
+static void *ioremap_np(unsigned long long addr, unsigned long size)
+{
+	printf("map %llx %lx\n", addr, size);
+	return map_fails ? NULL : pg[6];
+}
+/* Bits 23:20, 8 and 0 set and bits 25:24 clear before the first write, and a pattern at the top: what is kept shows. */
+static u64 cyc_reg = 0xa500000000f00101ULL;
+static u64 cyc_read(void)
+{
+	printf("cyc? %llx\n", (unsigned long long)cyc_reg);
+	return cyc_reg;
+}
+static void cyc_write(u64 v)
+{
+	cyc_reg = v;
+	printf("cyc %llx\n", (unsigned long long)v);
+}
+static const char *kinds = "";
+static void wfi_ret(const char *how)
+{
+	printf("%s %llx\n", how, (unsigned long long)(cyc_reg & 0x3f00001));
+	switch (*kinds) {
+	case 0:
+		printf("never\n");
+		fflush(stdout);
+		exit(0);
+	case 't':	/* CPU0's timer: an FIQ, the timer firing, 25.5 s after the commit's last write */
+		isr_el1 = 1U << 6;
+		cntp_ctl_el0 = 5;
+		clk = m1_t_third + 51 * m1_tps / 2;
+		break;
+	case 'i':	/* an IRQ, 1 ms on */
+		isr_el1 = 1U << 7;
+		clk += m1_tps / 1000;
+		break;
+	case 'a':	/* an SError, 1 ms on */
+		isr_el1 = 1U << 8;
+		clk += m1_tps / 1000;
+		break;
+	default:	/* 'e': nothing pending, 1 ms on */
+		isr_el1 = 0;
+		clk += m1_tps / 1000;
+		break;
+	}
+	kinds++;
+}
+static void m1_ll_wfi(void)
+{
+	wfi_ret("wfi");
+}
+static void wfi_plain(void)
+{
+	wfi_ret("plainwfi");
+}
+"""
+LLR_FN_MAIN = r"""
+/* argv: "init" and a case; or look, ll_retn, mark, which word is wide, dead (each 0 or 1, the fourth a letter) and the returns. */
+int main(int argc, char **argv)
+{
+	static const u16 sio[SIOD_N] = SIOD_OFFS, pcie[PCD_N] = PCD_OFFS;
+	static struct m1_core core;
+	unsigned int i;
+
+	(void)m1_ll_pwm;
+	(void)cntp_tval_el0;
+	post_map[73] = pg[4];
+	if (argc == 3) {
+		pg[6][OG_ST_E / 4] = 0x44;
+		pg[6][OG_ST_P0 / 4] = 0x40;
+		pg[6][OG_ST_P1 / 4] = 0x40;
+		pg[6][M1_SOC_EACC / 4] = 0x0f;
+		pg[6][M1_SOC_PACC0 / 4] = 0x2f;
+		pg[6][M1_SOC_PACC1 / 4] = 0x2f;
+		if (strcmp(argv[2], "mapped"))
+			m1_soc = NULL;
+		map_fails = !strcmp(argv[2], "mapfail");
+		if (!strcmp(argv[2], "nopos"))
+			m1_pos = NULL;
+		if (!strcmp(argv[2], "nops"))
+			m1_ps = NULL;
+		if (!strcmp(argv[2], "nopos") || !strcmp(argv[2], "nops"))
+			m1_soc = pg[6];
+		printf("ret %d\n", m1_llr_init());
+		printf("soc %d\n", m1_soc == (void *)pg[6]);
+		return 0;
+	}
+	if (argc != 7)
+		return 2;
+	/* Every word the look reads, set to a value whose byte is known: m1_ll_ret()'s in LL_FN_MAIN, with 0x2922c0040 at its awake 3. */
+	for (i = 0; i < SIOD_N; i++)
+		pg[1][sio[i] / 4] = i < 12 ? 0x0000030f : 0x0f0000ff;
+	for (i = 0; i < PCD_N; i++)
+		pg[2][pcie[i] / 4] = i == 0 || i == 2 ? 0x300 : 0xff;
+	pg[1][M1_PS_ANS2 / 4] = 0x300;
+	pg[2][M1_PS_PMP_RO / 4] = 0xff;
+	pg[0][M1_POS_GATE40 / 4] = 0x00000003;
+	pg[0][M1_POS_GATE44 / 4] = 0x1230000c;	/* its bits above the nibble are not among those "wide" speaks of */
+	pg[0][M1_POS_PHASE / 4] = 0x00000004;
+	pg[0][LL_HS_B / 4] = 0x80000002;
+	pg[4][M1_POS_HS_A / 4] = 1U << 24;
+	pg[6][OG_ST_E / 4] = 0x0000001a;
+	pg[6][M1_SOC_EACC / 4] = 0x00000050;
+	switch (argv[4][0]) {
+	case 's':
+		pg[6][OG_ST_E / 4] = 0x0000011a;
+		break;
+	case 'g':
+		pg[0][M1_POS_GATE40 / 4] = 0x00000007;
+		break;
+	case 'p':
+		pg[0][M1_POS_PHASE / 4] = 0x00000014;
+		break;
+	case 'e':
+		pg[6][M1_SOC_EACC / 4] = 0x000000d0;
+		break;
+	}
+	ll_retn = argv[2][0] == '1';
+	dead = argv[5][0] == '1';
+	kinds = argv[6];
+	cntp_ctl_el0 = 1;	/* ll_wake=1's timer: enabled, unmasked, not firing yet */
+	clk = m1_t_third;
+	m1_deep_wfi(argv[3][0] == '1' ? &core : NULL, argv[1][0] == '1');
+}
+"""
+# SIO's 43 power words in B2's order (sio_down.h's), as last_look_tests() has them.
+LLR_SIO = [0x188, 0x1a8, 0x1b0, 0x1b8, 0x1c0, 0x1c8, 0x1d0, 0x1d8, 0x1e0, 0x190, 0x198, 0x1a0, 0x218, 0x220, 0x228, 0x2d0, 0x1f0, 0x1f8, 0x200, 0x208,
+           0x210, 0x238, 0x240, 0x248, 0x250, 0x258, 0x260, 0x268, 0x270, 0x288, 0x290, 0x298, 0x2a0, 0x2a8, 0x2b0, 0x2b8, 0x2c0, 0x2c8, 0x280, 0x1e8,
+           0x230, 0x278, 0x180]
+
+
+def llr_model(look, retn, mark, kinds, wide="-", dead=False):
+    """What the harness must print for m1_deep_wfi(mark, look) with ll_retn as given, over these returns of the WFI: a second
+    writing-out of the brief, not of the code. kinds: one letter a return (e nothing pending, t CPU0's timer, i an IRQ, a an
+    SError)."""
+    acks = [f"w A {0x60 + 4 * i:x} ffffffff" for i in range(9)]
+
+    def cmd(line):
+        return ([] if dead else [line]) + acks
+
+    power = ([f"r S {o:x}" for o in LLR_SIO] + ["r S 190"] + [f"r P {o:x}" for o in (0x2e8, 0x2f0, 0x320, 0x148, 0x150)] + ["r S 3b8", "r P 2d8"]
+             + cmd("c 600d cc a5"))
+    retention = bool(look and retn)
+    # Bits 25:20 and bit 0 cleared, bits 25:24 set, everything else kept; bit 0 set unless this is CPU0's retention phase.
+    cyc = 0xa500000003000100 | (0 if retention else 1)
+    out = ["cyc? a500000000f00101", f"cyc {cyc:x}"]
+    n = empties = rets = ms = 0
+    ctl, b0 = 1, None
+    for k in kinds:
+        out.append(f"{'wfi' if look else 'plainwfi'} {cyc & 0x3f00001:x}")
+        isr = {"e": 0, "t": 1, "i": 2, "a": 4}[k]
+        if k == "t":
+            ctl, ms = 5, 25500
+        else:
+            ms += 1
+        if mark:
+            rets += 1
+            out.append(f"clean {rets}")
+        if retention:
+            out.append("sr isr_el1")
+            if not isr:
+                empties += 1
+                if empties < 1000:
+                    continue
+        if look:
+            n = min(n + 1, 101)
+            if n in (2, 100):
+                b0 = b0 & ~3 | (2 if n == 2 else 3)
+                out += cmd(f"c 6008 {b0:02x}")
+            if n == 1:
+                b0 = 0x80 | next((i for i, edge in enumerate((10, 100, 1000, 5000, 15000, 22000, 30000)) if ms < edge), 7) << 4 | 1
+                b1 = isr | (8 if ctl & 4 else 0) | 0xd0  # HS_A's bit 24, HS_B's bits 1 and 31
+                ctl = 0
+                out += ["sr isr_el1", "sr cntp_ctl_el0", "sw cntp_ctl_el0 0"] + cmd(f"c 6008 {b0:02x}")
+                out += ["r C 4", "r E 10c", "r E 40", "r E 44", "r E 110"]
+                if retn:
+                    b3 = 0x3c | (0x40 if wide != "-" else 0) | (0x80 if empties >= 1000 else 0)
+                    out += ["r K 2000", "r K 0"] + cmd(f"c 6009 {b1:02x} 1a {b3:02x} d4")
+                else:
+                    out += cmd(f"c 6009 {b1:02x} 03 0c 84")
+                out += power
+        if retention:
+            retention = False
+            cyc |= 1
+            out.append(f"cyc {cyc:x}")
+    return out + [f"{'wfi' if look else 'plainwfi'} {cyc & 0x3f00001:x}", "never"]
+
+
+def ll_retn_tests(g, src):
+    """ll_retn=1: last_look.h's helpers against a second writing-out; m1_deep_wfi(), m1_llr_empty(), m1_llr_look(), m1_ll_ret()
+    and m1_llr_init() compiled as they stand against pages, system registers and a CYC_OVRD that log every access, with the
+    WFI's returns scripted (LLR_FN_MOCKS says what is mocked); where e1_hook.c uses them; K1, the undo and m1_pmu_ok() for the
+    family; and the record under its own stages through m1-crumbs."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    hdr_src = open(os.path.join(os.path.dirname(HOOK), "last_look.h")).read()
+    tool = open(TOOL).read()
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
+    defs = "".join(line + "\n" for line in src.splitlines()
+                   if re.match(r"#define (M1_SPMI_WORDS|M1_SPMI_ACK\(w\)|M1_POS_(GATE40|GATE44|PHASE|HS_A)|M1_PS_ANS2|M1_PS_PMP_RO|M1_SOC_(CLUSTERS|PACC0|PACC1))\s", line))
+    okdefs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_ALARM_ON|M1_PMU_RTC)\s", line))
+    wfi = cut("static void __noreturn m1_deep_wfi(struct m1_core *mark, bool look)", "\n}\n")
+    empty_fn, look_fn = cut("static bool m1_llr_empty(void)", "\n}\n"), cut("static u8 m1_llr_look(void)", "\n}\n")
+    ret_fn, send_fn, init_fn = cut("static void m1_ll_ret(void)", "\n}\n"), cut("static void m1_ll_send(", "\n}\n"), cut("static int __init m1_llr_init(void)", "\n}\n")
+    mrs, msr, plain = ('asm volatile("mrs %0, s3_5_c15_c5_0" : "=r"(cyc));', 'asm volatile("msr s3_5_c15_c5_0, %0; isb" : : "r"(cyc));',
+                       'asm volatile("dsb sy; isb; wfi" : : : "memory");')
+    check(wfi.count(mrs) == 1 and wfi.count(msr) == 2 and wfi.count(plain) == 1 and wfi.count("asm") == 4 and wfi.count("m1_ll_wfi();") == 1,
+          "m1_deep_wfi() has four inline-asm statements and no other: CYC_OVRD read once and written in two places, and the other cores' WFI;"
+          " CPU0's WFI is m1_ll_wfi(). The harness replaces exactly these", wfi)
+    mocked = wfi.replace(mrs, "cyc = cyc_read();").replace(msr, "cyc_write(cyc);").replace(plain, "wfi_plain();")
+    cases = {"timer": (1, 1, 0, "t"), "five": (1, 1, 0, "eeeeet"), "cap": (1, 1, 0, "e" * 1000), "edge": (1, 1, 0, "e" * 999 + "t"), "never": (1, 1, 0, ""),
+             "again": (1, 1, 0, "tt"), "again0": (1, 1, 0, "te"), "hundred": (1, 1, 0, "t" + "eit" * 33 + "eee"), "irq": (1, 1, 0, "i"), "serror": (1, 1, 0, "eea"),
+             "capthen": (1, 1, 0, "e" * 1000 + "et"), "short": (1, 1, 0, "e" * 400), "plain": (1, 0, 0, "tt"), "plain0": (1, 0, 0, "eet"),
+             "other": (0, 1, 0, "et"), "othermark": (0, 1, 1, "et"), "old": (0, 0, 0, "t"), "oldmark": (0, 0, 1, "ee")}
+    with tempfile.TemporaryDirectory() as tmp:
+        def build(name, code):
+            c = os.path.join(tmp, name + ".c")
+            with open(c, "w") as f:
+                f.write(code)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(tmp, name), c], check=True)
+            return os.path.join(tmp, name)
+
+        def lines(exe, *args):
+            return subprocess.run([exe, *args], capture_output=True, text=True, check=True).stdout.splitlines()
+
+        hdr = [l.split() for l in lines(build("llrhdr", LLR_HDR))]
+        fn = build("llrfn", LL_FN_PRELUDE + defs + llr_defs(src) + LLR_FN_MOCKS + send_fn + empty_fn + look_fn + ret_fn + mocked + init_fn + LLR_FN_MAIN)
+        got = {name: lines(fn, str(look), str(retn), str(mark), "-", "0", kinds) for name, (look, retn, mark, kinds) in cases.items()}
+        wides = {w: lines(fn, "1", "1", "0", w, "0", "t") for w in "sgpe"}
+        dead = lines(fn, "1", "1", "0", "-", "1", "tt")
+        inits = {c: lines(fn, "init", c) for c in ("mapped", "unmapped", "mapfail", "nopos", "nops")}
+        okl = [l.split() for l in lines(build("llrok", "#include <stdio.h>\n#include <stdbool.h>\n#include <stdint.h>\ntypedef uint8_t u8;\n"
+                                               + pmu_ok_defs() + okdefs + cut("static bool m1_pmu_ok(bool write,", "\n}\n") + LL_OK_MAIN))]
+        k1 = k1_build(tmp, src)
+        record, zeros = "e1d91a3cd4cca5", "00000000000000"
+        k1_runs = {m: (k1(m, record), k1(m, zeros, record)) for m in ("lastlook", "plain", "wakeall", "observe")}
+
+    # The header.
+    check([r for r in hdr if r[0] == "const"] == [["const", "14", "18", "1c", "3000001", "1", "3000000", "1000", "80", "40"]]
+          and "#define M1_LLR_STAGE_PRE\t0x14" in hdr_src and "#define M1_LLR_STAGE_PEND\t0x18\n" in hdr_src and "#define M1_LLR_STAGE\t\t0x1c\n" in hdr_src,
+          "last_look.h: ll_retn=1's stages are 0x14, 0x18 and 0x1c; CYC_OVRD as the recipe has it is 0x3000001, the bit left clear is bit 0, and"
+          " what CPU0 writes for its last WFI is 0x3000000; the look is made at the 1000th empty return; the flags in 0x600b are bits 7 and 6",
+          str([r for r in hdr if r[0] == "const"]))
+    b2, b4 = [[int(x, 16) for x in r[1:]] for r in hdr if r[0] == "b2"], [[int(x, 16) for x in r[1:]] for r in hdr if r[0] == "b4"]
+    check(len(b2) == 1024 and all(lo == hi == a & 0xff for a, lo, hi in b2),
+          "llr_b2(): the state word's low byte and nothing of the word above it")
+    check(len(b4) == 1024 and all(e == eh == 0x80 | (a >> 4 & 7) << 4 and p == ph == 0x80 | a & 0xf for a, e, p, eh, ph in b4),
+          "llr_b4(): bit 7 always, EACC's bits 6:4 in bits 6:4 and nothing else of that word (not its target nibble, nothing above bit 6),"
+          " PHASE's low nibble in bits 3:0 and nothing above it")
+    b3 = [[int(x, 16) for x in r[1:]] for r in hdr if r[0] == "b3"]
+    check(len(b3) == 64 * 16 * 4 and all(v == vh == (a & 0xf) | (w & 3) << 4 | (k & 1) << 6 | (k >> 1) << 7 for a, w, k, v, vh in b3),
+          "llr_b3(): 0x2922c0044's low nibble in bits 3:0, 0x2922c0040's bits 1:0 in bits 5:4, 'wide' in bit 6, 'made at the last empty return'"
+          " in bit 7, and nothing else of either word")
+    wide = {(int(r[1]), int(r[2])): int(r[3]) for r in hdr if r[0] == "wide"}
+    first = (8, 2, 4, 7)  # the first bit of each word that the bytes don't carry: the state word, 0x2922c0040, PHASE, EACC's word
+    check(len(wide) == 128 and all(v == int(k >= first[w]) for (w, k), v in wide.items())
+          and [r[1:] for r in hdr if r[0] == "top"] == [[str(w), "0"] for w in range(4)] and [r for r in hdr if r[0] == "tops"] == [["tops", "0", "0"]],
+          "llr_wide(): set by any bit of the state word above bit 7, of 0x2922c0040 above bit 1, of PHASE above bit 3 or of EACC's word above"
+          " bit 6, each alone, and by no bit below those: not with each word, or all four, at the most its bits in the record can say",
+          str(sorted(k for k, v in wide.items() if v)[:8]))
+    stages = sorted((int(r[1], 16), int(r[2]), int(r[3]), int(r[4], 16)) for r in hdr if r[0] == "stage")
+    want_st = sorted((s, w, r, {0: ll, 1: lw}[w] if not r else lr) for s, ll, lw, lr in ((0x52, 0x09, 0x06, 0x14), (0x51, 0x0a, 0x07, 0x18), (0x53, 0x0b, 0x08, 0x1c))
+                     for w in (0, 1) for r in (0, 1))
+    check(stages == want_st,
+          "ll_stage(): fabric_up=1's three stages alone are mapped, in each of the three sets: last_look=1's 0x09, 0x0a, 0x0b, ll_wake=1's 0x06,"
+          " 0x07, 0x08, and with ll_retn=1 0x14, 0x18, 0x1c for 0x52, 0x51, 0x53, whatever ll_wake is given as", str(stages))
+    every = [int(v, 16) for name in os.listdir(os.path.dirname(HOOK)) if name.endswith((".h", ".c"))
+             for v in re.findall(r"#define \w*STAGE\w*\s+0x([0-9a-f]{2})\b", open(os.path.join(os.path.dirname(HOOK), name)).read())]
+    known = (set(g["STAGES"]) | set(g["OBSERVE_STAGES"]) | set(g["LATE"]) | set(range(0x21, 0x28)) | set(range(0x31, 0x3a)) | set(range(0x58, 0x60))
+             | {0x4e, 0x4f, 0x56, 0x57, g["FAB_PRE"], g["PROBE_STAGE"], g["LOOK_STAGE"], g["LL_PRE"], g["LLW_PRE"]} | set(g["FAB_WD2"]) | set(g["GATES_STAGES"])
+             | set(g["SIOD_STAGES"]) | set(g["SIOD1_STAGES"]) | set(g["PCD_STAGES"]) | set(g["SST_STAGES"]) | set(g["A2P_STAGES"]) | set(g["ACL_STAGES"])
+             | set(g["LL_WD2"]) | set(g["LLW_WD2"]) | set(g["POSITION"]) | set(g["DISP_STAGES"]) | set(g["RECFG_STAGES"]) | set(g["OG_STAGES"])
+             | set(g["WA_EARLY"]))
+    check(g["LLR_PRE"] == 0x14 and g["LLR_WD2"] == (0x18, 0x1c) and g["LLR_STAGES"] == (0x14, 0x18, 0x1c) and not set(g["LLR_STAGES"]) & known
+          and all(every.count(s) == 1 for s in g["LLR_STAGES"]) and set(g["LLR_STAGES"]) <= set(g["LL_STAGES"]) and set(g["LLR_STAGES"]) <= set(g["LLW_STAGES"])
+          and g["LLR_PRE"] in g["PRE_STAGES"] and g["LLR_WD2"][0] in g["WD2_PEND"] and g["LLR_WD2"][1] not in g["WD2_PEND"] and set(g["LLR_WD2"]) <= set(g["WD2_STAGES"])
+          and all(g["HOLD"][s] == 0x50 and s in g["HOLD_TEXT"] and "ll_retn=1" in g["HOLD_TEXT"][s] for s in g["LLR_STAGES"])
+          and (g["LLR_SPURIOUS_MAX"], g["LLR_EMPTY"], g["LLR_WIDE"], g["LLR_LANDED"]) == (1000, 0x80, 0x40, 0x80)
+          and set(g["LLR_ST"]) == set(g["OG_ST"]) | {0x44} and all(g["LLR_ST"][k] == v for k, v in g["OG_ST"].items()),
+          "m1-crumbs has the header's three stages, no other run's and no other define's in e1-hook/: 0x14 the last before the commit, 0x18 the"
+          " pending one, 0x1c the clean one; they count as last_look=1's and as ll_wake=1's (the marker at 70 s, the alarm, the timer, the"
+          " light); it has the 1000, the two flags and the mark, and the state word's names are obs_gate=1's with 0x44 added")
+
+    # The retention phase, as it stands, against the model.
+    wrong = [name for name, (look, retn, mark, kinds) in cases.items() if got[name] != llr_model(look, retn, mark, kinds)]
+    acks = [f"w A {0x60 + 4 * i:x} ffffffff" for i in range(9)]
+    t = got["timer"]
+    check(not wrong and t[:5] == ["cyc? a500000000f00101", "cyc a500000003000100", "wfi 3000000", "sr isr_el1", "sr isr_el1"]
+          and t[5:8] == ["sr cntp_ctl_el0", "sw cntp_ctl_el0 0", "c 6008 e1"] and t[8:17] == acks
+          and t[17:25] == ["r C 4", "r E 10c", "r E 40", "r E 44", "r E 110", "r K 2000", "r K 0", "c 6009 d9 1a 3c d4"]
+          and t[-13:-12] == ["c 600d cc a5"] and t[-3:] == ["cyc a500000003000101", "wfi 3000001", "never"] and t.count("r K 2000") == 1 and len(t) == 98,
+          "ll_retn=1, CPU0's timer ending its WFI at once: CYC_OVRD read, and written with bits 25:20 and bit 0 cleared and bits 25:24 set, the"
+          " rest kept (0x3000000 in the field); the WFI; ISR_EL1 read, non-zero; then the look, once: ISR_EL1 and the timer's control read,"
+          " the control written 0, 0x6008 sent (0xe1: 22 to 30 s, once) and acked; HS_A, HS_B, 0x2922c0040, 0x2922c0044 and PHASE read, then"
+          " the two new reads, the E complex's state word and EACC's word, and 0x6009-0x600c sent (0xd9, 0x1a, 0x3c, 0xd4); B2's power"
+          " words read and 0x600d-0x600e sent; then CYC_OVRD written again with bit 0 set, the same value otherwise (0x3000001 in the"
+          " field), and the next WFI is taken with it. All eighteen scripts match the model line for line", f"{wrong}\n" + "\n".join(t[:30]))
+    five, cap, edge = got["five"], got["cap"], got["edge"]
+    check(five[:12] == ["cyc? a500000000f00101", "cyc a500000003000100"] + ["wfi 3000000", "sr isr_el1"] * 5 and five[12:] == t[2:]
+          and not [l for l in five[:12] if l.startswith(("c ", "r ", "w ", "sw "))],
+          "five returns with nothing pending, then the timer: each empty return reads ISR_EL1 and nothing else, sends nothing, writes nothing,"
+          " and the WFI is taken again with CYC_OVRD as it was (0x3000000); the sixth return is the look, exactly as when it comes at once",
+          "\n".join(five[:16]))
+    check(cap[:2002] == ["cyc? a500000000f00101", "cyc a500000003000100"] + ["wfi 3000000", "sr isr_el1"] * 1000 and cap.count("wfi 3000000") == 1000
+          and cap[2002:2006] == ["sr isr_el1", "sr cntp_ctl_el0", "sw cntp_ctl_el0 0", "c 6008 b1"] and "c 6009 d0 1a bc d4" in cap
+          and cap[-3:] == ["cyc a500000003000101", "wfi 3000001", "never"] and len([l for l in cap if l.startswith("c ")]) == 3
+          and edge.count("wfi 3000000") == 1000 and "c 6008 e1" in edge and "c 6009 d9 1a 3c d4" in edge and "c 6009 d0 1a bc d4" not in edge
+          and got["short"] == ["cyc? a500000000f00101", "cyc a500000003000100"] + ["wfi 3000000", "sr isr_el1"] * 400 + ["wfi 3000000", "never"],
+          "a thousand returns with nothing pending: 999 are taken again, and at the 1000th the look is made anyway, with bit 7 of 0x600b saying"
+          " so (0xbc) and nothing pending in 0x6009 (0xd0), then bit 0 set again; 999 and then the timer is a look for the timer, without"
+          " that bit; 400 and then nothing more sends nothing at all and never writes CYC_OVRD a second time", "\n".join(cap[2000:2010]))
+    check(got["never"] == ["cyc? a500000000f00101", "cyc a500000003000100", "wfi 3000000", "never"],
+          "a WFI that never returns: CYC_OVRD written once, 0x3000000, and nothing else: no read, no command, no second write")
+    again, again0, hundred = got["again"], got["again0"], got["hundred"]
+    tail = ["cyc a500000003000101", "wfi 3000001", "c 6008 e2"] + acks + ["wfi 3000001", "never"]
+    check(again[-len(tail):] == tail and again0[-len(tail):] == tail and again[:-len(tail)] == t[:-3] and again.count("sr isr_el1") == 2
+          and again0.count("sr isr_el1") == 2,
+          "a second return after the look: taken with 0x3000001, ISR_EL1 not read again, counted by m1_ll_ret() as in any last_look=1 run"
+          " (0x6008 := 0xe2, acked), whether or not anything is pending then: an empty return is no longer taken again unseen", "\n".join(again[-16:]))
+    check(hundred.count("c 6008 e2") == 1 and hundred.count("c 6008 e3") == 1 and len([l for l in hundred if l.startswith("c ")]) == 5
+          and hundred.count("wfi 3000000") == 1 and hundred.count("wfi 3000001") == 103 and hundred.count("sr isr_el1") == 2
+          and [l for l in hundred if l.startswith("cyc ")] == ["cyc a500000003000100", "cyc a500000003000101"],
+          "103 returns after the look: 0x6008 again at the second and at the hundredth and at no other, every one of them with 0x3000001, and"
+          " CYC_OVRD written twice in all", "\n".join(l for l in hundred if l.startswith(("c ", "cyc "))))
+    check("c 6008 81" in got["irq"] and "c 6009 d2 1a 3c d4" in got["irq"] and "c 6008 81" in got["serror"] and "c 6009 d4 1a 3c d4" in got["serror"]
+          and got["serror"].count("wfi 3000000") == 3 and "c 6008 b1" in got["capthen"] and "c 6008 b2" in got["capthen"]
+          and got["capthen"].count("wfi 3000001") == 3,
+          "an IRQ or an SError pending ends the phase as the timer does, and the record says which, with the timer not firing; after a look made"
+          " at the 1000th empty return the later returns are counted from it (0xb1, then 0xb2)")
+    for w, name in (("s", "the state word above bit 7"), ("g", "0x2922c0040 above bit 1"), ("p", "PHASE above bit 3"), ("e", "EACC's word above bit 6")):
+        check(wides[w] == [l.replace("c 6009 d9 1a 3c d4", "c 6009 d9 1a 7c d4") for l in t] and wides[w] != t,
+              f"{name}: bit 6 of 0x600b and nothing else changes (0x7c for 0x3c), the same accesses", "\n".join(l for l in wides[w] if l.startswith("c ")))
+    check(dead == [l for l in llr_model(1, 1, 0, "tt") if not l.startswith("c ")] and dead == [l for l in again if not l.startswith("c ")]
+          and "cyc a500000003000101" in dead,
+          "with SPMI already failed the same reads and acks are made, nothing is sent, and bit 0 is still set again after the look")
+    everything = [l for name in cases for l in got[name]] + dead + [l for w in wides for l in wides[w]]
+    check(not [l for l in everything if l.startswith("w ") and not l.startswith("w A ")] and "r X 0" not in everything
+          and {l for l in everything if l.startswith("sw ")} == {"sw cntp_ctl_el0 0"} and all(got[n].count("sw cntp_ctl_el0 0") <= 1 for n in cases)
+          and {l for l in everything if l.startswith("cyc ")} == {"cyc a500000003000100", "cyc a500000003000101"},
+          "in every script: no MMIO write but nub-spmi0's acks, no system register written but CPU0's timer control, 0 and once, and CYC_OVRD,"
+          " with one of two values that differ in bit 0 alone")
+    check(got["plain"][:3] == ["cyc? a500000000f00101", "cyc a500000003000101", "wfi 3000001"] and got["plain"][3:6] == ["sr isr_el1", "sr cntp_ctl_el0", "sw cntp_ctl_el0 0"]
+          and "c 6009 d9 03 0c 84" in got["plain"] and "r K 2000" not in got["plain"] and "r K 0" not in got["plain"]
+          and len([l for l in got["plain"] if l.startswith("cyc ")]) == 1 and "c 6008 e2" in got["plain"]
+          and got["plain0"][2:4] == ["wfi 3000001", "sr isr_el1"] and "c 6008 81" in got["plain0"] and "c 6009 d0 03 0c 84" in got["plain0"]
+          and got["plain0"].count("wfi 3000001") == 4,
+          "without ll_retn=1 a last_look=1 run is as it was: 0x3000001 from the start and written once, the first return m1_ll_ret()'s own"
+          " three commands with 0x2922c0040's and 0x2922c0044's low bytes and PHASE (no read of the soc-cluster page), an empty first return"
+          " recorded as a return, and no return taken again unseen", "\n".join(got["plain"][:8]))
+    check(got["other"] == ["cyc? a500000000f00101", "cyc a500000003000101", "plainwfi 3000001", "plainwfi 3000001", "plainwfi 3000001", "never"]
+          and got["old"] == got["other"][:3] + got["other"][4:]
+          and got["othermark"] == got["other"][:3] + ["clean 1", "plainwfi 3000001", "clean 2", "plainwfi 3000001", "never"]
+          and got["oldmark"] == got["othermark"],
+          "every other core's deep WFI in an ll_retn=1 run is what it is in any run: CYC_OVRD written once with bit 0 set, the three"
+          " instructions, nothing read and nothing sent at a return; with a mark, the returns counted as before")
+
+    # The source: where the bit is clear and where it is set again.
+    check(in_order_of(wfi, ["\tbool retn = look && ll_retn;\n", mrs, "\tcyc &= ~(GENMASK_ULL(25, 20) | BIT_ULL(0));\n\tcyc |= 0x3000001ULL;\n"
+                            "\tif (retn)\n\t\tcyc &= ~LLR_CYC_NO_RETN;", msr, "\tfor (;;) {\n\t\tif (look)\n\t\t\tm1_ll_wfi();",
+                            "\t\tif (retn && m1_llr_empty())", "\t\t\tcontinue;\n\t\tif (look)\n\t\t\tm1_ll_ret();\n\t\tif (retn) {\n",
+                            "\t\t\tretn = false;\n\t\t\tcyc |= LLR_CYC_NO_RETN;\n\t\t\t" + msr + "\n\t\t}\n\t}\n}"])
+          and len(re.findall(r"\bretn\b", re.sub(r"/\*.*?\*/", "", wfi, flags=re.S))) == 5 and len(re.findall(r"\bLLR_CYC_NO_RETN\b", code_only)) == 3
+          and src.count("msr s3_5_c15_c5_0") == wfi.count("msr s3_5_c15_c5_0") + 1 and "msr s3_5_c15_c5_0" in cut("static void e1_cpu_down(", "\n}\n")
+          and len(re.findall(r"\bm1_llr_empty\(", code_only)) == 2 and len(re.findall(r"\bm1_llr_look\(", code_only)) == 2
+          and re.findall(r"\bm1_deep_wfi\(([^)]*)\)", code_only) == ["struct m1_core *mark, bool look", "NULL, false", "NULL, false", "obs ? &m1_core[0] : NULL, last_look"],
+          "m1_deep_wfi(): bit 0 is cleared only where look and ll_retn=1 are both set, which is CPU0's call alone; it is set again right after"
+          " the call of m1_ll_ret() that made the look, by the same statement that wrote it first, and never cleared again; an empty return"
+          " skips m1_ll_ret() and that write; the register is written nowhere else in the file but in e1_cpu_down(), the floor's own, as"
+          " before", wfi)
+    check(empty_fn == ("static bool m1_llr_empty(void)\n{\n\tif (read_sysreg(isr_el1))\n\t\treturn false;\n\tif (m1_llr_empties < U32_MAX)\n"
+                       "\t\tm1_llr_empties++;\n\treturn m1_llr_empties < LLR_SPURIOUS_MAX;\n}\n")
+          and len(re.findall(r"\bm1_llr_empties\b", code_only)) == 5,
+          "m1_llr_empty(): ISR_EL1 read whole, as Linux's idle loop reads it; non-zero is not empty; zero is counted, saturating, and is"
+          " empty until the 1000th; the count is used there and in the look's flag and nowhere else")
+    check("\tif (n != 1)\n\t\treturn;\n\tif (ll_retn) {\t/* its own look and form; 0x6008's byte kept for the counts above */\n\t\tb0 = m1_llr_look();\n"
+          "\t\treturn;\n\t}\n\tnow = m1_now();\n" in ret_fn and ret_fn.count("ll_retn") == 1,
+          "m1_ll_ret() hands its first return to m1_llr_look() with ll_retn=1 alone, before any read of its own, and keeps the byte for its counts")
+    look_code = re.sub(r"/\*.*?\*/", "", look_fn, flags=re.S)
+    check(in_order_of(look_fn, ["\tdt = m1_now() - m1_t_third;\n\tisr = (read_sysreg(isr_el1) >> 6) & 7;\n\tctl = read_sysreg(cntp_ctl_el0);\n\twrite_sysreg(0, cntp_ctl_el0);",
+                                "\tisb();\n\tb[0] = ll_b0(1, ll_time_code(dt, m1_tps));", "\tm1_ll_send(LL_AT, b, 1);\n",
+                                "\thsa = readl(hs_a);\n\thsb = readl(m1_pos + LL_HS_B);\n\tg40 = readl(m1_pos + M1_POS_GATE40);\n\tg44 = readl(m1_pos + M1_POS_GATE44);\n"
+                                "\tphase = readl(m1_pos + M1_POS_PHASE);\n", "\t/* The two new ones, last:",
+                                "\tst_e = readl(m1_soc + OG_ST_E);\n\teacc = readl(m1_soc + M1_SOC_EACC);\n\tb[1] = ll_b1(isr, ctl & ARCH_TIMER_CTRL_IT_STAT, hsa, hsb);\n"
+                                "\tb[2] = llr_b2(st_e);\n\tb[3] = llr_b3(g44, g40, llr_wide(st_e, g40, phase, eacc), m1_llr_empties >= LLR_SPURIOUS_MAX);\n"
+                                "\tb[4] = llr_b4(eacc, phase);", "\tm1_ll_send(LL_AT + 1, b + 1, 4);\n\tfor (i = 0; i < SIOD_N; i++)\n",
+                                "\tans = readl(m1_sio + M1_PS_ANS2);\n\tpmp = readl(m1_ps + M1_PS_PMP_RO);\n\tb[6] = ll_b6(pc, ll_off(ans), ll_off(pmp));\n"
+                                "\tm1_ll_send(LL_AT + 5, &b[5], 2);", "\treturn b[0];\n}"])
+          and not re.search(wr, look_fn) and look_code.count("write_sysreg") == 1 and look_code.count("m1_ll_send(") == 3 and look_code.count("m1_soc") == 2
+          and "OG_ST_P" not in look_code and "M1_SOC_PACC" not in look_code and not re.search(r"\w\([^;]*readl\([^;]*,[^;]*readl\(", look_fn)
+          and "asm" not in look_code and "cyc" not in look_code,
+          "m1_llr_look() takes the clock first, sends 0x6008 before any MMIO read, reads the five words m1_ll_ret() reads and only then the E"
+          " complex's state word and EACC's word, the last two reads of the second command, each into its own variable; sends that command"
+          " before it reads a power word; has no MMIO write and no system register write but the timer's control; and doesn't touch CYC_OVRD"
+          " itself", look_fn)
+
+    # The parameter and the load.
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    init = cut("static int __init e1_hook_init(void)", "\n}\n")
+    m1_init = cut("static int __init m1_init(void)", "\n}\n")
+    check("\nstatic bool ll_retn;\nmodule_param(ll_retn, bool, 0444);\nMODULE_PARM_DESC(ll_retn, \"With ll_wake=1, never with gate_look=1:" in src
+          and in_order_of(params, ["\tif (ll_wake && !last_look) {\n", "\tif (gate_look && !last_look) {\n",
+                                   "\tif (ll_retn && (!ll_wake || gate_look)) {\n\t\tpr_err(\"ll_retn=1 needs ll_wake=1 and no gate_look=1 (", "\t\treturn -EINVAL;\n\t}\n"])
+          and 'wake_all ? " wake_all=1" : "", ll_retn ? " ll_retn=1" : "", pre_test ?' in src
+          and src.count("%s", src.index('pr_info("loaded: s2idle ops set through'), src.index("sym, replay, quiet ?")) == 37
+          and " *   pkexec e1-hook/run-floor --m1-ll-retn         (--m1-atc-down's and ll_retn=1:" in src
+          and not re.search(r"\bll_retn\s*=[^=]", code_only) and len(re.findall(r"\bll_retn\b", code_only)) == 10,
+          "ll_retn=1 is off unless asked for, can't be set after the load, refuses without ll_wake=1 (and so without last_look=1) and with"
+          " gate_look=1, and is named in the load line, which has a %s for it, and in the header's list of launchers; it is named in ten"
+          " places (its declaration and description, m1_ll_ret(), m1_deep_wfi(), the two stages, the load, the refusal, the load line) and"
+          " assigned in none")
+    for name, first_line in (("mapped", None), ("unmapped", "map 28e098000 4000")):
+        want = ([first_line] if first_line else []) + ["r K 2000", "r K 2004", "r K 2008", "r K 0", "r K 4", "r K 8",
+                "info m1: ll_retn: awake: state words: E complex 00000044, P complex 0 00000040, P complex 1 00000040; soc-cluster words: EACC 0000000f,"
+                " PACC0 0000002f, PACC1 0000002f"]
+        o = inits[name]
+        check(o[:len(want)] == want and len(o) == len(want) + 3 and o[-2:] == ["ret 0", "soc 1"]
+              and o[-3].startswith("info m1: ll_retn: CPU0 takes its last WFI with CYC_OVRD's low bits 0x3000000 in place of 0x3000001 (bit 0, ")
+              and "its timer 25 s out" in o[-3] and "up to 1000 times" in o[-3] and "the PMU's 0x6008-0x600e and sets bit 0 again" in o[-3],
+              f"m1_llr_init() with the soc-cluster page {'already mapped: not mapped again' if name == 'mapped' else 'not yet mapped: mapped, one page at 0x28e098000'};"
+              " the three state words and the three soc-cluster words read awake, each once, in that order, and logged with what the run"
+              " will do; nothing written", "\n".join(o))
+    check(inits["mapfail"] == ["map 28e098000 4000", "err m1: ll_retn: the soc-cluster page, the engine's page or the first power page isn't mapped; refusing",
+                               "ret -12", "soc 0"]
+          and inits["nopos"] == inits["mapfail"][1:3] + ["soc 1"] and inits["nops"] == inits["nopos"],
+          "m1_llr_init() refuses, with nothing read, if the soc-cluster page doesn't map, or the engine's page or the first power page isn't"
+          " mapped, m1_og_init()'s three", str(inits["mapfail"]) + str(inits["nopos"]))
+    og_init = cut("static int __init m1_og_init(void)", "\n}\n")
+    after_m1 = init[init.index("\t\tret = m1_init();\n\t\tif (ret)\n\t\t\tgoto unmap;\n"):init.index("\tset_ops(&e1_ops);")]
+    check(not re.search(wr, init_fn) and "\tif (!m1_soc)\n\t\tm1_soc = ioremap_np(M1_SOC_CLUSTERS, PAGE_SIZE);\n\tif (!m1_soc || !m1_pos || !m1_ps) {\n" in init_fn
+          and "\t\treturn -ENOMEM;\n\t}\n" in init_fn and "\tif (!m1_pos || !m1_ps || !m1_soc) {\n" in og_init and init_fn.count("readl(") == 6
+          and not re.search(r"\w\([^;]*readl\([^;]*,[^;]*readl\(", init_fn)
+          and in_order_of(m1_init, ["\tif (observe || pmgr_late) {\n\t\tm1_soc = ioremap_np(M1_SOC_CLUSTERS, PAGE_SIZE);\n",
+                                    "\tif (last_look) {\n\t\tint ret = m1_ll_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
+                                    "\tif (ll_retn) {\n\t\tint ret = m1_llr_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"])
+          and len(re.findall(r"\bm1_llr_init\(", code_only)) == 2 and len(re.findall(r"\bm1_soc = ", code_only)) == 2
+          and "\tif (m1_soc)\n\t\tiounmap(m1_soc);\n" in cut("static void m1_unmap(void)", "\n}\n") and src.count("iounmap(m1_soc)") == 1
+          and "\tm1_unmap();\n}" in cut("static void e1_unmap(void)", "\n}\n")
+          and not re.search(r"\breturn\b", after_m1) and after_m1.count("goto unmap;") >= 3 and "\nunmap:\n\te1_unmap();\n" in init
+          and "\te1_unmap();\n\tmodule_put(smc_owner);\n\tput_device(&smc_pdev->dev);\n" in cut("static void __exit e1_hook_exit(void)", "\n}\n")
+          and ("static_assert(LLR_CYC_DEEP == 0x3000001ULL && LLR_CYC_RETN == 0x3000000ULL && LLR_CYC_NO_RETN == BIT_ULL(0) && LLR_SPURIOUS_MAX == 1000 &&\n"
+               "\t      M1_LLR_STAGE_PRE == 0x14 && M1_LLR_STAGE_PEND == 0x18 && M1_LLR_STAGE == 0x1c && LLR_EMPTY == 0x80 && LLR_WIDE == 0x40 &&\n"
+               "\t      M1_SOC_CLUSTERS + OG_ST_E == 0x28e09a000ULL && M1_SOC_CLUSTERS + M1_SOC_EACC == 0x28e098000ULL);\n") in src,
+          "m1_llr_init() writes nothing, maps the soc-cluster page only if nothing has (pmgr_late=1's mapping comes first in m1_init()), asks"
+          " for the pages m1_og_init() asks for, and runs right after m1_ll_init() with its refusal returned; the page has one pointer and"
+          " one unmap, in m1_unmap(), which the exit reaches through e1_unmap() and so does every failure of the load from m1_init() on"
+          " (each is a goto unmap, none a return); the build asserts the two values, the stages, the flags and the two addresses")
+
+    # K1, the undo and m1_pmu_ok(): last_look=1's, unchanged.
+    start, undo, pmu_ok = cut("static int m1_pmu_start(void)", "\n}\n"), cut("static void m1_pmu_undo(void)", "\n}\n"), cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+    oks = {(int(r[1]), int(r[3], 16), int(r[4])) for r in okl if r[0] == "ok" and r[2] == "1"}
+    three = {(0x6008, 1), (0x6009, 4), (0x600d, 2)}
+    check("ll_retn" not in start + undo + pmu_ok and "llr" not in (start + undo + pmu_ok).lower()
+          and all(k1_runs[m][0][8:0x0f] == (bytes((0x20,)) + bytes(6) if m == "wakeall" else bytes(7)) and k1_runs[m][1][8:0x0f] == bytes(7) for m in k1_runs)
+          and three <= {(a, n) for ll, a, n in oks if ll == 1} and not three & {(a, n) for ll, a, n in oks if ll == 0}
+          and {(a, n) for ll, a, n in oks if ll == 3} & three == {(0x6008, 1)},
+          "K1, the undo and m1_pmu_ok() don't know ll_retn=1: its run is a last_look=1 run to them. Compiled as they stand: K1 zeroes an"
+          " ll_retn=1 record left at 0x6008-0x600e in a last_look=1 run and in every other kind, the undo zeroes one too, and m1_pmu_ok()"
+          " lets the look's three commands (one byte at 0x6008, four at 0x6009, two at 0x600d) through with last_look=1, none of them in"
+          " a run without it, and in a wake_all=1 run only the one byte that is that run's own", str({m: v[0][8:0x0f].hex() for m, v in k1_runs.items()}))
+
+    # The record through m1-crumbs.
+    def rec(stage, r=bytes(7), b16=0xfd, secs=120000):
+        b = bytearray(0x20)
+        b[1], b[3] = 0x30, 0x50
+        b[4:8] = bytes((0x80 | stage, 0x7d, 0x00, 0xf5))
+        b[8:0x0f] = r
+        b[0x10:0x14] = secs.to_bytes(4, "little")
+        b[0x12:0x14] = bytes((0x00, 0x5f))  # the outcomes over the second's upper bytes, with atc_down=1's mark
+        b[0x14:0x17] = bytes((0x90, 0x8d, b16))
+        return bytes(b)
+
+    def ll(stage, r):
+        """ll_lines() itself on a record under a stage: the lines for 0x6008-0x600e, the light's line last under ll_wake=1's stages."""
+        return g["ll_lines"](stage, rec(stage, bytes(r)))
+
+    full = bytes((0xe1, 0xd9, 0x1a, 0x3c, 0xd4, 0xcc, 0xa5))
+    head = ("0x6008-0x600e = {}: ll_retn=1's record: CPU0's last WFI taken with retention left on (CYC_OVRD's bit 0 clear, its timer 25 s out),"
+            " and its look at the first return with something pending:")
+    light = "  0x6016 bit 6: step 8 made the keyboard PWM's three writes"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+
+        def dec(stage, r=bytes(7), b16=0xfd, x=70, alarm_at=None, clear=False):
+            secs = 120000
+            before = fake(path, rec(stage, r, b16, secs), rtc_secs=secs + x + 100, alarm=(0x41, secs + 20 if alarm_at is None else alarm_at, 0, 0))
+            p = run(path, *(["--clear"] if clear else []))
+            return p.returncode, p.stdout, p.stderr, before, open(path, "rb").read()
+
+        rc, out, err, _, _ = dec(0x1c, full)
+        check(rc == 0 and "stage 0x6004 = 0x9c (pmp_out=1: bit 7, so the stage is 0x1c) (pmgr_late=1): last_look=1 ll_wake=1 ll_retn=1: fabric_up=1's 0x53" in out
+              and "its last WFI, taken with retention left on (CYC_OVRD's bit 0 clear), follow" in out
+              and head.format("e1 d9 1a 3c d4 cc a5") + "\n"
+                  "  0x6008 = 0xe1: CPU0'S LAST WFI RETURNED and its look was made, 22 to 30 s after the commit's last write; once by the last time it was"
+                  " counted, the look's return as the first (returns with nothing pending before it aren't in the count). CPU0 is up when it reads"
+                  " the words below: whether it, or its complex, had been down in between isn't in this byte\n"
+                  "  0x6009 = 0xd9: pending at the look (ISR_EL1): an FIQ; CPU0's own timer was firing (set 25 s out in this run); HS_A bit 24 = 1;"
+                  " HS_B bits 0, 1, 31 = 0, 1, 1\n"
+                  "  0x600a = 0x1a: the E complex's state word (0x28e09a000), low byte: the value a down sequence ends on\n"
+                  "  0x600b = 0x3c: 0x2922c0044's low nibble 1100: bit 0 clear, bit 1 clear, bit 2 set (B2's first poll, op 1, waits for it set), bit 3"
+                  " set (op 3 waits for it clear); 0x2922c0040's bits 1:0 = 3 (as awake: B2's ops 4 to 6 haven't run)\n"
+                  "  0x600b bit 7: clear: the look wasn't made at the 1000th return with nothing pending, but at a return that found ISR_EL1 non-zero;"
+                  " bit 6 clear: the state word, 0x2922c0040, PHASE and EACC's word had no bit above what these bytes carry\n"
+                  "  0x600c = 0xd4: EACC's soc-cluster word (0x28e098000), bits 6:4 = 101: bit 4 set (a change asked for and not finished), bit 5 clear"
+                  " (the up-done flag), bit 6 set (what a down sequence waits for first, with no timeout); its low nibble isn't sent. PHASE's low"
+                  " nibble 0x4 (the entry pair's first (A2))\n"
+                  "  0x600d = 0xcc: 12 of the 43 power words of SIO's subtree read off (actual state 0)" in out
+              and "  0x600e = 0xa5: read off: of the five PCIe words, APCIE_ST_SYS, APCIE_GP_SYS; ANS2 off; the PMP's word on\n" + light + "\n" in out
+              and "0x6016 = 0xfd (bit 6 is the keyboard light's, below; without it 0xbd): every alarm command was acked" in out
+              and "0x140c is the commit's second + 20, as the run wrote it" in out and "its count past 80 s and running" in out
+              and "wd1_mark=1's marker: about 70 s is what WD1 gives with its count never zeroed" in out
+              and "last_look=1's record of CPU0's own last WFI" not in out and "0x2922c0040's low byte" not in out and "gate_look" not in out.split("0x6008-0x600e = ")[1],
+              "the harness's own seven bytes under the run's clean stage 0x9c: the stage named, every field read back as m1_llr_look() packed"
+              " it, in the run's own form and not last_look=1's, the light's bit taken off the alarm's byte, the alarm 20 s out and the marker at"
+              " 70 s as in any ll_wake=1 run", out + err)
+        rc, out, err, _, _ = dec(0x1c, x=22, b16=0xbd)
+        rc2, out2, err2, _, _ = dec(0x18, full)
+        rc3, out3, err3, _, _ = dec(0x14)
+        rc4, out4, err4, _, _ = dec(0x14, full)
+        check(rc == 0 and head.format("00 00 00 00 00 00 00") + "\n  all 0: CPU0's WFI didn't return, or the first command failed. As far as this record goes CPU0"
+              " never came back to make its look: it went down, it stayed in its WFI for good, or it returned only with nothing pending, fewer than 1000 times,"
+              " which sends nothing. Not a proof that the core was powered off. Its own timer was set 25 s out, unmasked: a core still powered would have"
+              " come back for it, unless the restart came first (the restart's time, above)\n  0x6016 bit 6: step 8 did NOT make the keyboard PWM's three writes" in out
+              and "22 s is well before the marker's 70 s" in out and "The alarm was set 20 s after the commit's second and CPU0's timer 25 s after its last step" in out
+              and "CPU0'S LAST WFI RETURNED" not in out
+              and rc2 == 0 and "last_look=1 ll_wake=1 ll_retn=1: fabric_up=1's 0x51" in out2 and "CPU0'S LAST WFI RETURNED and its look was made" in out2
+              and "marker: not read. CPU0 had an exception pending after its reads" in out2
+              and rc3 == 0 and "8 (last_look=1 ll_wake=1 ll_retn=1): fabric_up=1's 0x52" in out3
+              and head.format("00 00 00 00 00 00 00") + "\n  all 0, and the stage is the last before the commit: the run isn't shown to have reached CPU0's WFI\n" + light in out3
+              and "stage 0x14, so nothing records the commit after those commands (0x18 or 0x1c comes after them)" in out3
+              and "marker: not read. Stage 0x14 is the last before the commit" in out3 and "restarts by itself about 70 s later" in out3
+              and rc4 == 0 and head.format("e1 d9 1a 3c d4 cc a5") + "\n  NOT READ: stage 0x14 is the last before the commit" in out4 and "CPU0'S LAST WFI RETURNED" not in out4,
+              "all 0 under the clean stage: the WFI didn't return or the first command failed, said as last_look=1 says it, with the light's line"
+              " and an early restart set beside the alarm's 20 s; the pending stage reads the record and not the marker; the stage before the"
+              " commit says the WFI isn't shown reached, names the next stages, and reads no bytes there", out + err + out2 + out3 + out4)
+        for stage, r in ((0x1c, full), (0x18, bytes((0x81, 0, 0, 0, 0, 0, 0))), (0x14, bytes(7)), (0x1c, bytes(7)), (0x1c, bytes((0x08, 0xc9, 2, 0xc, 0x84, 0xcc, 0xa5)))):
+            rc, out, err, before, after = dec(stage, r, clear=True)
+            want = bytearray(before)
+            want[0x6004:0x600f], want[0x6010:0x6017], want[0x1401] = bytes(11), bytes(7), 0x01
+            check(rc == 0 and after == bytes(want) and "disarmed: 0x1401 = 0x01" in out and "cleared: 0x6004-0x600e and 0x6010-0x6016 read back as zeros" in out,
+                  f"--clear after stage 0x{0x80 | stage:02x} with {r.hex(' ')} there: the run's alarm (20 s out) disarmed, 0x6004-0x600e and 0x6010-0x6016 zeroed,"
+                  " nothing else", out + err + f"\n{after[0x6000:0x6020].hex(' ')}")
+        rc, out, err, before, after = dec(0x1c, full, clear=True, alarm_at=120000 + 3600)
+        check(rc == 0 and after[0x1401] == 0x41 and "0x140c is NOT the commit's second + 20" in out and "was left alone: nothing shows this run armed it" in out,
+              "--clear after an ll_retn=1 run with an alarm an hour out, which isn't the 20 s it wrote: the alarm is left alone", out + err)
+        # The same seven bytes under other runs' stages: never read in this form.
+        others = {}
+        for stage in (0x0b, 0x08, 0x0a, 0x07, 0x53, 0x55, 0x1b, 0x13):
+            others[stage] = dec(stage, full, b16=0xfd if stage in (0x08, 0x07) else 0xbd, alarm_at=None if stage in (0x08, 0x07) else 120000 + 3600)
+        check(all(rc == 0 and "ll_retn" not in o and "the E complex's state word" not in o for rc, o, _, _, _ in others.values())
+              and all("last_look=1's record of CPU0's own last WFI:\n  0x6008 = 0xe1: CPU0'S LAST WFI RETURNED, first 22 to 30 s" in others[s][1]
+                      and "  0x600a = 0x1a: 0x2922c0040's low byte (bit 1 set)" in others[s][1] and "  0x600b = 0x3c: 0x2922c0044's low byte: bit 2 set" in others[s][1]
+                      and "  0x600c = 0xd4: PHASE's low seven bits 0x54 (not a phase on file)" in others[s][1] for s in (0x0b, 0x08, 0x0a, 0x07))
+              and "NOT READ: the stage isn't one of last_look=1's" in others[0x53][1]
+              and all("wake_all=1's record" in others[s][1] and "not what e1_hook writes" in others[s][1] for s in (0x55, 0x1b, 0x13)),
+              "the record's bytes under last_look=1's and ll_wake=1's stages are read in those runs' form (0x600a as 0x2922c0040's byte, 0x600c as"
+              " PHASE's seven bits), under --m1-mark's not at all, and under the gates_mark=1 family's as wake_all=1's byte with junk after it:"
+              " the ll_retn=1 form is applied under its own three stages and nowhere else", others[0x0b][1] + others[0x55][1])
+    sc = bytearray(scratch(0x6f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0x80 | 5 << 3 | 1), flags=0x90, isrs=0x24, drained=0x95))
+    sc[8:0x0f] = full
+    og = "\n".join(g["ll_lines"](0x6f, bytes(sc)))
+    check("obs_gate=1's record" in og and "ll_retn" not in og and "CPU0'S LAST WFI" not in og,
+          "and under an observer's stage they are read as CPU7's record, not as CPU0's", og)
+
+    # Each field, for every value, from ll_lines() itself. None of them touches another's line.
+    base = ll(0x1c, full)
+    check(base[0] == head.format("e1 d9 1a 3c d4 cc a5") and base[-1] == light and len(base) == 10,
+          "ll_lines() under stage 0x1c: the head, eight lines for the seven bytes, and the light's line", "\n".join(base))
+
+    def rest(out, r, *mine):
+        """Whether out, the lines for the record r, is base but for the head, which has r's bytes, and the lines numbered in mine."""
+        return (len(out) == len(base) and out[0] == head.format(bytes(r).hex(" "))
+                and all(out[i] == base[i] for i in range(1, len(base)) if i not in mine))
+
+    wrong = []
+    for v in range(256):
+        out = ll(0x1c, bytes((v,)) + full[1:])
+        if v & 0x80 and v & 3 and not v & 0x0c:
+            want = (f"  0x6008 = 0x{v:02x}: CPU0'S LAST WFI RETURNED and its look was made, "
+                    + ("under 10 ms", "10 to 100 ms", "0.1 to 1 s", "1 to 5 s", "5 to 15 s", "15 to 22 s", "22 to 30 s", "30 s or more")[v >> 4 & 7]
+                    + " after the commit's last write; " + (None, "once", "twice or more, under a hundred times", "a hundred times or more")[v & 3]
+                    + " by the last time it was counted, the look's return as the first")
+            past = ". A count past one is a return after the look, when retention was off again (CYC_OVRD's bit 0 set, as in every other run)"
+            if not out[1].startswith(want) or out[1].endswith(past) != (v & 3 > 1) or not rest(out, bytes((v,)) + full[1:], 1):
+                wrong.append(hex(v))
+        elif out != [head.format(f"{v:02x} d9 1a 3c d4 cc a5"),
+                     f"  0x6008 = 0x{v:02x}: not a value e1_hook writes in this run (bit 7 set, bits 3:2 clear, a count in bits 1:0): NOT READ", light]:
+            wrong.append(hex(v))
+    check(not wrong and sum(1 for v in range(256) if v & 0x80 and v & 3 and not v & 0x0c) == 24,
+          "0x6008, every value: the 24 the run can send (bit 7, a time's code, a count, bits 3:2 clear) are read, the time and the count named,"
+          " a count past one said to be a return after the look; any other, gate_look=1's 0x08 and 0x04, obs_gate=1's 0x40 and wake_all=1's 0x20"
+          " and its bytes among them, is not a value of this run's and nothing after it is read", str(wrong[:8]))
+    wrong = []
+    for v in range(256):
+        out = ll(0x1c, full[:1] + bytes((v,)) + full[2:])
+        pend = ", ".join(n for i, n in enumerate(("an FIQ", "an IRQ", "an SError")) if v >> i & 1) or "nothing"
+        want = (f"  0x6009 = 0x{v:02x}: pending at the look (ISR_EL1): {pend}; CPU0's own timer {'was firing' if v & 8 else 'was not firing'}"
+                f" (set 25 s out in this run); HS_A bit 24 = {v >> 4 & 1}; HS_B bits 0, 1, 31 = {v >> 5 & 1}, {v >> 6 & 1}, {v >> 7 & 1}")
+        if out[2] != want or not rest(out, full[:1] + bytes((v,)) + full[2:], 2):
+            wrong.append(hex(v))
+    check(not wrong, "0x6009, every value: what was pending at the look, whether CPU0's timer was firing, HS_A's bit 24 and HS_B's three bits, each as read",
+          str(wrong[:8]))
+    names = {0x44: "what it has read awake since boot on this Mac, a complex the sequencer hasn't cycled", 0x40: "the value an up sequence ends on",
+             0x1a: "the value a down sequence ends on",
+             0x51: "a value both sequences write on the way: the down sequence's first, after its wait for bit 6 of the soc-cluster word",
+             0x53: "a value both sequences write on the way", 0x5b: "a value both sequences write on the way", 0x1b: "the down sequence's last value but one",
+             0x41: "the up sequence's last value but one"}
+    wrong = []
+    for v in range(256):
+        out = ll(0x1c, full[:2] + bytes((v,)) + full[3:])
+        if (out[3] != f"  0x600a = 0x{v:02x}: the E complex's state word (0x28e09a000), low byte: {names.get(v, 'not a value on file')}"
+                or not rest(out, full[:2] + bytes((v,)) + full[3:], 3)):
+            wrong.append(hex(v))
+    check(not wrong and "0x600a = 0x44: the E complex's state word (0x28e09a000), low byte: what it has read awake since boot on this Mac, a complex the"
+          " sequencer hasn't cycled" in "\n".join(ll(0x1c, full[:2] + b"\x44" + full[3:])),
+          "0x600a, every value: the E complex's state word by its name: 0x44 what it has read awake since boot, the seven values the sequences"
+          " write as obs_gate=1 names them, and anything else not a value on file", str(wrong[:8]))
+    wrong = []
+    for v in range(256):
+        out = ll(0x1c, full[:3] + bytes((v,)) + full[4:])
+        g44, g40 = v & 0xf, v >> 4 & 3
+        sc_ = lambda bit: "set" if g44 & bit else "clear"
+        how = {3: "as awake: B2's ops 4 to 6 haven't run", 2: "bit 1 set, bit 0 clear: not a value on file"}.get(g40, "bit 1 clear: B2 clears it at its ops 4 to 6")
+        want = (f"  0x600b = 0x{v:02x}: 0x2922c0044's low nibble {g44:04b}: bit 0 {sc_(1)}, bit 1 {sc_(2)}, bit 2 {sc_(4)} (B2's first poll, op 1, waits for it"
+                f" set), bit 3 {sc_(8)} (op 3 waits for it clear); 0x2922c0040's bits 1:0 = {g40} ({how})")
+        flags = ("  0x600b bit 7: "
+                 + ("THE LOOK WAS MADE AT THE 1000TH RETURN WITH NOTHING PENDING (ISR_EL1 0 at each), not for a pending interrupt" if v & 0x80 else
+                    "clear: the look wasn't made at the 1000th return with nothing pending, but at a return that found ISR_EL1 non-zero")
+                 + ("; bit 6: ONE OF THE WORDS HAS A BIT ABOVE WHAT THESE BYTES CARRY (the state word above bit 7, 0x2922c0040 above bit 1, PHASE above"
+                    " bit 3 or EACC's word above bit 6): the bytes aren't the whole words" if v & 0x40 else
+                    "; bit 6 clear: the state word, 0x2922c0040, PHASE and EACC's word had no bit above what these bytes carry"))
+        if out[4:6] != [want, flags] or not rest(out, full[:3] + bytes((v,)) + full[4:], 4, 5):
+            wrong.append(hex(v))
+    check(not wrong,
+          "0x600b, every value: 0x2922c0044's nibble bit by bit with what B2's ops 1 and 3 wait for, 0x2922c0040's two bits (3 as awake, B2's ops"
+          " 4 to 6 not run; bit 1 clear, B2's clearing; 2 not on file), and its own line for the two flags: made at the 1000th empty return or"
+          " not, a bit above the bytes or not", str(wrong[:8]))
+    phases = {0: "pair 0's", 2: "pair 1's", 3: "pair 1's last", 4: "the entry pair's first (A2)", 5: "the entry pair's second (A2)", 6: "pair 3's first",
+              7: "the entry pair's last (A2)", 8: "pair 1's", 9: "pair 3's second", 0xa: "pair 1's", 0xb: "pair 1's", 0xc: "pair 1's", 0xd: "pair 1's"}
+    wrong = []
+    for v in range(256):
+        out = ll(0x1c, full[:4] + bytes((v,)) + full[5:])
+        if not v & 0x80:
+            if out != [head.format(f"e1 d9 1a 3c {v:02x} cc a5"), base[1]] + [f"  0x6009-0x600c = d9 1a 3c {v:02x}: the second command, the handshake, the engine's page and the two new reads, didn't"
+                                              " land whole (bit 7 of 0x600c, its last byte: a read that hung, a restart, or SPMI): none of the four is read, and"
+                                              " nothing after them. Its last two reads, the E complex's state word and EACC's soc-cluster word, are the ones"
+                                              " CPU0 hadn't made in this state", light]:
+                wrong.append(hex(v))
+            continue
+        acc, ph = v >> 4 & 7, v & 0xf
+        want = (f"  0x600c = 0x{v:02x}: EACC's soc-cluster word (0x28e098000), bits 6:4 = {acc:03b}: bit 4 {'set' if acc & 1 else 'clear'} (a change asked for and"
+                f" not finished), bit 5 {'set' if acc & 2 else 'clear'} (the up-done flag), bit 6 {'set' if acc & 4 else 'clear'} (what a down sequence waits"
+                f" for first, with no timeout); its low nibble isn't sent. PHASE's low nibble 0x{ph:x} ({phases.get(ph, 'not a phase on file')})")
+        if out[6] != want or not rest(out, full[:4] + bytes((v,)) + full[5:], 6):
+            wrong.append(hex(v))
+    check(not wrong and g["PHASES"] == phases,
+          "0x600c, every value: with its bit 7, EACC's three bits each named and PHASE's low nibble by the phase's name; without it the second"
+          " command didn't land whole, none of its four bytes is read, not the state word either, and nothing after them", str(wrong[:8]))
+    wrong = []
+    for a in range(256):
+        for b_ in (0x00, 0x7f, 0x80, 0xa5, 0xff):
+            out = ll(0x1c, full[:5] + bytes((a, b_)))
+            if a & 0x80 and b_ & 0x80:
+                n = a & 0x3f
+                pc = ", ".join(nm for i, nm in enumerate(("APCIE_ST_SYS", "APCIE_ST1_SYS", "APCIE_GP_SYS", "APCIE_ST", "APCIE_GP")) if b_ >> i & 1) or "none"
+                ok = (len(out) == 10 and out[7].startswith(f"  0x600d = 0x{a:02x}: {n} of the 43 power words of SIO's subtree read off (actual state 0)")
+                      and (": NOT A COUNT e1_hook can send" in out[7]) == (n > 43) and out[7].endswith(f"read {'off' if a & 0x40 else 'on'}")
+                      and out[8] == f"  0x600e = 0x{b_:02x}: read off: of the five PCIe words, {pc}; ANS2 {'off' if b_ & 0x20 else 'on'}; the PMP's word"
+                                    f" {'off' if b_ & 0x40 else 'on'}")
+            else:
+                ok = out[7:] == [f"  0x600d 0x600e = {a:02x} {b_:02x}: the third command, B2's power words, didn't land whole (bit 7 of each): not read", light]
+            if not ok or out[0] != head.format(f"e1 d9 1a 3c d4 {a:02x} {b_:02x}") or out[1:7] != base[1:7]:
+                wrong.append((hex(a), hex(b_)))
+    check(not wrong, "0x600d and 0x600e: read as last_look=1's third command, both or neither, by bit 7 of each; the second command's lines stand either way",
+          str(wrong[:8]))
+    junk = [ll(0x1c, r) for r in (bytes((0x08, 0xc9, 2, 0xc, 0x84, 0xcc, 0xa5)), bytes((0x04, 0, 0, 0, 0, 0, 0)), bytes((0xe9, 0xc9, 2, 0xc, 0x84, 0xcc, 0xa5)),
+                                  bytes((0x40, 0, 0, 0, 0, 0, 0)), bytes((0x97, 0xd0, 0x51, 0x1a, 0xad, 0x51, 0xbd)), bytes((0x20, 0, 0, 0, 0, 0, 0)),
+                                  bytes((0xf0, 0, 0, 0, 0, 0, 0)), b"iBot\x00\x00\x00", bytes((0x00, 0xd9, 0x1a, 0x3c, 0xd4, 0xcc, 0xa5)))]
+    check(all(len(o) == 3 and "ll_retn=1's record" in o[0] and "not a value e1_hook writes in this run" in o[1] and "NOT READ" in o[1] and o[2] == light
+              and not any(w in "\n".join(o) for w in ("gate_look", "obs_gate", "wake_all", "CPU7", "the look landed", "K1 writes"))
+              for o in junk),
+          "under ll_retn=1's stage the other forms aren't applied: gate_look=1's look and its mark, a return after a look, obs_gate=1's mark and"
+          " its record, wake_all=1's mark and its byte, a boot loader's text and a record without its first byte are each not this run's,"
+          " NOT READ, with nothing said in those runs' words", "\n".join(junk[0] + junk[4]))
+    check("    if s in LLR_STAGES:\n        return llr_lines(s, r) + blink\n    if s in (LL_PRE, LLW_PRE):\n" in tool
+          and tool.index("    if og_record(s, r):\n        return og_lines(s, r)\n") < tool.index("    if s in LLR_STAGES:\n        return llr_lines(s, r) + blink\n")
+          and tool.count("llr_lines(s, r)") == 2 and "\ndef llr_lines(s, r):\n" in tool and "LLW_STAGES = (LLW_PRE,) + LLW_WD2 + LLR_STAGES" in tool
+          and "    pre = LLR_PRE if s in LLR_STAGES else LLW_PRE if s in LLW_STAGES else LL_PRE if s in LL_STAGES else" in tool
+          and "            seven = st in LL_STAGES or og_record(st, b[8:0x0f]) or wa_clear(st, b[8:0x0f])\n" in tool,
+          "m1-crumbs reads the form by the stage alone, after the checks that keep another run's record out and before last_look=1's own"
+          " reading; the three stages are ll_wake=1's for the alarm, the timer and the light, and last_look=1's for --clear and the marker")
 
 
 def in_order_of(text, parts):
@@ -9941,7 +10710,7 @@ def position_tests(g, src):
     # recfg_bite=1: the module reads, and never writes, the SRAM; the sample goes out once, after the release, in one command with its stage.
     tool = open(TOOL).read()
     check("#define M1_RECFG_STAGE\t\t0x47" in src and "#define M1_RECFG_STAGE_PEND\t0x46" in src and "RECFG_STAGES = (0x46, 0x47)\n" in tool
-          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x15, 0x19, 0x11, 0x09, 0x06, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b, 0x12, 0x13, 0x0a, 0x0b, 0x07, 0x08),
+          and g["SIO_STOP_STAGES"] == (0x4e, 0x4f, 0x52, 0x4b, 0x3d, 0x1d, 0x15, 0x19, 0x11, 0x09, 0x06, 0x14, 0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b, 0x12, 0x13, 0x0a, 0x0b, 0x07, 0x08, 0x18, 0x1c),
           "recfg_bite=1's stages are 0x46 and 0x47 in the module and in m1-crumbs, with sio_stop=1's stages")
     uses = [l for l in src.splitlines() if re.search(r"\bm1_recfg\b", l)]
     literals = [int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", src)]
@@ -9999,14 +10768,15 @@ def position_tests(g, src):
            "\tif (wd2_bite) {\n\t\tint ret = m1_wd2_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
            "\t/* After m1_wd2_init(), which maps the engine's page: m1_ll_init() refuses without it. */\n"
            "\tif (last_look) {\n\t\tint ret = m1_ll_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
+           "\tif (ll_retn) {\n\t\tint ret = m1_llr_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
            "\tif (blink) {\n\t\tint ret = m1_blink_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
            "\tif (wake_all)\n\t\tm1_wa_init();\n\t/* Last: it reads through pages") in src,
-          "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and then m1_wd2_init(), for wd2_bite=1 alone, with only last_look=1's, blink=1's, wake_all=1's and the look's start-up"
+          "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and then m1_wd2_init(), for wd2_bite=1 alone, with only last_look=1's, ll_retn=1's, blink=1's, wake_all=1's and the look's start-up"
           " after it, and returns their refusals (wake_all=1's has none)")
 
     # wd2_bite=1: one write to WD2, its bite, by CPU0 after the release, and only if WD2 showed RESET_EN; the sample in one command with its stage.
-    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2 + SST_WD2 + A2P_WD2 + ACL_WD2 + LL_WD2 + LLW_WD2\n" in tool
-          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b, 0x12, 0x13, 0x0a, 0x0b, 0x07, 0x08) and g["WD2_PEND"] == (0x56, 0x51, 0x54, 0x3e, 0x1e, 0x16, 0x1a, 0x12, 0x0a, 0x07),
+    check("#define M1_WD2_STAGE\t\t0x57" in src and "#define M1_WD2_STAGE_PEND\t0x56" in src and "WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2 + SST_WD2 + A2P_WD2 + ACL_WD2 + LL_WD2 + LLW_WD2 + LLR_WD2\n" in tool
+          and g["SAMPLE_STAGES"] == (0x46, 0x47, 0x56, 0x57, 0x51, 0x53, 0x54, 0x55, 0x3e, 0x3f, 0x1e, 0x1f, 0x16, 0x17, 0x1a, 0x1b, 0x12, 0x13, 0x0a, 0x0b, 0x07, 0x08, 0x18, 0x1c) and g["WD2_PEND"] == (0x56, 0x51, 0x54, 0x3e, 0x1e, 0x16, 0x1a, 0x12, 0x0a, 0x07, 0x18),
           "wd2_bite=1's stages are 0x56 and 0x57 in the module and in m1-crumbs, with recfg_bite=1's as the stages whose 0x6005 is a sample")
     wout = src[src.index("static void m1_wd2_out(void)"):]
     wout = wout[:wout.index("\n}\n")]

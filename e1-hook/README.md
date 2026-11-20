@@ -264,6 +264,38 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   is the witness, as in `--m1-a2-pre-blink`. With every wake source masked, a Mac whose entry completed would
   not wake for a key, the lid or the PMU's alarm: it comes back only by holding the power button. Run it
   with `--no-reading`, the nights off around it and nothing in the USB-C ports.
+- `ll_retn=1` (`run-floor --m1-ll-retn`, on `ll_wake=1`, never with `gate_look=1`; the launcher's line is
+  `--m1-atc-down`'s with it; `e1-hook/last_look.h` has why, the record's form and the stages) changes how CPU0
+  takes its very last WFI, and nothing before it. CYC_OVRD's bit 0 is XNU's `disWfiRetn`, "disable WFI
+  retention": the recipe sets it (0x3000001), as macOS does, so a WFI can't come back at the next instruction
+  with its state kept; Linux's own idle on this chip leaves it clear and comes back on the core's timer. With
+  `ll_retn=1` CPU0 writes 0x3000000 (bits 25:24 alone) before that WFI, ACC_OVRD's deep-sleep fields set as in
+  every run and `ll_wake=1`'s timer 25 s out. A return with nothing pending (ISR_EL1 0: Linux's idle loops on
+  those) is counted and the WFI taken again, up to 1000 times, with nothing read but ISR_EL1 and nothing sent.
+  At the first return with something pending, or the 1000th empty one, CPU0 makes its look, once: the clock,
+  ISR_EL1, the timer's status, its control written 0, and three commands to 0x6008-0x600e in `last_look=1`'s
+  order, each before the next one's reads, in a form of this run's own. 0x6008 and 0x6009 are `last_look=1`'s
+  (the count takes the look's return as the first); 0x600a is the low byte of the E complex's state word,
+  0x28e09a000 (0x44 awake since boot; a down sequence ends on 0x1a, an up sequence on 0x40); 0x600b has
+  0x2922c0044's low nibble, 0x2922c0040's bits 1:0 (3 awake) in bits 5:4, bit 6 if the state word, 0x2922c0040,
+  PHASE or EACC's word has a bit the bytes don't carry, and bit 7 if the look was made at the 1000th empty
+  return; 0x600c has bit 7, the bits 6:4 of EACC's soc-cluster word, 0x28e098000, and PHASE's low nibble;
+  0x600d and 0x600e are `last_look=1`'s, best effort (they were lost across the restart in three runs). Then
+  CPU0 sets bit 0 again, 0x3000001, and goes on as a `last_look=1` run does after a first return. **New on
+  the hardware: one system register's value on CPU0, CYC_OVRD's bit 0 clear for its last WFI until the look,
+  and two reads CPU0 hasn't made in this state**, the state word and EACC's word, the last reads of the second
+  command (the observer read both after a commit; the load maps their page if nothing has, and reads and logs
+  them awake with the other two complexes'). Nothing else: no MMIO write is new (the tests' count of the
+  module's MMIO write calls is unchanged, 74), the other cores' deep WFI is as it was, and K1, the undo and
+  `m1_pmu_ok()` are `last_look=1`'s. Stages of its own, 0x94, then 0x9c or 0x98, by which `m1-crumbs` knows
+  the form: under them it reads each field as read and names it, and all 0 as "the WFI didn't return, or the
+  first command failed" (a WFI that returned only with nothing pending, fewer than 1000 times, leaves that
+  too); it applies this form under no other run's stage and no other run's form under these; the alarm
+  (20 s), the timer, the light and the marker (70 s) read as `ll_wake=1`'s. `m1_ll_wfi()` keeps x18 to x30 on
+  the stack across the WFI, as the kernel's `apple_cpu_deep_wfi()` does, and like it needs the stack pointer
+  and the system registers to survive; whether they do with the recipe's ACC_OVRD is part of what the run
+  asks. Run it with `--no-reading`, the nights off around it and nothing in the USB-C ports, and film the
+  keyboard.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be
