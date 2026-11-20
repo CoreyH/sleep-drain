@@ -5426,6 +5426,91 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The desk step of 2026-11-20: Linux's own idle moved no complex's state word in 12 s of samples, the eighth run closes the wake sources, and what the others found
+
+**The night before.** The first night the nights' power-off covered in ordinary use: the lid closed on battery
+at 17:55:57 (48%), the alarm armed for 25 minutes, `post power-off why=alarm-time` at 18:20:58, and the Mac
+was off until Corey started it at 09:45 (the Apple logo, and a new session, as the setting says). That sleep
+was `valid=yes`: 1,501 s at `avg_mw_cc` 1,931.
+
+**Upstream.** No answer yet on aurora-silicon/linux#2198 to the follow-up of 11-19; nothing new on
+omacom/linux-aurora#351, #454, #504 or #290, and no reply on malik-na/linux-aurora#77.
+
+**What the others did, 2026-11-16 to -20** (public threads, PR lists and commit messages; no code read, nothing
+posted). aurora-silicon/linux has nothing for T600x's sleep beyond our issue. Naeem Malik's T8103 branch
+(`m1power/s2r-rs1-135`) has four commits past the sweep of 11-16, the last on 11-17; his words in quotes, his
+chip's values, leads here and not facts about T6000:
+- He now has both systems' state at the commit. "Linux run40 under the m1n1 hypervisor with real S2R restarts
+  ~5 s after the commit; macOS 13.5 through the same commit path wakes. Both systems' state was then read by
+  the same tracer when the last core reached its commit (249 power-state, always-on and clock words ...): 54
+  differ." That diff is what nobody has for a T600x (#2198's first answer), and it is made with a tool this
+  project's assistant doesn't build (CLAUDE.md, m1n1).
+- "At its commit macOS 13.5 has DCSn+0x7b0 = 0 on all eight DRAM controllers, with their power domains gating
+  themselves; Linux has 3 and the domains always on. The engine's program reads that field." Here the sequence
+  after B2 waits, untimed, for the 16 DCS power words to read off, and nothing in B2 lowers them ("B2 read
+  against the M4 classes", point 4): if this Mac's DRAM controllers don't gate themselves under Linux either,
+  that is where an entry that got through B2 would stop next.
+- "Two hypervisor captures of macOS 13.5's sleep entry with every device page trapped ... show the same 135
+  writes in the memory controller's space in the last 50 ms before the commit. Linux did the first five."
+  Whether his run 43 (those writes made) ends his restart isn't in a commit. His lab repository
+  (malik-na/m1-power-lab, "workbench for investigating Apple M1 power management through m1n1") is public
+  and was pushed on 11-20; it wasn't read.
+
+**Before the eighth run: is there a look that comes back?** The stall is in the state no core sees, and the
+plan asked for this to be weighed before another one-way run. One idea, checked at the desk: its plain form
+found no support, and the form with the recipe's own settings is untested:
+- *The idea.* Linux's own deep idle on this chip comes back by the core's timer. If a complex whose cores idle
+  that way counted as down for the engine's gate word, the last core could idle so after the commit, come back
+  on its timer, and read what B2 did meanwhile (0x2922c0040 is lowered by nothing but B2's ops 4 to 6).
+- *Bit 0 of CYC_OVRD is "disable WFI retention"*, not "no return" as the module's comments have it
+  (xnu-12377.121.6, `osfmk/arm64/machine_routines_asm.s`: `ARM64_REG_CYC_OVRD_disWfiRetn`, set with "OK to
+  power down" in `arm64_prepare_for_sleep()`; `arm64_retention_wfi` returns to the next instruction with the
+  general registers lost). The recipe sets it, as macOS does, so its WFIs can't return that way. And for a
+  core put down *not* for deep sleep XNU masks IRQ and FIQ in the same register "to avoid spurious wakeups":
+  for deep sleep it leaves them, as the recipe does (modes 0).
+- *This kernel's idle* (`drivers/cpuidle/cpuidle-apple.c` on omacom's `integration/aurora`, state "CPU PD",
+  "CPU/cluster powered down"): CYC_OVRD's bits 25:24 set to 3 and a WFI, retention left on, ACC_OVRD untouched.
+- *The check* (`results/idle-watch-20261120/`: a read-only sampler through /dev/mem, words the looks have read
+  awake before): 0x2922c0044, 0x2922c0040, the three complexes' state words and their soc-cluster words, read
+  as fast as a loop goes for 6 s from CPU0 and 6 s from CPU7, 2.3 million samples: **one value throughout**,
+  8, 3, 0x44 0x40 0x40, 0x0f 0x2f 0x2f. In a like 6 s a quarter of an hour later P1's three cores spent 4.75,
+  5.27 and 6.2 s in CPU PD (`cpuidle.txt`), so they were all in it together for most of such a window (inferred:
+  the counters weren't read around the sampler itself). **So in these samples, awake, Linux's deep idle moved
+  no complex's state word and the gate word didn't count it.** That is this kernel's idle and nothing more: the
+  complexes went down in the runs where their cores had ACC_OVRD's deep-sleep fields *and* retention disabled,
+  and which of the two it takes isn't known. A core without retention has nothing to come back to but its
+  reset vector; a core with ACC_OVRD's deep-sleep fields and retention left on hasn't been tried anywhere here.
+- *What is left of it, not built.* (a) That untried case, as one bit changed in run B's recipe: CPU0's last
+  WFI with CYC_OVRD's bit 0 clear and its timer at 25 s, where `m1_ll_ret()` already records a return and what
+  it reads. The gate word can't be the witness: CPU0 is up again when it reads it, so "stayed up" and "went
+  down and came back" read the same there (the decoder says so of a return already). What keeps a trace is
+  the E complex's state word, 0x44 since boot and never cycled by the sequencer, which an up sequence would
+  leave at 0x40 (by the SRAM's listing; not seen on this complex), and 0x2922c0040, which only B2 lowers. So
+  the run needs the state word added to the return's record, and reads three ways: state word 0x40 or
+  0x2922c0040 changed, the complex went down with every core gone and this is the look; a return with the
+  state word still 0x44 and 0x2922c0040 at 3, retention kept the complex up; no return, as run B. (b) A secondary core as the last one down with its reset vector (RVBAR, not
+  locked on the seven) pointed at a stub of ours, and something to start it with no core up. XNU's "spurious
+  wakeups" says an interrupt can start a core that is down; whether one can with its whole complex down, and
+  from which source, isn't known. A day's build with two unknown mechanisms in it: kept as an idea.
+
+**The eighth run, chosen: every AP wake source masked** (`wake_all=1`, being built; its own section when it
+is). Checked against the notebook first: no run here has masked source 54 (NUB.SPMISw3IRQ, the PMU's line) or
+word 6's ids 0xcd-0xdf; the one sample of the words inferred to be the wake status after a commit (run 2,
+CPU7 up) showed no new bit; "run 38 masks every wake source" is Naeem's, on T8103. The M4 Pro's driver names
+an unmasked pending source as a holder of the first gate, and the follow-up of 11-19 asked upstream about
+exactly this, so the run closes a named class whatever it shows. Odds that the light stops, mine: one in
+twenty. The AIC is masked whole in steps 2 and 4 and nub-spmi0's enables are zeroed in step 7, so the one
+source left open may never have had a way to assert.
+
+**Where that leaves the method** (judgment). What stands between the last WFI and B2's power-downs is the gate
+word in a state no core reads, and every difference from macOS that the recipe copies is a *write* macOS made:
+its *state* at the commit has never been seen on this chip. On T8103 that state, read under the hypervisor in
+both systems, gave 54 differing words where replaying writes had run dry. After this run two of the ten
+one-way runs remain, and no candidate on file is better than one in twenty. So the next thing worth more than
+a run is macOS's commit state for T6000: from whoever has the hypervisor set up for it (maralcbr traced this
+very model; Naeem's lab is public), or made on this Mac by Corey, since the tool is theirs to use and not
+this assistant's to build. Asking is Corey's call each time.
+
 ### The `a2_pre=1` run with the light: the moves made, the same 91 s, and a light seen only in part (2026-11-19)
 
 `run-floor --no-reading --m1-a2-pre-blink` in a safe boot, on battery at about 60%, nothing in the USB-C
