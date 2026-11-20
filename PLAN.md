@@ -60,8 +60,10 @@ this section where they differ.
    - Read the answer on aurora-silicon/linux#2198, if one has come (`#issuecomment-7014628444`: what
      bit 3 of the gate word is, whether the PMU's wake source should be masked). A reply needs Corey's OK.
    - Kept as ideas, not built: CPU0's last WFI with retention left on (CYC_OVRD's bit 0 clear) and
-     its timer at 25 s, one bit changed in run B's recipe, whose `m1_ll_ret()` records a return: the
-     best of the three for a ninth run, since either answer says something; a secondary core as the last one down with its RVBAR at a stub of ours
+     its timer at 25 s, one bit changed in run B's recipe, whose `m1_ll_ret()` records a return, with
+     the E complex's state word added to that record (0x44 until the sequencer has cycled it; the gate
+     word says nothing once CPU0 is up again): the best of the three for a ninth run; a secondary core
+     as the last one down with its RVBAR at a stub of ours
      and an interrupt to start it with no core up (two unknown mechanisms); the other words on at the
      commit that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4: macOS's table
      doesn't lower them either). DBGPRCR_EL1's bit 0 is dropped: the cores' power words read

@@ -5482,8 +5482,13 @@ found no support, and the form with the recipe's own settings is untested:
   reset vector; a core with ACC_OVRD's deep-sleep fields and retention left on hasn't been tried anywhere here.
 - *What is left of it, not built.* (a) That untried case, as one bit changed in run B's recipe: CPU0's last
   WFI with CYC_OVRD's bit 0 clear and its timer at 25 s, where `m1_ll_ret()` already records a return and what
-  it reads. If the E complex still goes down and CPU0 comes back, that is the look; if CPU0 comes back with
-  the gate word as a core up leaves it, retention keeps the complex up and the idea is closed. (b) A secondary core as the last one down with its reset vector (RVBAR, not
+  it reads. The gate word can't be the witness: CPU0 is up again when it reads it, so "stayed up" and "went
+  down and came back" read the same there (the decoder says so of a return already). What keeps a trace is
+  the E complex's state word, 0x44 since boot and never cycled by the sequencer, which an up sequence would
+  leave at 0x40 (by the SRAM's listing; not seen on this complex), and 0x2922c0040, which only B2 lowers. So
+  the run needs the state word added to the return's record, and reads three ways: state word 0x40 or
+  0x2922c0040 changed, the complex went down with every core gone and this is the look; a return with the
+  state word still 0x44 and 0x2922c0040 at 3, retention kept the complex up; no return, as run B. (b) A secondary core as the last one down with its reset vector (RVBAR, not
   locked on the seven) pointed at a stub of ours, and something to start it with no core up. XNU's "spurious
   wakeups" says an interrupt can start a core that is down; whether one can with its whole complex down, and
   from which source, isn't known. A day's build with two unknown mechanisms in it: kept as an idea.
