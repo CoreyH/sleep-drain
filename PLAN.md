@@ -36,10 +36,11 @@ this section where they differ.
   lost in both runs that wrote them, though awake they take a write. Use the first five.
 - The SMC's keys across a one-way run say nothing: after four runs and after a plain restart they
   differ only by the charger and the battery.
-- Linux's own deep idle ("CPU PD": retention on, ACC_OVRD untouched) takes no complex down in the
-  sequencer's sense and doesn't move the gate word (`results/idle-watch-20261120/`). Bit 0 of CYC_OVRD,
+- Linux's own deep idle ("CPU PD": retention on, ACC_OVRD untouched) moved no complex's state word
+  and not the gate word in 12 s of samples awake (`results/idle-watch-20261120/`). Bit 0 of CYC_OVRD,
   which the recipe sets as macOS does, is "disable WFI retention": a core down that way has only its
-  reset vector to come back to. So a last core that idles and returns to look isn't on offer.
+  reset vector to come back to. Untried: a last core with ACC_OVRD's deep-sleep fields and retention
+  left on, which might go down in the engine's sense and still return to look.
 - macOS's *state* at its commit has never been read on a T600x; the recipe copies its writes. On T8103
   that state, read under the m1n1 hypervisor in both systems, showed 54 words differing (Naeem Malik,
   2026-11-16).
@@ -58,7 +59,9 @@ this section where they differ.
      for a capture is Corey's call. Put this to Corey with the run's result.
    - Read the answer on aurora-silicon/linux#2198, if one has come (`#issuecomment-7014628444`: what
      bit 3 of the gate word is, whether the PMU's wake source should be masked). A reply needs Corey's OK.
-   - Kept as ideas, not built: a secondary core as the last one down with its RVBAR at a stub of ours
+   - Kept as ideas, not built: CPU0's last WFI with retention left on (CYC_OVRD's bit 0 clear) and
+     its timer at 25 s, one bit changed in run B's recipe, whose `m1_ll_ret()` records a return: the
+     best of the three for a ninth run, since either answer says something; a secondary core as the last one down with its RVBAR at a stub of ours
      and an interrupt to start it with no core up (two unknown mechanisms); the other words on at the
      commit that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4: macOS's table
      doesn't lower them either). DBGPRCR_EL1's bit 0 is dropped: the cores' power words read

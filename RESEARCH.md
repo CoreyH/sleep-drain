@@ -5426,7 +5426,7 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
-### The desk step of 2026-11-20: Linux's own idle takes no complex down, the eighth run closes the wake sources, and what the others found
+### The desk step of 2026-11-20: Linux's own idle moved no complex's state word in 12 s of samples, the eighth run closes the wake sources, and what the others found
 
 **The night before.** The first night the nights' power-off covered in ordinary use: the lid closed on battery
 at 17:55:57 (48%), the alarm armed for 25 minutes, `post power-off why=alarm-time` at 18:20:58, and the Mac
@@ -5457,7 +5457,8 @@ chip's values, leads here and not facts about T6000:
   and was pushed on 11-20; it wasn't read.
 
 **Before the eighth run: is there a look that comes back?** The stall is in the state no core sees, and the
-plan asked for this to be weighed before another one-way run. One idea, checked at the desk and not supported:
+plan asked for this to be weighed before another one-way run. One idea, checked at the desk: its plain form
+found no support, and the form with the recipe's own settings is untested:
 - *The idea.* Linux's own deep idle on this chip comes back by the core's timer. If a complex whose cores idle
   that way counted as down for the engine's gate word, the last core could idle so after the commit, come back
   on its timer, and read what B2 did meanwhile (0x2922c0040 is lowered by nothing but B2's ops 4 to 6).
@@ -5474,11 +5475,15 @@ plan asked for this to be weighed before another one-way run. One idea, checked 
   as fast as a loop goes for 6 s from CPU0 and 6 s from CPU7, 2.3 million samples: **one value throughout**,
   8, 3, 0x44 0x40 0x40, 0x0f 0x2f 0x2f. In a like 6 s a quarter of an hour later P1's three cores spent 4.75,
   5.27 and 6.2 s in CPU PD (`cpuidle.txt`), so they were all in it together for most of such a window (inferred:
-  the counters weren't read around the sampler itself). **So Linux's deep idle takes no complex down in the
-  sequencer's sense, and the gate word doesn't count it.** The complexes went down in the runs where their
-  cores had ACC_OVRD's deep-sleep fields and retention disabled; which of the two it takes isn't known, and a
-  core without retention has nothing to come back to but its reset vector.
-- *What is left of it, not built:* a secondary core as the last one down with its reset vector (RVBAR, not
+  the counters weren't read around the sampler itself). **So in these samples, awake, Linux's deep idle moved
+  no complex's state word and the gate word didn't count it.** That is this kernel's idle and nothing more: the
+  complexes went down in the runs where their cores had ACC_OVRD's deep-sleep fields *and* retention disabled,
+  and which of the two it takes isn't known. A core without retention has nothing to come back to but its
+  reset vector; a core with ACC_OVRD's deep-sleep fields and retention left on hasn't been tried anywhere here.
+- *What is left of it, not built.* (a) That untried case, as one bit changed in run B's recipe: CPU0's last
+  WFI with CYC_OVRD's bit 0 clear and its timer at 25 s, where `m1_ll_ret()` already records a return and what
+  it reads. If the E complex still goes down and CPU0 comes back, that is the look; if CPU0 comes back with
+  the gate word as a core up leaves it, retention keeps the complex up and the idea is closed. (b) A secondary core as the last one down with its reset vector (RVBAR, not
   locked on the seven) pointed at a stub of ours, and something to start it with no core up. XNU's "spurious
   wakeups" says an interrupt can start a core that is down; whether one can with its whole complex down, and
   from which source, isn't known. A day's build with two unknown mechanisms in it: kept as an idea.
