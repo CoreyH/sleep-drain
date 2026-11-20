@@ -1,11 +1,11 @@
 #!/usr/bin/python3 -I
 """tests/mutants.py: break the one-way runs' code one way at a time and see that the tests notice (tests/m1_crumbs_test.py;
-tests/e1_hook_probe_test.py for the launcher e1-hook/probe).
+tests/e1_hook_probe_test.py for the launcher e1-hook/probe; tests/e1a_launcher_test.py for the launcher e1-hook/run-floor).
 
   python3 -I -B tests/mutants.py            every mutant (about an hour and a half for a thousand: six at a time)
   python3 -I -B tests/mutants.py wd1 fab    only those whose name has one of these words
 
-Each mutant is one change to e1-hook/e1_hook.c, one of its headers, e1-hook/m1-crumbs or e1-hook/probe: a wrong value, a write
+Each mutant is one change to e1-hook/e1_hook.c, one of its headers, e1-hook/m1-crumbs, e1-hook/probe or e1-hook/run-floor: a wrong value, a write
 that isn't gated, a check dropped, a bit read wrong. It's applied in a copy of e1-hook/ and tests/, never in the
 tree, and the tests run there. A mutant is caught if a check fails or the tests can't build what they compile; it
 survived if they still say "all ok", and then the tests have a hole. A mutant whose text isn't in the file any more
@@ -33,8 +33,12 @@ PRT = "pre_test.h"
 A2P = "a2_pre.h"
 ACL = "acc_last.h"
 LL = "last_look.h"
-# The test that has to notice a mutant of each file: the launcher e1-hook/probe has its own.
-TESTS = {PROBE: "e1_hook_probe_test.py"}
+RUN = "run-floor"
+# The test that has to notice a mutant of each file: the launchers e1-hook/probe and e1-hook/run-floor have their own.
+TESTS = {PROBE: "e1_hook_probe_test.py", RUN: "e1a_launcher_test.py"}
+# A test's own arguments. run-floor's test takes half a minute a launcher and has 35 of them: its mutants are run against the
+# plain floor, which has the usage cases, and the launchers named here. A mutant of another option needs its launcher added.
+ARGS = {RUN: ["run-floor", "--m1-a2-pre-blink", "--m1-wake-all"]}
 
 # (name, file, the text to change, what it becomes); the text must occur exactly once.
 MUTANTS = [
@@ -1216,7 +1220,103 @@ MUTANTS = [
     ("ogl decoder: the power words named in another order", CRUMBS, "OG_WORDS = (\"CPU0\", \"ECPM (the E complex)\", \"PCPM0 (P complex 0)\"", "OG_WORDS = (\"ECPM (the E complex)\", \"CPU0\", \"PCPM0 (P complex 0)\""),
     ("ogl decoder: off read as on", CRUMBS, "{'off' if v >> i & 1 else 'on'}", "{'on' if v >> i & 1 else 'off'}"),
     ("ogl decoder: the second sample's four read a bit off", CRUMBS, "then: {words(r[6] >> 3)}", "then: {words(r[6] >> 2)}"),
-    ("ogl decoder: --clear leaves the observer's record", CRUMBS, "            seven = st in LL_STAGES or og_record(st, b[8:0x0f])\n", "            seven = st in LL_STAGES\n"),
+    ("ogl decoder: --clear leaves the observer's record", CRUMBS, "            seven = st in LL_STAGES or og_record(st, b[8:0x0f]) or wa_clear(st, b[8:0x0f])\n", "            seven = st in LL_STAGES or wa_clear(st, b[8:0x0f])\n"),
+    # wake_all=1: step 7's seven AP wake-mask words written 0xffffffff, read back with the status words, and one byte at 0x6008.
+    # (Every name here has "wa:" or "wa " in it and no other mutant's does: python3 -I -B tests/mutants.py "wa:" "wa " runs these alone.)
+    ("wa: on by default", C, "static bool wake_all;", "static bool wake_all = true;"),
+    ("wa: parameter writable (0644)", C, "module_param(wake_all, bool, 0444);", "module_param(wake_all, bool, 0644);"),
+    ("wa: loads without gates_mark", C, "\tif (wake_all && (!gates_mark || observe)) {", "\tif (wake_all && observe) {"),
+    ("wa: loads with observe=1", C, "\tif (wake_all && (!gates_mark || observe)) {", "\tif (wake_all && !gates_mark) {"),
+    ("wa: the load line doesn't name it", C, "blink ? \" blink=1\" : \"\", wake_all ? \" wake_all=1\" : \"\",", "blink ? \" blink=1\" : \"\", \"\","),
+    ("wa: 0xffffffff written in every run", C, "\t\twritel(wake_all ? U32_MAX : m1_wake_mask[i], m1_aon + 4 * i);", "\t\twritel(U32_MAX, m1_aon + 4 * i);"),
+    ("wa: the table's values written with wake_all=1 too", C, "\t\twritel(wake_all ? U32_MAX : m1_wake_mask[i], m1_aon + 4 * i);", "\t\twritel(m1_wake_mask[i], m1_aon + 4 * i);"),
+    ("wa: the two values the wrong way round", C, "\t\twritel(wake_all ? U32_MAX : m1_wake_mask[i], m1_aon + 4 * i);", "\t\twritel(wake_all ? m1_wake_mask[i] : U32_MAX, m1_aon + 4 * i);"),
+    ("wa: word 6 left as macOS's value", C, "\t\twritel(wake_all ? U32_MAX : m1_wake_mask[i], m1_aon + 4 * i);", "\t\twritel(wake_all && i < 6 ? U32_MAX : m1_wake_mask[i], m1_aon + 4 * i);"),
+    ("wa: the masks read back in every run", C, "\tif (wake_all)\n\t\twa = m1_wa_read();\n", "\twa = m1_wa_read();\n"),
+    ("wa: the masks read back before they are written", C, "\tm1_crumb(0x6004, b, 4);\n\tfor (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)\n",
+     "\tm1_crumb(0x6004, b, 4);\n\tif (wake_all)\n\t\twa = m1_wa_read();\n\tfor (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)\n"),
+    ("wa: the masks read back after CPU0 is quieted", C, "\tif (wake_all)\n\t\twa = m1_wa_read();\n\n\t/* 8 */\n\tm1_quiet_core();\n", "\n\t/* 8 */\n\tm1_quiet_core();\n\tif (wake_all)\n\t\twa = m1_wa_read();\n"),
+    ("wa: the byte sent in step 7, with the reads", C, "\tif (wake_all)\n\t\twa = m1_wa_read();\n", "\tif (wake_all) {\n\t\twa = m1_wa_read();\n\t\tm1_crumb(LL_AT, &wa, 1);\n\t}\n"),
+    ("wa: the byte sent before step 8's record", C, "\tm1_crumb(0x6010, b, 7);\n", "\tif (wake_all)\n\t\tm1_crumb(LL_AT, &wa, 1);\n\tm1_crumb(0x6010, b, 7);\n"),
+    ("wa: the byte not sent", C, "\tif (wake_all)\n\t\tm1_crumb(LL_AT, &wa, 1);\n\t/* wd1_mark=1: does the marker stand?", "\t/* wd1_mark=1: does the marker stand?"),
+    ("wa: the byte sent in every run", C, "\tif (wake_all)\n\t\tm1_crumb(LL_AT, &wa, 1);\n", "\tm1_crumb(LL_AT, &wa, 1);\n"),
+    ("wa: the byte sent by the read as well", C, "\treturn wa_byte(named, unnamed, pending);\n", "\tm1_crumb(LL_AT, (u8[]){ wa_byte(named, unnamed, pending) }, 1);\n\treturn wa_byte(named, unnamed, pending);\n"),
+    ("wa: word 6 held to all ones for the named ids", C, "\t\tif (i < WA_WORDS - 1 ? back != U32_MAX : (back & WA_W6_NAMED) != WA_W6_NAMED)", "\t\tif (back != U32_MAX)"),
+    ("wa: word 5 checked as word 6 is", C, "\t\tif (i < WA_WORDS - 1 ? back != U32_MAX :", "\t\tif (i < WA_WORDS - 2 ? back != U32_MAX :"),
+    ("wa: word 0 not read back", C, "\tfor (i = 0; i < WA_WORDS; i++) {\n\t\tback = readl(m1_aon + 4 * i);", "\tfor (i = 1; i < WA_WORDS; i++) {\n\t\tback = readl(m1_aon + 4 * i);"),
+    ("wa: the ids with no name read from the named bits", C, "\tunnamed = (back | WA_W6_NAMED) == U32_MAX;", "\tunnamed = (back & WA_W6_NAMED) == WA_W6_NAMED;"),
+    ("wa: the ids with no name said to take when any bit did", C, "\tunnamed = (back | WA_W6_NAMED) == U32_MAX;", "\tunnamed = (back & ~WA_W6_NAMED) != 0;"),
+    ("wa: the status words counted as one", C, "\t\tif (readl(m1_wake_status + 4 * i))\n\t\t\tpending++;", "\t\tif (readl(m1_wake_status + 4 * i))\n\t\t\tpending = 1;"),
+    ("wa: the masks read again for the status words", C, "\t\tif (readl(m1_wake_status + 4 * i))\n\t\t\tpending++;", "\t\tif (readl(m1_aon + 4 * i))\n\t\t\tpending++;"),
+    ("wa: the last status word not read", C, "\tfor (i = 0; i < WA_WORDS; i++) {\n\t\tif (readl(m1_wake_status", "\tfor (i = 0; i < WA_WORDS - 1; i++) {\n\t\tif (readl(m1_wake_status"),
+    ("wa: the byte sent to 0x6009", C, "\t\tm1_crumb(LL_AT, &wa, 1);", "\t\tm1_crumb(LL_AT + 1, &wa, 1);"),
+    ("wa: a mask put back after the read", C, "\treturn wa_byte(named, unnamed, pending);\n", "\twritel(m1_wake_mask[1], m1_aon + 4);\n\treturn wa_byte(named, unnamed, pending);\n"),
+    ("wa: K1 leaves no mark", C, "\t\tv = WA_ARMED;\n\t\tif (!ret)\n\t\t\tret = m1_kwrite(LL_AT, &v, 1);\n", "\t\tv = WA_ARMED;\n"),
+    ("wa: K1 doesn't zero the seven bytes first", C, "\tif (!ret && wake_all) {\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n", "\tif (!ret && wake_all) {\n"),
+    ("wa: K1 marks every run", C, "\tif (!ret && wake_all) {\n", "\tif (!ret) {\n"),
+    ("wa: the undo leaves the seven bytes", C, "\tif (wake_all) {\n\t\terr = m1_kwrite(LL_AT, zero, LL_N);\n\t\tret = ret ?: err;\n\t}\n", ""),
+    ("wa: 0x6008-0x600e open to any write with wake_all=1", C, "\tif (wake_all && addr == LL_AT && one && wa_ok(b[0]))", "\tif (wake_all && addr >= LL_AT && end <= LL_AT + LL_N)"),
+    ("wa: any byte let through at 0x6008 with wake_all=1", C, "\tif (wake_all && addr == LL_AT && one && wa_ok(b[0]))", "\tif (wake_all && addr == LL_AT && one)"),
+    ("wa: a mark with six more bytes let through with wake_all=1", C, "\tif (wake_all && addr == LL_AT && one && wa_ok(b[0]))", "\tif (wake_all && addr == LL_AT && (one || n == LL_N) && wa_ok(b[0]))"),
+    ("wa: seven bytes of anything let through in any run", C, "\t\tif (i == LL_N)\n\t\t\treturn true;\n", "\t\treturn true;\n"),
+    ("wa: the seventh of the zeros not looked at", C, "\t\tif (i == LL_N)\n\t\t\treturn true;\n", "\t\tif (i >= LL_N - 1)\n\t\t\treturn true;\n"),
+    ("wa: seven zeros let through wherever they start", C, "\tif (addr == LL_AT && n == LL_N) {\n\t\tunsigned int i;", "\tif (n == LL_N) {\n\t\tunsigned int i;"),
+    ("wa: zeros let through at 0x6008 whatever their number", C, "\tif (addr == LL_AT && n == LL_N) {\n\t\tunsigned int i;\n\n\t\tfor (i = 0; i < LL_N && !b[i]; i++)\n\t\t\t;\n\t\tif (i == LL_N)",
+     "\tif (addr == LL_AT) {\n\t\tunsigned int i;\n\n\t\tfor (i = 0; i < n && !b[i]; i++)\n\t\t\t;\n\t\tif (i == n)"),
+    ("wa: no seven zeros let through in a run with no clause of its own", C, "\t\tif (i == LL_N)\n\t\t\treturn true;\n", "\t\tif (i == LL_N && (last_look || observe || wake_all))\n\t\t\treturn true;\n"),
+    ("wa: 0x6008 open to every run", C, "\tif (wake_all && addr == LL_AT && one && wa_ok(b[0]))", "\tif (addr == LL_AT && one && wa_ok(b[0]))"),
+    ("wa: K1 leaves 0x6008-0x600e in a run with no clause of its own", C, "\tif (!ret && !wake_all && !last_look && !observe)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n", ""),
+    ("wa: K1 zeroes 0x6008-0x600e after wake_all=1's mark too", C, "\tif (!ret && !wake_all && !last_look && !observe)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n\t/* wake_all=1: the seven zeroed, then its mark: the byte, sent after step 8's record, writes over it. */\n\tif (!ret && wake_all) {\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n\t\tv = WA_ARMED;\n\t\tif (!ret)\n\t\t\tret = m1_kwrite(LL_AT, &v, 1);\n\t}\n",
+     "\tif (!ret && wake_all) {\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n\t\tv = WA_ARMED;\n\t\tif (!ret)\n\t\t\tret = m1_kwrite(LL_AT, &v, 1);\n\t}\n\tif (!ret)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n"),
+    ("wa: the undo leaves 0x6008-0x600e in a run with no clause of its own", C, "\tif (!wake_all && !last_look && !observe) {\n\t\terr = m1_kwrite(LL_AT, zero, LL_N);\n\t\tret = ret ?: err;\n\t}\n", ""),
+    ("wa: the load's log of the masks not made", C, "\tif (wake_all)\n\t\tm1_wa_init();\n", ""),
+    ("wa: a mask written at the load", C, "\t\tmask[i] = readl(m1_aon + 4 * i);\n", "\t\tmask[i] = readl(m1_aon + 4 * i);\n\t\twritel(U32_MAX, m1_aon + 4 * i);\n"),
+    ("wa header: K1's mark is obs_gate=1's", LL, "#define WA_ARMED\t\t(1U << 5)", "#define WA_ARMED\t\t(1U << 6)"),
+    ("wa header: the mark is bit 7 alone", LL, "#define WA_MARK\t\t\t0xc0U", "#define WA_MARK\t\t\t0x80U"),
+    ("wa header: the two fields swapped", LL, "(named ? WA_NAMED : 0) | (unnamed ? WA_UNNAMED : 0)", "(named ? WA_UNNAMED : 0) | (unnamed ? WA_NAMED : 0)"),
+    ("wa header: the count not capped", LL, "(status > 7 ? 7 : status));", "status);"),
+    ("wa header: the count capped at 3", LL, "(status > 7 ? 7 : status));", "(status > 3 ? 3 : status));"),
+    ("wa header: word 6's named ids a bit short", LL, "#define WA_W6_NAMED\t\t0x00001fffU", "#define WA_W6_NAMED\t\t0x00000fffU"),
+    ("wa header: word 6's named ids a bit long", LL, "#define WA_W6_NAMED\t\t0x00001fffU", "#define WA_W6_NAMED\t\t0x00003fffU"),
+    ("wa header: a byte with bit 3 may be written", LL, "((v & WA_MARK) == WA_MARK && !(v & (1U << 3)));", "((v & WA_MARK) == WA_MARK);"),
+    ("wa header: one top bit enough for a byte to be written", LL, "((v & WA_MARK) == WA_MARK && !(v & (1U << 3)));", "((v & WA_MARK) && !(v & (1U << 3)));"),
+    ("wa header: K1's mark may not be written", LL, "\treturn v == WA_ARMED || ((v & WA_MARK)", "\treturn ((v & WA_MARK)"),
+    ("wa header: obs_gate=1's mark may be written", LL, "\treturn v == WA_ARMED || ((v & WA_MARK)", "\treturn v == WA_ARMED || v == 0x40 || ((v & WA_MARK)"),
+    ("wa decoder: K1's mark is obs_gate=1's", CRUMBS, "WA_ARMED = 0x20  #", "WA_ARMED = 0x40  #"),
+    ("wa decoder: the byte under any stage", CRUMBS, " or ((s in WA_STAGES or s == WA_STEP7) and r[0] & WA_MARK == WA_MARK)", " or (r[0] & WA_MARK == WA_MARK)"),
+    ("wa decoder: one top bit taken for the mark", CRUMBS, " or ((s in WA_STAGES or s == WA_STEP7) and r[0] & WA_MARK == WA_MARK)", " or ((s in WA_STAGES or s == WA_STEP7) and bool(r[0] & WA_MARK))"),
+    ("wa decoder: the byte under step 7's own stage not read", CRUMBS, " or ((s in WA_STAGES or s == WA_STEP7) and r[0] & WA_MARK == WA_MARK)", " or (s in WA_STAGES and r[0] & WA_MARK == WA_MARK)"),
+    ("wa decoder: step 7's own stage not said", CRUMBS, "    if s == WA_STEP7:\n        out.append(", "    if False:\n        out.append("),
+    ("wa decoder: K1's mark under one of last_look=1's stages", CRUMBS, "    return (s not in LL_STAGES and s not in OG_STAGES and r[0] == WA_ARMED)", "    return (s not in OG_STAGES and r[0] == WA_ARMED)"),
+    ("wa decoder: K1's mark under an observer's stage", CRUMBS, "    return (s not in LL_STAGES and s not in OG_STAGES and r[0] == WA_ARMED)", "    return (s not in LL_STAGES and r[0] == WA_ARMED)"),
+    ("wa decoder: acc_last=1's stages left out of the family", CRUMBS, "WA_STAGES = GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES  #", "WA_STAGES = GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES  #"),
+    ("wa decoder: not asked before the other two readings", CRUMBS, "    if wa_record(s, r):\n        return wa_lines(s, r)\n", ""),
+    ("wa decoder: K1's mark read as the byte", CRUMBS, "    if b0 == WA_ARMED:\n", "    if False:\n"),
+    ("wa decoder: a mark after a later stage said as one before it", CRUMBS, "        if s in WA_STAGES:\n            how = (f\"Stage 0x{s:02x} is a later command's", "        if False:\n            how = (f\"Stage 0x{s:02x} is a later command's"),
+    ("wa decoder: a mark under another run's stage said to be this run's", CRUMBS, "    if b0 == WA_ARMED and s not in WA_EARLY and s not in WA_STAGES:\n", "    if False:\n"),
+    ("wa decoder: a mark under the family's stage said to be another run's", CRUMBS, "    if b0 == WA_ARMED and s not in WA_EARLY and s not in WA_STAGES:\n", "    if b0 == WA_ARMED and s not in WA_EARLY:\n"),
+    ("wa decoder: step 5's to step 7's stages not ones the run can be at", CRUMBS, "WA_EARLY = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10) + ACK_EARLY", "WA_EARLY = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10)"),
+    ("wa decoder: no stage at all not one the run can be at", CRUMBS, "WA_EARLY = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10) + ACK_EARLY", "WA_EARLY = (0x01, 0x02, 0x03, 0x04, 0x05, 0x10) + ACK_EARLY"),
+    ("wa decoder: another recipe's step 7 one the run can be at", CRUMBS, "WA_EARLY = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10) + ACK_EARLY", "WA_EARLY = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x30, 0x38) + ACK_EARLY"),
+    ("wa decoder: the reads that could fault not named under step 7's stage", CRUMBS, "            if s == WA_STEP7:\n                how +=", "            if False:\n                how +="),
+    ("wa decoder: the reads that could fault named under every early stage", CRUMBS, "            if s == WA_STEP7:\n                how +=", "            if True:\n                how +="),
+    ("wa decoder: bytes in the other six read past", CRUMBS, "    if any(r[1:]):\n        return out + [f\"  0x6009-0x600e = {r[1:].hex(' ')}: not what e1_hook writes (K1", "    if False:\n        return out + [f\"  0x6009-0x600e = {r[1:].hex(' ')}: not what e1_hook writes (K1"),
+    ("wa decoder: bit 3 taken", CRUMBS, "    if b0 & 0x08:\n        return out + [f\"  0x6008 = 0x{b0:02x}: not what e1_hook writes (its bit 3", "    if False:\n        return out + [f\"  0x6008 = 0x{b0:02x}: not what e1_hook writes (its bit 3"),
+    ("wa decoder: the named ids read from bit 4", CRUMBS, "every source with a name is masked\" if b0 & WA_NAMED else", "every source with a name is masked\" if b0 & WA_UNNAMED else"),
+    ("wa decoder: the ids with no name read from bit 5", CRUMBS, "they read back all set\" if b0 & WA_UNNAMED else", "they read back all set\" if b0 & WA_NAMED else"),
+    ("wa decoder: the count read from two bits", CRUMBS, "    n = b0 & 7\n", "    n = b0 & 3\n"),
+    ("wa decoder: --clear leaves the byte", CRUMBS, "            seven = st in LL_STAGES or og_record(st, b[8:0x0f]) or wa_clear(st, b[8:0x0f])\n", "            seven = st in LL_STAGES or og_record(st, b[8:0x0f])\n"),
+    ("wa decoder: --clear zeroes the six on 0x6008's word", CRUMBS, "    return wa_record(s, r) and not r[0] & 0x08 and not any(r[1:])", "    return wa_record(s, r) and not r[0] & 0x08"),
+    ("wa decoder: --clear takes a byte with bit 3 for the run's", CRUMBS, "    return wa_record(s, r) and not r[0] & 0x08 and not any(r[1:])", "    return wa_record(s, r) and not any(r[1:])"),
+    ("wa decoder: --clear takes any 0x6008 with six zeros for the run's", CRUMBS, "    return wa_record(s, r) and not r[0] & 0x08 and not any(r[1:])", "    return not r[0] & 0x08 and not any(r[1:])"),
+    ("wa launcher: wake_all=1 not passed to the module", RUN, "((!wakeall)) || params+=(wake_all=1)\n", "((!wakeall)) || params+=()\n"),
+    ("wa launcher: --m1-a2-pre-blink loads wake_all=1 too", RUN, "  if [[ $1 == --m1-wake-all ]]; then\n    wakeall=1\n", "  if [[ $1 == --m1-a2-pre-blink || $1 == --m1-wake-all ]]; then\n    wakeall=1\n"),
+    ("wa launcher: without the light and the six power words", RUN, "  if [[ $1 == --m1-a2-pre-blink || $1 == --m1-wake-all ]]; then\n    atcdown=1\n", "  if [[ $1 == --m1-a2-pre-blink ]]; then\n    atcdown=1\n"),
+    ("wa launcher: the reading under --m1-a2-pre-blink's label", RUN, "    wakeall=1\n    label=floor-m1-wake-all\n", "    wakeall=1\n"),
+    ("wa launcher: an older build not refused", RUN, "((!wakeall)) || [[ $parms == *$'\\n'wake_all:* ]] || die \"$ko is an older build, without wake_all: make -C $here\"\n", ""),
+    ("wa launcher: a build that ignored wake_all=1 left loaded", RUN, "  { ((!wakeall)) || [[ $(cat \"$MODDIR/parameters/wake_all\") == Y ]]; } ||", "  { true; } ||"),
+    ("wa launcher: the message after wd2-bite names another option", RUN, "((!wakeall)) || wd2opt=--m1-wake-all\n", ""),
+    ("wa launcher: taken with a second option", RUN, "elif (($# == 1)) && [[ $1 == --m1-a2-pre || $1 == --m1-a2-pre-blink || $1 == --m1-wake-all ]]; then", "elif (($# >= 1)) && [[ $1 == --m1-a2-pre || $1 == --m1-a2-pre-blink || $1 == --m1-wake-all ]]; then"),
 ]
 
 
@@ -1233,7 +1333,7 @@ def one(mutant, base):
             return name, f"STALE (its text is in {rel} {text.count(old)} times): fix the list"
         with open(path, "w") as f:
             f.write(text.replace(old, new))
-        r = subprocess.run([sys.executable, "-I", "-B", os.path.join(copy, "tests", test)], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, "-I", "-B", os.path.join(copy, "tests", test)] + ARGS.get(rel, []), capture_output=True, text=True)
     fails = sum(line.startswith("FAIL ") for line in r.stdout.splitlines())
     if fails:
         return name, f"caught ({fails} failing)"

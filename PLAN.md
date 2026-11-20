@@ -46,12 +46,17 @@ this section where they differ.
   2026-11-16).
 
 **Next, in this order:**
-1. **The eighth run since the review: every AP wake source masked** (`wake_all=1`, `run-floor
-   --m1-wake-all`: being built on 2026-11-20; RESEARCH.md, "The desk step of 2026-11-20"). It is
+1. **Corey's turn: the eighth run since the review, every AP wake source masked** (`run-floor
+   --no-reading --m1-wake-all`; RESEARCH.md, "`wake_all=1` as built", 2026-11-20). It is
    `--m1-a2-pre-blink`'s run with all seven wake-mask words written 0xffffffff, where the recipe leaves
    the PMU's source (54) and word 6's unnamed ids open, and one byte at 0x6008 for the read-back. The
    light is the result: filmed, or watched to the restart. Odds that it stops: one in twenty; it
-   closes the class the M4 Pro's driver names and the follow-up upstream asked about.
+   closes the class the M4 Pro's driver names and the follow-up upstream asked about. The nights off
+   around it; if the light stops and no restart comes, the power button held is the only way back.
+   After it: `m1-crumbs`, `--clear`, the collect, the nights on, one prompt.
+   - Upstream on 2026-11-20: the ask to Naeem for his commit-state tracer or a T600x snapshot is posted
+     (malik-na/linux-aurora#77). The ask to maralcbr is drafted and not posted: their repository is
+     archived; omacom/linux-aurora#290 with a mention is the place left, and needs Corey's word.
    - After it two of the review's ten one-way runs are left, and nothing on file is a better bet than
      this one. What is worth more than a ninth run is macOS's commit state for T6000, which takes the
      m1n1 hypervisor: someone else's capture (maralcbr traced a J314s; Naeem's lab,
@@ -76,13 +81,14 @@ this section where they differ.
    the decoder saying when that driver is bound: until then a run that sets the alarm near needs the
    nights off around it.
 4. Upstream, each reply with Corey's OK: aurora-silicon/linux#2198 (the data, the RVBAR reading and
-   the follow-up of 11-19 are posted; answers may come), omacom/linux-aurora#351
-   with #454 and #504 stacked on it (no maintainer review yet), #290, malik-na/linux-aurora#77.
+   the follow-up of 11-19 are posted; answers may come), malik-na/linux-aurora#77 (the ask of 11-20
+   for his tracer or a T600x snapshot), omacom/linux-aurora#351
+   with #454 and #504 stacked on it (no maintainer review yet), #290.
 5. The nights on the charger (installed 2026-11-19) haven't been seen on the Mac: the log will show
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
 
 **As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
-`--m1-a2-pre-blink` the latest launcher option; the PMU's record bytes all zero; scratch that must outlast
+`--m1-wake-all` the latest launcher option; the PMU's record bytes all zero; scratch that must outlast
 a restart in `~/.local/share/sleep-drain/`.
 
 ## Where things stand

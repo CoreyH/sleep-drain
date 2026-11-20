@@ -103,6 +103,7 @@
  *   pkexec e1-hook/run-floor --m1-obs-gate        (--m1-late's and obs_gate=1: the same)
  *   pkexec e1-hook/run-floor --m1-atc-down        (--m1-last-look-wake's and atc_down=1: the same)
  *   pkexec e1-hook/run-floor --m1-a2-pre-blink    (--m1-a2-pre's, atc_down=1 and blink=1: the same)
+ *   pkexec e1-hook/run-floor --m1-wake-all        (--m1-a2-pre-blink's and wake_all=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -406,6 +407,9 @@ MODULE_PARM_DESC(atc_down, "With ps_words=1: at the end of step 5, around m1_pw[
 static bool blink;
 module_param(blink, bool, 0444);
 MODULE_PARM_DESC(blink, "With gates_mark=1, never with sio_down=1 or sio_steps=1 (they switch FPWM0 off): in step 8, ll_wake=1's light without the rest of it: FPWM0's power word asked on and the keyboard backlight's PWM set to blink, 100 ms on and 100 ms off (m1_ll_blink()'s four writes; last_look.h). Nothing of it goes to the record: the light blinking from the dark screen is the sign that the writes were made");
+static bool wake_all;
+module_param(wake_all, bool, 0444);
+MODULE_PARM_DESC(wake_all, "With gates_mark=1, never with observe=1: in step 7 all seven AP wake-mask words (0x292004008-0x292004020) are written 0xffffffff, where the recipe leaves source 54 (the PMU's interrupt) and word 6's bits 31:13 open; CPU0 then reads the seven back and the seven status words after them, and after step 8's record sends one byte to the PMU's 0x6008 (last_look.h). No wake source is left open: a Mac whose entry completed wakes for no key and no lid, and comes back only by holding the power button");
 static bool gate_look;
 module_param(gate_look, bool, 0444);
 MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
@@ -831,8 +835,10 @@ static void e1_post_slpa_eh(void)
  *              power down CPM = 3, [32] disable PIO on WFI CPU, [34] enable
  *              deep sleep
  *   CYC_OVRD   [21:20] FIQ mode and [23:22] IRQ mode = 0, [25:24] OK to power
- *              down = 3 (force down), [0] disable WFI return: 0x3000001,
- *              which macOS writes (maralcbr, L452)
+ *              down = 3 (force down), [0] disable WFI retention (XNU's
+ *              disWfiRetn: with it clear a WFI can return to the next
+ *              instruction with the core's state kept): 0x3000001, which macOS
+ *              writes (maralcbr, L452)
  */
 static void e1_cpu_down(void *unused)
 {
@@ -993,7 +999,11 @@ static void e1_after_slpa(void)
  * (0x50 or 0x30), 0x6004-0x6007 and 0x6010-0x6016, the spare legacy-scratch
  * bytes DeepIdle uses (Corey's OK of 2026-11-07, PLAN.md); reads only there,
  * of the RTC and of the alarm's control (0x1401, every m1 load's check that
- * no alarm is armed). alarm=1 adds its own, below. Every way back from the
+ * no alarm is armed). alarm=1 adds its own, below, and last_look=1, observe=1
+ * and wake_all=1 their records at 0x6008-0x600e (Corey's OK of 2026-11-16 for
+ * those bytes); since wake_all=1, K1 and the undo write seven zeros there in
+ * every run, and m1_pmu_ok() lets that one write through in any. Every way
+ * back from the
  * replay after 0x50 went out writes
  * 0x30 again and zeroes the breadcrumbs (m1_undo says how that went).
  *
@@ -1656,7 +1666,8 @@ static void e1_after_slpa(void)
  * the SoC 70 s after it. Nothing else changes up to step 10. There
  * m1_deep_wfi() calls m1_ll_ret() each time CPU0's WFI returns: at the first
  * return it sends seven bytes to the PMU's 0x6008-0x600e in three commands
- * (m1_pmu_ok() lets those bytes through only with last_look=1, and K1 and
+ * (m1_pmu_ok() lets those bytes through with last_look=1, and with observe=1
+ * or wake_all=1 for their own records there, and K1 and
  * the undo zero them), at the second and the hundredth the first byte again.
  * Reads only, but for CPU0's timer control, written 0. ll_wake=1 (run-floor
  * --m1-last-look-wake; with last_look=1) adds, in step 8, FPWM0's power word
@@ -1675,6 +1686,31 @@ static void e1_after_slpa(void)
  * bit 3 saying so; m1_ll_ret() then sends 0x6008 alone. Reads only, and no
  * stage of its own: the bit is in the record, and K1 leaves 0x6008 as 0x04
  * until the look's own command.
+ *
+ * wake_all=1 (run-floor --m1-wake-all; with gates_mark=1, never with
+ * observe=1) changes step 7's seven writes and nothing else: every AP
+ * wake-mask word is written 0xffffffff, where m1_wake_mask[] leaves source 54
+ * and word 6's bits 31:13 open (PLAN.md, after the a2_pre=1 run with the
+ * light: does a pending source that the masks let through hold the engine
+ * before its power-downs?). No address is new, and the load's never-write
+ * check covers the seven whatever is written. Right after nub-spmi0's enables,
+ * still in step 7, m1_wa_read() reads the seven back and the seven status
+ * words after them: reads this state hasn't seen (its comment), with SError
+ * unmasked. Their byte (last_look.h has it) goes to the PMU's 0x6008 in step
+ * 8, right after that step's record at 0x6010 and before its stage: were it
+ * sent in step 7 and its command failed, the RTC's second and 0x6010-0x6016
+ * would be lost with it, since a failed command stops every later one. The
+ * stage, the outcomes and the family's own byte still follow it. With
+ * wake_all=1 m1_pmu_ok() lets one byte through at 0x6008, K1's mark or the
+ * byte (wa_ok()), and K1 leaves 0x6008 as 0x20 until that byte. No stage of
+ * its own: the byte's two top bits say whose it is. Since this option K1 and
+ * the undo zero 0x6008-0x600e in every m1 run, whatever its options, and
+ * m1_pmu_ok() lets seven zeros through there in any: a byte or a mark that an
+ * earlier run left would read as a later run's under the stages they share
+ * (Pullfrog on #127). At the load m1_wa_init() logs both sets of seven
+ * awake. With every source masked a Mac whose entry completed wakes for no
+ * key and no lid, the PMU's alarm included: it comes back only by holding
+ * the power button.
  *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
@@ -1950,6 +1986,12 @@ static const u8 m1_order[M1_NCPUS - 1] = { 1, 2, 3, 5, 6, 4, 7 };
  * interrupt), as Naeem's entry leaves its T8103 counterpart. Word 6 is
  * macOS's own value. Linux runs with 0, 0x40, 0, 0, 0, 0, 0; maralcbr's bit
  * 15 wrote macOS's values to these words on a J314s.
+ *
+ * wake_all=1 writes 0xffffffff to each of the seven in place of these, so
+ * that neither source 54 nor word 6's bits 31:13 (ids 0xcd to 0xdf, none with
+ * a name, which macOS's value leaves open) stays unmasked: the run asks
+ * whether a pending source these values let through holds the engine's first
+ * gate. m1_wa_read() then reads the seven back (last_look.h).
  */
 static const u32 m1_wake_mask[7] = {
 	0xffffffff, 0xffbfffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x00001fff,
@@ -2160,6 +2202,21 @@ static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n
 	/* observe=1: K1's zeros go to 0x6008-0x600e in every observer's run, and obs_gate=1's mark and CPU7's look (last_look.h). */
 	if (observe && addr >= LL_AT && end <= LL_AT + LL_N)
 		return true;
+	/* wake_all=1: 0x6008 by itself, and there only K1's mark or the byte, bits 7:6 set and bit 3 clear (wa_ok(); last_look.h). */
+	if (wake_all && addr == LL_AT && one && wa_ok(b[0]))
+		return true;
+	/*
+	 * Any run: seven zeros at 0x6008-0x600e, K1's and the undo's, and nothing else there: a record or a mark that an
+	 * earlier run left would read as this run's under the stages the two share (Pullfrog on #127).
+	 */
+	if (addr == LL_AT && n == LL_N) {
+		unsigned int i;
+
+		for (i = 0; i < LL_N && !b[i]; i++)
+			;
+		if (i == LL_N)
+			return true;
+	}
 	/* last_look=1: 0x6008-0x600e too (last_look.h). */
 	return (addr >= 0x6004 && end <= (last_look ? LL_AT + LL_N : 0x6008)) || (addr >= 0x6010 && end <= 0x6017);
 }
@@ -2195,6 +2252,20 @@ static int m1_pmu_start(void)
 	ret = m1_kwrite(0x6004, zero, 4);
 	if (!ret)
 		ret = m1_kwrite(0x6010, zero, 7);
+	/*
+	 * 0x6008-0x600e in every run that has no clause of its own for them below: a record or a mark that an earlier run
+	 * left there would read as this run's under the stages the two share, the gates_mark=1 family's and step 7's own
+	 * (Pullfrog on #127, as on #116 for observers).
+	 */
+	if (!ret && !wake_all && !last_look && !observe)
+		ret = m1_kwrite(LL_AT, zero, LL_N);
+	/* wake_all=1: the seven zeroed, then its mark: the byte, sent after step 8's record, writes over it. */
+	if (!ret && wake_all) {
+		ret = m1_kwrite(LL_AT, zero, LL_N);
+		v = WA_ARMED;
+		if (!ret)
+			ret = m1_kwrite(LL_AT, &v, 1);
+	}
 	if (!ret && last_look)
 		ret = m1_kwrite(LL_AT, zero, LL_N);
 	if (!ret && gate_look) {
@@ -2253,11 +2324,20 @@ static void m1_pmu_undo(void)
 	ret = ret ?: err;
 	err = m1_kwrite(0x6010, zero, 7);
 	ret = ret ?: err;
+	/* 0x6008-0x600e in every run, as K1: this clause for the runs with none of their own below. */
+	if (!wake_all && !last_look && !observe) {
+		err = m1_kwrite(LL_AT, zero, LL_N);
+		ret = ret ?: err;
+	}
 	if (last_look) {
 		err = m1_kwrite(LL_AT, zero, LL_N);
 		ret = ret ?: err;
 	}
 	if (observe) {
+		err = m1_kwrite(LL_AT, zero, LL_N);
+		ret = ret ?: err;
+	}
+	if (wake_all) {
 		err = m1_kwrite(LL_AT, zero, LL_N);
 		ret = ret ?: err;
 	}
@@ -2768,6 +2848,42 @@ static bool m1_ll_blink(void)
 	dsb(sy);
 	isb();
 	return true;
+}
+
+/*
+ * wake_all=1, step 7, CPU0 alone, right after the seven AP wake-mask words were
+ * written 0xffffffff and nub-spmi0's enables 0 (last_look.h has the byte and
+ * why): the seven masks read back, each against what was written, word 6 in
+ * two parts (the ids with a name, bits 12:0, and the rest, which macOS's value
+ * leaves clear and which may not exist); then the seven words after them, the
+ * AP's wake status as far as is known, counted if non-zero. It returns their
+ * byte, which step 8 sends after its own record. Reads only, and both are new
+ * in this state. Every m1 run has written the seven masks here, and nothing
+ * has read them but the load, awake. The status words have been read around
+ * the commit only in observe=1's runs, which have none of hold=1, sio_stop=1,
+ * ps_words=1 and atc_down=1. SError is still unmasked: a read that faulted
+ * panics here, and leaves step 7's stage (0x39: 0xb9 in this recipe's record),
+ * K1's 0x20 at 0x6008 and a restart about 10 s later, if the panic's restart
+ * works.
+ */
+static u8 m1_wa_read(void)
+{
+	unsigned int i, pending = 0;
+	bool named = true, unnamed;
+	u32 back = 0;
+
+	for (i = 0; i < WA_WORDS; i++) {
+		back = readl(m1_aon + 4 * i);
+		if (i < WA_WORDS - 1 ? back != U32_MAX : (back & WA_W6_NAMED) != WA_W6_NAMED)
+			named = false;
+	}
+	/* back is word 6's here: its bits 31:13, the ids with no name. */
+	unnamed = (back | WA_W6_NAMED) == U32_MAX;
+	for (i = 0; i < WA_WORDS; i++) {
+		if (readl(m1_wake_status + 4 * i))
+			pending++;
+	}
+	return wa_byte(named, unnamed, pending);
 }
 
 /*
@@ -4013,6 +4129,7 @@ static void __noreturn m1_after_slpa(void)
 	static const u8 two = 0x02;
 	void __iomem *commit = post_map[ARRAY_SIZE(e1_post_slpa) - 1];
 	u8 parked = 0, left = 0, down = 0, held = 0, isrs = 0, flags = BIT(7), qto = 0, b[7], rtc[6] = {}, pmpb = 0, wd1 = 0;
+	u8 wa = 0;	/* wake_all=1: the byte m1_wa_read() makes in step 7, sent in step 8 */
 	u32 fab_pre = 0;
 	bool fab_set = false, fab_end = false;
 	struct m1_core *o = &m1_core[7];
@@ -4165,9 +4282,12 @@ static void __noreturn m1_after_slpa(void)
 	b[3] = hold ? held : down;
 	m1_crumb(0x6004, b, 4);
 	for (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)
-		writel(m1_wake_mask[i], m1_aon + 4 * i);
+		writel(wake_all ? U32_MAX : m1_wake_mask[i], m1_aon + 4 * i);	/* wake_all=1: no source left open (the table's comment) */
 	for (i = 0; i < M1_SPMI_WORDS; i++)
 		writel(0, m1_spmi + M1_SPMI_EN(i));
+	/* wake_all=1: the seven read back and the seven status words after them, into the byte step 8 sends (last_look.h). */
+	if (wake_all)
+		wa = m1_wa_read();
 
 	/* 8 */
 	m1_quiet_core();
@@ -4180,6 +4300,12 @@ static void __noreturn m1_after_slpa(void)
 	b[5] = pmp_out ? pmpb | (isrs ? BIT(6) : 0) : isrs;
 	b[6] = alarm ? 0 : min(drained, 255U);	/* alarm=1: 0x6016 is m1_alarm_arm()'s */
 	m1_crumb(0x6010, b, 7);
+	/*
+	 * wake_all=1: m1_wa_read()'s byte to 0x6008, only now: if this command fails, which stops every later one, the record above
+	 * is in the PMU already. The stage is still step 7's when it goes out.
+	 */
+	if (wake_all)
+		m1_crumb(LL_AT, &wa, 1);
 	/* wd1_mark=1: does the marker stand? The last look before the commit: nothing here touches WD1 after it. */
 	if (wd1_mark)
 		wd1 = m1_wd1_bits_at(readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_BITE), readl(m1_wdt + WD1_COUNT),
@@ -5834,6 +5960,29 @@ static int __init m1_blink_init(void)
 	return 0;
 }
 
+/* wake_all=1's byte is none of K1's other marks, its two parts of word 6 are the whole word, and the status words follow the masks in one page. */
+static_assert(WA_ARMED == 0x20 && WA_MARK == 0xc0 && !(WA_ARMED & (WA_MARK | LL_ARMED | OG_ARMED)) && !((WA_NAMED | WA_UNNAMED | 0xf) & WA_MARK) &&
+	      WA_W6_NAMED == 0x00001fffU && ARRAY_SIZE(m1_wake_mask) == WA_WORDS && M1_AON_WAKE == 0x292004008ULL &&
+	      M1_AON_WAKE_STATUS == M1_AON_WAKE + 4 * WA_WORDS && (M1_AON_WAKE_STATUS & ~PAGE_MASK) + 4 * WA_WORDS <= PAGE_SIZE);
+
+/*
+ * wake_all=1 at load, after m1_init()'s own mappings and its never-write check of the seven mask words, which holds
+ * whatever value step 7 writes them: the seven masks and the seven words after them logged as they read awake, for
+ * comparison with the byte. Nothing to refuse: m1_init() has returned by now if the page didn't map. Reads only.
+ */
+static void __init m1_wa_init(void)
+{
+	u32 mask[WA_WORDS], st[WA_WORDS];
+	unsigned int i;
+
+	for (i = 0; i < WA_WORDS; i++) {
+		mask[i] = readl(m1_aon + 4 * i);
+		st[i] = readl(m1_wake_status + 4 * i);
+	}
+	pr_info("m1: wake_all: awake: the AP wake masks %08x %08x %08x %08x %08x %08x %08x; the seven words after them (the wake status, inferred) %08x %08x %08x %08x %08x %08x %08x. Step 7 writes 0xffffffff to all seven masks and reads both sets, and step 8 sends one byte to the PMU's 0x%x\n",
+		mask[0], mask[1], mask[2], mask[3], mask[4], mask[5], mask[6], st[0], st[1], st[2], st[3], st[4], st[5], st[6], LL_AT);
+}
+
 /* fabric_up=1 at load: the word off the never-write list and as it is awake, 0x333, so that 3 is its awake value. Reads only. */
 static int __init m1_fab_init(void)
 {
@@ -6235,6 +6384,8 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
+	if (wake_all)
+		m1_wa_init();
 	/* Last: it reads through pages the initializers above map, the engine's among them (m1_wd2_init()'s here). */
 	if (look) {
 		int ret = m1_look_init();
@@ -6762,6 +6913,10 @@ static int __init e1_check_params(void)
 		pr_err("blink=1 needs gates_mark=1 and neither sio_down=1 nor sio_steps=1 (it's ll_wake=1's light in that family's runs, whose byte at 0x6016 isn't the alarm's; those two switch FPWM0 off themselves)\n");
 		return -EINVAL;
 	}
+	if (wake_all && (!gates_mark || observe)) {
+		pr_err("wake_all=1 needs gates_mark=1 and no observe=1 (it's that family's run with all seven AP wake-mask words written 0xffffffff in step 7 and one byte at 0x6008; in an observer's run that byte is CPU7's)\n");
+		return -EINVAL;
+	}
 	if (gate_look && !last_look) {
 		pr_err("gate_look=1 needs last_look=1 (it's that run with the return's reads made once before CPU0's last WFI, 1 s after the commit)\n");
 		return -EINVAL;
@@ -6939,7 +7094,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "", obs_gate ? " obs_gate=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -6947,7 +7102,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", atc_down ? " atc_down=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", blink ? " blink=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", blink ? " blink=1" : "", wake_all ? " wake_all=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
 		gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;
