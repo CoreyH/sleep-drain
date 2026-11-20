@@ -112,14 +112,18 @@
  *                  idle loops on ISR_EL1 reading 0). Each such return is
  *                  counted and the WFI taken again, however many there are,
  *                  until LLR_BOUND_S seconds after CPU0 first took the WFI,
- *                  with nothing read but ISR_EL1 and the clock and nothing
- *                  sent. A bound in time and not a count: were the WFI to
- *                  return at once every time, a count would be used up in
- *                  well under a second and the look made before B2 had done
- *                  anything
- *   the look       at the first return with ISR_EL1 non-zero, or at the
- *                  first empty one past that time (CPU0's timer never showed
- *                  in ISR_EL1): once, what a first return
+ *                  with nothing read but ISR_EL1, the timer's control and the
+ *                  clock, and nothing sent. A return at which CPU0's timer
+ *                  reads as firing (its control's ISTATUS) is not empty,
+ *                  whatever ISR_EL1 reads: a timer that ended the WFI without
+ *                  showing there would else leave, 5 s on, the bytes of a
+ *                  WFI that never held. A bound in time and not a count:
+ *                  were the WFI to return at once every time, a count would
+ *                  be used up in well under a second and the look made
+ *                  before B2 had done anything
+ *   the look       at the first return with ISR_EL1 non-zero or the timer
+ *                  firing, or at the first past that time with neither: once,
+ *                  what a first return
  *                  of last_look=1's does (the clock, ISR_EL1, the timer's
  *                  status, its control written 0), and three commands in that
  *                  record's order and manner, the second with two reads CPU0
@@ -137,8 +141,12 @@
  *           the first (the empty ones before it aren't in it). And, in this
  *           form alone, bits 3:2 the empty returns before the look
  *           (llr_empty_code()): 0 none, 1 one to nine, 2 ten to 999, 3 a
- *           thousand or more, which is a WFI that returned at once again and
- *           again and didn't hold CPU0 down. gate_look=1's two bits are
+ *           thousand or more. A count of the returns after which the WFI was
+ *           taken again, the look's own return not among them, and nothing
+ *           more: it doesn't say how long the WFI held between them (a
+ *           thousand at once and then 24 s of holding is code 3 too), and
+ *           code 0 with 0x600b's bit 7 is a WFI that held past the bound and
+ *           returned once with nothing pending. gate_look=1's two bits are
  *           these two: ll_retn=1 refuses it, so K1 never writes its mark in
  *           such a run, and the stage says which they are. The later
  *           returns' sends of this byte keep them
@@ -149,10 +157,12 @@
  *           0x1a, an up sequence on 0x40)
  *   0x600b  bits 3:0 0x2922c0044's low nibble; bits 5:4 0x2922c0040's bits
  *           1:0 (3 awake: B2 clears bit 1 at its ops 4 to 6); bit 6 "wide":
- *           one of the state word above bit 7, 0x2922c0040 above bit 1, PHASE
- *           above bit 3 and EACC's word above bit 6 has a bit these bytes
- *           don't carry (llr_wide()); bit 7: the look was made at the
- *           time bound, with nothing pending, not for a pending interrupt
+ *           one of the state word above bit 7, 0x2922c0040 above bit 1,
+ *           0x2922c0044 above bit 3 (last_look=1's form has its low byte,
+ *           this one its nibble), PHASE above bit 3 and EACC's word above
+ *           bit 6 has a bit these bytes don't carry (llr_wide()); bit 7: the
+ *           look was made at the time bound, with nothing pending and the
+ *           timer not firing, not for a pending interrupt or the timer
  *   0x600c  bit 7 set; bits 6:4 EACC's bits 6:4; bits 3:0 PHASE's low
  *           nibble. The second command's last byte: without its bit 7 none
  *           of 0x6009-0x600c is read
@@ -442,7 +452,7 @@ static inline u8 ll_b6(u8 pcie, bool ans, bool pmp)
 	return (u8)(LL_MARK | (pmp ? 1U << 6 : 0) | (ans ? 1U << 5 : 0) | (pcie & 0x1f));
 }
 
-/* ll_retn=1: how many returns with nothing pending came before the look: 0 none, 1 one to nine, 2 ten to 999, 3 a thousand or more. */
+/* ll_retn=1: how many returns with nothing pending came before the look's own: 0 none, 1 one to nine, 2 ten to 999, 3 a thousand or more. A count, not a time. */
 static inline u8 llr_empty_code(u32 n)
 {
 	return n >= LLR_E_MANY ? 3 : n >= LLR_E_FEW ? 2 : n ? 1 : 0;
@@ -466,10 +476,13 @@ static inline u8 llr_b2(u32 st_e)
 	return (u8)st_e;
 }
 
-/* Whether one of the four words has a bit the bytes don't carry: the state word above bit 7, 0x2922c0040 above bit 1, PHASE above bit 3, EACC's above bit 6. */
-static inline bool llr_wide(u32 st_e, u32 gate40, u32 phase, u32 eacc)
+/*
+ * Whether one of the five words has a bit the bytes don't carry: the state word above bit 7, 0x2922c0040 above bit 1,
+ * 0x2922c0044 above bit 3, PHASE above bit 3, EACC's above bit 6.
+ */
+static inline bool llr_wide(u32 st_e, u32 gate40, u32 gate44, u32 phase, u32 eacc)
 {
-	return (st_e >> 8) || (gate40 >> 2) || (phase >> 4) || (eacc >> 7);
+	return (st_e >> 8) || (gate40 >> 2) || (gate44 >> 4) || (phase >> 4) || (eacc >> 7);
 }
 
 /* 0x600b: 0x2922c0044's low nibble, 0x2922c0040's bits 1:0, llr_wide(), and whether the look was made at the time bound, with nothing pending. */

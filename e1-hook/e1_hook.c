@@ -416,7 +416,7 @@ module_param(gate_look, bool, 0444);
 MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
 static bool ll_retn;
 module_param(ll_retn, bool, 0444);
-MODULE_PARM_DESC(ll_retn, "With ll_wake=1, never with gate_look=1: CPU0 takes its last WFI with CYC_OVRD's bit 0, XNU's \"disable WFI retention\", left clear (0x3000000 in place of 0x3000001), as Linux's own idle on this chip has it, with ll_wake=1's timer to end it. A return with nothing pending (ISR_EL1 0) is counted and the WFI taken again, until 30 s after the first; at the first return with something pending, or the first past that time, CPU0 makes last_look=1's look once, with two reads added, the E complex's state word (0x28e09a000) and EACC's soc-cluster word (0x28e098000), sends it to the PMU's 0x6008-0x600e in a form of its own, sets bit 0 again and goes on as a last_look=1 run does after a first return. No MMIO write is new (last_look.h)");
+MODULE_PARM_DESC(ll_retn, "With ll_wake=1, never with gate_look=1: CPU0 takes its last WFI with CYC_OVRD's bit 0, XNU's \"disable WFI retention\", left clear (0x3000000 in place of 0x3000001), as Linux's own idle on this chip has it, with ll_wake=1's timer to end it. A return with nothing pending (ISR_EL1 0, CPU0's timer not firing) is counted and the WFI taken again, until 30 s after the first; at the first return with something pending or the timer firing, or the first past that time, CPU0 makes last_look=1's look once, with two reads added, the E complex's state word (0x28e09a000) and EACC's soc-cluster word (0x28e098000), sends it to the PMU's 0x6008-0x600e in a form of its own, sets bit 0 again and goes on as a last_look=1 run does after a first return. No MMIO write is new (last_look.h)");
 static bool ll_wake;
 module_param(ll_wake, bool, 0444);
 MODULE_PARM_DESC(ll_wake, "With last_look=1: the PMU's alarm 20 s after the commit in place of an hour, CPU0's own timer set to end its WFI 25 s after step 10, and in step 8 FPWM0's power word asked on and the keyboard backlight's PWM set to blink, 100 ms on and 100 ms off (four writes; last_look.h)");
@@ -1696,11 +1696,12 @@ static void e1_after_slpa(void)
  * m1_deep_wfi() CYC_OVRD is written with its bit 0, XNU's disWfiRetn, clear
  * (0x3000000 for 0x3000001), so that CPU0's last WFI can come back at the
  * next instruction for ll_wake=1's timer, as Linux's own idle does. Until
- * the look, m1_llr_empty() reads ISR_EL1 at each return: 0 is counted and the
- * WFI taken again, however often, until LLR_BOUND_S seconds after the first
- * WFI (a bound in time: a WFI that returned at once every time would use up
- * a count in well under a second). At the first return with something
- * pending, or the first empty one past that time, m1_ll_ret() hands its first
+ * the look, m1_llr_empty() reads ISR_EL1 and the timer's status at each
+ * return: with ISR_EL1 0 and the timer not firing the return is counted and
+ * the WFI taken again, however often, until LLR_BOUND_S seconds after the
+ * first WFI (a bound in time: a WFI that returned at once every time would
+ * use up a count in well under a second). At the first return with something
+ * pending or the timer firing, or the first past that time, m1_ll_ret() hands its first
  * return to m1_llr_look(): the clock, ISR_EL1, the timer's status, its
  * control written 0, and three commands in last_look=1's order, the second
  * with the E complex's state word and EACC's soc-cluster word read last, the
@@ -2740,24 +2741,33 @@ static bool m1_llr_bound;	/* ll_retn=1: the look is made at the time bound, with
  * exception masked: whether this return is an empty one, to take the WFI again
  * after. A retention WFI can return with nothing pending, and Linux's idle on
  * this chip loops on ISR_EL1 reading 0 (apple_cpu_deep_wfi()). ISR_EL1
- * non-zero: false, the look is due. Zero: counted, however many there have
- * been, and true until LLR_BOUND_S seconds have passed since m1_deep_wfi()
- * took the clock; at the first empty return past that the look is made
- * anyway, and its record says so. A bound in time and not a count: a WFI
- * that returned at once every time would use a count up in well under a
- * second, before the engine had done anything to look at. One system
- * register read and the counter; nothing written, nothing sent.
+ * non-zero: false, the look is due. So it is if CPU0's own timer reads as
+ * firing (its control's ISTATUS) with ISR_EL1 0: a timer that ended the WFI
+ * without showing there would otherwise be taken again until the bound, and
+ * leave the bytes of a WFI that never held; the look then records the timer
+ * firing and no FIQ, which reads one way. With neither, once LLR_BOUND_S
+ * seconds have passed since m1_deep_wfi() took the clock, the look is made
+ * anyway, and its record says so. Else the return is empty: counted,
+ * however many there have been, and true. So the count is of the returns
+ * after which the WFI is taken again, never of the look's own. A bound in
+ * time and not a count: a WFI that returned at once every time would use a
+ * count up in well under a second, before the engine had done anything to
+ * look at. Two system register reads and the counter; nothing written,
+ * nothing sent.
  */
 static bool m1_llr_empty(void)
 {
 	if (read_sysreg(isr_el1))
 		return false;
+	if (read_sysreg(cntp_ctl_el0) & ARCH_TIMER_CTRL_IT_STAT)
+		return false;
+	if (llr_past(m1_now() - m1_llr_t0, m1_tps)) {
+		m1_llr_bound = true;
+		return false;
+	}
 	if (m1_llr_empties < U32_MAX)
 		m1_llr_empties++;
-	if (!llr_past(m1_now() - m1_llr_t0, m1_tps))
-		return true;
-	m1_llr_bound = true;
-	return false;
+	return true;
 }
 
 /*
@@ -2803,7 +2813,7 @@ static u8 m1_llr_look(void)
 	eacc = readl(m1_soc + M1_SOC_EACC);
 	b[1] = ll_b1(isr, ctl & ARCH_TIMER_CTRL_IT_STAT, hsa, hsb);
 	b[2] = llr_b2(st_e);
-	b[3] = llr_b3(g44, g40, llr_wide(st_e, g40, phase, eacc), m1_llr_bound);
+	b[3] = llr_b3(g44, g40, llr_wide(st_e, g40, g44, phase, eacc), m1_llr_bound);
 	b[4] = llr_b4(eacc, phase);	/* the command's last byte: its bit 7 says the four landed */
 	m1_ll_send(LL_AT + 1, b + 1, 4);
 	for (i = 0; i < SIOD_N; i++)
@@ -3018,10 +3028,10 @@ static u8 m1_wa_read(void)
  * WFI retention"), is left clear until the look: 0x3000000, bits 25:24
  * alone, as Linux's own idle has them, so that the WFI can come back at the
  * next instruction for CPU0's timer. Until then a return with nothing
- * pending is counted and the WFI taken again (m1_llr_empty()), until
- * LLR_BOUND_S seconds after the clock taken here, once, before the first
- * WFI; the first return with something pending, or the first empty one past
- * that time, goes to m1_ll_ret(), whose first return is the look
+ * pending and the timer not firing is counted and the WFI taken again
+ * (m1_llr_empty()), until LLR_BOUND_S seconds after the clock taken here,
+ * once, before the first WFI; the first return with something pending or the
+ * timer firing, or the first past that time, goes to m1_ll_ret(), whose first return is the look
  * (m1_llr_look()), and right after it bit 0 is set again: the value written
  * first, with that bit, which is the 0x3000001 of every other run. Every
  * later WFI is the recipe's own.

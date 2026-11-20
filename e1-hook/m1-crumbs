@@ -150,8 +150,8 @@ LLR_LANDED = 0x80  # 0x600c in ll_retn=1's record, the second command's last byt
 LLR_AT_BOUND, LLR_WIDE = 0x80, 0x40  # 0x600b in ll_retn=1's record: the look was made at the time bound, with nothing pending; a word has a bit the bytes don't carry
 # 0x6008's bits 3:2 in ll_retn=1's record, and in no other: the returns with nothing pending before the look (last_look.h's llr_empty_code())
 LLR_E_SHIFT = 2
-LLR_EMPTIES = ("none: the WFI held until its return", "one to nine", "ten to 999",
-               "a thousand or more: the WFI returned at once again and again, so CPU0 was not held down by it")
+# A count of the returns after which the WFI was taken again, the look's own not among them: not a measure of how long the WFI held.
+LLR_EMPTIES = ("none", "one to nine", "ten to 999", "a thousand or more")
 # obs_gate=1 (last_look.h): the same seven bytes in observe=1's run, CPU7's look at the engine's gate words
 OG_MARK, OG_ARMED, OG_LATER_MS = 0x80, 0x40, 500
 OG_CLUS = 0x10  # 0x6008's bit 4: the record's second form, the complexes' own words (what e1_hook sends since 2026-11-19)
@@ -416,7 +416,8 @@ HOLD_TEXT = {
     0x1c: "last_look=1 ll_wake=1 ll_retn=1: fabric_up=1's 0x53: the commit, the alarm and the release are done, and CPU0 wrote"
           " WD2's bite, if WD2 was armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards. Its own timer, set"
           " 25 s out, and its last WFI, taken with retention left on (CYC_OVRD's bit 0 clear), follow, and this stage doesn't"
-          " show they were reached. If that WFI returned with something pending, 0x6008-0x600e say so, below",
+          " show they were reached. If CPU0 made its look, at a return of that WFI with something pending or its timer firing, or"
+          " at the first past the time bound, 30 s on, with neither, 0x6008-0x600e have it, below",
     0x18: "last_look=1 ll_wake=1 ll_retn=1: fabric_up=1's 0x51: the commit, the alarm and the release are done, and CPU0 wrote"
           " WD2's bite, if WD2 was armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards:"
           " that would end its last WFI, taken with retention left on (CYC_OVRD's bit 0 clear), at once, and 0x6008-0x600e,"
@@ -1424,8 +1425,9 @@ def ll_power_lines(r):
 
 def llr_lines(s, r):
     """ll_retn=1: 0x6008-0x600e under that run's stages (e1-hook/last_look.h has the form): what CPU0 sent at its look, the first
-    return of its last WFI, taken with retention left on, that found something pending, or the first past the time bound that
-    found nothing. 0x6008's bits 3:2 are the empty returns' code here, by the stage, and never gate_look=1's two bits.
+    return of its last WFI, taken with retention left on, that found something pending or its timer firing, or the first past the
+    time bound that found neither. 0x6008's bits 3:2 are the empty returns' code here, by the stage, and never gate_look=1's two
+    bits: a count, from which nothing is concluded about how long the WFI held.
     Fields as read, each named; what they add up to is PLAN.md's to say."""
     out = [f"0x6008-0x600e = {r.hex(' ')}: ll_retn=1's record: CPU0's last WFI taken with retention left on (CYC_OVRD's bit 0 clear, its"
            f" timer {LL_TIMER_S} s out), and its look, at the first return with something pending or the first past the time bound:"]
@@ -1448,9 +1450,13 @@ def llr_lines(s, r):
                f" {LL_COUNT[b0 & 3]} by the last time it was counted, the look's return as the first (returns with nothing pending"
                " before it aren't in the count). CPU0 is up when it reads the words below: whether it, or its complex, had been down"
                " in between isn't in this byte"
-               + f". Bits 3:2: returns with nothing pending before the look: {LLR_EMPTIES[b0 >> LLR_E_SHIFT & 3]}"
+               + f". Bits 3:2: returns with nothing pending before the look, each followed by another WFI: {LLR_EMPTIES[b0 >> LLR_E_SHIFT & 3]}"
+               + (". That count doesn't say how long the WFI held between returns: the time of the look's return and the words"
+                  " below are read on their own" if b0 >> LLR_E_SHIFT & 3 else "")
                + (". A count past one is a return after the look, when retention was off again (CYC_OVRD's bit 0 set, as in every"
-                  " other run)" if b0 & 3 > 1 else ""))
+                  " other run). It can be the look's own doing: a read of the look's that faulted leaves an SError pending, masked,"
+                  " and every later WFI then returns at once, which takes the count to two and to a hundred within milliseconds"
+                  if b0 & 3 > 1 else ""))
     # The second command's last byte carries bit 7 here too: without it the four aren't shown to have landed whole, and none is read.
     if not r[4] & LLR_LANDED:
         return out + [f"  0x6009-0x600c = {r[1:5].hex(' ')}: the second command, the handshake, the engine's page and the two new reads, didn't"
@@ -1468,14 +1474,15 @@ def llr_lines(s, r):
                f" {'set' if g44 & 8 else 'clear'} (op 3 waits for it clear); 0x2922c0040's bits 1:0 = {g40} ("
                + ("as awake: B2's ops 4 to 6 haven't run" if g40 == 3 else
                   "bit 1 set, bit 0 clear: not a value on file" if g40 == 2 else "bit 1 clear: B2 clears it at its ops 4 to 6") + ")")
-    out.append("  0x600b bit 7: " + (f"THE LOOK WAS MADE AT THE TIME BOUND, WITH NOTHING PENDING, not for a pending interrupt: ISR_EL1 read 0 at"
-                                    f" every return until {LLR_BOUND_S} s after the WFI was first taken, so CPU0's timer, {LL_TIMER_S} s out,"
-                                    " never showed there" if r[3] & LLR_AT_BOUND else
+    out.append("  0x600b bit 7: " + (f"THE LOOK WAS MADE AT THE TIME BOUND, WITH NOTHING PENDING AND THE TIMER NOT FIRING, not for a pending"
+                                    f" interrupt: at the first return {LLR_BOUND_S} s or more after the WFI was first taken, ISR_EL1 read 0"
+                                    f" and CPU0's timer, {LL_TIMER_S} s out, didn't read as firing" if r[3] & LLR_AT_BOUND else
                                     f"clear: the look wasn't made at the time bound ({LLR_BOUND_S} s after the WFI was first taken, with"
-                                    " nothing pending), but at a return that found ISR_EL1 non-zero")
+                                    " nothing pending), but at a return that found ISR_EL1 non-zero or CPU0's timer firing")
                + ("; bit 6: ONE OF THE WORDS HAS A BIT ABOVE WHAT THESE BYTES CARRY (the state word above bit 7, 0x2922c0040 above bit 1,"
-                  " PHASE above bit 3 or EACC's word above bit 6): the bytes aren't the whole words" if r[3] & LLR_WIDE else
-                  "; bit 6 clear: the state word, 0x2922c0040, PHASE and EACC's word had no bit above what these bytes carry"))
+                  " 0x2922c0044 above bit 3, PHASE above bit 3 or EACC's word above bit 6): the bytes aren't the whole words"
+                  if r[3] & LLR_WIDE else
+                  "; bit 6 clear: the state word, 0x2922c0040, 0x2922c0044, PHASE and EACC's word had no bit above what these bytes carry"))
     acc, ph = r[4] >> 4 & 7, r[4] & 0xf
     out.append(f"  0x600c = 0x{r[4]:02x}: EACC's soc-cluster word (0x28e098000), bits 6:4 = {acc:03b}: bit 4 {'set' if acc & 1 else 'clear'} (a"
                f" change asked for and not finished), bit 5 {'set' if acc & 2 else 'clear'} (the up-done flag), bit 6"

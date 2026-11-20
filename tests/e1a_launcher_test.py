@@ -522,6 +522,22 @@ def wait_for(path):
     return False
 
 
+def handed_over(tmp, p, launcher, both=False):
+    """The launcher's pid, and the stub reading's too if both, once the launcher has started the reading, which writes them. None,
+    with a failed check that shows what the launcher printed, if it ended or hung before that (it refused, or the module didn't
+    load as asked): the caller's checks all need it running, and are skipped."""
+    path = os.path.join(tmp, "pids")
+    if wait_for(path):
+        pids = [int(x) for x in open(path).read().split()]
+        return pids if both else pids[0]
+    if p.poll() is None:
+        p.kill()
+    out, err = p.communicate(timeout=30)
+    check(False, f"{name(launcher)}: the launcher gets as far as the reading (it didn't: it ended before the hand-off, so what needs it running wasn't tested)",
+          f"rc {p.returncode}\n" + out + err + "\n".join(calls(tmp)))
+    return None
+
+
 def test_handoff(launcher):
     script, _, args, label, _ = launcher
     script = name(launcher)
@@ -552,8 +568,9 @@ def test_floor_watch(launcher):
         d = setup(tmp, launcher, reading="handoff")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher, watch_s=30), stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True)
-        wait_for(os.path.join(tmp, "pids"))
-        launcher_pid = int(open(os.path.join(tmp, "pids")).read().split()[0])
+        launcher_pid = handed_over(tmp, p, launcher)
+        if launcher_pid is None:
+            return
         time.sleep(1.5)
         alive = p.poll() is None
         try:
@@ -600,8 +617,9 @@ def test_floor_watch(launcher):
         d = setup(tmp, launcher, reading="handoff")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher, watch_s=30), stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True)
-        wait_for(os.path.join(tmp, "pids"))
-        launcher_pid = int(open(os.path.join(tmp, "pids")).read().split()[0])
+        launcher_pid = handed_over(tmp, p, launcher)
+        if launcher_pid is None:
+            return
         time.sleep(1.5)
         try:
             os.kill(launcher_pid, signal.SIGTERM)
@@ -632,12 +650,10 @@ def test_signals(launcher):
                 d = setup(tmp, launcher, reading="wait")
                 p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher), stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, text=True)
-                pids = os.path.join(tmp, "pids")
-                for _ in range(200):
-                    if os.path.exists(pids) and os.path.getsize(pids):
-                        break
-                    time.sleep(0.05)
-                launcher_pid, reading = (int(x) for x in open(pids).read().split())
+                pids = handed_over(tmp, p, launcher, both=True)
+                if pids is None:
+                    return
+                launcher_pid, reading = pids
                 if both:
                     os.kill(reading, sig)
                 try:
@@ -1084,8 +1100,9 @@ def test_recfg(launcher):
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="wait")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        wait_for(os.path.join(tmp, "pids"))
-        launcher_pid = int(open(os.path.join(tmp, "pids")).read().split()[0])
+        launcher_pid = handed_over(tmp, p, launcher)
+        if launcher_pid is None:
+            return
         os.kill(launcher_pid, signal.SIGTERM)
         out, err = p.communicate(timeout=30)
         rc_ = recfg_calls(tmp)
@@ -1102,8 +1119,9 @@ def test_recfg(launcher):
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="handoff")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher, watch_s=30), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        wait_for(os.path.join(tmp, "pids"))
-        launcher_pid = int(open(os.path.join(tmp, "pids")).read().split()[0])
+        launcher_pid = handed_over(tmp, p, launcher)
+        if launcher_pid is None:
+            return
         time.sleep(1.5)
         try:
             os.kill(launcher_pid, signal.SIGKILL)
@@ -1114,8 +1132,9 @@ def test_recfg(launcher):
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="handoff")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher, watch_s=30), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        wait_for(os.path.join(tmp, "pids"))
-        launcher_pid = int(open(os.path.join(tmp, "pids")).read().split()[0])
+        launcher_pid = handed_over(tmp, p, launcher)
+        if launcher_pid is None:
+            return
         time.sleep(1.5)
         try:
             os.kill(launcher_pid, signal.SIGTERM)
@@ -1212,8 +1231,9 @@ def test_wd2(launcher):
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="wait")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        wait_for(os.path.join(tmp, "pids"))
-        launcher_pid = int(open(os.path.join(tmp, "pids")).read().split()[0])
+        launcher_pid = handed_over(tmp, p, launcher)
+        if launcher_pid is None:
+            return
         os.kill(launcher_pid, signal.SIGTERM)
         out, err = p.communicate(timeout=30)
         wc = wd2_calls(tmp)
@@ -1230,8 +1250,9 @@ def test_wd2(launcher):
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="handoff")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher, watch_s=30), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        wait_for(os.path.join(tmp, "pids"))
-        launcher_pid = int(open(os.path.join(tmp, "pids")).read().split()[0])
+        launcher_pid = handed_over(tmp, p, launcher)
+        if launcher_pid is None:
+            return
         time.sleep(1.5)
         try:
             os.kill(launcher_pid, signal.SIGKILL)
@@ -1243,8 +1264,9 @@ def test_wd2(launcher):
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, reading="handoff")
         p = subprocess.Popen(cmd(d, launcher), env=env(tmp, launcher, watch_s=30), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        wait_for(os.path.join(tmp, "pids"))
-        launcher_pid = int(open(os.path.join(tmp, "pids")).read().split()[0])
+        launcher_pid = handed_over(tmp, p, launcher)
+        if launcher_pid is None:
+            return
         time.sleep(1.5)
         try:
             os.kill(launcher_pid, signal.SIGTERM)

@@ -271,21 +271,26 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   with its state kept; Linux's own idle on this chip leaves it clear and comes back on the core's timer. With
   `ll_retn=1` CPU0 writes 0x3000000 (bits 25:24 alone) before that WFI, ACC_OVRD's deep-sleep fields set as in
   every run and `ll_wake=1`'s timer 25 s out. A return with nothing pending (ISR_EL1 0: Linux's idle loops on
-  those) is counted and the WFI taken again, however many there are, until 30 s (the timer's 25 s and 5) after
-  CPU0 first took the WFI, with nothing read but ISR_EL1 and the counter and nothing sent. The bound is a time
+  those) and the timer not reading as firing is counted and the WFI taken again, however many there are, until
+  30 s (the timer's 25 s and 5) after CPU0 first took the WFI, with nothing read but ISR_EL1, the timer's
+  control and the counter, and nothing sent. A return at which the timer reads as firing ends the phase
+  whatever ISR_EL1 reads, so that a timer which doesn't show there can't pass for a WFI that never held. The bound is a time
   and not a count: a WFI that returned at once every time would use up a count in well under a second, and
   the look would come before B2 had done anything.
-  At the first return with something pending, or the first empty one past that time, CPU0 makes its look, once: the clock,
+  At the first return with something pending or the timer firing, or the first past that time with neither, CPU0 makes its look, once: the clock,
   ISR_EL1, the timer's status, its control written 0, and three commands to 0x6008-0x600e in `last_look=1`'s
   order, each before the next one's reads, in a form of this run's own. 0x6008 and 0x6009 are `last_look=1`'s
   (the count takes the look's return as the first), but for 0x6008's bits 3:2, which in this form alone say how
-  many empty returns came before the look: 0 none, 1 one to nine, 2 ten to 999, 3 a thousand or more, a WFI
-  that returned at once again and again and didn't hold CPU0 down (they are `gate_look=1`'s two bits in the
+  many empty returns came before the look: 0 none, 1 one to nine, 2 ten to 999, 3 a thousand or more. That is
+  a count of the returns after which the WFI was taken again, the look's own not among them, and not a measure
+  of how long the WFI held: a thousand at once and then 24 s of holding is code 3 too, and `m1-crumbs` concludes
+  nothing about residency from it (they are `gate_look=1`'s two bits in the
   other forms; this run refuses it, and the later returns' sends of 0x6008 keep them); 0x600a is the low byte of the E complex's state word,
   0x28e09a000 (0x44 awake since boot; a down sequence ends on 0x1a, an up sequence on 0x40); 0x600b has
   0x2922c0044's low nibble, 0x2922c0040's bits 1:0 (3 awake) in bits 5:4, bit 6 if the state word, 0x2922c0040,
-  PHASE or EACC's word has a bit the bytes don't carry, and bit 7 if the look was made at the time bound,
-  with nothing pending (the timer never showed in ISR_EL1); 0x600c has bit 7, the bits 6:4 of EACC's soc-cluster word, 0x28e098000, and PHASE's low nibble;
+  0x2922c0044, PHASE or EACC's word has a bit the bytes don't carry, and bit 7 if the look was made at the time
+  bound, with nothing pending and the timer not firing (with code 0 in 0x6008's bits 3:2, a WFI that held past
+  the bound and returned once with nothing pending); 0x600c has bit 7, the bits 6:4 of EACC's soc-cluster word, 0x28e098000, and PHASE's low nibble;
   0x600d and 0x600e are `last_look=1`'s, best effort (they were lost across the restart in three runs). Then
   CPU0 sets bit 0 again, 0x3000001, and goes on as a `last_look=1` run does after a first return. **New on
   the hardware: one system register's value on CPU0, CYC_OVRD's bit 0 clear for its last WFI until the look,
