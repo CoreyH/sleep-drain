@@ -5438,9 +5438,11 @@ for the ninth one-way run since the review; built so that it is ready, not yet h
 **What it is.** `e1_hook ll_retn=1`, with `ll_wake=1` (run B's family: the alarm at 20 s, CPU0's timer at
 25 s, the keyboard light), refusing `gate_look=1`. One value changes: in step 10 CPU0 writes CYC_OVRD
 0x3000000 where every run writes 0x3000001, and takes its WFI. From there:
-- a return with nothing in ISR_EL1 is counted and the WFI taken again (Linux's loop does the same);
-- at the first return with something pending, or the first one 30 s or more after the WFI was first taken,
-  CPU0 makes **the look**, once: what a `last_look=1` return reads (the time, ISR_EL1, its timer, the
+- a return with nothing in ISR_EL1 and its timer not firing is counted and the WFI taken again (Linux's
+  loop does the same on ISR_EL1);
+- at the first return with something pending or the timer's own status set (a timer that ended the WFI
+  without showing in ISR_EL1 must not read as a WFI that never held), or the first one 30 s or more after
+  the WFI was first taken, CPU0 makes **the look**, once: what a `last_look=1` return reads (the time, ISR_EL1, its timer, the
   handshake words, 0x2922c0040, 0x2922c0044, PHASE, B2's power words) and two words CPU0 hasn't read in this
   state: the E complex's state word (0x28e09a000) and EACC's soc-cluster word (0x28e098000), which the
   observer read after a commit on 11-19;
@@ -5453,10 +5455,10 @@ tell the decoder the form:
 
 | byte | |
 |---|---|
-| 0x6008 | bit 7; bits 6:4 the time of the look's return; bits 3:2 the empty returns before it (none, 1-9, 10-999, 1,000 or more); bits 1:0 how often it has returned since |
+| 0x6008 | bit 7; bits 6:4 the time of the look's return; bits 3:2 how many empty returns were followed by another WFI before it (none, 1-9, 10-999, 1,000 or more: a count, which says nothing of how long the WFI held between them); bits 1:0 how often it has returned since |
 | 0x6009 | as `last_look=1`'s: ISR_EL1's F, I, A, the timer firing, HS_A's bit 24, HS_B's bits 0, 1, 31 |
 | 0x600a | the E complex's state word, low byte |
-| 0x600b | bits 3:0 0x2922c0044's; bits 5:4 0x2922c0040's bits 1:0; bit 6 a word has a bit its byte doesn't carry; bit 7 the look was made at the time bound with nothing pending |
+| 0x600b | bits 3:0 0x2922c0044's; bits 5:4 0x2922c0040's bits 1:0; bit 6 one of the five words has a bit its field doesn't carry; bit 7 the look was made at the time bound, with nothing pending and the timer not firing |
 | 0x600c | bit 7; bits 6:4 EACC's bits 6:4; bits 3:0 PHASE's low nibble |
 | 0x600d, 0x600e | as `last_look=1`'s (B2's power words): sent, and lost across the restart in three runs so far |
 
@@ -5473,10 +5475,19 @@ this. WD1's marker is at 70 s in this family.
   listing; not yet seen on this complex), **or 0x2922c0040 no longer 3, or PHASE past 4:** the complex went
   down with every core gone and CPU0 is back to say what B2 did. That is the look; what it shows decides
   everything after.
-- **1,000 or more empty returns:** the WFI didn't hold CPU0 at all; the look is a reading with a core up, and
-  says nothing new.
+- **the empty returns' count** decides none of these by itself: it is cumulative, so a thousand quick
+  returns and then a 24 s wait read like a WFI that never held. The time of the look's return and the words
+  it read are what count (Pullfrog on #129).
+- **a count of returns past one after the look** can be the look's own doing: a read of its that faulted
+  leaves an SError pending, and every later WFI then returns at once.
 - **the light stops:** B2 reached its tenth SIO word, in this run of all runs. Then CPU0 may never report
   (B2 lowers 0x2922c0040, the AP's partition, before that); the light and the restart's time are the result.
+- **a restart later than 70 s, or none:** if retention on the last core was itself what held the engine, B2
+  can move after the look, zero WD1's count at its op 223 and put the restart as late as about three minutes
+  after the commit; an entry that then completes leaves the Mac dark with no timed wake (the alarm fired at
+  20 s, the look switched CPU0's timer off): the power button. The good endings, both.
+- **a restart between 25 and 70 s with all zeros:** not the alarm's wake: a return that had lost what the
+  code after it needs faults before its first command, and the panic restarts.
 Odds, mine: a look into the dark state one in ten; a clean close most of the rest.
 
 **What is new on hardware.** One system-register value on CPU0, for one WFI: CYC_OVRD's bit 0 clear, as
@@ -5487,14 +5498,26 @@ survive that WFI under the recipe's ACC_OVRD; the code after the WFI keeps what 
 `m1_ll_wfi()` saves (the same thirteen as the kernel's `apple_cpu_deep_wfi`) and on the stack, checked in
 the built object.
 
-**Checked.** Built by a subagent from a written brief in its own worktree. `tests/m1_crumbs_test.py` (1,372
+**Checked.** Built by a subagent from a written brief in its own worktree. `tests/m1_crumbs_test.py` (1,376
 ok): the header's helpers; `m1_deep_wfi()` compiled in user space with its three inline-asm statements
 replaced by text and the WFI scripted (the C around the instructions runs, the instructions don't): the
 timer at once, 1 to 20,000 empty returns then the timer, empty returns to the bound and a tick short of it,
 never returning, later returns, the other cores and a plain `last_look=1` run unchanged; K1, the undo and
 `m1_pmu_ok()` over this family; the decoder over each field and over the stages where the form does and
-doesn't apply. `tests/e1a_launcher_test.py` (2,933 ok in full at the first commit; the two options' 220
-again after). 40 `llr` mutants, none missed; no stale mutant in the list of 1,266.
+doesn't apply. `tests/e1a_launcher_test.py` (2,933 ok in full on the last
+commit). 45 `llr` mutants, none missed, each by a failing check; no stale mutant in the list of 1,271.
+
+**The two reviews.** Pullfrog: the decoder and this section had read residency out of the empty returns'
+count; they don't now. One adversarial pass by a subagent given the code and five claims to break: nothing
+blocking. In the built object nothing live crosses either call of `m1_ll_wfi()` outside x19 to x28 and the
+stack; the other cores and every other run get 0x3000001 and the plain WFI as before; the stages, `--clear`,
+the alarm's and the marker's texts, the parameter chain and the launcher's line hold. Its findings, all
+taken: the timer's status as a second way out of the phase; the SError caveat that `last_look=1`'s decoder
+has and this form's lacked; the look's own return counted among the empty ones; the gate word's bits above
+3 outside "wide"; two mutants caught for the wrong reason (one by an unbound variable, one by the launcher
+test crashing: that test now fails a check where a launcher dies before its hand-off). Its judgment on what
+could end worse than run B's restart at 70 s: nothing that hangs past the watchdog from CPU0's side, nothing
+that damages the record, nothing that outlasts the restart; the two endings added to the list above.
 
 ### The `wake_all=1` run: every named source masked, the light to the end, the same 90 s (2026-11-20)
 
