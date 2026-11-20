@@ -113,7 +113,7 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   out-of-tree module (`make -C e1-hook`) that runs at the end of a suspend's noirq pass and, with
   `replay=15`, replays macOS's sleep entry for good: the Mac resets or stays dark, and never wakes.
   `run-floor` is its launcher, one option per rung, each rung adding to the one before
-  (`--m1-a2-pre-blink` is the latest); `m1-crumbs` reads the record a run leaves in the PMU after the
+  (`--m1-wake-all` is the latest); `m1-crumbs` reads the record a run leaves in the PMU after the
   restart, and `--clear` zeroes it. `probe` is the one launcher that isn't one-way: it loads the module
   with `probe=1`, which reads three coprocessor words in the recipe's state and fails the suspend, so
   the Mac is meant to come back (it didn't: with two firmwares stopped the kernel doesn't resume);
@@ -130,7 +130,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
 - `tests/`: hardware-free checks, one file per tool, each run as `python3 -I -B tests/<name>.py`.
   `tests/README.md` lists what each covers. The two that guard the one-way runs are
   `tests/m1_crumbs_test.py` (the decoder, and `e1_hook.c`'s own table, wait and write functions
-  compiled in user space) and `tests/e1a_launcher_test.py` (every `run-floor` option, about 6 minutes);
+  compiled in user space) and `tests/e1a_launcher_test.py` (every `run-floor` option, about 15 minutes;
+  option names as arguments run only those);
   `tests/e1_hook_probe_test.py` guards `e1-hook/probe`.
   `tests/mutants.py` breaks that code one way at a time and says what the first of them missed.
 - `patches/`: patch series for upstream, kept here for review before they're

@@ -5426,6 +5426,79 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### `wake_all=1` as built: every AP wake source masked, and the ask for macOS's commit state (2026-11-20)
+
+**Why.** "The desk step of 2026-11-20", below: the recipe's wake masks leave two things open, source 54
+(NUB.SPMISw3IRQ, the PMU's line: word 1's bit 22) and the ids 0xcd to 0xdf of word 6 (bits 31:13, which
+macOS's own value leaves clear and which no source is named for). The M4 Pro's driver says a pending source
+the masks let through would hold the first gate; the follow-up of 11-19 asked upstream whether the PMU's
+needs masking and has no answer. One run closes the class.
+
+**What it is.** `e1_hook wake_all=1` changes the value of step 7's seven writes and nothing else: each of
+0x292004008 to 0x292004020 is written 0xffffffff where `m1_wake_mask[]` has 0xffbfffff in word 1 and
+0x00001fff in word 6. No address is new. Right after, still in step 7, `m1_wa_look()` reads the seven back
+and the seven words after them (0x292004024 on, inferred to be the AP's wake status) and sends one byte to
+the PMU's 0x6008:
+
+| bits | |
+|---|---|
+| 7:6 | both set: the byte is `wake_all=1`'s |
+| 5 | words 0 to 5 read back 0xffffffff, and word 6's bits 12:0 all set |
+| 4 | word 6's bits 31:13 read back all set too (whether they exist isn't known) |
+| 3 | 0 |
+| 2:0 | how many of the seven status words read non-zero right after |
+
+K1 zeroes 0x6008-0x600e and leaves 0x20 at 0x6008 until that byte, so one that never landed shows. It needs
+`gates_mark=1` and refuses `observe=1`, whose record is in the same bytes. `m1-crumbs` reads the byte under
+that family's stages and under step 7's own (0x39, what the record keeps if the byte lands and nothing
+after it does), and `--clear` takes it with the rest. At the load `m1_wa_init()` logs both sets of seven as
+they read awake.
+
+`run-floor --m1-wake-all` is `--m1-a2-pre-blink`'s line with `wake_all=1`: A2's three moves made by the AP,
+ATC0's chain lowered, the keyboard light set blinking in step 8, WD1's marker at 90 s, and now no wake source
+open. The alarm an hour out is still armed by `alarm=1`, so the nights are off around the run as before.
+
+**How it reads** (Corey films the keyboard to the restart, or watches it all the way):
+- the light blinks for the 90 s and the Mac restarts: no source that the masks left open was holding the
+  engine. With bit 5 of the byte set that closes the class; without it the masks didn't take and the run
+  says nothing.
+- the light stops before the restart: B2 reached its tenth SIO word with every source masked. Then a wake
+  source was the hold; which one, a run with source 54 alone masked would say.
+- the light stops and no restart comes: the entry may have completed. Nothing wakes this Mac then, no key,
+  no lid and no alarm: wait two minutes past the 90 s, then hold the power button until it goes off, and
+  start it. The PMU's 0x0201 and the record say how far it got.
+- the status count: a fact for the notebook, no reading by itself. The words' place is inferred, they are
+  read microseconds after the masks, and whether they show raw or masked sources isn't known.
+Odds that the light stops, mine: one in twenty.
+
+**Writes.** The seven mask words, as every run since M1 run 1 writes them, with 0xffffffff in all. New in
+the values: word 1's bit 22 and word 6's bits 31:13, both undone by the restart (the masks read Linux's
+values again after every run so far). One new PMU byte, 0x6008, within Corey's OK of 2026-11-16 for
+0x6008-0x600e. Everything else is `--m1-a2-pre-blink`'s.
+
+**Checked.** Built by a subagent from a written brief, in its own worktree, then read line by line here.
+`tests/m1_crumbs_test.py` (1,270 ok): `wa_byte()` and `m1_wa_look()` compiled in user space against fake
+pages (all ones; word 6 reading 0x00001fff back; a word that doesn't take; status words non-zero), step 7's
+writes in both modes (the first test of `m1_wake_mask[]`'s values at all), K1's zeros and mark, the undo,
+`m1_pmu_ok()` over every address and length, the refusals, the decoder over landed, armed and junk bytes
+and over the stages where the byte is and isn't the run's. `tests/e1a_launcher_test.py` (2,817 ok). 63 `wa`
+mutants, none missed; `tests/mutants.py` can now mutate `run-floor`, and the launcher test takes option names
+to run only those. What it had to change beyond the brief: `m1_pmu_ok()` let 0x6008-0x600e through only
+with `last_look=1` or `observe=1`, so K1's zeros would have been refused and the replay never started; it now
+lets 0x6008 alone and the seven from it through with `wake_all=1`.
+
+**Upstream, the same day, with Corey's OK ("post both please").** To Naeem Malik, on our open question in
+his repository: whether the tracer behind his commit-state comparison could be run on a J314s given T6000's
+addresses, or whether he would take one snapshot under macOS on a T600x
+([malik-na/linux-aurora#77](https://github.com/malik-na/linux-aurora/issues/77#issuecomment-7035969390)).
+The second, to maralcbr, for the J314s trace or a dump near the commit, **was not posted**: maralcbr/omarchy-mx-mac
+is archived now (#281, where the ask of 11-04 was, is deleted) and maralcbr/linux has no issues. They are
+active on omacom/linux-aurora; a comment on #290 that mentions them is a new place and needs Corey's word.
+Corey also has macOS installed on this Mac (26.6.2, which can't be the hypervisor's guest on this chip: SPTM)
+and can boot it, and asked whether they can run m1n1 themselves: yes, on this Mac, from their Linux desktop
+(PLAN.md, A3 and A4); the script that takes the snapshot is m1n1's Python and not Claude's to write, and
+whether Claude may read the result is still theirs to decide.
+
 ### The desk step of 2026-11-20: Linux's own idle moved no complex's state word in 12 s of samples, the eighth run closes the wake sources, and what the others found
 
 **The night before.** The first night the nights' power-off covered in ordinary use: the lid closed on battery

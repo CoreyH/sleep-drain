@@ -8428,19 +8428,29 @@ def wake_all_tests(g, src):
               and not any(f in o for f in fields for o in (out, out2, out3, out4)),
               "a byte with anything in the other six, or with bit 3 set: said not to be what e1_hook writes, and no field read",
               out + err + out2 + err2 + out3 + err3 + out4)
+        # Step 7's own stage: the byte landed and no later command did. It is still the run's, read and cleared.
+        rc5, out5, err5, _, _ = wdec(b"\xf0", 0xb9)
+        rc6, out6, err6, _, after6 = wdec(b"\xf0", 0xb9, clear=True)
+        check(rc5 == 0 and head in out5 and "  the stage, 0x39, is step 7's own: this byte landed and no later command did\n" in out5
+              and "  0x6008 = 0xf0, " + named + unnamed + none in out5 and "NOT READ" not in out5 and "last_look=1" not in out5
+              and rc6 == 0 and not any(after6[8:0x0f]) and "0x6004-0x600e" in out6,
+              "wake_all=1's byte under step 7's own stage (0xb9, 0x39 with pmp_out=1's bit): read as the run's, with a line saying no later command landed, and cleared with the rest",
+              out5 + err5 + out6 + err6)
         # Whose bytes: the stage says. last_look=1's stages and an observer's keep their own readings, and the byte under a stage
         # that is neither theirs nor the family's isn't read as wake_all=1's.
-        outs = {(stage, v): wdec(bytes((v,)), stage) for stage in (0x8b, 0x88, 0x7f, 0x6e, 0xd3, 0xb9, 0x50) for v in (0xf0, 0x20, 0x40)}
+        # The fallback's own text names wake_all=1 among the records these bytes aren't: what mustn't appear is its record or its mark's line.
+        nowa = lambda o: "wake_all=1's record" not in o and "wake_all=1 was set" not in o
+        outs = {(stage, v): wdec(bytes((v,)), stage) for stage in (0x8b, 0x88, 0x7f, 0x6e, 0xd3, 0x50) for v in (0xf0, 0x20, 0x40)}
         check(all(rc == 0 for rc, _, _, _, _ in outs.values())
-              and all("wake_all" not in outs[(stage, v)][1] and "last_look=1's record of CPU0's own last WFI" in outs[(stage, v)][1]
+              and all(nowa(outs[(stage, v)][1]) and "last_look=1's record of CPU0's own last WFI" in outs[(stage, v)][1]
                       for stage in (0x8b, 0x88) for v in (0xf0, 0x20, 0x40))
-              and all("wake_all" not in outs[(stage, v)][1] for stage in (0x7f, 0x6e) for v in (0xf0, 0x20, 0x40))
+              and all(nowa(outs[(stage, v)][1]) for stage in (0x7f, 0x6e) for v in (0xf0, 0x20, 0x40))
               and all("obs_gate=1's record" in outs[(stage, 0xf0)][1] and "NOT READ: the stage isn't one of last_look=1's" in outs[(stage, 0x20)][1]
                       and "obs_gate=1 was set and CPU7's look never landed" in outs[(stage, 0x40)][1] for stage in (0x7f, 0x6e))
-              and all("wake_all" not in outs[(stage, 0xf0)][1] and "NOT READ: the stage isn't one of last_look=1's" in outs[(stage, 0xf0)][1]
+              and all(nowa(outs[(stage, 0xf0)][1]) and "NOT READ: the stage isn't one of last_look=1's" in outs[(stage, 0xf0)][1]
                       and "wake_all=1 was set and its byte never landed" in outs[(stage, 0x20)][1]
-                      and "the mark of an obs_gate=1 run whose look never landed" in outs[(stage, 0x40)][1] and "wake_all" not in outs[(stage, 0x40)][1]
-                      for stage in (0xd3, 0xb9, 0x50)),
+                      and "the mark of an obs_gate=1 run whose look never landed" in outs[(stage, 0x40)][1] and nowa(outs[(stage, 0x40)][1])
+                      for stage in (0xd3, 0x50)),
               "under one of last_look=1's stages 0xf0, 0x20 and 0x40 are that run's to read, and under an observer's they are obs_gate=1's or"
               " nobody's: none decodes as wake_all=1's; under a stage of neither and not the family's, 0xf0 isn't read as the byte, 0x20 is K1's"
               " mark for wake_all=1 and 0x40 stays obs_gate=1's", "".join(f"{k}: {v[1]}{v[2]}" for k, v in outs.items()))

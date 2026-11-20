@@ -835,8 +835,10 @@ static void e1_post_slpa_eh(void)
  *              power down CPM = 3, [32] disable PIO on WFI CPU, [34] enable
  *              deep sleep
  *   CYC_OVRD   [21:20] FIQ mode and [23:22] IRQ mode = 0, [25:24] OK to power
- *              down = 3 (force down), [0] disable WFI return: 0x3000001,
- *              which macOS writes (maralcbr, L452)
+ *              down = 3 (force down), [0] disable WFI retention (XNU's
+ *              disWfiRetn: with it clear a WFI can return to the next
+ *              instruction with the core's state kept): 0x3000001, which macOS
+ *              writes (maralcbr, L452)
  */
 static void e1_cpu_down(void *unused)
 {
@@ -1660,7 +1662,8 @@ static void e1_after_slpa(void)
  * the SoC 70 s after it. Nothing else changes up to step 10. There
  * m1_deep_wfi() calls m1_ll_ret() each time CPU0's WFI returns: at the first
  * return it sends seven bytes to the PMU's 0x6008-0x600e in three commands
- * (m1_pmu_ok() lets those bytes through only with last_look=1, and K1 and
+ * (m1_pmu_ok() lets those bytes through with last_look=1, and with observe=1
+ * or wake_all=1 for their own records there, and K1 and
  * the undo zero them), at the second and the hundredth the first byte again.
  * Reads only, but for CPU0's timer control, written 0. ll_wake=1 (run-floor
  * --m1-last-look-wake; with last_look=1) adds, in step 8, FPWM0's power word
