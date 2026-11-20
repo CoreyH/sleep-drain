@@ -1145,6 +1145,7 @@ def main():
     a2_pre_tests(g, src)
     acc_last_tests(g, src)
     last_look_tests(g, src)
+    wake_all_tests(g, src)
     sio_steps_tests(g, src)
     with tempfile.TemporaryDirectory() as tmp:
         ppath = os.path.join(tmp, "nvmem")
@@ -5184,7 +5185,7 @@ def probe_tests(g, src, dec):
                        if re.match(r"#define (M1_PS_SIO|M1_PS_SIO_CPU|M1_PS_UART_P|M1_PS_SPI_P|M1_PS_ANS2|M1_PS_PMP_RO|M1_POS_GATE44|M1_POS_GATE40|"
                                    r"M1_ASC_CPU_CONTROL|M1_ASC_CPU_STATUS|M1_ASC_CPU_RUN|M1_ASC_IDLE|M1_SIO_ENTRY|M1_PMU_ALARM\w*|M1_PMU_RTC|"
                                    r"M1_ALARM_ON)\s", line))
-        ran = build("prun", PROBE_RUN_PRELUDE + defs + "static bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        ran = build("prun", PROBE_RUN_PRELUDE + defs + "static bool alarm = true, last_look, observe, wake_all;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                     + PROBE_RUN_MODEL + cut("static struct {\n\tbool sio_run,", "} m1_pr;\n")
                     + cut("static bool m1_probe_word(", "\n}\n") + cut("static void m1_probe_at(u8 step)", "\n}\n")
                     + cut("static bool m1_sio_raise(void)", "\n}\n") + cut("static void m1_probe_prepare(void)\n{", "\n}\n") + cut("static void m1_probe_late(void)", "\n}\n") + PROBE_RUN_MAIN)
@@ -5664,7 +5665,7 @@ def look_tests(g, src, dec):
         hdr = [line.split() for line in build("lhdr", LOOK_HDR)]
         defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_PMU_RTC|M1_ALARM_ON)\s", line))
         defs_pos = [line for line in src.splitlines() if re.match(r"#define M1_POS_PAGE\s", line)]
-        ran = build("lrun", LOOK_RUN_PRELUDE + defs + defs_pos[0] + "\nstatic bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        ran = build("lrun", LOOK_RUN_PRELUDE + defs + defs_pos[0] + "\nstatic bool alarm = true, last_look, observe, wake_all;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                     + LOOK_RUN_MODEL + cut("#define LOOK_PRE_ROW", "\n") + cut("static void m1_look_at(u8 group)", "\n}\n") + cut("static void m1_look(const char *when, u8 pass)", "\n}\n")
                     + cut("static void m1_pre_beside(const char *when, bool gates)", "\n}\n") + cut("static int __init m1_look_init(void)", "\n}\n") + LOOK_RUN_MAIN)
 
@@ -6119,7 +6120,7 @@ def gate_tests(g, src, dec):
         defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_PMU_RTC|M1_ALARM_ON)\s", line))
         # LATE: the model's gate closes this many ticks after the UARTs went off: past the first poll's last read, and before the
         # read that comes right before the lane's write.
-        ran = build("grun", GATE_RUN_PRELUDE + "#define LATE 103\n" + defs + "static bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        ran = build("grun", GATE_RUN_PRELUDE + "#define LATE 103\n" + defs + "static bool alarm = true, last_look, observe, wake_all;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                     + GATE_RUN_MODEL + cut("static void m1_look_at(u8 group)", "\n}\n") + cut("static void m1_gate_log(const char *when)", "\n}\n")
                     + cut("static bool m1_gate_wait(const char *when)", "\n}\n") + cut("static u32 m1_gate_write(void __iomem *p,", "\n}\n")
                     + cut("static void m1_gate_test(void)", "\n}\n") + GATE_RUN_MAIN)
@@ -6669,10 +6670,10 @@ def pre_tests(g, src):
         defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_PMU_RTC|M1_ALARM_ON)\s", line))
         pieces = (cut("static void m1_look_at(u8 group)", "\n}\n") + cut("static void __iomem *m1_pre_word(unsigned int i)", "\n}\n")
                   + cut("static void m1_pre_log(const char *when, const u32 *v)", "\n}\n") + cut("static void m1_pre_beside(const char *when, bool gates)", "\n}\n"))
-        ran = build("prun", PRE_RUN_PRELUDE + defs + "static bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        ran = build("prun", PRE_RUN_PRELUDE + defs + "static bool alarm = true, last_look, observe, wake_all;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                     + PRE_RUN_MODEL + pieces + cut("static void m1_pre_test(void)", "\n}\n") + PRE_RUN_MAIN)
         defs_pos = [line for line in src.splitlines() if re.match(r"#define M1_POS_PAGE\s", line)]
-        loads = build("pload", LOOK_RUN_PRELUDE + defs + defs_pos[0] + "\nstatic bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+        loads = build("pload", LOOK_RUN_PRELUDE + defs + defs_pos[0] + "\nstatic bool alarm = true, last_look, observe, wake_all;\n#define LL_AT 0x6008\n#define LL_N 7\n" + cut("static bool m1_pmu_ok(bool write,", "\n}\n")
                       + LOOK_RUN_MODEL + cut("#define LOOK_PRE_ROW", "\n") + cut("static void m1_look_at(u8 group)", "\n}\n")
                       + cut("static void m1_look(const char *when, u8 pass)", "\n}\n") + cut("static void m1_pre_beside(const char *when, bool gates)", "\n}\n")
                       + cut("static int __init m1_look_init(void)", "\n}\n") + LOOK_RUN_MAIN.split("int main(void)")[0] + PRE_LOAD_MAIN)
@@ -7180,9 +7181,10 @@ int main(void)
 	unsigned int addr, n, w, ll;
 	u8 b[8] = { 0 };
 
-	for (ll = 0; ll < 3; ll++) {
+	for (ll = 0; ll < 4; ll++) {
 		last_look = ll == 1;
 		observe = ll == 2;
+		wake_all = ll == 3;
 		for (w = 0; w < 2; w++)
 			for (addr = 0x5ff8; addr < 0x6028; addr++)
 				for (n = 1; n <= 8; n++)
@@ -7201,7 +7203,7 @@ OG_K1_PRELUDE = r"""
 #include "last_look.h"
 #define EIO 5
 #define M1_PMU_RTC 0x1406
-static bool last_look, gate_look, obs_gate, observe, m1_sent_50;
+static bool last_look, gate_look, obs_gate, observe, wake_all, m1_sent_50;
 static u8 pmu[0x10000];
 static int m1_kwrite(unsigned int addr, const u8 *b, unsigned int n) { memcpy(pmu + addr, b, n); return 0; }
 static int m1_kread(unsigned int addr, u8 *b, unsigned int n) { memcpy(b, pmu + addr, n); return 0; }
@@ -7217,6 +7219,7 @@ int main(int argc, char **argv)
 	observe = !strcmp(m, "observe") || !strcmp(m, "obsgate");
 	obs_gate = !strcmp(m, "obsgate");
 	last_look = !strcmp(m, "lastlook");
+	wake_all = !strcmp(m, "wakeall");
 	if (m1_pmu_start() || !m1_sent_50 || gate_look)
 		return 1;
 	for (i = 0; i < 0x20; i++)
@@ -7437,7 +7440,7 @@ def last_look_tests(g, src):
         blink_on, blink_auto, blink_never, blink_busy = lines(fn, "blink"), lines(fn, "blinka"), lines(fn, "blinkn"), lines(fn, "blinkb")
         ok = [tuple(int(x, 16) if i == 2 else int(x) for i, x in enumerate(l.split()[1:]))
               for l in lines(build("llok", "#include <stdio.h>\n#include <stdbool.h>\n#include <stdint.h>\ntypedef uint8_t u8;\n"
-                                   "static bool alarm = true, last_look, observe;\n#define LL_AT 0x6008\n#define LL_N 7\n" + okdefs
+                                   "static bool alarm = true, last_look, observe, wake_all;\n#define LL_AT 0x6008\n#define LL_N 7\n" + okdefs
                                    + cut("static bool m1_pmu_ok(bool write,", "\n}\n") + LL_OK_MAIN))]
 
     # The header, against the numbers as PLAN.md and last_look.h's comment have them.
@@ -7660,6 +7663,11 @@ def last_look_tests(g, src):
           and {(a, n) for a in range(0x6008, 0x600f) for n in range(1, 0x600f - a + 1)} <= w1 and (0x600f, 1) not in w1 and (0x6008, 8) not in w1
           and (0x6008, 1) not in w0 and r0 == r1,
           "m1_pmu_ok(): with last_look=1 a write may also end in 0x6008-0x600e, never at 0x600f; without it nothing there; reads are the same")
+    w3 = {(a, n) for ll, w, a, n in ok if ll == 3 and w}
+    r3 = {(a, n) for ll, w, a, n in ok if ll == 3 and not w}
+    check(w3 == w0 | {(0x6008, 1), (0x6008, 7)} and not {(0x6008, 1), (0x6008, 7)} & w0 and r3 == r0 and w3 < w2 and w3 < w1,
+          "m1_pmu_ok(): with wake_all=1 a write may also be 0x6008 by itself or the seven bytes from it (K1's and the undo's zeros), and"
+          " nothing else new: no other byte of the seven alone, no part of them, nothing at 0x600f; reads are the same", str(sorted(w3 - w0)))
 
     # Where they're used.
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
@@ -8061,11 +8069,14 @@ def last_look_tests(g, src):
                 f.write(OG_K1_PRELUDE + cut("static int m1_pmu_start(void)", "\n}\n") + OG_K1_MAIN)
             subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(ktmp, "k1"), k1c], check=True)
             k1 = {m: bytes.fromhex(subprocess.run([os.path.join(ktmp, "k1"), m], capture_output=True, text=True, check=True).stdout.strip())
-                  for m in ("observe", "obsgate", "plain", "lastlook")}
+                  for m in ("observe", "obsgate", "plain", "lastlook", "wakeall")}
         check(k1["observe"][8:0x0f] == bytes(7) and k1["obsgate"][8:0x0f] == bytes((0x40, 0, 0, 0, 0, 0, 0)) and k1["lastlook"][8:0x0f] == bytes(7)
-              and k1["plain"][8:0x0f] == full and all(v[4] == 0x01 and v[1] == 0x50 for v in k1.values()),
+              and k1["plain"][8:0x0f] == full and all(v[4] == 0x01 and v[1] == 0x50 for v in k1.values())
+              and k1["wakeall"][8:0x0f] == bytes((0x20, 0, 0, 0, 0, 0, 0))
+              and all(v[:8] == k1["plain"][:8] and v[0x0f:] == k1["plain"][0x0f:] for v in k1.values()),
               "K1, the real m1_pmu_start(), over a retained obs_gate=1 record: an ordinary observer's run zeroes 0x6008-0x600e, an obs_gate=1 run"
-              " leaves its mark alone there, a last_look=1 run zeroes them, and a run of neither kind leaves them", str({m: v.hex(' ') for m, v in k1.items()}))
+              " leaves its mark alone there, a last_look=1 run zeroes them, a wake_all=1 run zeroes them and leaves its own mark, 0x20, alone"
+              " there, and a run of none of these leaves them; no other byte differs between them", str({m: v.hex(' ') for m, v in k1.items()}))
         sc = bytearray(scratch(0x7f, parked=0xff, left=0x04, down=29, secs=121544, prog=(0x10, 0x80 | 5 << 3 | 1), flags=0x90, isrs=0x24, drained=0x95))
         sc[8:0x0f] = k1["observe"][8:0x0f]
         fake(path, bytes(sc), rtc_secs=121761)
@@ -8082,7 +8093,7 @@ def last_look_tests(g, src):
         want = bytearray(before)
         want[0x6004:0x6008], want[0x6010:0x6017] = bytes(4), bytes(7)
         check(rc == 0 and after == bytes(want) and "cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros" in out
-              and "0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage and no obs_gate=1 record says they're a run's" in out,
+              and "0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage, no obs_gate=1 record and no wake_all=1 record says they're a run's" in out,
               "--clear leaves bytes that are neither run's alone, and says so", out + err)
     tool = open(TOOL).read()
     check("    try:\n        r0201 = os.pread(fd, 1, R0201)\n    except OSError:\n        r0201 = b\"\"\n" in tool and "\"PMU 0x0201: not read\"" in tool
@@ -8090,6 +8101,373 @@ def last_look_tests(g, src):
           and len(re.findall(r"os\.pwrite\(", tool)) == 2,
           "m1-crumbs reads 0x0201 once, by itself, so that a read that fails costs only its line, and has two writes in all: the alarm's control"
           " and the crumbs' zeros")
+
+
+WA_HDR = r"""
+#include <stdio.h>
+#include "last_look.h"
+int main(void)
+{
+	unsigned int n, u, s;
+
+	printf("const %x %x %x %x %x %u %x %x %x %u\n", WA_ARMED, WA_MARK, WA_NAMED, WA_UNNAMED, WA_W6_NAMED, WA_WORDS, LL_ARMED, OG_ARMED, LL_AT, LL_N);
+	for (n = 0; n < 2; n++)
+		for (u = 0; u < 2; u++)
+			for (s = 0; s < 12; s++)
+				printf("b %u %u %u %x\n", n, u, s, wa_byte(n, u, s));
+	printf("big %x %x\n", wa_byte(1, 1, 0xffffffffU), wa_byte(0, 0, 0x100));
+	return 0;
+}
+"""
+WA_FN_PRELUDE = r"""
+#include <stdio.h>
+#include <string.h>
+#include "last_look.h"
+#define __iomem
+#define __init
+#define ENODEV 19
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define U32_MAX 0xffffffffU
+#define pr_err(...) printf("err " __VA_ARGS__)
+#define pr_info(...) printf("info " __VA_ARGS__)
+static bool wake_all;
+static int dead;
+/*
+ * The seven AP wake-mask words with the seven status words after them, and nub-spmi0's page: every access logged. A mask
+ * word keeps of a write only the bits in keep[]: a bit that isn't there doesn't take.
+ */
+static u32 aon[2 * WA_WORDS], keep[WA_WORDS], en[0x20];
+static void *m1_aon = aon, *m1_spmi = en;
+static u32 readl(const void *p)
+{
+	const u32 *w = p;
+
+	if (w < aon || w >= aon + 2 * WA_WORDS) {
+		printf("r X\n");
+		return 0;
+	}
+	printf("r %c %u\n", w < aon + WA_WORDS ? 'M' : 'S', (unsigned int)(w - aon) % WA_WORDS);
+	return *w;
+}
+static void writel(u32 v, void *p)
+{
+	u32 *w = p;
+
+	if (w >= aon && w < aon + WA_WORDS) {
+		printf("w M %u %x\n", (unsigned int)(w - aon), v);
+		*w = v & keep[w - aon];
+	} else if (w >= en && w < en + 0x20) {
+		printf("w E %x %x\n", (unsigned int)((unsigned char *)w - (unsigned char *)en), v);
+	} else {
+		printf("w X %x\n", v);
+	}
+}
+/* As e1_hook.c's: once a command fails, none goes out after it. */
+static void m1_crumb(unsigned int addr, const u8 *b, unsigned int n)
+{
+	unsigned int i;
+
+	if (dead)
+		return;
+	printf("c %x", addr);
+	for (i = 0; i < n; i++)
+		printf(" %02x", b[i]);
+	printf("\n");
+}
+"""
+WA_FN_MAIN = r"""
+int main(int argc, char **argv)
+{
+	const char *sc = argc > 1 ? argv[1] : "";
+	unsigned int i;
+
+	for (i = 0; i < WA_WORDS; i++) {
+		keep[i] = 0xffffffffU;
+		aon[i] = i == 1 ? 0x40 : 0;	/* the masks as Linux runs with them */
+	}
+	if (!strncmp(sc, "init", 4)) {
+		for (i = 0; i < WA_WORDS; i++)
+			aon[WA_WORDS + i] = 0x10 + i;
+		if (sc[4])
+			m1_aon = NULL;
+		printf("ret %d\n", m1_wa_init());
+		return 0;
+	}
+	wake_all = strcmp(sc, "plain") != 0;
+	dead = !strcmp(sc, "dead");
+	if (!strcmp(sc, "w6"))
+		keep[6] = 0x00001fff;	/* word 6 as macOS's value has it: nothing above bit 12 takes */
+	if (!strcmp(sc, "w6low"))
+		keep[6] = 0xffffefff;	/* its bit 12, an id with a name, doesn't take */
+	if (!strcmp(sc, "w6top"))
+		keep[6] = 0x7fffffff;	/* its bit 31 alone doesn't take */
+	if (!strcmp(sc, "w6edge"))
+		keep[6] = 0xffffdfff;	/* its bit 13 alone, the first with no name, doesn't take */
+	if (!strcmp(sc, "w6none"))
+		keep[6] = 0;
+	if (!strcmp(sc, "w0"))
+		keep[0] = 0xfffffffe;
+	if (!strcmp(sc, "w1"))
+		keep[1] = 0xffbfffff;	/* source 54 stays open, as the recipe's own value leaves it */
+	if (!strcmp(sc, "w5"))
+		keep[5] = 0x7fffffff;
+	if (!strcmp(sc, "both")) {
+		keep[3] = 0xffff0000;
+		keep[6] = 0x00001fff;
+	}
+	if (!strcmp(sc, "status")) {
+		aon[WA_WORDS + 2] = 0x00400000;
+		aon[WA_WORDS + 5] = 1;
+	}
+	if (!strcmp(sc, "status0"))
+		aon[WA_WORDS] = 0x80000000U;
+	if (!strcmp(sc, "status6"))
+		aon[WA_WORDS + 6] = 0x00000100;
+	if (!strcmp(sc, "status7"))
+		for (i = 0; i < WA_WORDS; i++)
+			aon[WA_WORDS + i] = 0x80000000U >> i;
+	step7();
+	return 0;
+}
+"""
+
+
+def wake_all_tests(g, src):
+    """wake_all=1: last_look.h's byte against an independent reading of it; step 7's two loops with m1_wake_mask[] and m1_wa_look(),
+    and m1_wa_init(), compiled as they stand against words that log every access; the places in e1_hook.c that use them; and the
+    byte, K1's mark and --clear through m1-crumbs."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
+    after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
+    look_fn, init_fn = cut("static void m1_wa_look(void)", "\n}\n"), cut("static int __init m1_wa_init(void)", "\n}\n")
+    table = cut("static const u32 m1_wake_mask[7] = {", "\n};\n")
+    # Step 7 from its first write to the end of the step, as it stands: the masks' loop, the enables' loop, the look's call.
+    step7 = after[after.index("\tfor (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)\n"):after.index("\n\t/* 8 */\n") + 1]
+    defs = "".join(line + "\n" for line in src.splitlines()
+                   if re.match(r"#define (M1_AON_WAKE|M1_AON_WAKE_STATUS|m1_wake_status|M1_SPMI_WORDS|M1_SPMI_EN\(w\))\s", line))
+    scenarios = ("plain", "all", "dead", "w6", "w6low", "w6top", "w6edge", "w6none", "w0", "w1", "w5", "both", "status", "status0", "status6", "status7",
+                 "init", "initnone")
+    with tempfile.TemporaryDirectory() as tmp:
+        def build(name, code):
+            c = os.path.join(tmp, name + ".c")
+            with open(c, "w") as f:
+                f.write(code)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(tmp, name), c], check=True)
+            return os.path.join(tmp, name)
+
+        hdr = [l.split() for l in subprocess.run([build("wahdr", WA_HDR)], capture_output=True, text=True, check=True).stdout.splitlines()]
+        fn = build("wafn", WA_FN_PRELUDE + defs + table + look_fn + init_fn + "static void step7(void)\n{\n\tunsigned int i;\n\n" + step7 + "}\n" + WA_FN_MAIN)
+        runs = {sc: subprocess.run([fn, sc], capture_output=True, text=True, check=True).stdout.splitlines() for sc in scenarios}
+
+    # The header, against the numbers as the task and last_look.h's comment have them.
+    b = [r[1:] for r in hdr if r[0] == "b"]
+    check([r for r in hdr if r[0] == "const"] == [["const", "20", "c0", "20", "10", "1fff", "7", "4", "40", "6008", "7"]]
+          and len(b) == 48 and all(int(v, 16) == 0xc0 | int(n) << 5 | int(u) << 4 | min(int(st), 7) for n, u, st, v in b)
+          and [r for r in hdr if r[0] == "big"] == [["big", "f7", "c7"]]
+          and all(not int(v, 16) & 0x08 and int(v, 16) not in (0x04, 0x20, 0x40) for _, _, _, v in b),
+          "last_look.h: K1's mark for wake_all=1 is 0x20, none of the other two (0x04, 0x40); wa_byte(): bits 7:6 always, the named ids in bit 5, the"
+          " rest of word 6 in bit 4, bit 3 never, the count of status words in bits 2:0 and no higher than 7 whatever it is given; no byte"
+          " it makes is one of K1's marks; word 6's named ids are its bits 12:0, and there are seven words", str(hdr[:3]))
+    tool = open(TOOL).read()
+    check((g["WA_ARMED"], g["WA_MARK"], g["WA_NAMED"], g["WA_UNNAMED"]) == (0x20, 0xc0, 0x20, 0x10)
+          and g["WA_STAGES"] == (0x4b, 0x54, 0x55, 0x3d, 0x3e, 0x3f, 0x1d, 0x1e, 0x1f, 0x15, 0x16, 0x17, 0x19, 0x1a, 0x1b, 0x11, 0x12, 0x13)
+          and g["WA_STAGES"] == g["GATES_STAGES"] + g["SIOD_STAGES"] + g["PCD_STAGES"] + g["SST_STAGES"] + g["A2P_STAGES"] + g["ACL_STAGES"]
+          and not set(g["WA_STAGES"]) & set(g["LL_STAGES"] + g["OG_STAGES"])
+          and tool.count("wa_record(") == 3 and tool.count("wa_lines(") == 2,
+          "m1-crumbs has the header's four values, and reads the byte under the gates_mark=1 family's stages, none of which is last_look=1's"
+          " or an observer's")
+
+    # Step 7 and m1_wa_look(), as they stand.
+    masks = [0xffffffff, 0xffbfffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x00001fff]
+    enables = [f"w E {0x20 + 4 * i:x} 0" for i in range(9)]
+    check([int(x, 16) for x in re.findall(r"0x([0-9a-f]{8})", table)] == masks
+          and runs["plain"] == [f"w M {i} {v:x}" for i, v in enumerate(masks)] + enables,
+          "without wake_all=1 step 7 writes m1_wake_mask[] as before: every source masked but 54 (word 1's bit 22), word 6 macOS's 0x00001fff;"
+          " then nub-spmi0's nine enables 0; no read of the masks or the status words, and no byte to 0x6008", "\n".join(runs["plain"]))
+    ones = [f"w M {i} ffffffff" for i in range(7)] + enables
+    reads = [f"r M {i}" for i in range(7)] + [f"r S {i}" for i in range(7)]
+    check(runs["all"] == ones + reads + ["c 6008 f0"] and runs["dead"] == ones + reads,
+          "with wake_all=1 step 7 writes 0xffffffff to each of the seven, the same seven addresses, then the nine enables 0; m1_wa_look() then"
+          " reads the seven masks back in order, then the seven status words, and sends 0x6008 := 0xf0 when all of it reads back and no status"
+          " word is set; with SPMI already failed the same reads are made and nothing is sent", "\n".join(runs["all"]))
+    want = {"w6": 0xe0, "w6low": 0xd0, "w6top": 0xe0, "w6edge": 0xe0, "w6none": 0xc0, "w0": 0xd0, "w1": 0xd0, "w5": 0xd0, "both": 0xc0,
+            "status": 0xf2, "status0": 0xf1, "status6": 0xf1, "status7": 0xf7}
+    got = {sc: runs[sc][-1] for sc in want}
+    check(all(runs[sc] == ones + reads + [f"c 6008 {v:02x}"] for sc, v in want.items()),
+          "m1_wa_look(): word 6 reading 0x00001fff back, or missing only its bit 13 or its bit 31, clears bit 4 alone (0xe0); a bit of words 0, 1"
+          " or 5 that doesn't take, or word 6's bit 12, clears bit 5 alone (0xd0); both parts missing, 0xc0; one status word non-zero, the first"
+          " or the last, counts 1, two count 2, all seven 7; the accesses are the same in every case", str(got))
+    check(not re.search(wr, look_fn) and "sysreg" not in look_fn and look_fn.count("m1_crumb(") == 1 and "\tm1_crumb(LL_AT, &v, 1);\n}" in look_fn
+          and look_fn.count("readl(") == 2 and not re.search(r"\w\([^;]*readl\([^;]*,[^;]*readl\(", look_fn)
+          and in_order_of(look_fn, ["\t\tback = readl(m1_aon + 4 * i);\n", "\tunnamed = (back | WA_W6_NAMED) == U32_MAX;\n", "\t\tif (readl(m1_wake_status + 4 * i))\n",
+                                    "\tv = wa_byte(named, unnamed, pending);\n"])
+          and not [l for sc in want for l in runs[sc] if l.startswith(("r X", "w X"))],
+          "m1_wa_look() has no write to a register and touches no system register: two reads in loops, the masks' before the status words', and"
+          " one command of one byte to 0x6008")
+    check(in_order_of(after, ["\t/* 7 */\n", "\tm1_crumb(0x6004, b, 4);\n\tfor (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)\n"
+                              "\t\twritel(wake_all ? U32_MAX : m1_wake_mask[i], m1_aon + 4 * i);",
+                              "\n\tfor (i = 0; i < M1_SPMI_WORDS; i++)\n\t\twritel(0, m1_spmi + M1_SPMI_EN(i));\n",
+                              "\tif (wake_all)\n\t\tm1_wa_look();\n\n\t/* 8 */\n\tm1_quiet_core();\n", "/* 9 */", "writel_relaxed(1, commit);"])
+          and len(re.findall(r"\bm1_wa_look\(", code_only)) == 2 and len(re.findall(r"writel\([^;]*\bm1_aon\b", code_only)) == 1
+          and len(re.findall(r"\bm1_wake_mask\b", code_only)) == 5 and len(re.findall(wr, step7)) == 2,
+          "step 7: stage 0x39's command, the seven masks (0xffffffff with wake_all=1 alone, m1_wake_mask[] otherwise: the one write to them in"
+          " the file), nub-spmi0's enables, then m1_wa_look() with wake_all=1 alone, its one caller, before step 8 quiets CPU0 and long before"
+          " the commit; the step makes the two write calls it made before")
+
+    # The load: m1_wa_init() and its place.
+    info = [l for l in runs["init"] if l.startswith("info ")]
+    check(runs["init"][:14] == [f"r {c} {i}" for i in range(7) for c in "MS"] and len(runs["init"]) == 16 and runs["init"][-1] == "ret 0"
+          and info == ["info m1: wake_all: awake: the AP wake masks 00000000 00000040 00000000 00000000 00000000 00000000 00000000; the seven words"
+                       " after them (the wake status, inferred) 00000010 00000011 00000012 00000013 00000014 00000015 00000016. Step 7 writes"
+                       " 0xffffffff to all seven masks, reads both sets and sends one byte to the PMU's 0x6008"]
+          and runs["initnone"] == ["err m1: wake_all: the AP wake masks' page isn't mapped; refusing", "ret -19"]
+          and not re.search(wr, init_fn),
+          "m1_wa_init(): the seven masks and the seven status words read once each and logged as they are awake, with what step 7 will do;"
+          " without the page it refuses, having read nothing; it writes nothing", "\n".join(runs["init"] + runs["initnone"]))
+    init = cut("static int __init m1_init(void)", "\n}\n")
+    check(in_order_of(init, ["\tm1_aon = ioremap_np(M1_AON_WAKE & PAGE_MASK, PAGE_SIZE);\n", "\tm1_aon += M1_AON_WAKE & ~PAGE_MASK;\n",
+                             "m1_never(M1_AON_WAKE, ARRAY_SIZE(m1_wake_mask)) ||", "\t\treturn -EPERM;\n", "int ret = m1_blink_init();",
+                             "\tif (wake_all) {\n\t\tint ret = m1_wa_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n", "\t/* Last: it reads through pages"])
+          and len(re.findall(r"\bm1_wa_init\(", code_only)) == 2
+          and "static_assert(WA_ARMED == 0x20 && WA_MARK == 0xc0 && !(WA_ARMED & (WA_MARK | LL_ARMED | OG_ARMED)) && !((WA_NAMED | WA_UNNAMED | 0xf) & WA_MARK) &&\n"
+              "\t      WA_W6_NAMED == 0x00001fffU && ARRAY_SIZE(m1_wake_mask) == WA_WORDS && M1_AON_WAKE == 0x292004008ULL &&\n"
+              "\t      M1_AON_WAKE_STATUS == M1_AON_WAKE + 4 * WA_WORDS && (M1_AON_WAKE_STATUS & ~PAGE_MASK) + 4 * WA_WORDS <= PAGE_SIZE);\n" in src
+          and not {0x292004008 + 4 * i for i in range(14)} & {0x28e0802d8, 0x28e700000},
+          "the load runs m1_wa_init() with wake_all=1 alone, after the page is mapped and the seven masks were checked against the never-write"
+          " list (a check of the addresses, so it holds for 0xffffffff as for the table's values) and before the look's start-up, and returns"
+          " its refusal; the build asserts the marks, the seven words at 0x292004008 and the status words right after them in the same page")
+
+    # The parameter, K1, the undo.
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    start, undo = cut("static int m1_pmu_start(void)", "\n}\n"), cut("static void m1_pmu_undo(void)", "\n}\n")
+    check(in_order_of(params, ["\tif (blink && (!gates_mark || sio_down || sio_steps)) {\n",
+                               "\tif (wake_all && (!gates_mark || observe)) {\n\t\tpr_err(\"wake_all=1 needs gates_mark=1 and no observe=1 (it's that family's run with all"
+                               " seven AP wake-mask words written 0xffffffff in step 7 and one byte at 0x6008;", "\t\treturn -EINVAL;\n\t}\n\tif (gate_look && !last_look) {\n"])
+          and "\nstatic bool wake_all;\nmodule_param(wake_all, bool, 0444);\nMODULE_PARM_DESC(wake_all, \"With gates_mark=1, never with observe=1:" in src
+          and 'blink ? " blink=1" : "", wake_all ? " wake_all=1" : "", pre_test ?' in src
+          and not re.search(r"\bwake_all\s*=[^=]", code_only) and len(re.findall(r"\bwake_all\b", code_only)) == 11
+          and "if (last_look && (!wd1_mark || gates_mark ||" in src,
+          "wake_all=1 is off unless asked for, refuses without gates_mark=1 or with observe=1, can't be set after the load and is named in the"
+          " load line; it can't meet last_look=1, which refuses gates_mark=1, so the three users of 0x6008-0x600e never load together")
+    check(in_order_of(start, ["\t\tret = m1_kwrite(0x6010, zero, 7);\n",
+                              "\tif (!ret && wake_all) {\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n\t\tv = WA_ARMED;\n\t\tif (!ret)\n\t\t\tret = m1_kwrite(LL_AT, &v, 1);\n\t}\n",
+                              "\tif (ret)\n\t\treturn ret;\n\tm1_sent_50 = true;\n"])
+          and "\tif (wake_all) {\n\t\terr = m1_kwrite(LL_AT, zero, LL_N);\n\t\tret = ret ?: err;\n\t}\n\tm1_undo = ret;\n" in undo
+          and "\tif (wake_all && addr == LL_AT && (one || n == LL_N))\n\t\treturn true;\n" in cut("static bool m1_pmu_ok(bool write,", "\n}\n"),
+          "K1 zeroes 0x6008-0x600e and then writes the mark over the first, with wake_all=1 alone, through the kernel's path and before boot"
+          " stage 0x50 goes out; the undo zeroes the seven; m1_pmu_ok() lets those writes through with wake_all=1 alone (last_look_tests() has"
+          " the compiled K1 and m1_pmu_ok())")
+
+    # The byte through m1-crumbs: the a2_pre=1 run with the light's own record (results/a2-pre-blink-20261119/crumbs.txt, written out
+    # here: mutants.py's copies have no results/), with 0x6008-0x600e as a wake_all=1 run would leave them.
+    base = bytes.fromhex("003000509b7d00f5 0000000000000000 13b8ff5f908eff00 0000000000000000")
+    head = ("wake_all=1's record: step 7 wrote 0xffffffff to all seven AP wake-mask words (0x292004008-0x292004020), and CPU0 read them back and"
+            " the seven words after them:\n")
+    named = "bit 5: the masks read back 0xffffffff in words 0 to 5 and all set in word 6's low 13 bits: every source with a name is masked\n"
+    not_named = ("bit 5: the masks read back NOT all 0xffffffff in words 0 to 5 and all set in word 6's low 13 bits: a source with a name isn't shown"
+                 " masked (which isn't recorded)\n")
+    unnamed = "  bit 4: the ids with no name (0xcd to 0xdf, word 6's bits 31:13) took the mask: they read back all set\n"
+    not_unnamed = ("  bit 4: the ids with no name (0xcd to 0xdf, word 6's bits 31:13) did NOT all read back set: macOS's value leaves them clear, and"
+                   " whether they exist isn't known\n")
+    none = "  bits 2:0: none of the seven words inferred to be the AP's wake status read non-zero after the masks\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+
+        def wdec(r, stage=0x9b, clear=False, armed=0x41):
+            sc = bytearray(base)
+            sc[4] = stage
+            sc[8:8 + len(r)] = r
+            before = fake(path, bytes(sc), rtc_secs=112659 + 130, alarm=(armed, 112659 + 3600, 0, 0))
+            p = run(path, *(["--clear"] if clear else []), cnt="960000000 24000000")
+            return p.returncode, p.stdout, p.stderr, before, open(path, "rb").read()
+
+        rc0, out0, err0, _, _ = wdec(bytes(7))
+        rc, out, err, _, _ = wdec(b"\xf0")
+        rest = [l for l in out0.splitlines() if not l.startswith("0x6000:") and l not in out.splitlines()]
+        check(rc == 0 and rc0 == 0 and "0x6008-0x600e = f0 00 00 00 00 00 00: " + head + "  0x6008 = 0xf0, " + named + unnamed + none in out
+              and "last_look=1" not in out and "obs_gate" not in out and "NOT READ" not in out and "wake_all" not in out0 and "0x6008-0x600e" not in out0
+              and not rest and "0x6016 = 0xff: a2_pre=1's byte, in place of the alarm's result:" in out
+              and "stage 0x6004 = 0x9b (pmp_out=1: bit 7, so the stage is 0x1b) (pmgr_late=1): a2_pre=1: gates_mark=1's 0x55:" in out,
+              "a wake_all=1 byte that landed whole, 0xf0, under --m1-a2-pre's last stage: every mask read back, the ids with no name too, no"
+              " status word set; every other line of the record is as without the byte, and without it nothing is said of 0x6008", out + err + "\n".join(rest))
+        for v, a, b_, c in ((0xe0, named, not_unnamed, none), (0xc0, not_named, not_unnamed, none), (0xd0, not_named, unnamed, none),
+                            (0xf3, named, unnamed, "  bits 2:0: 3 of the seven words inferred to be the AP's wake status read non-zero after the masks: which"
+                                                   " isn't recorded\n"),
+                            (0xc7, not_named, not_unnamed, "  bits 2:0: 7 of the seven words inferred to be the AP's wake status read non-zero after the masks:"
+                                                           " which isn't recorded\n")):
+            rc, out, err, _, _ = wdec(bytes((v,)))
+            check(rc == 0 and f"0x6008-0x600e = {v:02x} 00 00 00 00 00 00: " + head + f"  0x6008 = 0x{v:02x}, " + a + b_ + c in out and "NOT READ" not in out,
+                  f"the byte 0x{v:02x}: each of its three fields said as read, and nothing concluded from them", out + err)
+        for stage in (0xcb, 0xd4, 0xd5, 0xbd, 0xbe, 0xbf, 0x9d, 0x9e, 0x9f, 0x95, 0x96, 0x97, 0x99, 0x9a, 0x9b, 0x91, 0x92, 0x93):
+            rc, out, err, _, _ = wdec(b"\xe1", stage)
+            check(rc == 0 and head + "  0x6008 = 0xe1, " + named + not_unnamed + "  bits 2:0: 1 of the seven" in out,
+                  f"the byte under stage 0x{stage:02x}, one of the gates_mark=1 family's: read as wake_all=1's", out + err)
+        armed_line = "  0x6008 = 0x20: wake_all=1 was set and its byte never landed: K1 writes this, step 7's command writes over it. "
+        early = "Stage 0x{:02x} is the last that landed: the run stopped before that command, or the command failed, which stops every later one"
+        later = ("Stage 0x{:02x} is a later command's, and a command that fails stops every later one: step 7's was acked and its byte didn't land, or"
+                 " the mark is an earlier run's, left uncleared")
+        fields = ("the masks read back", "the ids with no name", "inferred to be the AP's wake status")
+        for stage, how in ((0x9b, later), (0x99, later), (0xd5, later), (0xb9, early), (0xa8, early), (0x82, early)):
+            rc, out, err, _, _ = wdec(b"\x20", stage)
+            check(rc == 0 and head + armed_line + how.format(stage & 0x7f) + "\n" in out and not any(f in out for f in fields)
+                  and "last_look=1" not in out and "obs_gate" not in out,
+                  f"K1's mark alone, 0x20, under stage 0x{stage:02x}: wake_all=1's byte never landed, said with what the stage allows (a stage sent"
+                  " after step 7 can't follow a command that failed there), and no field is read from it", out + err)
+        rc, out, err, _, _ = wdec(bytes((0xf0, 0, 0, 5, 0, 0, 0)))
+        rc2, out2, err2, _, _ = wdec(bytes((0x20, 0, 0, 0, 0, 0, 0x80)))
+        rc3, out3, err3, _, _ = wdec(b"\xf8")
+        rc4, out4, err4, _, _ = wdec(b"\xcf")
+        check(rc == 0 and head + "  0x6009-0x600e = 00 00 05 00 00 00: not what e1_hook writes (K1 zeroes them, and this run sends 0x6008 alone): NOT READ\n" in out
+              and rc2 == 0 and armed_line + later.format(0x1b) + "; 0x6009-0x600e = 00 00 00 00 00 80 are not what e1_hook writes: NOT READ\n" in out2
+              and rc3 == 0 and head + "  0x6008 = 0xf8: not what e1_hook writes (its bit 3 is never set): NOT READ\n" in out3
+              and rc4 == 0 and "  0x6008 = 0xcf: not what e1_hook writes (its bit 3 is never set): NOT READ\n" in out4
+              and not any(f in o for f in fields for o in (out, out2, out3, out4)),
+              "a byte with anything in the other six, or with bit 3 set: said not to be what e1_hook writes, and no field read",
+              out + err + out2 + err2 + out3 + err3 + out4)
+        # Whose bytes: the stage says. last_look=1's stages and an observer's keep their own readings, and the byte under a stage
+        # that is neither theirs nor the family's isn't read as wake_all=1's.
+        outs = {(stage, v): wdec(bytes((v,)), stage) for stage in (0x8b, 0x88, 0x7f, 0x6e, 0xd3, 0xb9, 0x50) for v in (0xf0, 0x20, 0x40)}
+        check(all(rc == 0 for rc, _, _, _, _ in outs.values())
+              and all("wake_all" not in outs[(stage, v)][1] and "last_look=1's record of CPU0's own last WFI" in outs[(stage, v)][1]
+                      for stage in (0x8b, 0x88) for v in (0xf0, 0x20, 0x40))
+              and all("wake_all" not in outs[(stage, v)][1] for stage in (0x7f, 0x6e) for v in (0xf0, 0x20, 0x40))
+              and all("obs_gate=1's record" in outs[(stage, 0xf0)][1] and "NOT READ: the stage isn't one of last_look=1's" in outs[(stage, 0x20)][1]
+                      and "obs_gate=1 was set and CPU7's look never landed" in outs[(stage, 0x40)][1] for stage in (0x7f, 0x6e))
+              and all("wake_all" not in outs[(stage, 0xf0)][1] and "NOT READ: the stage isn't one of last_look=1's" in outs[(stage, 0xf0)][1]
+                      and "wake_all=1 was set and its byte never landed" in outs[(stage, 0x20)][1]
+                      and "the mark of an obs_gate=1 run whose look never landed" in outs[(stage, 0x40)][1] and "wake_all" not in outs[(stage, 0x40)][1]
+                      for stage in (0xd3, 0xb9, 0x50)),
+              "under one of last_look=1's stages 0xf0, 0x20 and 0x40 are that run's to read, and under an observer's they are obs_gate=1's or"
+              " nobody's: none decodes as wake_all=1's; under a stage of neither and not the family's, 0xf0 isn't read as the byte, 0x20 is K1's"
+              " mark for wake_all=1 and 0x40 stays obs_gate=1's", "".join(f"{k}: {v[1]}{v[2]}" for k, v in outs.items()))
+        rc, out, err, _, _ = wdec(b"\x40")
+        rc2, out2, err2, _, _ = wdec(bytes((0x87, 0xa8, 0x01, 0x0d, 0x84, 0x0d, 0xb9)), 0x7f)
+        check(rc == 0 and "  0x6008 = 0x40: the mark of an obs_gate=1 run whose look never landed. This run's if it was one, which stage 0x1b doesn't say;"
+              " otherwise an earlier run's, left uncleared" in out and "wake_all" not in out
+              and rc2 == 0 and "0x6008-0x600e = 87 a8 01 0d 84 0d b9: obs_gate=1's record: the engine's gate words read by CPU7, the observer" in out2
+              and "  0x600e = 0xb9: then: CPU0 off, ECPM (the E complex) off, PCPM0 (P complex 0) off, PCPM1 (P complex 1, CPU7's own) on; 0x2922c0040's bits 1:0 = 1" in out2
+              and "wake_all" not in out2,
+              "obs_gate=1's mark under a stage of the gates_mark=1 family, and its record under CPU7's stage: both read as before", out + err + out2 + err2)
+
+        # --clear: the seven bytes go with the rest after the byte or K1's mark for it, and stay after a byte no stage vouches for.
+        for stage, r, armed in ((0x9b, b"\xf0", 0x41), (0x9b, b"\x20", 0x41), (0xb9, b"\x20", 0x01), (0x9b, bytes((0xf0, 0, 0, 5, 0, 0, 0)), 0x41)):
+            rc, out, err, before, after_ = wdec(r, stage, clear=True, armed=armed)
+            want_ = bytearray(before)
+            want_[0x6004:0x600f], want_[0x6010:0x6017], want_[0x1401] = bytes(11), bytes(7), 0x01
+            check(rc == 0 and after_ == bytes(want_) and "cleared: 0x6004-0x600e and 0x6010-0x6016 read back as zeros" in out and "weren't zeroed" not in out
+                  and ("disarmed: 0x1401 = 0x01" in out) == (armed == 0x41),
+                  f"--clear after wake_all=1's {r.hex(' ')} under stage 0x{stage:02x}: 0x6008-0x600e zeroed with the rest, the run's alarm disarmed if it"
+                  " armed one, nothing else", out + err + f"\n{after_[0x6000:0x6020].hex(' ')}")
+        rc, out, err, before, after_ = wdec(b"\xf0", 0xd3, clear=True)
+        want_ = bytearray(before)
+        want_[0x6004:0x6008], want_[0x6010:0x6017], want_[0x1401] = bytes(4), bytes(7), 0x01
+        check(rc == 0 and after_ == bytes(want_) and "cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros" in out
+              and "0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage, no obs_gate=1 record and no wake_all=1 record says they're a run's" in out,
+              "--clear after 0xf0 under a stage that isn't the family's: 0x6008-0x600e left alone, and said so", out + err)
 
 
 def in_order_of(text, parts):
@@ -9401,8 +9779,9 @@ def position_tests(g, src):
            "\tif (wd2_bite) {\n\t\tint ret = m1_wd2_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
            "\t/* After m1_wd2_init(), which maps the engine's page: m1_ll_init() refuses without it. */\n"
            "\tif (last_look) {\n\t\tint ret = m1_ll_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
-           "\tif (blink) {\n\t\tint ret = m1_blink_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\t/* Last: it reads through pages") in src,
-          "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and then m1_wd2_init(), for wd2_bite=1 alone, with only last_look=1's, blink=1's and the look's start-up"
+           "\tif (blink) {\n\t\tint ret = m1_blink_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
+           "\tif (wake_all) {\n\t\tint ret = m1_wa_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\t/* Last: it reads through pages") in src,
+          "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and then m1_wd2_init(), for wd2_bite=1 alone, with only last_look=1's, blink=1's, wake_all=1's and the look's start-up"
           " after it, and returns their refusals")
 
     # wd2_bite=1: one write to WD2, its bite, by CPU0 after the release, and only if WD2 showed RESET_EN; the sample in one command with its stage.

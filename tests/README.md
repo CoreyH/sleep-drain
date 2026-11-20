@@ -66,7 +66,18 @@ used to sit in CLAUDE.md, entry for entry):
   each of its stages, in both of its forms, with `--clear`. For atc_down=1 it checks `m1_atc[]` against the six words, runs
   `m1_atc_write()` against words that log every access (clean, and with each kind of word stuck on), the order
   around `m1_pw_write()`, and the decoder on its mark and on run B's own record with either mark. For blink=1: the load's refusals,
-  `m1_blink_init()`'s checks and their order against `m1_ll_init()`'s, and its one place in step 8. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
+  `m1_blink_init()`'s checks and their order against `m1_ll_init()`'s, and its one place in step 8. For wake_all=1 it compiles
+  `last_look.h`'s `wa_byte()` against a second writing-out of the byte, and runs step 7's own lines (the masks' loop with
+  `m1_wake_mask[]`, the enables' loop, the look's call), `m1_wa_look()` and `m1_wa_init()` as they stand against words that
+  log every access: the table's values without it and nothing read, 0xffffffff seven times with it, the seven read back and
+  the seven status words, and the byte for every part that doesn't take (word 6 reading 0x00001fff back, its bit 12, 13 or
+  31 alone, a bit of words 0, 1 or 5, both parts) and for one, two and seven status words set; nothing sent once SPMI has
+  failed, the load's log and its refusal without the page. Then the step's order (after nub-spmi0's enables, before step 8),
+  the one write to the masks, K1's zeros and mark and the undo, `m1_pmu_ok()` with it (0x6008 by itself or the seven from
+  it, nothing else new), the refusals, and the byte through m1-crumbs on the a2_pre=1 run with the light's own record: each
+  field, under each stage of the gates_mark=1 family, K1's mark before and after step 7's stage, junk in the other six
+  bytes, bit 3, never as wake_all=1's under one of last_look=1's stages or an observer's, obs_gate=1's mark and record as
+  before, and `--clear`. For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
   writing-out of A2's ops 11 to 16 (every pairing of each word's two bits at every count of moves made, and 400
   drawn cases), and runs `m1_a2_pre()` with the module's own table of waits against a model of the p-state page
   and the muxes' page in 29 scenarios (a write dropped, a word that settles late or never or keeps bit 31, DCS put
@@ -136,10 +147,18 @@ used to sit in CLAUDE.md, entry for entry):
   `uninstall.sh` for the new files, runs `install.sh`'s two functions that start the unit after a rebuild,
   and runs `sleep-drain-nights` with stub `sudo` and `systemctl`, also as uid 0 in a bubblewrap user
   namespace with only the stubs on PATH, as pkexec starts it.
+- `tests/e1a_launcher_test.py` runs `e1-hook/run-e1a` and every `run-floor` option as uid 0 in a bubblewrap
+  user namespace against stub `insmod`, `rmmod`, `modinfo` and `sleep-drain-reading`: the parameters and the
+  label each option loads with (`--m1-wake-all`: `--m1-a2-pre-blink`'s line and `wake_all=1`), the hand-off
+  and the watch after it, every refusal (an older build without the option's parameter, a build that
+  ignored it, two options together), and every way out. It takes about half a minute a launcher; options as
+  arguments run only those launchers (`run-floor` by itself is the plain floor, which has the usage cases).
 - `tests/mutants.py` isn't a test of the code but of the tests: it breaks `e1_hook.c`, its headers,
-  `m1-crumbs` and `e1-hook/probe` one way at a time in a copy (a wrong value, a write that isn't gated, a
-  check dropped, a bit read wrong) and says which of those `tests/m1_crumbs_test.py` (for the launcher,
-  `tests/e1_hook_probe_test.py`) didn't notice. Run it after changing any of them, and give it the
-  mutants a new rung calls for. A word as its argument runs only the mutants whose names have it.
+  `m1-crumbs`, `e1-hook/probe` and `e1-hook/run-floor` one way at a time in a copy (a wrong value, a write that
+  isn't gated, a check dropped, a bit read wrong) and says which of those `tests/m1_crumbs_test.py` (for the
+  launchers, `tests/e1_hook_probe_test.py` and, for the launchers its `ARGS` names, `tests/e1a_launcher_test.py`)
+  didn't notice. Run it after changing any of them, and give it the
+  mutants a new rung calls for. A word as its argument runs only the mutants whose names have it
+  (wake_all=1's are `"wa:" "wa "`: `wa` by itself is in ninety other names).
   Either way it first checks the whole list against the tree, in a second, and stops if a mutant's text
   isn't there exactly once: a rung that moved an older mutant's line fixes the list before anything runs.

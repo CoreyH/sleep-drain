@@ -232,6 +232,24 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   writes. Nothing of it goes to the record (0x6016 is that family's own byte): the light blinking from the
   dark screen is the sign the writes were made, and its stopping before the restart the sign that B2 reached
   its tenth SIO word.
+- `wake_all=1` (`run-floor --m1-wake-all`, on `gates_mark=1`, never with `observe=1`; the launcher's line is
+  `--m1-a2-pre-blink`'s with it; `e1-hook/last_look.h` has the byte) changes what step 7's seven writes
+  carry and nothing else: all seven AP wake-mask words, 0x292004008 to 0x292004020, are written 0xffffffff,
+  where the recipe leaves source 54 (the PMU's interrupt, word 1's bit 22) and word 6's bits 31:13 (ids 0xcd
+  to 0xdf, none with a name; the word is macOS's own 0x00001fff) open. It asks whether a pending wake source
+  that the masks let through holds the engine before its power-downs. No address is new. Right after, still
+  in step 7, `m1_wa_look()` reads the seven back and the seven words after them (0x292004024 on, the AP's wake
+  status, inferred) and sends one byte to the PMU's 0x6008. K1 zeroes 0x6008-0x600e first, as in an
+  observer's run, and writes its mark. So 0x6008 reads one of three ways after such a run: 0x00, the run
+  didn't get as far as K1; 0x20, K1's mark, step 7's byte never landed; or the byte, bits 7:6 both set, with
+  bit 5 saying words 0 to 5 read back 0xffffffff and word 6's bits 12:0 all set, bit 4 that word 6's bits
+  31:13 read back all set too (whether those bits exist isn't known), bit 3 always 0, and bits 2:0 how many
+  of the seven status words read non-zero. `m1-crumbs` reads the byte under that family's stages and K1's
+  mark under any stage that isn't `last_look=1`'s or an observer's, and `--clear` zeroes the seven bytes
+  after either. The load logs both sets of seven awake. The stages are `a2_pre=1`'s and the keyboard's light
+  is the witness, as in `--m1-a2-pre-blink`. With every wake source masked, a Mac whose entry completed would
+  not wake for a key, the lid or the PMU's alarm: it comes back only by holding the power button. Run it
+  with `--no-reading`, the nights off around it and nothing in the USB-C ports.
 - `pcie_down=1` (`run-floor --m1-pcie-down`, on `gates_mark=1`, never with `sio_down=1` or `probe=1`;
   `e1-hook/pcie_down.h` has the words, their order, the byte and the stages) makes B2's own switch-off of the PCIe
   power words from the AP, before the commit, and leaves them off. In step 8, where `gates_mark=1`'s reads would be

@@ -150,6 +150,34 @@
  * the seven bytes in every observe=1 run, with obs_gate=1 or not: CPU7's stages
  * are an ordinary observer's too, and a record left there would read as its.
  * Reads only.
+ *
+ * wake_all=1 is neither of these: one byte, 0x6008 alone, in a run of the
+ * gates_mark=1 family, which last_look=1 refuses and which has no observer
+ * (PLAN.md, after the a2_pre=1 run with the light). Step 7 writes the seven AP
+ * wake-mask words, 0x292004008 to 0x292004020, where a set bit masks a
+ * source. The recipe's values leave source 54 open (NUB.SPMISw3IRQ, the PMU's
+ * interrupt: word 1's bit 22), and word 6 is macOS's own 0x00001fff, which
+ * leaves ids 0xcd to 0xdf open (its bits 31:13, none with a name). With
+ * wake_all=1 all seven are written 0xffffffff: if a pending source that the
+ * masks let through is what holds the engine before its power-downs, that
+ * closes every one. Right after, still in step 7, CPU0 reads the seven back,
+ * then the seven words after them (0x292004024 on: the AP's wake status,
+ * inferred), and sends:
+ *   0x6008  bits 7:6 set (WA_MARK); bit 5 (WA_NAMED): words 0 to 5 read back
+ *           0xffffffff and word 6's bits 12:0 read back all set, every id
+ *           with a name; bit 4 (WA_UNNAMED): word 6's bits 31:13 read back
+ *           all set too (whether those bits exist isn't known: macOS's value
+ *           leaves them clear); bit 3 always 0; bits 2:0 how many of the
+ *           seven status words read non-zero then (which ones isn't kept)
+ * K1 zeroes the seven bytes, as in an observer's run, and leaves 0x6008 as
+ * WA_ARMED, so a byte that never landed shows; 0x6009-0x600e stay 0. The
+ * byte's two top bits tell it from K1's three marks (0x04, 0x20, 0x40); the
+ * stage tells it from the other two records, whose first byte has bit 7 too.
+ * With every source masked, a Mac whose entry completed would wake for no
+ * key and no lid: it comes back only by holding the power button. Reads only,
+ * apart from the PMU's byte: the masks are words the load reads awake, the
+ * status words ones CPU0 has read right before a commit and CPU7 after one
+ * (observe=1).
  */
 #ifndef LAST_LOOK_H
 #define LAST_LOOK_H
@@ -210,6 +238,22 @@ typedef uint64_t u64;
 #define OG_ST_E			0x2000
 #define OG_ST_P0		0x2004
 #define OG_ST_P1		0x2008
+
+#define WA_WORDS			7		/* the AP wake-mask words, and the status words after them */
+#define WA_W6_NAMED		0x00001fffU	/* word 6's ids with a name: bits 12:0, macOS's own value for the word */
+#define WA_ARMED		(1U << 5)	/* 0x6008 as K1 leaves it with wake_all=1, until step 7's command */
+#define WA_MARK			0xc0U		/* 0x6008, wake_all=1's byte: bits 7:6, both */
+#define WA_NAMED		(1U << 5)	/* under WA_MARK: words 0 to 5 and word 6's bits 12:0 read back all set */
+#define WA_UNNAMED		(1U << 4)	/* under WA_MARK: word 6's bits 31:13 read back all set too */
+
+/*
+ * wake_all=1's byte at 0x6008. named: words 0 to 5 read back 0xffffffff and word 6's bits 12:0 all set; unnamed: word 6's
+ * bits 31:13 all set; status: how many of the seven status words read non-zero. Bit 3 stays 0.
+ */
+static inline u8 wa_byte(bool named, bool unnamed, unsigned int status)
+{
+	return (u8)(WA_MARK | (named ? WA_NAMED : 0) | (unnamed ? WA_UNNAMED : 0) | (status > 7 ? 7 : status));
+}
 
 /* The four power words, each true if it read off: 0x6008. */
 static inline u8 og_b0(bool cpu0, bool ecpm, bool pcpm0, bool pcpm1)
