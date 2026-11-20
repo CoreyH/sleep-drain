@@ -271,15 +271,21 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   with its state kept; Linux's own idle on this chip leaves it clear and comes back on the core's timer. With
   `ll_retn=1` CPU0 writes 0x3000000 (bits 25:24 alone) before that WFI, ACC_OVRD's deep-sleep fields set as in
   every run and `ll_wake=1`'s timer 25 s out. A return with nothing pending (ISR_EL1 0: Linux's idle loops on
-  those) is counted and the WFI taken again, up to 1000 times, with nothing read but ISR_EL1 and nothing sent.
-  At the first return with something pending, or the 1000th empty one, CPU0 makes its look, once: the clock,
+  those) is counted and the WFI taken again, however many there are, until 30 s (the timer's 25 s and 5) after
+  CPU0 first took the WFI, with nothing read but ISR_EL1 and the counter and nothing sent. The bound is a time
+  and not a count: a WFI that returned at once every time would use up a count in well under a second, and
+  the look would come before B2 had done anything.
+  At the first return with something pending, or the first empty one past that time, CPU0 makes its look, once: the clock,
   ISR_EL1, the timer's status, its control written 0, and three commands to 0x6008-0x600e in `last_look=1`'s
   order, each before the next one's reads, in a form of this run's own. 0x6008 and 0x6009 are `last_look=1`'s
-  (the count takes the look's return as the first); 0x600a is the low byte of the E complex's state word,
+  (the count takes the look's return as the first), but for 0x6008's bits 3:2, which in this form alone say how
+  many empty returns came before the look: 0 none, 1 one to nine, 2 ten to 999, 3 a thousand or more, a WFI
+  that returned at once again and again and didn't hold CPU0 down (they are `gate_look=1`'s two bits in the
+  other forms; this run refuses it, and the later returns' sends of 0x6008 keep them); 0x600a is the low byte of the E complex's state word,
   0x28e09a000 (0x44 awake since boot; a down sequence ends on 0x1a, an up sequence on 0x40); 0x600b has
   0x2922c0044's low nibble, 0x2922c0040's bits 1:0 (3 awake) in bits 5:4, bit 6 if the state word, 0x2922c0040,
-  PHASE or EACC's word has a bit the bytes don't carry, and bit 7 if the look was made at the 1000th empty
-  return; 0x600c has bit 7, the bits 6:4 of EACC's soc-cluster word, 0x28e098000, and PHASE's low nibble;
+  PHASE or EACC's word has a bit the bytes don't carry, and bit 7 if the look was made at the time bound,
+  with nothing pending (the timer never showed in ISR_EL1); 0x600c has bit 7, the bits 6:4 of EACC's soc-cluster word, 0x28e098000, and PHASE's low nibble;
   0x600d and 0x600e are `last_look=1`'s, best effort (they were lost across the restart in three runs). Then
   CPU0 sets bit 0 again, 0x3000001, and goes on as a `last_look=1` run does after a first return. **New on
   the hardware: one system register's value on CPU0, CYC_OVRD's bit 0 clear for its last WFI until the look,
@@ -289,8 +295,8 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   module's MMIO write calls is unchanged, 74), the other cores' deep WFI is as it was, and K1, the undo and
   `m1_pmu_ok()` are `last_look=1`'s. Stages of its own, 0x94, then 0x9c or 0x98, by which `m1-crumbs` knows
   the form: under them it reads each field as read and names it, and all 0 as "the WFI didn't return, or the
-  first command failed" (a WFI that returned only with nothing pending, fewer than 1000 times, leaves that
-  too); it applies this form under no other run's stage and no other run's form under these; the alarm
+  first command failed" (a WFI that returned only with nothing pending, with the restart before the time
+  bound, leaves that too); it applies this form under no other run's stage and no other run's form under these; the alarm
   (20 s), the timer, the light and the marker (70 s) read as `ll_wake=1`'s. `m1_ll_wfi()` keeps x18 to x30 on
   the stack across the WFI, as the kernel's `apple_cpu_deep_wfi()` does, and like it needs the stack pointer
   and the system registers to survive; whether they do with the recipe's ACC_OVRD is part of what the run

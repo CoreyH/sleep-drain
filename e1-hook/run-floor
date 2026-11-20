@@ -253,15 +253,16 @@
 # 0x3000001), as Linux's own idle on this chip does, with its timer 25 s out as in run B. The recipe's value, macOS's,
 # keeps a WFI from coming back at the next instruction; this one lets it. If CPU0's complex still goes down in the
 # engine's sense and CPU0 comes back for its timer, it reads what the engine did meanwhile. A return with nothing pending
-# is taken again, up to 1000 times; at the first return with something pending CPU0 makes its look once and sends seven
-# bytes to the PMU's 0x6008-0x600e in a form of this run's own: when, what was pending, the handshakes, the E complex's
+# is counted and the WFI taken again, until 30 s after the first; at the first return with something pending, or the
+# first past that time, CPU0 makes its look once and sends seven bytes to the PMU's 0x6008-0x600e in a form of this
+# run's own: when, how many empty returns came first, what was pending, the handshakes, the E complex's
 # state word (0x28e09a000), 0x2922c0044 and 0x2922c0040, EACC's soc-cluster word (0x28e098000), PHASE and how many of
 # B2's power words read off. Then it sets bit 0 again and goes on as run B does after a return. New on the hardware: that
 # one system register's value on CPU0, until the look, and two reads CPU0 hasn't made in this state (the state word and
 # EACC's word, which the observer has read after a commit, and the load reads awake); no register write is new. It ends
 # as run B does: the keyboard light blinks from the dark screen until B2 reaches its tenth SIO word or the restart
 # comes, the alarm is 20 s out and WD1's marker 70 s; and the record says whether CPU0 came back and what it found (all
-# 0: it didn't come back with anything pending, or its first command failed). Its stages are its own from step 8 on
+# 0: it made no look before the restart, or its first command failed). Its stages are its own from step 8 on
 # (0x94, then 0x9c or 0x98), by which m1-crumbs knows the form; its label is floor-m1-ll-retn. Run it with --no-reading,
 # the nights off around it (pkexec /usr/local/bin/sleep-drain-nights off), nothing in the USB-C ports, and film the
 # keyboard.

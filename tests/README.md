@@ -87,25 +87,30 @@ used to sit in CLAUDE.md, entry for entry):
   it, and fourteen other runs' stages, where it is not read; junk in the other six bytes, bit 3; never as wake_all=1's
   under one of last_look=1's stages or an observer's, obs_gate=1's mark and record as before; and `--clear`, which zeroes
   the seven only after a byte or a mark with six zeros behind it and bit 3 clear, under stage 0x00 and the probe's too.
-  For ll_retn=1 it compiles `last_look.h`'s `llr_b2()`, `llr_b3()`, `llr_b4()`, `llr_wide()` and `ll_stage()`'s three sets
-  against a second writing-out (every bit of each word alone for `llr_wide()`), and runs `m1_deep_wfi()`, `m1_llr_empty()`,
+  For ll_retn=1 it compiles `last_look.h`'s `llr_empty_code()`, `llr_b0()`, `llr_past()`, `llr_b2()`, `llr_b3()`, `llr_b4()`,
+  `llr_wide()` and `ll_stage()`'s three sets against a second writing-out (every bit of each word alone for `llr_wide()`, the
+  time bound to the tick, the empties' code at each edge), and runs `m1_deep_wfi()`, `m1_llr_empty()`,
   `m1_llr_look()`, `m1_ll_ret()` and `m1_llr_init()` as they stand against the pages that log every access, a logged
   ISR_EL1 and timer control, and a logged variable for CYC_OVRD. What is mocked: `m1_deep_wfi()`'s three inline-asm
   statements are replaced in its text by exact match (its read of CYC_OVRD, its two writes with their isb, the other
-  cores' dsb-isb-wfi), `m1_ll_wfi()` is a stub, and each WFI returns by a script; so the C around the instructions is
-  what runs, not the instructions. Eighteen scripts against a model written from the brief: the timer at once; five
-  empty returns and the timer; 1000 empty returns; 999 and the timer; 400 and no more; never; a second return after the
-  look, pending or not; 103 after it; an IRQ and an SError; returns after a look made at the 1000th; a last_look=1 run
-  without it; the other cores with and without a mark. They pin CYC_OVRD's two values (0x3000000 only for CPU0, only
-  with ll_retn=1 and only until the look; 0x3000001 written again right after it, and for every later WFI), an empty
-  return reading ISR_EL1 and nothing else, the look's order (0x6008 before any MMIO read, the two new reads last in
+  cores' dsb-isb-wfi), `m1_ll_wfi()` is a stub, and each WFI returns by a script, which moves the clock too; so the C
+  around the instructions is what runs, not the instructions. Twenty-five scripts against a model written from the
+  brief: the timer at once; 1, 9, 10, 999, 1000 and 20000 empty returns and then the timer; empty returns a second
+  apart until the time bound, 30 s after CPU0's first WFI (which the script puts half a second after the commit); a
+  tick short of it, and at it to the tick; the timer 26 s in; never; a second return after the look, pending or not;
+  103 after it; returns after ten empty ones and after a look at the bound (0x6008's bits 3:2 kept); an IRQ and an
+  SError; a last_look=1 run without it; the other cores with and without a mark. They pin CYC_OVRD's two values
+  (0x3000000 only for CPU0, only with ll_retn=1 and only until the look; 0x3000001 written again right after it, and
+  for every later WFI), an empty return reading ISR_EL1 and nothing else, however many there are, the empties' code,
+  the bound's flag, the look's order (0x6008 before any MMIO read, the two new reads last in
   the second command, the power words after it), each word that sets "wide", raw SPMI already failed, and that nothing
   is written but the acks, the timer's control and CYC_OVRD. Then the source (where bit 0 is cleared and set, the one
   caller of each function, the refusals, the load line), `m1_llr_init()` with the page mapped, not mapped, failing to
   map and with either other page missing, the one unmap and the load's failure paths; K1 and the undo over an ll_retn=1
   record in each kind of run and `m1_pmu_ok()` for the look's three commands (all three are `last_look=1`'s, and none
   names ll_retn); and the record through m1-crumbs under its three stages: every value of each of the first five
-  bytes, the third command with and without its marks, all 0, the stage before the commit, the pending stage, the
+  bytes (0x6008's bits 3:2 as the empties' code there, and as gate_look=1's two bits under last_look=1's and ll_wake=1's
+  stages, as before), the third command with and without its marks, all 0, the stage before the commit, the pending stage, the
   alarm at 20 s, the light and the marker at 70 s, `--clear`, the same bytes under last_look=1's, ll_wake=1's,
   --m1-mark's, the gates_mark=1 family's and an observer's stages (never read in this form), and the other runs'
   records and marks under these (never read in theirs).

@@ -416,7 +416,7 @@ module_param(gate_look, bool, 0444);
 MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
 static bool ll_retn;
 module_param(ll_retn, bool, 0444);
-MODULE_PARM_DESC(ll_retn, "With ll_wake=1, never with gate_look=1: CPU0 takes its last WFI with CYC_OVRD's bit 0, XNU's \"disable WFI retention\", left clear (0x3000000 in place of 0x3000001), as Linux's own idle on this chip has it, with ll_wake=1's timer to end it. A return with nothing pending (ISR_EL1 0) is counted and the WFI taken again, up to 1000 times; at the first return with something pending CPU0 makes last_look=1's look once, with two reads added, the E complex's state word (0x28e09a000) and EACC's soc-cluster word (0x28e098000), sends it to the PMU's 0x6008-0x600e in a form of its own, sets bit 0 again and goes on as a last_look=1 run does after a first return. No MMIO write is new (last_look.h)");
+MODULE_PARM_DESC(ll_retn, "With ll_wake=1, never with gate_look=1: CPU0 takes its last WFI with CYC_OVRD's bit 0, XNU's \"disable WFI retention\", left clear (0x3000000 in place of 0x3000001), as Linux's own idle on this chip has it, with ll_wake=1's timer to end it. A return with nothing pending (ISR_EL1 0) is counted and the WFI taken again, until 30 s after the first; at the first return with something pending, or the first past that time, CPU0 makes last_look=1's look once, with two reads added, the E complex's state word (0x28e09a000) and EACC's soc-cluster word (0x28e098000), sends it to the PMU's 0x6008-0x600e in a form of its own, sets bit 0 again and goes on as a last_look=1 run does after a first return. No MMIO write is new (last_look.h)");
 static bool ll_wake;
 module_param(ll_wake, bool, 0444);
 MODULE_PARM_DESC(ll_wake, "With last_look=1: the PMU's alarm 20 s after the commit in place of an hour, CPU0's own timer set to end its WFI 25 s after step 10, and in step 8 FPWM0's power word asked on and the keyboard backlight's PWM set to blink, 100 ms on and 100 ms off (four writes; last_look.h)");
@@ -1697,8 +1697,10 @@ static void e1_after_slpa(void)
  * (0x3000000 for 0x3000001), so that CPU0's last WFI can come back at the
  * next instruction for ll_wake=1's timer, as Linux's own idle does. Until
  * the look, m1_llr_empty() reads ISR_EL1 at each return: 0 is counted and the
- * WFI taken again, up to LLR_SPURIOUS_MAX times. At the first return with
- * something pending, or the last empty one, m1_ll_ret() hands its first
+ * WFI taken again, however often, until LLR_BOUND_S seconds after the first
+ * WFI (a bound in time: a WFI that returned at once every time would use up
+ * a count in well under a second). At the first return with something
+ * pending, or the first empty one past that time, m1_ll_ret() hands its first
  * return to m1_llr_look(): the clock, ISR_EL1, the timer's status, its
  * control written 0, and three commands in last_look=1's order, the second
  * with the E complex's state word and EACC's soc-cluster word read last, the
@@ -2730,15 +2732,21 @@ static void m1_ll_send(unsigned int addr, const u8 *b, unsigned int n)
 }
 
 static u32 m1_llr_empties;	/* ll_retn=1: CPU0's returns with nothing pending, before its look */
+static u64 m1_llr_t0;		/* ll_retn=1: the clock right before CPU0 took its last WFI the first time */
+static bool m1_llr_bound;	/* ll_retn=1: the look is made at the time bound, with nothing pending */
 
 /*
  * ll_retn=1, CPU0 alone, at each return of its last WFI until the look, every
  * exception masked: whether this return is an empty one, to take the WFI again
  * after. A retention WFI can return with nothing pending, and Linux's idle on
  * this chip loops on ISR_EL1 reading 0 (apple_cpu_deep_wfi()). ISR_EL1
- * non-zero: false, the look is due. Zero: counted, and true unless this was
- * the LLR_SPURIOUS_MAX'th such return, where the look is made anyway and its
- * record says so. One system register read; nothing written, nothing sent.
+ * non-zero: false, the look is due. Zero: counted, however many there have
+ * been, and true until LLR_BOUND_S seconds have passed since m1_deep_wfi()
+ * took the clock; at the first empty return past that the look is made
+ * anyway, and its record says so. A bound in time and not a count: a WFI
+ * that returned at once every time would use a count up in well under a
+ * second, before the engine had done anything to look at. One system
+ * register read and the counter; nothing written, nothing sent.
  */
 static bool m1_llr_empty(void)
 {
@@ -2746,7 +2754,10 @@ static bool m1_llr_empty(void)
 		return false;
 	if (m1_llr_empties < U32_MAX)
 		m1_llr_empties++;
-	return m1_llr_empties < LLR_SPURIOUS_MAX;
+	if (!llr_past(m1_now() - m1_llr_t0, m1_tps))
+		return true;
+	m1_llr_bound = true;
+	return false;
 }
 
 /*
@@ -2778,7 +2789,8 @@ static u8 m1_llr_look(void)
 	ctl = read_sysreg(cntp_ctl_el0);
 	write_sysreg(0, cntp_ctl_el0);	/* ll_wake=1's timer, which is to end the retention WFI: it mustn't end a later one */
 	isb();
-	b[0] = ll_b0(1, ll_time_code(dt, m1_tps));	/* the look's return is the first: the empty ones before it aren't in the count */
+	/* The look's return is the first: the empty ones before it aren't in the count, and have their own code in bits 3:2. */
+	b[0] = llr_b0(1, ll_time_code(dt, m1_tps), m1_llr_empties);
 	m1_ll_send(LL_AT, b, 1);
 	/* Each read into its own variable, in this order. First the five that m1_ll_ret() reads at a return of last_look=1's. */
 	hsa = readl(hs_a);
@@ -2791,7 +2803,7 @@ static u8 m1_llr_look(void)
 	eacc = readl(m1_soc + M1_SOC_EACC);
 	b[1] = ll_b1(isr, ctl & ARCH_TIMER_CTRL_IT_STAT, hsa, hsb);
 	b[2] = llr_b2(st_e);
-	b[3] = llr_b3(g44, g40, llr_wide(st_e, g40, phase, eacc), m1_llr_empties >= LLR_SPURIOUS_MAX);
+	b[3] = llr_b3(g44, g40, llr_wide(st_e, g40, phase, eacc), m1_llr_bound);
 	b[4] = llr_b4(eacc, phase);	/* the command's last byte: its bit 7 says the four landed */
 	m1_ll_send(LL_AT + 1, b + 1, 4);
 	for (i = 0; i < SIOD_N; i++)
@@ -3006,8 +3018,10 @@ static u8 m1_wa_read(void)
  * WFI retention"), is left clear until the look: 0x3000000, bits 25:24
  * alone, as Linux's own idle has them, so that the WFI can come back at the
  * next instruction for CPU0's timer. Until then a return with nothing
- * pending is counted and the WFI taken again (m1_llr_empty()); the first
- * return that isn't one goes to m1_ll_ret(), whose first return is the look
+ * pending is counted and the WFI taken again (m1_llr_empty()), until
+ * LLR_BOUND_S seconds after the clock taken here, once, before the first
+ * WFI; the first return with something pending, or the first empty one past
+ * that time, goes to m1_ll_ret(), whose first return is the look
  * (m1_llr_look()), and right after it bit 0 is set again: the value written
  * first, with that bit, which is the 0x3000001 of every other run. Every
  * later WFI is the recipe's own.
@@ -3023,6 +3037,8 @@ static void __noreturn m1_deep_wfi(struct m1_core *mark, bool look)
 	if (retn)
 		cyc &= ~LLR_CYC_NO_RETN;	/* ll_retn=1: 0x3000000, retention left on, until the look */
 	asm volatile("msr s3_5_c15_c5_0, %0; isb" : : "r"(cyc));
+	if (retn)
+		m1_llr_t0 = m1_now();	/* the retention phase's time bound counts from here */
 	for (;;) {
 		if (look)
 			m1_ll_wfi();	/* the same three instructions, with the registers kept */
@@ -6047,9 +6063,16 @@ static int __init m1_ll_init(void)
 }
 
 /* ll_retn=1's two CYC_OVRD values differ in bit 0 alone, its stages are its own, and its two new reads are in the soc-cluster page. */
-static_assert(LLR_CYC_DEEP == 0x3000001ULL && LLR_CYC_RETN == 0x3000000ULL && LLR_CYC_NO_RETN == BIT_ULL(0) && LLR_SPURIOUS_MAX == 1000 &&
-	      M1_LLR_STAGE_PRE == 0x14 && M1_LLR_STAGE_PEND == 0x18 && M1_LLR_STAGE == 0x1c && LLR_EMPTY == 0x80 && LLR_WIDE == 0x40 &&
+static_assert(LLR_CYC_DEEP == 0x3000001ULL && LLR_CYC_RETN == 0x3000000ULL && LLR_CYC_NO_RETN == BIT_ULL(0) &&
+	      M1_LLR_STAGE_PRE == 0x14 && M1_LLR_STAGE_PEND == 0x18 && M1_LLR_STAGE == 0x1c && LLR_AT_BOUND == 0x80 && LLR_WIDE == 0x40 &&
 	      M1_SOC_CLUSTERS + OG_ST_E == 0x28e09a000ULL && M1_SOC_CLUSTERS + M1_SOC_EACC == 0x28e098000ULL);
+/*
+ * Its time bound is 5 s past CPU0's timer and well below the marker's 70 s (at most half of it: the bound counts from step
+ * 10, the marker from step 4); the empties' code is in gate_look=1's two bits of 0x6008 and in none of the return's.
+ */
+static_assert(LLR_BOUND_S == LL_TIMER_S + 5 && LLR_BOUND_S > LL_TIMER_S && 2 * LLR_BOUND_S <= (WD1_MARK_BITE - LL_WD1_COUNT) / WD1_HZ &&
+	      3U << LLR_E_SHIFT == (LL_LOOKED | LL_ARMED) && !(3U << LLR_E_SHIFT & (LL_MARK | 7U << LL_T_SHIFT | 3U)) &&
+	      LLR_E_FEW == 10 && LLR_E_MANY == 1000);
 
 /*
  * ll_retn=1 at load, after m1_ll_init(): the soc-cluster page mapped, if no other option mapped it (pmgr_late=1 has, in
@@ -6077,8 +6100,8 @@ static int __init m1_llr_init(void)
 	acc[2] = readl(m1_soc + M1_SOC_PACC1);
 	pr_info("m1: ll_retn: awake: state words: E complex %08x, P complex 0 %08x, P complex 1 %08x; soc-cluster words: EACC %08x, PACC0 %08x, PACC1 %08x\n",
 		st[0], st[1], st[2], acc[0], acc[1], acc[2]);
-	pr_info("m1: ll_retn: CPU0 takes its last WFI with CYC_OVRD's low bits 0x%llx in place of 0x%llx (bit 0, \"disable WFI retention\", clear) and its timer %u s out; a return with nothing pending is taken again, up to %u times; at its look it reads the E complex's state word and EACC's word too, sends seven bytes to the PMU's 0x%x-0x%x and sets bit 0 again\n",
-		LLR_CYC_RETN, LLR_CYC_DEEP, LL_TIMER_S, LLR_SPURIOUS_MAX, LL_AT, LL_AT + LL_N - 1);
+	pr_info("m1: ll_retn: CPU0 takes its last WFI with CYC_OVRD's low bits 0x%llx in place of 0x%llx (bit 0, \"disable WFI retention\", clear) and its timer %u s out; a return with nothing pending is taken again, until %u s after the first; at its look it reads the E complex's state word and EACC's word too, sends seven bytes to the PMU's 0x%x-0x%x and sets bit 0 again\n",
+		LLR_CYC_RETN, LLR_CYC_DEEP, LL_TIMER_S, LLR_BOUND_S, LL_AT, LL_AT + LL_N - 1);
 	return 0;
 }
 
