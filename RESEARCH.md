@@ -5426,6 +5426,76 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### `ll_retn=1` as built: CPU0's last WFI with retention left on, and a look if it comes back (2026-11-20)
+
+**Why.** "The desk step of 2026-11-20", below: the hold is in a state no core reads, and a core that goes
+down the recipe's way (CYC_OVRD's bit 0 set: no retention) has only its reset vector to come back to. Linux's
+idle leaves bit 0 clear and comes back on the core's timer, but takes no complex down. Untried anywhere here:
+the recipe's last core with ACC_OVRD's deep-sleep fields as they are *and* retention left on. If the E complex
+still goes down in the engine's sense and CPU0 comes back, CPU0 reads what B2 did meanwhile. The candidate
+for the ninth one-way run since the review; built so that it is ready, not yet handed over.
+
+**What it is.** `e1_hook ll_retn=1`, with `ll_wake=1` (run B's family: the alarm at 20 s, CPU0's timer at
+25 s, the keyboard light), refusing `gate_look=1`. One value changes: in step 10 CPU0 writes CYC_OVRD
+0x3000000 where every run writes 0x3000001, and takes its WFI. From there:
+- a return with nothing in ISR_EL1 is counted and the WFI taken again (Linux's loop does the same);
+- at the first return with something pending, or the first one 30 s or more after the WFI was first taken,
+  CPU0 makes **the look**, once: what a `last_look=1` return reads (the time, ISR_EL1, its timer, the
+  handshake words, 0x2922c0040, 0x2922c0044, PHASE, B2's power words) and two words CPU0 hasn't read in this
+  state: the E complex's state word (0x28e09a000) and EACC's soc-cluster word (0x28e098000), which the
+  observer read after a commit on 11-19;
+- then CYC_OVRD goes back to 0x3000001 and the run ends as run B does.
+The bound is by the clock, not by a count: a WFI that returns at once every time would otherwise use up any
+count in under a second and test nothing (the builder's own note, taken).
+
+**The record**, under stages of its own (0x14, 0x18, 0x1c; with `pmp_out=1`'s bit 0x94, 0x98, 0x9c), which
+tell the decoder the form:
+
+| byte | |
+|---|---|
+| 0x6008 | bit 7; bits 6:4 the time of the look's return; bits 3:2 the empty returns before it (none, 1-9, 10-999, 1,000 or more); bits 1:0 how often it has returned since |
+| 0x6009 | as `last_look=1`'s: ISR_EL1's F, I, A, the timer firing, HS_A's bit 24, HS_B's bits 0, 1, 31 |
+| 0x600a | the E complex's state word, low byte |
+| 0x600b | bits 3:0 0x2922c0044's; bits 5:4 0x2922c0040's bits 1:0; bit 6 a word has a bit its byte doesn't carry; bit 7 the look was made at the time bound with nothing pending |
+| 0x600c | bit 7; bits 6:4 EACC's bits 6:4; bits 3:0 PHASE's low nibble |
+| 0x600d, 0x600e | as `last_look=1`'s (B2's power words): sent, and lost across the restart in three runs so far |
+
+`run-floor --m1-ll-retn` is `--m1-atc-down`'s line with `ll_retn=1`: run B with ATC0's chain lowered, and
+this. WD1's marker is at 70 s in this family.
+
+**How it reads** (the keyboard filmed or watched to the restart, as in run B):
+- **all zero, the light to 70 s:** CPU0 didn't come back in the 70 s. With ACC_OVRD's deep-sleep fields a
+  core goes down for good whatever bit 0 says, or its timer goes with it. The idea is closed.
+- **a return near 25 s, the state word 0x44, 0x2922c0040 at 3:** CPU0 was held and came back, and the E
+  complex was never cycled: retention keeps the complex up, so the gate stayed closed as with a core up. The
+  idea is closed, cleanly.
+- **a return with the state word no longer 0x44** (0x40 is what an up sequence ends on, by the SRAM's
+  listing; not yet seen on this complex), **or 0x2922c0040 no longer 3, or PHASE past 4:** the complex went
+  down with every core gone and CPU0 is back to say what B2 did. That is the look; what it shows decides
+  everything after.
+- **1,000 or more empty returns:** the WFI didn't hold CPU0 at all; the look is a reading with a core up, and
+  says nothing new.
+- **the light stops:** B2 reached its tenth SIO word, in this run of all runs. Then CPU0 may never report
+  (B2 lowers 0x2922c0040, the AP's partition, before that); the light and the restart's time are the result.
+Odds, mine: a look into the dark state one in ten; a clean close most of the rest.
+
+**What is new on hardware.** One system-register value on CPU0, for one WFI: CYC_OVRD's bit 0 clear, as
+this kernel's idle has it all day, with the recipe's ACC_OVRD beside it, which nothing here has combined.
+Two reads CPU0 hasn't made in this state. No MMIO write is new (the tripwire's count is unchanged), and
+nothing outlasts the restart. What isn't known: whether CPU0's system registers, its timer among them,
+survive that WFI under the recipe's ACC_OVRD; the code after the WFI keeps what it needs in the registers
+`m1_ll_wfi()` saves (the same thirteen as the kernel's `apple_cpu_deep_wfi`) and on the stack, checked in
+the built object.
+
+**Checked.** Built by a subagent from a written brief in its own worktree. `tests/m1_crumbs_test.py` (1,372
+ok): the header's helpers; `m1_deep_wfi()` compiled in user space with its three inline-asm statements
+replaced by text and the WFI scripted (the C around the instructions runs, the instructions don't): the
+timer at once, 1 to 20,000 empty returns then the timer, empty returns to the bound and a tick short of it,
+never returning, later returns, the other cores and a plain `last_look=1` run unchanged; K1, the undo and
+`m1_pmu_ok()` over this family; the decoder over each field and over the stages where the form does and
+doesn't apply. `tests/e1a_launcher_test.py` (2,933 ok in full at the first commit; the two options' 220
+again after). 40 `llr` mutants, none missed; no stale mutant in the list of 1,266.
+
 ### The `wake_all=1` run: every named source masked, the light to the end, the same 90 s (2026-11-20)
 
 `run-floor --no-reading --m1-wake-all` in a safe boot, on battery at about 80%, nothing in the USB-C ports,
