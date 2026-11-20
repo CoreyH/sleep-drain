@@ -61,12 +61,15 @@ this section where they differ.
      since the installed 26.6.2 can't be the guest). Claude writes no m1n1 code; whether Claude may read
      a capture is Corey's decision, still open. Claude's part that is free of both: T6000's address list
      as a plain file, and this Mac's own state at the commit read by the look.
-   - **The ninth run, if one is built before an answer:** CPU0's last WFI with retention left on
-     (CYC_OVRD's bit 0 clear) and its timer at 25 s, one bit changed in run B's recipe with ATC0's chain
-     lowered, and the E complex's state word added to the return's record (0x44 until the sequencer has
-     cycled it; the gate word says nothing once CPU0 is up again). A return with the state word at 0x40
-     or 0x2922c0040 changed is a look into the dark state; a return with both as found, or no return,
-     closes the idea.
+   - **The ninth run, built and ready: `run-floor --no-reading --m1-ll-retn`** (RESEARCH.md,
+     "`ll_retn=1` as built", 2026-11-20): CPU0's last WFI with retention left on (CYC_OVRD's bit 0
+     clear) and its timer at 25 s, one value changed in run B's recipe with ATC0's chain lowered, and
+     a look when it comes back, with the E complex's state word in the record (0x44 until the
+     sequencer has cycled it; the gate word says nothing once CPU0 is up again). A return with the state
+     word changed, 0x2922c0040 no longer 3 or PHASE past 4 is a look into the dark state; a return with
+     all as found, or no return, closes the idea. The light filmed or watched to the restart at 70 s;
+     the nights off around it. Corey runs it when they choose; an answer upstream first would be read
+     before it.
    - Kept as ideas, not built: a secondary core as the last one down with its RVBAR at a stub of ours
      and an interrupt to start it with no core up (two unknown mechanisms); the other words on at the
      commit that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4: macOS's table
@@ -84,7 +87,7 @@ this section where they differ.
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
 
 **As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
-`--m1-wake-all` the latest launcher option; the PMU's record bytes all zero; scratch that must outlast
+`--m1-ll-retn` the latest launcher option; the PMU's record bytes all zero; scratch that must outlast
 a restart in `~/.local/share/sleep-drain/`.
 
 ## Where things stand

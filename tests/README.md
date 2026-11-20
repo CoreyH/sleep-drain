@@ -87,6 +87,38 @@ used to sit in CLAUDE.md, entry for entry):
   it, and fourteen other runs' stages, where it is not read; junk in the other six bytes, bit 3; never as wake_all=1's
   under one of last_look=1's stages or an observer's, obs_gate=1's mark and record as before; and `--clear`, which zeroes
   the seven only after a byte or a mark with six zeros behind it and bit 3 clear, under stage 0x00 and the probe's too.
+  For ll_retn=1 it compiles `last_look.h`'s `llr_empty_code()`, `llr_b0()`, `llr_past()`, `llr_b2()`, `llr_b3()`, `llr_b4()`,
+  `llr_wide()` and `ll_stage()`'s three sets against a second writing-out (every bit of each word alone for `llr_wide()`, the
+  time bound to the tick, the empties' code at each edge), and runs `m1_deep_wfi()`, `m1_llr_empty()`,
+  `m1_llr_look()`, `m1_ll_ret()` and `m1_llr_init()` as they stand against the pages that log every access, a logged
+  ISR_EL1 and timer control, and a logged variable for CYC_OVRD. What is mocked: `m1_deep_wfi()`'s three inline-asm
+  statements are replaced in its text by exact match (its read of CYC_OVRD, its two writes with their isb, the other
+  cores' dsb-isb-wfi), `m1_ll_wfi()` is a stub, and each WFI returns by a script, which moves the clock too; so the C
+  around the instructions is what runs, not the instructions. Thirty-one scripts against a model written from the
+  brief: the timer at once; 1, 9, 10, 999, 1000 and 20000 empty returns and then the timer; empty returns a second
+  apart until the time bound, 30 s after CPU0's first WFI (which the script puts half a second after the commit); a
+  tick short of it, and at it to the tick; a WFI that holds for 31 s and returns once with nothing pending (the look's
+  own return isn't among the empty ones: none, with the bound's flag), and nine empty returns before such a one (nine,
+  not ten); the timer firing with ISR_EL1 reading 0, at once, after three empty returns and 27 s in (the look there and
+  then, the timer firing and no FIQ in 0x6009, no bound flag); the timer 26 s in; never; a second return after the look, pending or not;
+  103 after it; returns after ten empty ones and after a look at the bound (0x6008's bits 3:2 kept); an IRQ and an
+  SError; a last_look=1 run without it; the other cores with and without a mark. They pin CYC_OVRD's two values
+  (0x3000000 only for CPU0, only with ll_retn=1 and only until the look; 0x3000001 written again right after it, and
+  for every later WFI), an empty return reading ISR_EL1 and the timer's control and nothing else, however many there are, the empties' code,
+  the bound's flag, the look's order (0x6008 before any MMIO read, the two new reads last in
+  the second command, the power words after it), each word that sets "wide", raw SPMI already failed, and that nothing
+  is written but the acks, the timer's control and CYC_OVRD. Then the source (where bit 0 is cleared and set, the one
+  caller of each function, the refusals, the load line), `m1_llr_init()` with the page mapped, not mapped, failing to
+  map and with either other page missing, the one unmap and the load's failure paths; K1 and the undo over an ll_retn=1
+  record in each kind of run and `m1_pmu_ok()` for the look's three commands (all three are `last_look=1`'s, and none
+  names ll_retn); and the record through m1-crumbs under its three stages: every value of each of the first five
+  bytes (0x6008's bits 3:2 as the empties' code there, and as gate_look=1's two bits under last_look=1's and ll_wake=1's
+  stages, as before; the empties' code named as a count and no more, with the harness's own record of a thousand
+  empty returns and then 24 s until the timer decoded to show that nothing concludes from it how long the WFI held; a
+  count past one with last_look=1's caveat that a faulted read of the look's can cause it), the third command with and without its marks, all 0, the stage before the commit, the pending stage, the
+  alarm at 20 s, the light and the marker at 70 s, `--clear`, the same bytes under last_look=1's, ll_wake=1's,
+  --m1-mark's, the gates_mark=1 family's and an observer's stages (never read in this form), and the other runs'
+  records and marks under these (never read in theirs).
   For a2_pre=1 it compiles `a2_pre.h`'s words, values, waits, stage map and byte against a second
   writing-out of A2's ops 11 to 16 (every pairing of each word's two bits at every count of moves made, and 400
   drawn cases), and runs `m1_a2_pre()` with the module's own table of waits against a model of the p-state page
@@ -159,9 +191,12 @@ used to sit in CLAUDE.md, entry for entry):
   namespace with only the stubs on PATH, as pkexec starts it.
 - `tests/e1a_launcher_test.py` runs `e1-hook/run-e1a` and every `run-floor` option as uid 0 in a bubblewrap
   user namespace against stub `insmod`, `rmmod`, `modinfo` and `sleep-drain-reading`: the parameters and the
-  label each option loads with (`--m1-wake-all`: `--m1-a2-pre-blink`'s line and `wake_all=1`), the hand-off
+  label each option loads with (`--m1-wake-all`: `--m1-a2-pre-blink`'s line and `wake_all=1`; `--m1-ll-retn`:
+  `--m1-atc-down`'s line and `ll_retn=1`), the hand-off
   and the watch after it, every refusal (an older build without the option's parameter, a build that
-  ignored it, two options together), and every way out. It takes about half a minute a launcher; options as
+  ignored it, two options together), and every way out. A launcher that ends before the hand-off, where a check needs
+  it running, fails a check that shows what it printed, and that function's other checks are skipped: it doesn't stop
+  the test. It takes about half a minute a launcher; options as
   arguments run only those launchers (`run-floor` by itself is the plain floor, which has the usage cases).
 - `tests/mutants.py` isn't a test of the code but of the tests: it breaks `e1_hook.c`, its headers,
   `m1-crumbs`, `e1-hook/probe` and `e1-hook/run-floor` one way at a time in a copy (a wrong value, a write that
@@ -169,6 +204,8 @@ used to sit in CLAUDE.md, entry for entry):
   launchers, `tests/e1_hook_probe_test.py` and, for the launchers its `ARGS` names, `tests/e1a_launcher_test.py`)
   didn't notice. Run it after changing any of them, and give it the
   mutants a new rung calls for. A word as its argument runs only the mutants whose names have it
-  (wake_all=1's are `"wa:" "wa "`: `wa` by itself is in ninety other names).
+  (wake_all=1's are `"wa:" "wa "`: `wa` by itself is in ninety other names; ll_retn=1's are `llr`). Its `ARGS` names five
+  launchers for a mutant of `run-floor` (the plain floor, `--m1-a2-pre-blink`, `--m1-wake-all`, `--m1-atc-down` and
+  `--m1-ll-retn`): about three minutes each.
   Either way it first checks the whole list against the tree, in a second, and stops if a mutant's text
   isn't there exactly once: a rung that moved an older mutant's line fixes the list before anything runs.

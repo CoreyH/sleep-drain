@@ -91,8 +91,92 @@
  * set here takes the cores out of that poll; the old bits say nothing new, and
  * neither is the stall's own state after CPU0's WFI.
  *
+ * ll_retn=1, on ll_wake=1 and never with gate_look=1 (RESEARCH.md, "The desk
+ * step of 2026-11-20", what is left of the idea, (a)), changes how CPU0 takes
+ * that WFI, and nothing before it.
+ * Every run so far has ended with all cores in a deep WFI and B2 stuck before
+ * its power-downs, in a state no core can read. CYC_OVRD's bit 0 is XNU's
+ * disWfiRetn, "disable WFI retention": the recipe sets it (0x3000001), as
+ * macOS does, and a WFI then can't come back at the next instruction with its
+ * state kept. Linux's own idle on this chip has bits 25:24 at 3 with bit 0
+ * clear, and comes back on the core's timer. Untried: the recipe's last core
+ * taking its last WFI that way, ACC_OVRD's deep-sleep fields set as in every
+ * run. If its complex (E) still goes down in the engine's sense and CPU0
+ * comes back, CPU0 can read what the engine did meanwhile:
+ *   the WFI        CPU0's CYC_OVRD is written 0x3000000 in place of 0x3000001
+ *                  (LLR_CYC_RETN: bits 25:24, bit 0 left clear), for its last
+ *                  WFI and until its look. ll_wake=1's timer, LL_TIMER_S out,
+ *                  is what is to end it. One system register's value, on CPU0
+ *                  alone: the other cores' deep WFI is as it was
+ *   empty returns  a retention WFI can return with nothing pending (Linux's
+ *                  idle loops on ISR_EL1 reading 0). Each such return is
+ *                  counted and the WFI taken again, however many there are,
+ *                  until LLR_BOUND_S seconds after CPU0 first took the WFI,
+ *                  with nothing read but ISR_EL1, the timer's control and the
+ *                  clock, and nothing sent. A return at which CPU0's timer
+ *                  reads as firing (its control's ISTATUS) is not empty,
+ *                  whatever ISR_EL1 reads: a timer that ended the WFI without
+ *                  showing there would else leave, 5 s on, the bytes of a
+ *                  WFI that never held. A bound in time and not a count:
+ *                  were the WFI to return at once every time, a count would
+ *                  be used up in well under a second and the look made
+ *                  before B2 had done anything
+ *   the look       at the first return with ISR_EL1 non-zero or the timer
+ *                  firing, or at the first past that time with neither: once,
+ *                  what a first return
+ *                  of last_look=1's does (the clock, ISR_EL1, the timer's
+ *                  status, its control written 0), and three commands in that
+ *                  record's order and manner, the second with two reads CPU0
+ *                  hasn't made in this state: the E complex's state word
+ *                  (0x28e09a000) and EACC's soc-cluster word (0x28e098000),
+ *                  which the observer, CPU7, read after a commit (the second
+ *                  form above). They come last among that command's reads,
+ *                  after the words CPU0 has read in this state before
+ *   afterwards     CYC_OVRD's bit 0 set again (0x3000001), and every later
+ *                  WFI is the recipe's own: its returns are counted and sent
+ *                  to 0x6008 as last_look=1's are
+ * The record's own form, known by the run's stages (the third set below):
+ *   0x6008  as last_look=1's: bit 7; bits 6:4 the time's code of the return
+ *           the look was made at; bits 1:0 the count, the look's return as
+ *           the first (the empty ones before it aren't in it). And, in this
+ *           form alone, bits 3:2 the empty returns before the look
+ *           (llr_empty_code()): 0 none, 1 one to nine, 2 ten to 999, 3 a
+ *           thousand or more. A count of the returns after which the WFI was
+ *           taken again, the look's own return not among them, and nothing
+ *           more: it doesn't say how long the WFI held between them (a
+ *           thousand at once and then 24 s of holding is code 3 too), and
+ *           code 0 with 0x600b's bit 7 is a WFI that held past the bound and
+ *           returned once with nothing pending. gate_look=1's two bits are
+ *           these two: ll_retn=1 refuses it, so K1 never writes its mark in
+ *           such a run, and the stage says which they are. The later
+ *           returns' sends of this byte keep them
+ *   0x6009  as last_look=1's, ll_b1(): ISR_EL1's F, I and A, CPU0's timer
+ *           firing, HS_A's bit 24, HS_B's bits 0, 1 and 31
+ *   0x600a  the E complex's state word, low byte (0x44 awake since boot: a
+ *           complex the sequencer hasn't cycled; a down sequence ends on
+ *           0x1a, an up sequence on 0x40)
+ *   0x600b  bits 3:0 0x2922c0044's low nibble; bits 5:4 0x2922c0040's bits
+ *           1:0 (3 awake: B2 clears bit 1 at its ops 4 to 6); bit 6 "wide":
+ *           one of the state word above bit 7, 0x2922c0040 above bit 1,
+ *           0x2922c0044 above bit 3 (last_look=1's form has its low byte,
+ *           this one its nibble), PHASE above bit 3 and EACC's word above
+ *           bit 6 has a bit these bytes don't carry (llr_wide()); bit 7: the
+ *           look was made at the time bound, with nothing pending and the
+ *           timer not firing, not for a pending interrupt or the timer
+ *   0x600c  bit 7 set; bits 6:4 EACC's bits 6:4; bits 3:0 PHASE's low
+ *           nibble. The second command's last byte: without its bit 7 none
+ *           of 0x6009-0x600c is read
+ *   0x600d  as last_look=1's, ll_b5()
+ *   0x600e  as last_look=1's, ll_b6(). These two, the third command, were
+ *           lost across the restart in three runs: best effort
+ * All 0 if the WFI never returned, or only with nothing pending and the restart
+ * came before the time bound, or the first command failed. K1 zeroes the seven as in any
+ * last_look=1 run. Nothing is written but the PMU's bytes, CPU0's timer
+ * control and its CYC_OVRD: no MMIO write is new.
+ *
  * The stages are --m1-mark's with other numbers, so that the decoder knows
- * which marker time and which alarm to expect.
+ * which marker time and which alarm to expect, and with ll_retn=1 which form
+ * the record has.
  *
  * obs_gate=1 is not a form of last_look=1 but the same seven bytes in another
  * run: observe=1's, runs 2 and 3, where CPU7 stays up through the commit and
@@ -239,6 +323,19 @@ typedef uint64_t u64;
 #define M1_LLW_STAGE_PRE	0x06	/* ll_wake=1's */
 #define M1_LLW_STAGE_PEND	0x07
 #define M1_LLW_STAGE		0x08
+#define M1_LLR_STAGE_PRE	0x14	/* ll_retn=1's: the record at 0x6008-0x600e has its own form */
+#define M1_LLR_STAGE_PEND	0x18
+#define M1_LLR_STAGE		0x1c
+
+#define LLR_CYC_DEEP		0x3000001ULL	/* CYC_OVRD as the recipe's deep WFI has it: bits 25:24, and bit 0, XNU's disWfiRetn */
+#define LLR_CYC_NO_RETN		(1ULL << 0)	/* that bit: "disable WFI retention" */
+#define LLR_CYC_RETN		(LLR_CYC_DEEP & ~LLR_CYC_NO_RETN)	/* 0x3000000: ll_retn=1, CPU0's last WFI until its look */
+#define LLR_BOUND_S		(LL_TIMER_S + 5)	/* ll_retn=1: with nothing pending, the look is made at the first return this long after CPU0's first WFI */
+#define LLR_AT_BOUND		(1U << 7)	/* in 0x600b: it was */
+#define LLR_E_SHIFT		2		/* in 0x6008, this form alone: bits 3:2, llr_empty_code() */
+#define LLR_E_FEW		10		/* fewer empty returns than this are code 1 */
+#define LLR_E_MANY		1000		/* and this many or more code 3 */
+#define LLR_WIDE		(1U << 6)	/* in 0x600b: llr_wide() */
 
 #define OG_MARK			(1U << 7)
 #define OG_ARMED		(1U << 6)	/* 0x6008 as K1 leaves it with obs_gate=1, until CPU7's first command */
@@ -355,16 +452,61 @@ static inline u8 ll_b6(u8 pcie, bool ans, bool pmp)
 	return (u8)(LL_MARK | (pmp ? 1U << 6 : 0) | (ans ? 1U << 5 : 0) | (pcie & 0x1f));
 }
 
-/* fabric_up=1's stages (--m1-mark's) to the last look's; any other stays. */
-static inline u8 ll_stage(u8 s, bool wake)
+/* ll_retn=1: how many returns with nothing pending came before the look's own: 0 none, 1 one to nine, 2 ten to 999, 3 a thousand or more. A count, not a time. */
+static inline u8 llr_empty_code(u32 n)
+{
+	return n >= LLR_E_MANY ? 3 : n >= LLR_E_FEW ? 2 : n ? 1 : 0;
+}
+
+/* 0x6008 in ll_retn=1's form: ll_b0()'s byte with the empties' code in bits 3:2, which are gate_look=1's in the other forms. */
+static inline u8 llr_b0(u32 n, u8 tcode, u32 empties)
+{
+	return (u8)(ll_b0(n, tcode) | llr_empty_code(empties) << LLR_E_SHIFT);
+}
+
+/* Whether the retention phase's time is up. dt: ticks since CPU0 first took its last WFI; tps: ticks a second. */
+static inline bool llr_past(u64 dt, u64 tps)
+{
+	return dt >= tps * LLR_BOUND_S;
+}
+
+/* ll_retn=1's record. 0x600a: the E complex's state word, low byte. */
+static inline u8 llr_b2(u32 st_e)
+{
+	return (u8)st_e;
+}
+
+/*
+ * Whether one of the five words has a bit the bytes don't carry: the state word above bit 7, 0x2922c0040 above bit 1,
+ * 0x2922c0044 above bit 3, PHASE above bit 3, EACC's above bit 6.
+ */
+static inline bool llr_wide(u32 st_e, u32 gate40, u32 gate44, u32 phase, u32 eacc)
+{
+	return (st_e >> 8) || (gate40 >> 2) || (gate44 >> 4) || (phase >> 4) || (eacc >> 7);
+}
+
+/* 0x600b: 0x2922c0044's low nibble, 0x2922c0040's bits 1:0, llr_wide(), and whether the look was made at the time bound, with nothing pending. */
+static inline u8 llr_b3(u32 gate44, u32 gate40, bool wide, bool bound)
+{
+	return (u8)((gate44 & 0xf) | (gate40 & 3) << 4 | (wide ? LLR_WIDE : 0) | (bound ? LLR_AT_BOUND : 0));
+}
+
+/* 0x600c: the mark, EACC's bits 6:4 and PHASE's low nibble: the second command's last byte. */
+static inline u8 llr_b4(u32 eacc, u32 phase)
+{
+	return (u8)(LL_MARK | (eacc >> 4 & 7) << 4 | (phase & 0xf));
+}
+
+/* fabric_up=1's stages (--m1-mark's) to the last look's, ll_wake=1's or, first, ll_retn=1's; any other stays. */
+static inline u8 ll_stage(u8 s, bool wake, bool retn)
 {
 	switch (s) {
 	case M1_FAB_STAGE_PRE:
-		return wake ? M1_LLW_STAGE_PRE : M1_LL_STAGE_PRE;
+		return retn ? M1_LLR_STAGE_PRE : wake ? M1_LLW_STAGE_PRE : M1_LL_STAGE_PRE;
 	case M1_FAB_STAGE_PEND:
-		return wake ? M1_LLW_STAGE_PEND : M1_LL_STAGE_PEND;
+		return retn ? M1_LLR_STAGE_PEND : wake ? M1_LLW_STAGE_PEND : M1_LL_STAGE_PEND;
 	case M1_FAB_STAGE:
-		return wake ? M1_LLW_STAGE : M1_LL_STAGE;
+		return retn ? M1_LLR_STAGE : wake ? M1_LLW_STAGE : M1_LL_STAGE;
 	}
 	return s;
 }

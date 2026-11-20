@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn]
 #
 # --quick, ahead of the recipe, makes the reading 1 minute instead of 10, with no need to wait
 # 20 minutes off the charger: for a run whose question is how it ends. If one ever goes dark for
@@ -247,6 +247,25 @@
 # back only by holding the power button (the dark ending's steps, below). Its stages are --m1-a2-pre's; its label is
 # floor-m1-wake-all. Run it with --no-reading, the nights off around it (pkexec /usr/local/bin/sleep-drain-nights
 # off), nothing in the USB-C ports, and film the keyboard.
+# --m1-ll-retn (RESEARCH.md, "The desk step of 2026-11-20"; e1-hook/last_look.h has why, the record's form and the stages)
+# is --m1-atc-down's run, run B's recipe with the six power words lowered, with one change in CPU0's very last step
+# (ll_retn=1): CPU0 takes its last WFI with bit 0 of CYC_OVRD, "disable WFI retention", left clear (0x3000000 in place of
+# 0x3000001), as Linux's own idle on this chip does, with its timer 25 s out as in run B. The recipe's value, macOS's,
+# keeps a WFI from coming back at the next instruction; this one lets it. If CPU0's complex still goes down in the
+# engine's sense and CPU0 comes back for its timer, it reads what the engine did meanwhile. A return with nothing pending
+# is counted and the WFI taken again, until 30 s after the first; at the first return with something pending or its
+# timer firing, or the first past that time, CPU0 makes its look once and sends seven bytes to the PMU's 0x6008-0x600e in a form of this
+# run's own: when, how many empty returns came first, what was pending, the handshakes, the E complex's
+# state word (0x28e09a000), 0x2922c0044 and 0x2922c0040, EACC's soc-cluster word (0x28e098000), PHASE and how many of
+# B2's power words read off. Then it sets bit 0 again and goes on as run B does after a return. New on the hardware: that
+# one system register's value on CPU0, until the look, and two reads CPU0 hasn't made in this state (the state word and
+# EACC's word, which the observer has read after a commit, and the load reads awake); no register write is new. It ends
+# as run B does: the keyboard light blinks from the dark screen until B2 reaches its tenth SIO word or the restart
+# comes, the alarm is 20 s out and WD1's marker 70 s; and the record says whether CPU0 came back and what it found (all
+# 0: it made no look before the restart, or its first command failed). Its stages are its own from step 8 on
+# (0x94, then 0x9c or 0x98), by which m1-crumbs knows the form; its label is floor-m1-ll-retn. Run it with --no-reading,
+# the nights off around it (pkexec /usr/local/bin/sleep-drain-nights off), nothing in the USB-C ports, and film the
+# keyboard.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
@@ -380,6 +399,7 @@ gatelook=0
 atcdown=0
 blink=0
 wakeall=0
+llretn=0
 obsgate=0
 quick=()
 label=floor
@@ -723,7 +743,7 @@ elif (($# == 1)) && [[ $1 == --m1-acc-last ]]; then
   gates=1
   acclast=1
   label=floor-m1-acc-last
-elif (($# == 1)) && [[ $1 == --m1-last-look || $1 == --m1-last-look-wake || $1 == --m1-gate-look || $1 == --m1-atc-down ]]; then
+elif (($# == 1)) && [[ $1 == --m1-last-look || $1 == --m1-last-look-wake || $1 == --m1-gate-look || $1 == --m1-atc-down || $1 == --m1-ll-retn ]]; then
   quiet=1
   m1=1
   late=1
@@ -756,8 +776,14 @@ elif (($# == 1)) && [[ $1 == --m1-last-look || $1 == --m1-last-look-wake || $1 =
     atcdown=1
     label=floor-m1-atc-down
   fi
+  if [[ $1 == --m1-ll-retn ]]; then
+    llwake=1
+    atcdown=1
+    llretn=1
+    label=floor-m1-ll-retn
+  fi
 elif (($# != 0)); then
-  die "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all]"
+  die "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -812,6 +838,7 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!atcdown)) || [[ $parms == *$'\n'atc_down:* ]] || die "$ko is an older build, without atc_down: make -C $here"
 ((!blink)) || [[ $parms == *$'\n'blink:* ]] || die "$ko is an older build, without blink: make -C $here"
 ((!wakeall)) || [[ $parms == *$'\n'wake_all:* ]] || die "$ko is an older build, without wake_all: make -C $here"
+((!llretn)) || [[ $parms == *$'\n'll_retn:* ]] || die "$ko is an older build, without ll_retn: make -C $here"
 # sleep-drain-pmp's module is built by install.sh for one kernel. After a kernel update it's the old kernel's until
 # install.sh runs again, which a safe boot can't do: better to say so now than after the load.
 ((!sio)) || [[ $(modinfo -F vermagic "$PMP_KO" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] ||
@@ -868,6 +895,7 @@ wd2opt=--m1-wd2-bite
 ((!atcdown)) || wd2opt=--m1-atc-down
 ((!blink)) || wd2opt=--m1-a2-pre-blink
 ((!wakeall)) || wd2opt=--m1-wake-all
+((!llretn)) || wd2opt=--m1-ll-retn
 reader=
 disarm() {
   local again
@@ -1023,6 +1051,7 @@ params=(replay=15 oneway=1)
 ((!atcdown)) || params+=(atc_down=1)
 ((!blink)) || params+=(blink=1)
 ((!wakeall)) || params+=(wake_all=1)
+((!llretn)) || params+=(ll_retn=1)
 armed=1
 if ! insmod "$ko" "${params[@]}"; then
   # The module says why in the kernel log, which a safe boot loses at the restart: show it now, and keep it.
@@ -1067,6 +1096,7 @@ fi
   { ((!gatelook)) || [[ $(cat "$MODDIR/parameters/gate_look") == Y ]]; } &&
   { ((!atcdown)) || [[ $(cat "$MODDIR/parameters/atc_down") == Y ]]; } &&
   { ((!blink)) || [[ $(cat "$MODDIR/parameters/blink") == Y ]]; } &&
+  { ((!llretn)) || [[ $(cat "$MODDIR/parameters/ll_retn") == Y ]]; } &&
   { ((!wakeall)) || [[ $(cat "$MODDIR/parameters/wake_all") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
 # --m1-sio-pmp: the PMP's display report requests withdrawn at this suspend's noirq (Corey's pick of 2026-11-09), as

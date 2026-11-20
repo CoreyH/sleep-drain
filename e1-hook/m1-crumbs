@@ -52,7 +52,7 @@ CNTVCT = os.environ.get("M1_CRUMBS_CNTVCT")
 RTC = 0x1406        # info-rtc: 6 bytes LE, the seconds in the upper four; the
                     # read must start here (pmu-alarm)
 CRUMBS = ((0x6004, 4), (0x6010, 7))  # the bytes --clear zeroes
-LL_CRUMBS = (0x6008, 7)  # and these too, after a last_look=1 run, an obs_gate=1 record or a wake_all=1 one: no other run leaves anything there
+LL_CRUMBS = (0x6008, 7)  # and these too, after a last_look=1 run (ll_retn=1's are such), an obs_gate=1 record or a wake_all=1 one: no other run leaves anything there
 # The RTC alarm: control (bit 6 enable, bit 1 latched when it fired), the
 # compare value (4 bytes LE, the RTC's seconds), event, mask (pmu-alarm).
 ALARM_CTRL, ALARM, ALARM_EVENT, ALARM_MASK = 0x1401, 0x140c, 0x14c0, 0x14c2
@@ -122,13 +122,18 @@ LL_PRE = 0x09
 LL_WD2 = (0x0a, 0x0b)
 LLW_PRE = 0x06
 LLW_WD2 = (0x07, 0x08)
-LLW_STAGES = (LLW_PRE,) + LLW_WD2
+# ll_retn=1 (--m1-ll-retn) is an ll_wake=1 run with CPU0's last WFI taken with retention left on and the record at 0x6008-0x600e
+# in a form of its own: the third set, by which that form is known (llr_lines()).
+LLR_PRE = 0x14
+LLR_WD2 = (0x18, 0x1c)
+LLR_STAGES = (LLR_PRE,) + LLR_WD2
+LLW_STAGES = (LLW_PRE,) + LLW_WD2 + LLR_STAGES  # every run with ll_wake=1's alarm, timer and light: its own stages, and ll_retn=1's
 LL_STAGES = (LL_PRE,) + LL_WD2 + LLW_STAGES
-PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE)  # the last stage before the commit, from fabric_up=1 on
+PRE_STAGES = (FAB_PRE, GATES_PRE, SIOD_PRE, PCD_PRE, SST_PRE, A2P_PRE, ACL_PRE, LL_PRE, LLW_PRE, LLR_PRE)  # the last stage before the commit, from fabric_up=1 on
 FAB_STAGES = (FAB_PRE,) + FAB_WD2 + GATES_STAGES + SIOD_STAGES + PCD_STAGES + SST_STAGES + A2P_STAGES + ACL_STAGES + LL_STAGES
 # wd2_bite=1, the same way: 0x6005 is its own sample (e1_hook's M1_WD2_STAGE_PEND and M1_WD2_STAGE)
-WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2 + SST_WD2 + A2P_WD2 + ACL_WD2 + LL_WD2 + LLW_WD2
-WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0])  # CPU0 had an exception pending after its reads
+WD2_STAGES = (0x56, 0x57) + FAB_WD2 + GATES_WD2 + SIOD_WD2 + PCD_WD2 + SST_WD2 + A2P_WD2 + ACL_WD2 + LL_WD2 + LLW_WD2 + LLR_WD2
+WD2_PEND = (0x56, FAB_WD2[0], GATES_WD2[0], SIOD_WD2[0], PCD_WD2[0], SST_WD2[0], A2P_WD2[0], ACL_WD2[0], LL_WD2[0], LLW_WD2[0], LLR_WD2[0])  # CPU0 had an exception pending after its reads
 SAMPLE_STAGES = RECFG_STAGES + WD2_STAGES  # 0x6005 isn't the parked cores
 SIO_STOP_STAGES = (0x4e, 0x4f) + PRE_STAGES + SAMPLE_STAGES  # sio_stop=1, in place of 0x5a and 0x5b: 0x6012 has the K steps' outcomes
 # alarm=1 (0x59, 0x5f), hold=1 (0x5a-0x5e) and position=1: 0x6016 is the alarm's byte, and the alarm may be armed
@@ -140,6 +145,13 @@ LL_BLINK_BIT = 0x40  # 0x6016 in an ll_wake=1 run: step 8 made the keyboard PWM'
 LL_LOOKED = 0x08  # 0x6008, gate_look=1: 0x6009-0x600e are CPU0's own look before its last WFI (last_look.h)
 LL_ARMED = 0x04  # 0x6008 as K1 leaves it with gate_look=1, until the look's first command
 LL_LOOK_MS = 1000  # last_look.h's: the look, after the commit's last write
+LLR_BOUND_S = LL_TIMER_S + 5  # last_look.h's, ll_retn=1: with nothing pending, the look is made at the first return this long after CPU0's first WFI
+LLR_LANDED = 0x80  # 0x600c in ll_retn=1's record, the second command's last byte: its mark
+LLR_AT_BOUND, LLR_WIDE = 0x80, 0x40  # 0x600b in ll_retn=1's record: the look was made at the time bound, with nothing pending; a word has a bit the bytes don't carry
+# 0x6008's bits 3:2 in ll_retn=1's record, and in no other: the returns with nothing pending before the look (last_look.h's llr_empty_code())
+LLR_E_SHIFT = 2
+# A count of the returns after which the WFI was taken again, the look's own not among them: not a measure of how long the WFI held.
+LLR_EMPTIES = ("none", "one to nine", "ten to 999", "a thousand or more")
 # obs_gate=1 (last_look.h): the same seven bytes in observe=1's run, CPU7's look at the engine's gate words
 OG_MARK, OG_ARMED, OG_LATER_MS = 0x80, 0x40, 500
 OG_CLUS = 0x10  # 0x6008's bit 4: the record's second form, the complexes' own words (what e1_hook sends since 2026-11-19)
@@ -148,6 +160,8 @@ OG_ST = {0x40: "the value an up sequence ends on", 0x1a: "the value a down seque
          0x51: "a value both sequences write on the way: the down sequence's first, after its wait for bit 6 of the soc-cluster word",
          0x53: "a value both sequences write on the way", 0x5b: "a value both sequences write on the way",
          0x1b: "the down sequence's last value but one", 0x41: "the up sequence's last value but one"}
+# The E complex's state word as ll_retn=1's look reads it: the sequences' values, and the one it has had awake
+LLR_ST = {0x44: "what it has read awake since boot on this Mac, a complex the sequencer hasn't cycled", **OG_ST}
 OG_STAGES = (0x61, 0x62, 0x6e, 0x6f, 0x71, 0x72, 0x7e, 0x7f)  # CPU7's stages from its first record on: the look follows that record
 OG_WORDS = ("CPU0", "ECPM (the E complex)", "PCPM0 (P complex 0)", "PCPM1 (P complex 1, CPU7's own)")
 # wake_all=1 (last_look.h): one byte at 0x6008, in a run of the gates_mark=1 family: step 7 writes 0xffffffff to all seven AP
@@ -396,6 +410,18 @@ HOLD_TEXT = {
     0x07: "last_look=1 ll_wake=1: fabric_up=1's 0x51: the commit, the alarm and the release are done, and CPU0 wrote WD2's"
           " bite, if WD2 was armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards: that"
           " would end its deep WFI, and 0x6008-0x600e, below, say whether it did",
+    0x14: "8 (last_look=1 ll_wake=1 ll_retn=1): fabric_up=1's 0x52, in a run whose WD1 marker has its count at 80 s: the steps'"
+          " outcomes (0x6012) follow it, then FPWM0 asked on and the keyboard light's PWM set blinking, nub-spmi0's acks, the"
+          " commit, the alarm's commands (20 s out), the release and stage 0x18 or 0x1c",
+    0x1c: "last_look=1 ll_wake=1 ll_retn=1: fabric_up=1's 0x53: the commit, the alarm and the release are done, and CPU0 wrote"
+          " WD2's bite, if WD2 was armed, and read WD2 and PHASE (0x6005) with nothing pending afterwards. Its own timer, set"
+          " 25 s out, and its last WFI, taken with retention left on (CYC_OVRD's bit 0 clear), follow, and this stage doesn't"
+          " show they were reached. If CPU0 made its look, at a return of that WFI with something pending or its timer firing, or"
+          " at the first past the time bound, 30 s on, with neither, 0x6008-0x600e have it, below",
+    0x18: "last_look=1 ll_wake=1 ll_retn=1: fabric_up=1's 0x51: the commit, the alarm and the release are done, and CPU0 wrote"
+          " WD2's bite, if WD2 was armed, and read WD2 and PHASE (0x6005), but had an SError, IRQ or FIQ pending afterwards:"
+          " that would end its last WFI, taken with retention left on (CYC_OVRD's bit 0 clear), at once, and 0x6008-0x600e,"
+          " below, say whether it did",
     0x4f: "sio_stop=1: the commit and the alarm are done, the run's last breadcrumb by design: CPU0 then released the others"
           " and took its deep WFI at once, unrecorded",
     0x40: "position=1: the release went out and CPU0's watch ended (0x6005 = the cores it read off); CPU0 stays up,"
@@ -1381,6 +1407,90 @@ def og_lines(s, r):
     return out
 
 
+def ll_power_lines(r):
+    """0x600d and 0x600e, the third command of last_look=1's record and of ll_retn=1's: how many of B2's power words read off."""
+    out = []
+    if not (r[5] & 0x80 and r[6] & 0x80):
+        return [f"  0x600d 0x600e = {r[5]:02x} {r[6]:02x}: the third command, B2's power words, didn't land whole (bit 7 of each): not read"]
+    n = r[5] & 0x3f
+    out.append(f"  0x600d = 0x{r[5]:02x}: {n} of the 43 power words of SIO's subtree read off (actual state 0)"
+               + (": NOT A COUNT e1_hook can send" if n > 43 else "; B2 switches them off from its op 35 on, and the suspend leaves"
+                  " some off before the commit, so the count awake, in the load log, is what to compare with")
+               + f"; FPWM0's own, the tenth B2 writes, read {'off' if r[5] & 0x40 else 'on'}")
+    pc = [n for i, n in enumerate(LL_PCIE) if r[6] >> i & 1]
+    out.append(f"  0x600e = 0x{r[6]:02x}: read off: of the five PCIe words, {', '.join(pc) or 'none'}; ANS2 {'off' if r[6] & 0x20 else 'on'};"
+               f" the PMP's word {'off' if r[6] & 0x40 else 'on'}")
+    return out
+
+
+def llr_lines(s, r):
+    """ll_retn=1: 0x6008-0x600e under that run's stages (e1-hook/last_look.h has the form): what CPU0 sent at its look, the first
+    return of its last WFI, taken with retention left on, that found something pending or its timer firing, or the first past the
+    time bound that found neither. 0x6008's bits 3:2 are the empty returns' code here, by the stage, and never gate_look=1's two
+    bits: a count, from which nothing is concluded about how long the WFI held.
+    Fields as read, each named; what they add up to is PLAN.md's to say."""
+    out = [f"0x6008-0x600e = {r.hex(' ')}: ll_retn=1's record: CPU0's last WFI taken with retention left on (CYC_OVRD's bit 0 clear, its"
+           f" timer {LL_TIMER_S} s out), and its look, at the first return with something pending or the first past the time bound:"]
+    if s == LLR_PRE:
+        if any(r):
+            return out + [f"  NOT READ: stage 0x{s:02x} is the last before the commit, and these bytes are only sent after CPU0's WFI,"
+                          " which comes after the later stage: the stage's command after the commit didn't land, or the bytes aren't this run's"]
+        return out + ["  all 0, and the stage is the last before the commit: the run isn't shown to have reached CPU0's WFI"]
+    if not any(r):
+        return out + ["  all 0: CPU0's WFI didn't return, or the first command failed. As far as this record goes CPU0 never came back to"
+                      f" make its look: it went down, it stayed in its WFI for good, or it returned only with nothing pending and the"
+                      f" restart came before the time bound, {LLR_BOUND_S} s after the WFI was first taken (such returns send nothing"
+                      f" until then). Not a proof that the core was powered off. Its own timer was set"
+                      f" {LL_TIMER_S} s out, unmasked: a core still powered would have come back for it, unless the restart came first"
+                      " (the restart's time, above)"]
+    b0, b1 = r[0], r[1]
+    if not b0 & 0x80 or not b0 & 3:
+        return out + [f"  0x6008 = 0x{b0:02x}: not a value e1_hook writes in this run (bit 7 set, a count in bits 1:0): NOT READ"]
+    out.append(f"  0x6008 = 0x{b0:02x}: CPU0'S LAST WFI RETURNED and its look was made, {LL_T[b0 >> 4 & 7]} after the commit's last write;"
+               f" {LL_COUNT[b0 & 3]} by the last time it was counted, the look's return as the first (returns with nothing pending"
+               " before it aren't in the count). CPU0 is up when it reads the words below: whether it, or its complex, had been down"
+               " in between isn't in this byte"
+               + f". Bits 3:2: returns with nothing pending before the look, each followed by another WFI: {LLR_EMPTIES[b0 >> LLR_E_SHIFT & 3]}"
+               + (". That count doesn't say how long the WFI held between returns: the time of the look's return and the words"
+                  " below are read on their own" if b0 >> LLR_E_SHIFT & 3 else "")
+               + (". A count past one is a return after the look, when retention was off again (CYC_OVRD's bit 0 set, as in every"
+                  " other run). It can be the look's own doing: a read of the look's that faulted leaves an SError pending, masked,"
+                  " and every later WFI then returns at once, which takes the count to two and to a hundred within milliseconds"
+                  if b0 & 3 > 1 else ""))
+    # The second command's last byte carries bit 7 here too: without it the four aren't shown to have landed whole, and none is read.
+    if not r[4] & LLR_LANDED:
+        return out + [f"  0x6009-0x600c = {r[1:5].hex(' ')}: the second command, the handshake, the engine's page and the two new reads, didn't"
+                      " land whole (bit 7 of 0x600c, its last byte: a read that hung, a restart, or SPMI): none of the four is read, and"
+                      " nothing after them. Its last two reads, the E complex's state word and EACC's soc-cluster word, are the ones"
+                      " CPU0 hadn't made in this state"]
+    pend = [n for bit, n in ((1, "an FIQ"), (2, "an IRQ"), (4, "an SError")) if b1 & bit]
+    out.append(f"  0x6009 = 0x{b1:02x}: pending at the look (ISR_EL1): {', '.join(pend) or 'nothing'}; CPU0's own timer "
+               + ("was firing" if b1 & 8 else "was not firing") + f" (set {LL_TIMER_S} s out in this run)"
+               + f"; HS_A bit 24 = {b1 >> 4 & 1}; HS_B bits 0, 1, 31 = {b1 >> 5 & 1}, {b1 >> 6 & 1}, {b1 >> 7 & 1}")
+    out.append(f"  0x600a = 0x{r[2]:02x}: the E complex's state word (0x28e09a000), low byte: {LLR_ST.get(r[2], 'not a value on file')}")
+    g44, g40 = r[3] & 0xf, r[3] >> 4 & 3
+    out.append(f"  0x600b = 0x{r[3]:02x}: 0x2922c0044's low nibble {g44:04b}: bit 0 {'set' if g44 & 1 else 'clear'}, bit 1"
+               f" {'set' if g44 & 2 else 'clear'}, bit 2 {'set' if g44 & 4 else 'clear'} (B2's first poll, op 1, waits for it set), bit 3"
+               f" {'set' if g44 & 8 else 'clear'} (op 3 waits for it clear); 0x2922c0040's bits 1:0 = {g40} ("
+               + ("as awake: B2's ops 4 to 6 haven't run" if g40 == 3 else
+                  "bit 1 set, bit 0 clear: not a value on file" if g40 == 2 else "bit 1 clear: B2 clears it at its ops 4 to 6") + ")")
+    out.append("  0x600b bit 7: " + (f"THE LOOK WAS MADE AT THE TIME BOUND, WITH NOTHING PENDING AND THE TIMER NOT FIRING, not for a pending"
+                                    f" interrupt: at the first return {LLR_BOUND_S} s or more after the WFI was first taken, ISR_EL1 read 0"
+                                    f" and CPU0's timer, {LL_TIMER_S} s out, didn't read as firing" if r[3] & LLR_AT_BOUND else
+                                    f"clear: the look wasn't made at the time bound ({LLR_BOUND_S} s after the WFI was first taken, with"
+                                    " nothing pending), but at a return that found ISR_EL1 non-zero or CPU0's timer firing")
+               + ("; bit 6: ONE OF THE WORDS HAS A BIT ABOVE WHAT THESE BYTES CARRY (the state word above bit 7, 0x2922c0040 above bit 1,"
+                  " 0x2922c0044 above bit 3, PHASE above bit 3 or EACC's word above bit 6): the bytes aren't the whole words"
+                  if r[3] & LLR_WIDE else
+                  "; bit 6 clear: the state word, 0x2922c0040, 0x2922c0044, PHASE and EACC's word had no bit above what these bytes carry"))
+    acc, ph = r[4] >> 4 & 7, r[4] & 0xf
+    out.append(f"  0x600c = 0x{r[4]:02x}: EACC's soc-cluster word (0x28e098000), bits 6:4 = {acc:03b}: bit 4 {'set' if acc & 1 else 'clear'} (a"
+               f" change asked for and not finished), bit 5 {'set' if acc & 2 else 'clear'} (the up-done flag), bit 6"
+               f" {'set' if acc & 4 else 'clear'} (what a down sequence waits for first, with no timeout); its low nibble isn't sent."
+               f" PHASE's low nibble 0x{ph:x} ({PHASES.get(ph, 'not a phase on file')})")
+    return out + ll_power_lines(r)
+
+
 def ll_lines(s, b):
     """last_look=1: 0x6008-0x600e, what CPU0 sent if its own last WFI returned, or with gate_look=1 what it sent itself before
     that WFI (e1-hook/last_look.h has the bytes). Fields as read, each named; what they add up to is PLAN.md's to say."""
@@ -1402,6 +1512,9 @@ def ll_lines(s, b):
                  + ("" if b[0x16] & LL_BLINK_BIT else " (FPWM0 didn't read on within 10 ms, or the alarm's byte, which carries the bit"
                     " and goes out after the first commit write, didn't land): a blink may not have been there to see, and its absence"
                     " says nothing about B2")]
+    # ll_retn=1's stages: the record has that run's own form, and none of what follows is applied to it.
+    if s in LLR_STAGES:
+        return llr_lines(s, r) + blink
     if s in (LL_PRE, LLW_PRE):
         if r == bytes((LL_ARMED,)) + bytes(6):
             return out + [f"  0x6008 = 0x{LL_ARMED:02x} and six zeros, and the stage is the last before the commit: gate_look=1 was set (K1 writes"
@@ -1452,7 +1565,6 @@ def ll_lines(s, b):
                    " to 10 read, this way under an earlier recipe: 0x2922c0044's bit 2 clear and bit 3 set, 0x2922c0040's bit 1 set, HS_A's"
                    " bit 31 up and bit 24 clear")
     # The second command's last byte carries bit 7: without it the four aren't shown to have landed whole, and none is read.
-    third = bool(r[5] & 0x80 and r[6] & 0x80)
     if not r[4] & 0x80:
         return out + [f"  0x6009-0x600c = {r[1:5].hex(' ')}: the second command, the engine's page and the handshake, didn't land whole (bit 7"
                       " of 0x600c, its last byte: a read that hung, a restart, or SPMI): none of the four is read, and nothing after them"] + blink
@@ -1470,17 +1582,7 @@ def ll_lines(s, b):
     out.append(f"  0x600b = 0x{r[3]:02x}: 0x2922c0044's low byte: bit 2 {'set' if r[3] & 4 else 'clear'} (B2's first poll, op 1, waits for it"
                f" set), bit 3 {'set' if r[3] & 8 else 'clear'} (op 3 waits for it clear)")
     out.append(f"  0x600c = 0x{r[4]:02x}: PHASE's low seven bits 0x{r[4] & 0x7f:x} ({PHASES.get(r[4] & 0x7f, 'not a phase on file')})")
-    if not third:
-        return out + [f"  0x600d 0x600e = {r[5]:02x} {r[6]:02x}: the third command, B2's power words, didn't land whole (bit 7 of each): not read"] + blink
-    n = r[5] & 0x3f
-    out.append(f"  0x600d = 0x{r[5]:02x}: {n} of the 43 power words of SIO's subtree read off (actual state 0)"
-               + (": NOT A COUNT e1_hook can send" if n > 43 else "; B2 switches them off from its op 35 on, and the suspend leaves"
-                  " some off before the commit, so the count awake, in the load log, is what to compare with")
-               + f"; FPWM0's own, the tenth B2 writes, read {'off' if r[5] & 0x40 else 'on'}")
-    pc = [n for i, n in enumerate(LL_PCIE) if r[6] >> i & 1]
-    out.append(f"  0x600e = 0x{r[6]:02x}: read off: of the five PCIe words, {', '.join(pc) or 'none'}; ANS2 {'off' if r[6] & 0x20 else 'on'};"
-               f" the PMP's word {'off' if r[6] & 0x40 else 'on'}")
-    return out + blink
+    return out + ll_power_lines(r) + blink
 
 
 def r0201_line(v):
@@ -2247,7 +2349,7 @@ def decode(b, rtc, cnt=None, alarm=None, r0201=None):
         ack = bool(b[0x14] & F_ACK) if b[0x14] & 0x80 else None
     else:
         ack = None if pmp and s in ACK_EARLY else False
-    pre = LLW_PRE if s in LLW_STAGES else LL_PRE if s in LL_STAGES else ACL_PRE if s in ACL_STAGES else A2P_PRE if s in A2P_STAGES else SST_PRE if s in SST_STAGES else PCD_PRE if s in PCD_STAGES else SIOD_PRE if s in SIOD_STAGES else GATES_PRE if s in GATES_STAGES else FAB_PRE  # the run's stage before the commit, for fabric_up=1's byte
+    pre = LLR_PRE if s in LLR_STAGES else LLW_PRE if s in LLW_STAGES else LL_PRE if s in LL_STAGES else ACL_PRE if s in ACL_STAGES else A2P_PRE if s in A2P_STAGES else SST_PRE if s in SST_STAGES else PCD_PRE if s in PCD_STAGES else SIOD_PRE if s in SIOD_STAGES else GATES_PRE if s in GATES_STAGES else FAB_PRE  # the run's stage before the commit, for fabric_up=1's byte
     ares = alarm_res(b, s)  # 0x6016 as the alarm's result, or None
     out = [
         f"0x6000: {b[0x00:0x08].hex(' ')}  {b[0x08:0x10].hex(' ')}",
@@ -2473,10 +2575,10 @@ def decode(b, rtc, cnt=None, alarm=None, r0201=None):
                                                                       f" 0x{b[0x16] & ~LL_BLINK_BIT:02x}):", 1))
             else:
                 out.append(alarm_byte(b[0x16]))
-            if s in (0x59, 0x5a, 0x4e, FAB_PRE, LL_PRE, LLW_PRE) and ares in ALARM_ACKED:
+            if s in (0x59, 0x5a, 0x4e, FAB_PRE, LL_PRE, LLW_PRE, LLR_PRE) and ares in ALARM_ACKED:
                 nxt = {0x59: "0x5f", 0x5a: "0x5b", 0x4e: "0x4f, or recfg_bite=1's 0x46 or 0x47, or wd2_bite=1's 0x56 or 0x57,",
-                       FAB_PRE: "0x51 or 0x53", LL_PRE: "0x0a or 0x0b", LLW_PRE: "0x07 or 0x08"}[s]
-                out.append(f"  stage 0x{s:02x}, so nothing records {'the commit' if s in (0x4e, FAB_PRE, LL_PRE, LLW_PRE) else 'the two commit writes'} after those commands ("
+                       FAB_PRE: "0x51 or 0x53", LL_PRE: "0x0a or 0x0b", LLW_PRE: "0x07 or 0x08", LLR_PRE: "0x18 or 0x1c"}[s]
+                out.append(f"  stage 0x{s:02x}, so nothing records {'the commit' if s in (0x4e, FAB_PRE, LL_PRE, LLW_PRE, LLR_PRE) else 'the two commit writes'} after those commands ("
                            f"{nxt} comes after them): inconclusive about the rest of the entry")
         elif b[0x14] & 0x80:
             out.append(f"0x6016 = {b[0x16]}: AIC events the cores took off their event registers")
