@@ -1,0 +1,5 @@
+/sys/devices/system/cpu/cpuN/cpuidle/state1 ("CPU PD", "CPU/cluster powered down"), usage and time (us),
+read twice 6 s apart at about 10:20, a quarter of an hour after idle-watch, the desktop as idle as then:
+cpu5 37801 1410150113  ->  38128 1414899802   (4.75 s of the 6 in CPU PD)
+cpu6 39082 1501292284  ->  39102 1506559403   (5.27 s)
+cpu7 15245 1511057228  ->  15288 1517302253   (6.2 s)
