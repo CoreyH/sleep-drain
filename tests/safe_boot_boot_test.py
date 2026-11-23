@@ -227,8 +227,11 @@ def main():
         p = run(t, tool, "boot")
         cfg = cfg_of(t)
         same = "linux /vmlinuz-linux-aurora root=UUID=aaaa rw module_blacklist=foo module_blacklist=apple_sep,bar quiet sleepdrain.safe"
-        check(p.returncode == 0 and entry_line(cfg, PLAIN) == same and entry_line(cfg, NOSEP) == same and "already keeps apple_sep out" in p.stdout,
-              "a regular line whose last module_blacklist already names apple_sep: both entries are that line, and the message says the driver is out anyway",
+        check(p.returncode == 0 and entry_line(cfg, PLAIN) == same
+              and entry_line(cfg, NOSEP) == same.replace(" sleepdrain.safe", " module_blacklist=apple_sep,bar sleepdrain.safe")
+              and "already keeps apple_sep out" in p.stdout,
+              "a regular line whose last module_blacklist already names apple_sep: the first entry is that line and the message says the driver is out anyway;"
+              " the second still ends with a blacklist of its own, the same list",
               p.stdout + p.stderr + cfg)
     with tempfile.TemporaryDirectory() as t:
         tool = setup(t, regular="root=UUID=aaaa rw module_blacklist=apple_sep module_blacklist=foo quiet")
@@ -248,7 +251,8 @@ def main():
         tool = setup(t, regular="root=UUID=aaaa rw module-blacklist=apple_sep,foo quiet")
         p = run(t, tool, "boot")
         same = "linux /vmlinuz-linux-aurora root=UUID=aaaa rw module-blacklist=apple_sep,foo quiet sleepdrain.safe"
-        check(p.returncode == 0 and entry_line(cfg_of(t), NOSEP) == same and "already keeps apple_sep out" in p.stdout,
+        check(p.returncode == 0 and entry_line(cfg_of(t), PLAIN) == same and entry_line(cfg_of(t), NOSEP).endswith(" quiet module_blacklist=apple_sep,foo sleepdrain.safe")
+              and "already keeps apple_sep out" in p.stdout,
               "the hyphen spelling with apple_sep in its list is seen as keeping the driver out", p.stdout + p.stderr + cfg_of(t))
     # A backslash in the regular line must compare as it is.
     with tempfile.TemporaryDirectory() as t:
@@ -257,6 +261,30 @@ def main():
         p = run(t, tool, "boot", "--no-sep")
         check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
               "a regular line with a backslash escape in it: the entries are written and found as written", p.stdout + p.stderr + cfg_of(t))
+    # Quoting: GRUB takes the quotes off, so a later quoted blacklist would win unseen. Refused for --no-sep, not guessed.
+    for reg in ('root=UUID=aaaa rw module-blacklist=apple_sep "module_blacklist=apple_pmp" quiet',
+                "root=UUID=aaaa rw module_blacklist=apple_sep 'foo=a b' quiet",
+                'root=UUID=aaaa rw module_blacklist=apple_sep foo=a\\ b quiet'):
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t, regular=reg)
+            before = cfg_of(t)
+            p = run(t, tool, "boot", "--no-sep")
+            check(p.returncode != 0 and "--no-sep refused, nothing selected" in p.stderr and nxt(t) is None and cfg_of(t) == before,
+                  f"boot --no-sep with a blacklist and quoting on the regular line ({reg[18:]}): refused, nothing written or selected", p.stdout + p.stderr)
+            p = run(t, tool, "boot")
+            check(p.returncode == 0 and nxt(t) == PLAIN and "already keeps apple_sep out" not in p.stdout
+                  and entry_line(cfg_of(t), PLAIN) == f"linux /vmlinuz-linux-aurora {reg} sleepdrain.safe",
+                  "a plain boot on that line still works, and claims nothing about the driver", p.stdout + p.stderr + cfg_of(t))
+            p = run(t, tool, "boot", "--no-sep")
+            check(p.returncode != 0 and nxt(t) == PLAIN, "and --no-sep is still refused after it, the plain selection left as it was", p.stdout + p.stderr)
+    # The read-back itself failing: the selection is unknown, and the message says that, not "not selected".
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t)
+        stub(os.path.join(t, "bin"), "grub-editenv", "exit 1\n")
+        p = run(t, tool, "boot", "--no-sep")
+        check(p.returncode != 0 and "couldn't be read back" in p.stderr and "isn't known" in p.stderr and "Not selected" not in p.stderr
+              and "the next restart is" not in p.stdout,
+              "a grub-editenv that can't read the block after grub-reboot: the command fails saying the selection isn't known", p.stdout + p.stderr)
     print("all ok" if not fails else f"{fails} failed")
     return 1 if fails else 0
 

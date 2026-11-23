@@ -119,14 +119,25 @@ sep_blacklisted() {
 # A command line with apple_sep added to its module blacklist: one more
 # module_blacklist= at the end that repeats the last one's list, since a second
 # argument replaces the first and would let that one's modules load again.
+# Always appended, also when the last list seems to have apple_sep already: the
+# entry then ends with an argument this script wrote and can check. GRUB takes
+# quotes off before the kernel sees the line, so in a line with quoting the
+# last blacklist can't be told by splitting at spaces: "boot --no-sep" refuses
+# such a line if it has a blacklist argument at all.
 no_sep_cmdline() {
   local last
-  if sep_blacklisted "$1"; then
-    echo "$1"
-    return
-  fi
   last=$(last_blacklist "$1")
-  echo "$1 module_blacklist=${last:+$last,}apple_sep"
+  if [[ ,$last, == *,apple_sep,* ]]; then
+    echo "$1 module_blacklist=$last"
+  else
+    echo "$1 module_blacklist=${last:+$last,}apple_sep"
+  fi
+}
+
+# A command line whose blacklist this script can't work out by splitting at
+# spaces: a blacklist argument somewhere, and quoting or a backslash anywhere.
+blacklist_unsure() {
+  [[ $1 =~ module[-_]blacklist && $1 == *[\"\'\\]* ]]
 }
 
 # have_entry CFG ID LINE: CFG's menu entry ID has exactly LINE as its linux line.
@@ -169,8 +180,14 @@ cmd_boot() {
   cmdline=${cmdline% sleepdrain.safe}
   boot_uuid=$(grub-probe --target=fs_uuid /boot)
   plain_line="linux /vmlinuz-linux-aurora $cmdline sleepdrain.safe"
-  nosep_line="linux /vmlinuz-linux-aurora $(no_sep_cmdline "$cmdline") sleepdrain.safe"
-  sep_blacklisted "${nosep_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep on the module blacklist of: $cmdline"
+  if blacklist_unsure "$cmdline"; then
+    # The second entry is then the plain one's twin, and can't be selected.
+    ((!nosep)) || die "the regular command line has a module blacklist and quoting, so what the kernel would end up blocking can't be worked out here; --no-sep refused, nothing selected: $cmdline"
+    nosep_line=$plain_line
+  else
+    nosep_line="linux /vmlinuz-linux-aurora $(no_sep_cmdline "$cmdline") sleepdrain.safe"
+    sep_blacklisted "${nosep_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep on the module blacklist of: $cmdline"
+  fi
 
   # Two entries with ids of their own, both always there, so that selecting
   # one never rewrites the entry an earlier "boot" has queued.
@@ -216,12 +233,15 @@ EOF
   if ((nosep)); then id=$ENTRY_NOSEP line=$nosep_line; else id=$ENTRY line=$plain_line; fi
   have_entry "$GRUB_CFG" "$id" "$line" || die "no $id entry with its command line in $GRUB_CFG; nothing selected"
   grub-reboot "$id" || die "grub-reboot failed; nothing new selected"
-  # grub-reboot can return 0 without having written the selection: read it back.
-  grub-editenv - list 2> /dev/null | grep -x -F "next_entry=$id" > /dev/null ||
-    die "grub-reboot returned 0, but the next entry isn't $id: $(grub-editenv - list 2> /dev/null | grep '^next_entry=' || echo 'none is set'). Not selected"
+  # grub-reboot can return 0 without having written the selection: read it back, once.
+  local env
+  env=$(grub-editenv - list 2> /dev/null) ||
+    die "grub-reboot returned 0, but GRUB's environment block couldn't be read back: whether $id is selected isn't known. Check with: sleep-drain-safe status"
+  grep -x -F "next_entry=$id" <<< "$env" > /dev/null ||
+    die "grub-reboot returned 0, but the next entry isn't $id: $(grep '^next_entry=' <<< "$env" || echo 'none is set'). Not selected"
   if ((nosep)); then
     echo "the next restart is a safe boot ($release, disk read-only) without the Secure Enclave's driver (apple_sep on the module blacklist); every restart after that is the regular one"
-  elif sep_blacklisted "$cmdline"; then
+  elif ! blacklist_unsure "$cmdline" && sep_blacklisted "$cmdline"; then
     echo "the next restart is a safe boot ($release, disk read-only); the regular command line already keeps apple_sep out; every restart after that is the regular one"
   else
     echo "the next restart is a safe boot ($release, disk read-only); every restart after that is the regular one"
