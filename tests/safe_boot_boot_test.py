@@ -227,11 +227,8 @@ def main():
         p = run(t, tool, "boot")
         cfg = cfg_of(t)
         same = "linux /vmlinuz-linux-aurora root=UUID=aaaa rw module_blacklist=foo module_blacklist=apple_sep,bar quiet sleepdrain.safe"
-        check(p.returncode == 0 and entry_line(cfg, PLAIN) == same
-              and entry_line(cfg, NOSEP) == same.replace(" sleepdrain.safe", " module_blacklist=apple_sep,bar sleepdrain.safe")
-              and "already keeps apple_sep out" in p.stdout,
-              "a regular line whose last module_blacklist already names apple_sep: the first entry is that line and the message says the driver is out anyway;"
-              " the second still ends with a blacklist of its own, the same list",
+        check(p.returncode == 0 and entry_line(cfg, PLAIN) == same and entry_line(cfg, NOSEP) == same and "already keeps apple_sep out" in p.stdout,
+              "a regular line whose last module_blacklist already names apple_sep: both entries are that line, no longer, and the message says the driver is out anyway",
               p.stdout + p.stderr + cfg)
     with tempfile.TemporaryDirectory() as t:
         tool = setup(t, regular="root=UUID=aaaa rw module_blacklist=apple_sep module_blacklist=foo quiet")
@@ -251,7 +248,7 @@ def main():
         tool = setup(t, regular="root=UUID=aaaa rw module-blacklist=apple_sep,foo quiet")
         p = run(t, tool, "boot")
         same = "linux /vmlinuz-linux-aurora root=UUID=aaaa rw module-blacklist=apple_sep,foo quiet sleepdrain.safe"
-        check(p.returncode == 0 and entry_line(cfg_of(t), PLAIN) == same and entry_line(cfg_of(t), NOSEP).endswith(" quiet module_blacklist=apple_sep,foo sleepdrain.safe")
+        check(p.returncode == 0 and entry_line(cfg_of(t), PLAIN) == same and entry_line(cfg_of(t), NOSEP) == same
               and "already keeps apple_sep out" in p.stdout,
               "the hyphen spelling with apple_sep in its list is seen as keeping the driver out", p.stdout + p.stderr + cfg_of(t))
     # A backslash in the regular line must compare as it is.
@@ -261,22 +258,68 @@ def main():
         p = run(t, tool, "boot", "--no-sep")
         check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
               "a regular line with a backslash escape in it: the entries are written and found as written", p.stdout + p.stderr + cfg_of(t))
-    # Quoting: GRUB takes the quotes off, so a later quoted blacklist would win unseen. Refused for --no-sep, not guessed.
+    # Quoting: GRUB takes the quotes off, so a later quoted blacklist would win unseen. Refused in both modes, nothing written.
     for reg in ('root=UUID=aaaa rw module-blacklist=apple_sep "module_blacklist=apple_pmp" quiet',
                 "root=UUID=aaaa rw module_blacklist=apple_sep 'foo=a b' quiet",
                 'root=UUID=aaaa rw module_blacklist=apple_sep foo=a\\ b quiet'):
         with tempfile.TemporaryDirectory() as t:
             tool = setup(t, regular=reg)
             before = cfg_of(t)
-            p = run(t, tool, "boot", "--no-sep")
-            check(p.returncode != 0 and "--no-sep refused, nothing selected" in p.stderr and nxt(t) is None and cfg_of(t) == before,
-                  f"boot --no-sep with a blacklist and quoting on the regular line ({reg[18:]}): refused, nothing written or selected", p.stdout + p.stderr)
-            p = run(t, tool, "boot")
-            check(p.returncode == 0 and nxt(t) == PLAIN and "already keeps apple_sep out" not in p.stdout
-                  and entry_line(cfg_of(t), PLAIN) == f"linux /vmlinuz-linux-aurora {reg} sleepdrain.safe",
-                  "a plain boot on that line still works, and claims nothing about the driver", p.stdout + p.stderr + cfg_of(t))
-            p = run(t, tool, "boot", "--no-sep")
-            check(p.returncode != 0 and nxt(t) == PLAIN, "and --no-sep is still refused after it, the plain selection left as it was", p.stdout + p.stderr)
+            for args in (["boot", "--no-sep"], ["boot"]):
+                p = run(t, tool, *args)
+                check(p.returncode != 0 and "nothing written, nothing selected" in p.stderr and nxt(t) is None and cfg_of(t) == before
+                      and not os.path.exists(os.path.join(t, "etc/grub.d/44_sleep_drain_safe")),
+                      f"{' '.join(args)} with a blacklist and quoting on the regular line ({reg[18:]}): refused, nothing written or selected", p.stdout + p.stderr)
+    # A no-SEP boot is queued; then the regular line gains a blacklist and a quoted option. Whatever is asked next, the queued
+    # entry must go on excluding apple_sep: nothing may be published under its id on a guess.
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t)
+        p = run(t, tool, "boot", "--no-sep")
+        cfg = cfg_of(t)
+        with open(os.path.join(t, "regular")) as f:
+            reg = f.read()
+        changed = 'module_blacklist=apple_pmp "foo=a b" quiet splash'
+        with open(os.path.join(t, "regular"), "w") as f:
+            f.write(reg.replace("quiet splash", changed))
+        with open(os.path.join(t, "boot/grub/grub.cfg"), "w") as f:
+            f.write(cfg.replace(f"{REG}\n", f"{REG.replace('quiet splash', changed)}\n"))
+        cfg = cfg_of(t)
+        stub(os.path.join(t, "bin"), "grub-reboot", "exit 1\n")
+        for args in (["boot"], ["boot", "--no-sep"]):
+            p = run(t, tool, *args)
+            check(p.returncode != 0 and nxt(t) == NOSEP and cfg_of(t) == cfg
+                  and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {REG} {NO_SEP} sleepdrain.safe",
+                  f"{' '.join(args)} after a no-SEP boot was queued and the regular line became one that can't be parsed: refused, and the queued entry still excludes apple_sep",
+                  p.stdout + p.stderr + cfg_of(t))
+    # The kernel's command line is 2048 bytes; what doesn't fit is cut at the end, where the read-only flag is.
+    def near(n, tail=""):
+        """A regular line that makes the plain entry's kernel line exactly n characters long."""
+        base = f"root=UUID=aaaa rw {tail}pad="
+        fixed = len("BOOT_IMAGE=/vmlinuz-linux-aurora ") + len(base) + len(" sleepdrain.safe")
+        return base + "x" * (n - fixed)
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t, regular=near(2047))
+        before = cfg_of(t)
+        for args in (["boot"], ["boot", "--no-sep"]):
+            p = run(t, tool, *args)
+            check(p.returncode != 0 and "lose its end, where the read-only flag is" in p.stderr and nxt(t) is None and cfg_of(t) == before,
+                  f"{' '.join(args)} with a regular line whose plain entry just fits and whose no-SEP entry wouldn't: refused, nothing written", p.stdout + p.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t, regular=near(2048))
+        p = run(t, tool, "boot")
+        check(p.returncode != 0 and "lose its end" in p.stderr and nxt(t) is None, "a plain entry one byte over: refused", p.stdout + p.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        reg = near(2047, tail="module_blacklist=apple_sep ")
+        tool = setup(t, regular=reg)
+        p = run(t, tool, "boot", "--no-sep")
+        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} sleepdrain.safe",
+              "a line at the limit that already keeps apple_sep out: the no-SEP entry is that line, not a longer one, and is selected", p.stdout + p.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        reg = near(2047 - len(f" {NO_SEP}"))
+        tool = setup(t, regular=reg)
+        p = run(t, tool, "boot", "--no-sep")
+        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP).endswith(f" {NO_SEP} sleepdrain.safe"),
+              "a line whose no-SEP entry lands exactly on the last byte that fits: taken", p.stdout + p.stderr)
     # The read-back itself failing: the selection is unknown, and the message says that, not "not selected".
     with tempfile.TemporaryDirectory() as t:
         tool = setup(t)
