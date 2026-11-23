@@ -66,10 +66,17 @@ this section where they differ.
      open: a light that stops says B2 reached its tenth SIO word, not that the entry finished, and
      macOS's commit state would still serve for whatever stops it next. Only an entry shown complete
      retires them.
-   - The reference's tested path sends the SEP its SLEEP through a driver; this run clears the wait
-     with the enclave up and this kernel's `apple_sep` bound, which sends no such message. Tell Corey
-     that with the run's steps. A question for Ante042 in the reply: how often their no-driver
-     fallback ran.
+   - The reference's tested path sends the SEP its SLEEP through a driver; this kernel's `apple_sep`
+     sends none, and on this Mac it runs with `xart_guard=0` and xART writes enabled. So the run is
+     made in a safe boot without that driver (`pkexec sleep-drain-safe boot --no-sep`, which adds
+     `module_blacklist=apple_sep`), the reference's no-driver case, and `run-floor` refuses
+     `--m1-sep-pg` and `--m1-disp-hs` with the module loaded. A question for Ante042 in the reply: how
+     often their no-driver fallback ran.
+   - The comparison with the reference (`ante042-20261123/diff-vs-recipe.md`) found a second step for
+     the opening: macOS sets bit 2 of 0x2922c0044, B2's first poll, by dispext0's fabric handshake
+     (block + 0x8014 := 1, + 0x82bc := 1, 2, 4) while it takes the displays down, and the recipe's K3b
+     lowers them with none. `disp_hs=1` makes it for disp0 and dispext0 and reads the gate word after
+     each; the run has both steps (`--m1-disp-hs`).
    - **After an entry that completes**, the fix is a port: Ante042's t6000 core onto upstream's
      `sleep.c` (their notes map it area by area), and a wake needs the loader's mailbox, which is
      m1n1's or aura's side and not Claude's to write.

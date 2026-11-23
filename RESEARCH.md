@@ -5484,15 +5484,28 @@ a suspend and keeps the node's power domains on across it, and sends the enclave
 run clears the wait with the enclave up and a driver bound, which neither macOS nor the reference's tested
 path does. What the enclave sees when the rest of the SoC goes down around it isn't known. It is not shown
 to be the same as a watchdog restart, though every run so far has ended in one with the enclave in this
-same state. What bounds it: the write is to the PMGR and is gone at the restart; the driver's `xart_guard`
-defaults to refusing the enclave's writes and deletes of xART on M1; and the run ends in a restart or a
-power button held either way.
+same state.
+
+**And on this Mac the enclave's store is open to it** (Pullfrog on #130, then read here). The guard's default
+is narrower than "refuses xART writes": it protects records this Linux didn't create and still lets Linux's
+own and the shared roots change. And this Mac doesn't run the default: `/etc/modprobe.d/apple-sep.conf` sets
+`xart_guard=0` (Corey's Touch ID fix of 2026-11-19, its risk written in the file: "the enclave may rewrite
+session records macOS also uses. If macOS rejects one, FileVault volumes may not unlock and recovery is a DFU
+restore"), and this boot's log says "xART guard off" and "writes ENABLED". The store is an APFS extent the
+driver writes directly; the safe boot makes the LUKS root read-only, not that. So a restart undoes the PMGR
+bit but not a write that reached the store, and a run that lets the SoC go down around a live enclave is
+not to be made with that driver loaded. **The run is therefore made with `apple_sep` kept from loading** (the
+safe boot with `module_blacklist=apple_sep`; `run-floor` refuses the option if the module is there): the
+enclave is then never started by Linux, nothing can service an xART write, and the state is the one the
+reference's fallback is written for, a SEP with no driver. Every earlier run had the driver loaded and ended
+in a hard restart; none of them let the engine past its opening.
 
 **Corey's two OKs of 2026-11-23**, asked because the conventions name the SEP:
 - the write: "Yes, build it": the next run clears bit 2 of 0x28e0cc200 before the commit, one PMGR register,
   not a write to the enclave, undone by the restart. The question as put to Corey said the enclave then
-  loses power untold "as at every watchdog restart": that equivalence isn't shown (the paragraph above), and
-  Corey is told so with the run's steps, before it is run.
+  loses power untold "as at every watchdog restart": that equivalence isn't shown (the paragraphs above),
+  Corey was told so the same morning, and the run as built doesn't rest on it: no enclave driver in that
+  boot.
 - reading Ante042's kernel branch: "read whatever you need to read! I don't see why I would limit your
   ambition here, you're in the driver's seat :)". Taken for that branch, credited; m1n1 and its forks stay
   off limits by CLAUDE.md's rule, which rests on Asahi's policy and which Corey didn't name.
