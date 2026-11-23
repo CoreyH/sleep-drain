@@ -63,7 +63,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   read-only all session: `pkexec sleep-drain-safe save [PATH...]` writes what
   the boot added (new log lines, new snapshots, the journal, PATHs) as one tar
   to the boot partition, mounted just for that, and `pkexec sleep-drain-safe
-  collect` puts it in place after the next regular boot. The regular
+  collect` puts it in place after the next regular boot. `boot --no-sep` selects
+  a second entry, the same with `apple_sep` on the kernel's module blacklist,
+  so that Linux never starts the Secure Enclave in that boot: for a run that lets the SoC go down around the
+  enclave, whose store (xART) the read-only root doesn't cover. The regular
   initramfs never gets the hook. The sleep log's `pre` line says `safe=yes`
   for a sleep in a safe boot.
 - `sleep-drain-reading`: idle battery readings that can span a reset (E1's
@@ -186,7 +189,17 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   this Mac, never values for a patch that goes upstream. On 2026-11-12 Corey OK'd the same for the M4 sleep
   drivers in aurora-silicon/linux#1477 and #1664 (`drivers/soc/apple/t6040-sleep.c`
   by fbalazsy, `t6041-sleep.c` by AxxzyWasTaken; `GPL-2.0-only OR MIT`),
-  credited; aura itself, which they run under, stays off limits.
+  credited; aura itself, which they run under, stays off limits. On 2026-11-23,
+  asked about Ante042's working J314s reference (Ante042/linux
+  `t600x-s2r-reference`: `drivers/soc/apple/s2r.c`, `S2R-T600X-NOTES.md`,
+  `GPL-2.0-only OR MIT`), Corey said: "read whatever you need to read! I don't
+  see why I would limit your ambition here, you're in the driver's seat :)".
+  Claude's reading: Linux kernel code and notes by others may be read as needed,
+  credited, without asking each time; m1n1 and aura, their forks included
+  (Ante042/m1n1 too), stay off limits, since that rule rests on Asahi's policy
+  and Corey didn't name it. The same day Corey OK'd the next run's clearing of
+  the PMGR's "wait for the SEP's power gate" bit (0x28e0cc200, bit 2): a PMGR
+  register, not the enclave; writes to the SEP itself still need asking.
 
 ## Experiments
 

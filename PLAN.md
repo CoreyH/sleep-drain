@@ -1,10 +1,10 @@
 # Plan
 
-Last updated 2026-11-20. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-23. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
-## Pick up here (2026-11-20)
+## Pick up here (2026-11-23)
 
 Read this first. "Where things stand" below is the long record and its order of work is superseded by
 this section where they differ.
@@ -29,8 +29,10 @@ this section where they differ.
   for its own timer; the restart comes at the marker's time all the same.
 - CPU0's RVBAR reads 0x00100100059e4001 under m1n1-aurora: bit 0 set, the address 0x100059e4000. The
   other seven have the same address with bit 0 clear (`results/rvbar-20261119/`).
-- Nobody has macOS's commit state for a T600x, and no M1 Pro or Max has come back from a completed
-  entry anywhere (aurora-silicon/linux#2198, answered 2026-11-19). T6000 data is welcome there; the
+- Nobody has macOS's commit state for a T600x. `sleep.c` has no T6000 entry and nothing has completed
+  one on this Mac or with it (aurora-silicon/linux#2198, answered 2026-11-19). Since 2026-11-22 there
+  is a report of a J314s that completes the entry and wakes, on Ante042's own reference branch with
+  an m1n1 of their own: their result, not reproduced here. T6000 data is welcome there; the
   entry's data went up as a comment on 2026-11-19.
 - A record's bytes: 0x6008-0x600c have carried across the restart every time; 0x600d and 0x600e were
   lost in both runs that wrote them, though awake they take a write. Use the first five.
@@ -49,31 +51,46 @@ this section where they differ.
   2026-11-16).
 
 **Next, in this order:**
-1. **Nothing is waiting for Corey. At the desk** (RESEARCH.md, "The `wake_all=1` run", 2026-11-20): with
-   every named wake source masked (read back) the light blinked to the restart at 90 s. A source the
-   masks let through isn't the hold. Eight of the review's ten one-way runs are used.
-   - **Read the answers first.** Three asks are out: aurora-silicon/linux#2198 (the follow-up of 11-19:
-     what bit 3 of the gate word is), malik-na/linux-aurora#77 (11-20: Naeem's commit-state tracer for a
-     J314s, or one snapshot under macOS on a T600x) and omacom/linux-aurora#290 (11-20: maralcbr's
-     J314s trace or a dump near the commit). Each reply needs Corey's OK.
-   - **macOS's commit state is the thing to get.** If a script or a capture comes back: Corey can run
-     m1n1 on this Mac from their Linux desktop (A3 and A4 below; a second volume with an older macOS,
-     since the installed 26.6.2 can't be the guest). Claude writes no m1n1 code; whether Claude may read
-     a capture is Corey's decision, still open. Claude's part that is free of both: T6000's address list
-     as a plain file, and this Mac's own state at the commit read by the look.
-   - **The ninth run, built and ready: `run-floor --no-reading --m1-ll-retn`** (RESEARCH.md,
-     "`ll_retn=1` as built", 2026-11-20): CPU0's last WFI with retention left on (CYC_OVRD's bit 0
-     clear) and its timer at 25 s, one value changed in run B's recipe with ATC0's chain lowered, and
-     a look when it comes back, with the E complex's state word in the record (0x44 until the
-     sequencer has cycled it; the gate word says nothing once CPU0 is up again). A return with the state
-     word changed, 0x2922c0040 no longer 3 or PHASE past 4 is a look into the dark state; a return with
-     all as found, or no return, closes the idea. The light filmed or watched to the restart at 70 s;
-     the nights off around it. Corey runs it when they choose; an answer upstream first would be read
-     before it.
-   - Kept as ideas, not built: a secondary core as the last one down with its RVBAR at a stub of ours
-     and an interrupt to start it with no core up (two unknown mechanisms); the other words on at the
-     commit that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4: macOS's table
-     doesn't lower them either).
+1. **The ninth run, BLOCKED until its three safeguards are in place: the reference's two steps for the
+   engine's opening, in a safe boot without the enclave's driver** (RESEARCH.md, "The weekend's
+   answers", 2026-11-23). Ante042's J314s completes the entry and wakes. Two things its driver does
+   that this recipe never did, both at B2's opening:
+   - the display blocks' fabric handshake (block + 0x8014 := 1, + 0x82bc := 1, 2, 4, after a set-up
+     table) while the displays go down: by the driver's comment dispext0's sets bit 2 of 0x2922c0044,
+     which is B2's first poll (`disp_hs=1`);
+   - bit 2 of the PMGR control word 0x28e0cc200, "wait for the SEP to power-gate", cleared when no
+     driver puts the SEP to sleep; here it reads 4 (`sep_pg=1`).
+   **The one recipe to run is `run-floor --no-reading --m1-disp-hs`**: `--m1-a2-pre-blink`'s line with
+   both, after `pkexec sleep-drain-safe boot --no-sep`. Three changes at once against
+   `--m1-a2-pre-blink`'s run of 11-19, then: the handshakes, the bit, and no `apple_sep` in the boot.
+   (The last run made, the eighth, was `--m1-wake-all`, that recipe with every named AP wake source masked;
+   this one has the recipe's own masks again, the PMU's source open: a fourth difference from run
+   eight, none from the baseline.) A light that stops is evidence about
+   that combination and says B2 reached its tenth SIO word, not that the entry finished and not which
+   change did it; the record's read-backs say what each write did to the gate word with CPU0 up (the
+   nibble before the handshakes and after each; the control word and the nibble after the clear).
+   - **Not to be handed over before all of:** `sleep-drain-safe boot --no-sep` merged (#131) *and
+     installed* (`pkexec bash install.sh`: the installed copy would otherwise ignore the option and
+     make an ordinary safe boot); `run/sep-pg` merged with `run-floor`'s refusal when `apple_sep` is
+     loaded, both reviews done, and the module built from `main`; and, in the safe boot itself before
+     the run, `sleep-drain-safe status` saying the driver is kept out and isn't loaded. Why: on this
+     Mac `apple_sep` runs with `xart_guard=0` and xART writes enabled, and the safe boot's read-only
+     root doesn't cover that store.
+   - `--m1-sep-pg` (the bit alone) is built with it and not planned as a run of its own.
+   - `ll_retn=1` (`--m1-ll-retn`) is built and merged and **not run**: held behind this.
+   - At the desk: the reference driver against the recipe, difference by difference
+     (`~/.local/share/sleep-drain/ante042-20261123/diff-vs-recipe.md`), for what stops the entry next
+     if the opening passes: the PMP powered off (its word is on this project's never-write list: a
+     fresh OK), `ps_late[]`'s fifty words, the memory controller's drain, `a2_pre=1`'s three moves,
+     which the reference never makes, and two late reads of APCIe power words it found fatal.
+   - A reply to Ante042 and RyanTheTide on #2198, with the run's result: needs Corey's OK. A question
+     for Ante042 in it: how often their no-driver fallback ran.
+   - Open asks: malik-na/linux-aurora#77 and omacom/linux-aurora#290 (11-20), unanswered. They stay
+     open: macOS's commit state would still serve for whatever stops the entry next. Only an entry
+     shown complete retires them.
+   - **After an entry that completes**, the fix is a port: Ante042's t6000 core onto upstream's
+     `sleep.c` (their notes map it area by area), and a wake needs the loader's mailbox, which is
+     m1n1's or aura's side and not Claude's to write.
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
