@@ -186,8 +186,9 @@ cmd_boot() {
   # the same way, plus the flag the hook looks for.
   # From grub.cfg without this script's own section: a safe entry is never the line to copy.
   regular_cmdline() {
+    # No exit at the match: awk reads to the end, or without_section would die of SIGPIPE on a long grub.cfg.
     without_section "$GRUB_CFG" "$SCRIPT" |
-      awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }'
+      awk '!found && $1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; found = 1 }'
   }
   cmdline=$(regular_cmdline)
   [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"

@@ -381,6 +381,24 @@ def main():
         check(p.returncode != 0 and "no /vmlinuz-linux-aurora entry" in p.stderr and nxt(t) == NOSEP and image(t)[0] == "the image the queued entry boots\n",
               "and with no regular entry to begin with, only this script's own: refused before the image is built; a safe entry isn't copied",
               p.stdout + p.stderr)
+    # A long grub.cfg: a submenu of 300 kB after the regular entry, more than a pipe holds, with other kernels' lines in it.
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t)
+        sub = "submenu 'Advanced options' {\n" + "".join(
+            f"menuentry 'Omarchy, with Linux fallback {i}' {{\n    linux /vmlinuz-linux-aurora root=UUID=bbbb{i} ro single\n"
+            f"    initrd /initramfs-fallback-{i}.img\n    # {'padding ' * 40}\n}}\n" for i in range(800)) + "}\n"
+        assert len(sub) > 300000
+        for f in ("regular", "boot/grub/grub.cfg"):
+            with open(os.path.join(t, f)) as fh:
+                reg = fh.read()
+            with open(os.path.join(t, f), "w") as fh:
+                fh.write(reg.replace("### END /etc/grub.d/10_linux ###\n", sub + "### END /etc/grub.d/10_linux ###\n"))
+        for args, want in ((["boot"], PLAIN), (["boot", "--no-sep"], NOSEP)):
+            p = run(t, tool, *args)
+            check(p.returncode == 0 and nxt(t) == want and entry_line(cfg_of(t), PLAIN) == f"linux /vmlinuz-linux-aurora {REG} sleepdrain.safe"
+                  and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {REG} {NO_SEP} sleepdrain.safe",
+                  f"{' '.join(args)} with a 300 kB submenu after the regular entry: the first regular line is the one copied, and the command finishes",
+                  f"rc {p.returncode}\n" + p.stdout + p.stderr[:600])
     # Bytes, not characters: a line of two-byte characters that fits by count and not by size.
     with tempfile.TemporaryDirectory() as t:
         base = "root=UUID=aaaa rw pad="
