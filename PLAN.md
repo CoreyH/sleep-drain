@@ -61,8 +61,11 @@ this section where they differ.
    - bit 2 of the PMGR control word 0x28e0cc200, "wait for the SEP to power-gate", cleared when no
      driver puts the SEP to sleep; here it reads 4 (`sep_pg=1`).
    **The one recipe to run is `run-floor --no-reading --m1-disp-hs`**: `--m1-a2-pre-blink`'s line with
-   both, after `pkexec sleep-drain-safe boot --no-sep`. Three changes at once against the last run,
-   then: the handshakes, the bit, and no `apple_sep` in the boot. A light that stops is evidence about
+   both, after `pkexec sleep-drain-safe boot --no-sep`. Three changes at once against
+   `--m1-a2-pre-blink`'s run of 11-19, then: the handshakes, the bit, and no `apple_sep` in the boot.
+   (The last run made, the eighth, was `--m1-wake-all`, that recipe with every wake source masked;
+   this one has the recipe's own masks again, the PMU's source open: a fourth difference from run
+   eight, none from the baseline.) A light that stops is evidence about
    that combination and says B2 reached its tenth SIO word, not that the entry finished and not which
    change did it; the record's read-backs say what each write did to the gate word with CPU0 up (the
    nibble before the handshakes and after each; the control word and the nibble after the clear).
