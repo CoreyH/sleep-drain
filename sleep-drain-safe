@@ -143,11 +143,18 @@ blacklist_unsure() {
 # Whether an entry's linux line fits the kernel's command line: arm64's buffer
 # is 2048 bytes with its NUL, GRUB puts BOOT_IMAGE= and the kernel's path
 # first, and what doesn't fit is cut off at the end, which is where the hook's
-# flag is: a boot without it isn't read-only.
+# flag is: a boot without it isn't read-only. Counted in bytes. A line with
+# quoting or a backslash reaches the kernel in another form than it has here
+# (GRUB takes quotes off and puts its own on, with escapes), so such a line is
+# taken only at under half the limit, which that can't double past.
 CMDLINE_MAX=2048
 fits() {
-  local full="BOOT_IMAGE=/vmlinuz-linux-aurora ${1#linux /vmlinuz-linux-aurora }"
-  ((${#full} < CMDLINE_MAX))
+  local LC_ALL=C full="BOOT_IMAGE=/vmlinuz-linux-aurora ${1#linux /vmlinuz-linux-aurora }"
+  if [[ $full == *[\"\'\\]* ]]; then
+    ((2 * ${#full} < CMDLINE_MAX))
+  else
+    ((${#full} < CMDLINE_MAX))
+  fi
 }
 
 # have_entry CFG ID LINE: CFG's menu entry ID has exactly LINE as its linux line.
@@ -175,6 +182,24 @@ cmd_boot() {
   [[ -f /etc/initcpio/hooks/sleepdrain-safe && -f /etc/initcpio/install/sleepdrain-safe ]] ||
     die "the sleepdrain-safe hook isn't installed: run install.sh"
 
+  # The regular entry's command line, so the safe boot opens the same root
+  # the same way, plus the flag the hook looks for.
+  cmdline=$(awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }' "$GRUB_CFG")
+  [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"
+  cmdline=${cmdline% sleepdrain.safe}
+  boot_uuid=$(grub-probe --target=fs_uuid /boot)
+  # Refusals first, before the image, the script or grub.cfg is touched: what an
+  # earlier "boot" queued stays what it was, image included.
+  [[ $cmdline != *'$'* ]] ||
+    die "the regular command line has a GRUB variable in it, so what the kernel gets is only known at boot; nothing written, nothing selected: $cmdline"
+  ! blacklist_unsure "$cmdline" ||
+    die "the regular command line has a module blacklist and quoting, so what the kernel would end up blocking can't be worked out here; nothing written, nothing selected: $cmdline"
+  plain_line="linux /vmlinuz-linux-aurora $cmdline sleepdrain.safe"
+  nosep_line="linux /vmlinuz-linux-aurora $(no_sep_cmdline "$cmdline") sleepdrain.safe"
+  sep_blacklisted "${nosep_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep on the module blacklist of: $cmdline"
+  fits "$plain_line" && fits "$nosep_line" ||
+    die "a safe entry's command line could pass the kernel's $CMDLINE_MAX bytes and lose its end, where the read-only flag is; nothing written, nothing selected"
+
   # Built fresh every time, so it always matches the installed kernel.
   mkdir -p "$IMAGE_DIR"
   mkinitcpio -k "$release" -A sleepdrain-safe -g "$IMAGE.new" > "$IMAGE_DIR/mkinitcpio.log" 2>&1 ||
@@ -182,21 +207,6 @@ cmd_boot() {
   lsinitcpio -a "$IMAGE.new" 2> /dev/null | grep 'sleepdrain-safe' > /dev/null ||
     { rm -f "$IMAGE.new"; die "the new image has no sleepdrain-safe hook"; }
   mv -f "$IMAGE.new" "$IMAGE"
-
-  # The regular entry's command line, so the safe boot opens the same root
-  # the same way, plus the flag the hook looks for.
-  cmdline=$(awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }' "$GRUB_CFG")
-  [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"
-  cmdline=${cmdline% sleepdrain.safe}
-  boot_uuid=$(grub-probe --target=fs_uuid /boot)
-  # Refusals first, before anything is written: what an earlier "boot" queued stays what it was.
-  ! blacklist_unsure "$cmdline" ||
-    die "the regular command line has a module blacklist and quoting, so what the kernel would end up blocking can't be worked out here; nothing written, nothing selected: $cmdline"
-  plain_line="linux /vmlinuz-linux-aurora $cmdline sleepdrain.safe"
-  nosep_line="linux /vmlinuz-linux-aurora $(no_sep_cmdline "$cmdline") sleepdrain.safe"
-  sep_blacklisted "${nosep_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep on the module blacklist of: $cmdline"
-  fits "$plain_line" && fits "$nosep_line" ||
-    die "a safe entry's command line would pass the kernel's $CMDLINE_MAX bytes and lose its end, where the read-only flag is; nothing written, nothing selected"
 
   # Two entries with ids of their own, both always there, so that selecting
   # one never rewrites the entry an earlier "boot" has queued.
