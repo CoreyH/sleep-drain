@@ -16,6 +16,12 @@ used to sit in CLAUDE.md, entry for entry):
   Mac's ADT dump when it's there.
 - `tests/safe_boot_hook_test.py` runs the safe boot's initramfs hook in mkinitcpio's busybox ash, in a
   bubblewrap sandbox with stub mount and blockdev, one failure per case.
+- `tests/safe_boot_boot_test.py` runs `sleep-drain-safe boot` and `boot --no-sep` with its fixed paths pointed
+  into a scratch directory and GRUB's and mkinitcpio's tools replaced by stubs: the two entries it writes, each
+  with its own id (the regular command line; the same with `apple_sep` added to the last `module_blacklist=`'s
+  list), which one each command selects, that a selection queued earlier outlasts a later command that fails,
+  that a regeneration is made again after one that failed, that a candidate `grub.cfg` without the blacklist is
+  refused before it replaces the live one, and the refusals. No boot is made.
 - `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe boot and `collect` in a fake next
   boot.
 - `tests/m1_crumbs_test.py` runs `e1-hook/m1-crumbs` on a fake PMU nvmem file, position=1's samples made by
