@@ -5443,72 +5443,124 @@ that driver does and this recipe never did sit at B2's opening:
 If the comment is right, the reading of 11-18 and -19 was wrong: the gate word's bit 2 is not "the third
 complex down", it can be set with every core up, and a core can read it. The fit to a count stood on four
 readings in which bits 0 and 1 moved and bit 2 never did; what bits 0 and 1 are is open again. This run
-reads the word before and after each handshake, with CPU0 up, and so tests the comment directly.
+samples the word around each block's writes, with CPU0 up: it can show the bit set where the comment says
+it would be, not which write set it.
 
 **What they are.**
 - `e1_hook disp_hs=1` (needs `disp_off=1` and `gates_mark=1`). In K3b, for each DCP that stopped, disp0 then
   dispext0: if its FE power word reads powered, the reference's 65 set-up writes to its fabric block
   (0x38c000000 with `disp_init_38c[]`, 0x28a000000 with `disp_init_28a[]`, copied from Ante042's `s2r.c` and
-  checked against it by the test, with a checksum pinned); the CPU0 word down, as K3b does it now; if the FE
-  word still reads powered, the handshake's four writes; the FE word down. A block whose FE reads off gets
-  no write: "the fabric block is only there while its fe is powered: a write to it otherwise is an SError".
-  Neither block is ever read. 0x2922c0044 is read at K3b's start and after each block.
-- `e1_hook sep_pg=1` (needs `gates_mark=1`). In step 7, where the wake masks are written: 0x28e0cc200 read,
-  written back with bit 2 clear if it is set, read again; then the SEP's power word and 0x2922c0044 read.
-- **Both refuse to load with a driver bound to the SEP's device**, and `run-floor` refuses both options while
-  `apple_sep` is loaded: the run is made after `pkexec sleep-drain-safe boot --no-sep` (the section below
-  says why: on this Mac the enclave's store is open to its driver).
+  checked against it by the test, with a checksum pinned), then 0x2922c0044 read; the CPU0 word down, as
+  K3b does it now; if that word read off and the FE word still reads powered, the handshake's four writes;
+  the FE word down. A block is written only right after its FE word read powered, and that read and the
+  writes behind it are made with interrupts off ("the fabric block is only there while its fe is powered: a
+  write to it otherwise is an SError"). Neither block is ever read. 0x2922c0044 is also read at K3b's start
+  and after each DCP's place in the loop.
+  The table has the handshake's four writes in it already, at its entries 29, 41, 53 and 63 of the 65
+  (from 0), so a block gets them twice: in the table with its CPU0 word up, and again after that word went
+  down. So "the handshake wasn't made" doesn't mean nothing was written: the table's flag says.
+- `e1_hook sep_pg=1` (needs `gates_mark=1`). In step 7, where the wake masks are written: 0x28e0cc200 and
+  the SEP's power word (0x28e580c00) read; the control word written back with bit 2 clear **only if the bit
+  is set and the SEP's power word reads actual state 0**; the control word read again; 0x2922c0044 read.
+  A bit that is set under an enclave that reads powered is left, and the byte says so.
+- **Neither is made with the SEP's driver in the boot**: the run is made after `pkexec sleep-drain-safe boot
+  --no-sep` (the section below says why: on this Mac the enclave's store, xART, is open to its driver and
+  the safe boot's read-only root doesn't cover it). Four things hold that, for both options: `run-floor`
+  refuses while `apple_sep` is loaded; it refuses unless the last `module_blacklist=` on the kernel's
+  command line lists `apple_sep` (a line with a blacklist and a quote or backslash it refuses rather than
+  guess); the module refuses to load with a driver bound to the SEP's device; and at the first suspend's
+  prepare, before the DCPs' shutdown, it looks again, and a driver bound by then calls the replay off with
+  nothing stopped or written (the suspend fails at prepare_late and the Mac wakes).
+
+**Where K3b differs from the reference**, each a reason the run could miss what the reference gets:
+- the reference takes the displays down before `slpa`; K3b is after it;
+- it makes the handshake and the FE word's power-down even if the CPU0 word didn't read off; here neither
+  is made then;
+- it takes down every block whose FE word reads powered, whatever its DCP's state; here only the blocks of
+  DCPs that stopped;
+- it refuses to sleep if a display's word doesn't read off; here the run goes on (byte B's bit 4 says);
+- it also takes dispext1's block and the GPU's port down;
+- its power-word values are macOS's (0x0f0400ff, 0x0f0403f0; 0x3f0); `m1_ps_off()` clears the target as
+  the power-state driver does;
+- it requires the SEP's power word to read 0 within 5 s after `apple_sep` told the enclave to sleep (its
+  tested path); here no driver ever spoke to the enclave in this boot, which is its fallback, and how
+  often that ran on their Mac isn't known.
+One thing is not a difference: the two displays' requests at the PMP are withdrawn here too, and earlier
+(`sio_on=1` has `run-floor` run `sleep-drain-pmp release 0xc 0xd`, made at the suspend's noirq), so the
+tables are written with the request gone and the PMP still running (K4 stops it after K3b).
 
 **The record**, in the bytes of 0x6008-0x600e the family doesn't use, each field with K1's mark until it lands:
 
 | bytes | |
 |---|---|
-| 0x6009 (`sep_pg=1`) | bit 7; bit 6 the wait bit was set as found; bit 5 the word read back with it clear and the rest as found; bit 4 the SEP's power word read actual 0; bits 3:0 0x2922c0044's low nibble then |
-| 0x600a (`disp_hs=1`) | bit 7; bit 6 dispext0's handshake was made; bit 5 disp0's; bits 3:0 0x2922c0044's low nibble at K3b's start |
+| 0x6009 (`sep_pg=1`) | bit 7; bit 6 the wait bit was set as found; bit 5 the word read back with it clear and the rest as found; bit 4 the SEP's power word read actual 0, before the write; bits 3:0 0x2922c0044's low nibble after it. Bit 6 without bits 5 and 4: the enclave read powered and the write wasn't made |
+| 0x600a (`disp_hs=1`) | bit 7; bit 6 dispext0's handshake was made; bit 5 disp0's; bits 3:0 the nibble at K3b's start |
 | 0x600b | bits 7:4 the nibble after dispext0's place in K3b; bits 3:0 after disp0's |
+| 0x600c | bit 7; bit 6 dispext0's set-up table was written; bit 5 disp0's; bits 3:0 the nibble right after dispext0's table |
+| 0x600d (best effort) | bit 7; bits 3:0 the nibble right after disp0's table. 0x600d was lost across the restart in the runs that wrote it: 0x00 reads as "not kept" |
 
-`run-floor --m1-sep-pg` is `--m1-a2-pre-blink`'s line with `sep_pg=1`; `--m1-disp-hs` is that with
-`disp_hs=1`, and is the one to run.
+The four `disp_hs` bytes go out in one command before K3b's stage. `run-floor --m1-sep-pg` is
+`--m1-a2-pre-blink`'s line with `sep_pg=1`; `--m1-disp-hs` is that with `disp_hs=1`, and is the one to run.
 
 **How `--m1-disp-hs` reads** (the keyboard filmed or watched; WD1's marker at 90 s):
-- **the nibbles first, whatever the light does:** bit 2 clear before the handshakes and set after dispext0's
-  (or disp0's) says the comment is right and B2's first poll is met before the commit, with a core up. Bit 2
-  clear in all three says the handshake as made here doesn't set it: the reference also drops each block's
-  request at the PMP before its CPU0 word and writes macOS's own values to the power words (0x0f0400ff,
-  0x0f0403f0; 0x3f0), which this step doesn't, and takes dispext1's and the GPU's ports down too.
-- **0x600a's bits 6:5** say whether each block's FE was powered when its turn came; a handshake not made is
-  a block that had no power, and nothing was written to it.
+- **the samples first, whatever the light does**, in the order taken: K3b's start; after disp0's table;
+  after disp0's place; after dispext0's table; after dispext0's place; step 7's (0x6009), the last before
+  the commit. The decoder names the first of them in which bit 2 read set. That says where the bit was
+  first *seen* set: between two samples lie a table, or a CPU0 power-down, a handshake and an FE
+  power-down, and the samples can't tell those apart, nor say the bit stayed set until B2 polled it. Set
+  after dispext0's table or place fits the reference's comment. Clear in every sample says the steps as
+  made here don't set it with CPU0 up: see the differences above.
+- **the flags** (handshake made, table written) say what each block got; a block with neither had no power
+  when its turn came, or its DCP didn't stop.
 - **the light stops:** B2 reached its tenth SIO word, for the first time in any run. Evidence about the
-  three changes together (the handshakes, the bit, no `apple_sep`); the nibbles and 0x6009 say what each
-  write did. Then the restart's time says how far it went: WD1's marker at 90 s if B2 stopped before its
+  three changes together (the display steps, the bit, no `apple_sep`); the samples and 0x6009 say what the
+  writes did. Then the restart's time says how far it went: WD1's marker at 90 s if B2 stopped before its
   op 223; up to about 150 s after that op if it zeroed WD1's count; WD2's 120 s if A2 never closed.
 - **the light stops and no restart comes:** the entry may have completed. Nothing this recipe leaves armed
   is known to wake the Mac (nub-spmi0's enables are zeroed, every AP wake source but the PMU's is masked,
   the alarm is an hour out): wait five minutes from the dark screen, then hold the power button.
-- **the light to the restart at 90 s:** B2 still short of its power-downs, with the nibbles to say whether
+- **the light to the restart at 90 s:** B2 still short of its power-downs, with the samples to say whether
   its first poll was met.
+- **no light at all, dark, no restart:** new with this run. No watchdog is armed at K3b and the light isn't
+  on yet (WD1's marker is step 4's, the light step 8's): a block write that stalls, or one that faults
+  where the panic's restart fails, leaves the Mac dark with the light never having blinked. Hold the power
+  button; the record is stage 0x02 with K1's marks. No light *ever* is what tells this from a completed
+  entry, where it blinks first.
 - **a restart about 10 s after the dark screen, stage 0x02 with 0x01 at 0x600a:** a write to a display
   block faulted (inferred from `kernel.panic=10`; not seen).
 Odds that the light stops, mine: one in two.
 
-**What is new on hardware.** Writes to two fabric blocks nothing here has written: 65 set-up words and the
-handshake's four in each of 0x38c000000 and 0x28a000000 (the table's last four are the handshake's too, so a
-block gets it twice, as in the reference), guarded by the FE word's read. One bit of one PMGR control word.
-Reads new in this state: the control word, the SEP's power word, and 0x2922c0044 in step 7 and in K3b. Three
-more PMU scratch bytes (0x6009-0x600b), inside the range OK'd on 2026-11-16. Nothing outlasts the restart.
-The MMIO-write tripwire goes from 74 to 80, each site named in the test.
+**What is new on hardware.** Writes to two fabric blocks nothing here has written: up to 69 in each of
+0x38c000000 and 0x28a000000 (the table's 65, the handshake's four), each group behind the FE word's read
+with interrupts off. One bit of one PMGR control word, and only under an enclave that reads off. Reads new
+in this state: the control word, the SEP's power word, and 0x2922c0044 in step 7 and in K3b. Five more PMU
+scratch bytes (0x6009-0x600d), inside the range OK'd on 2026-11-16. Nothing outlasts the restart. The
+MMIO-write tripwire goes from 74 to 80, each site named in the test.
 
-**Checked.** Built by a subagent from three written briefs in its own worktree, then read here.
-`tests/m1_crumbs_test.py` (1,583 ok): the header's helpers; `m1_sp_clear()` and K3b compiled in user space
-against fake pages with a write log (exactly one write, of the word less bit 2, only if the bit is set; per
-block the table, the CPU0 word, the handshake, the FE word in that order; an FE that reads off: no write to
-the block; without `disp_hs`, K3b's accesses identical to a copy of the function before the change, in
-eight scenarios); the tables against the reference's file and their checksums; `m1_pmu_ok()`, K1 and the
-undo over every combination of the three options, with the real functions; the load's refusals, the SEP's
-driver among them; the decoder over each field, together and alone, leftovers, the stages each record can
-stand under, `--clear`. `tests/e1a_launcher_test.py` (3,208 ok in full): the two options, their refusal with
-`apple_sep` loaded, every other option unchanged by it. 73 `sp` and 65 `dh` mutants, none missed, each by a
-failing check.
+**Checked.** Built by a subagent from written briefs in its own worktree, then read here; reviewed by
+Pullfrog and by one adversarial subagent, whose findings became eight fixes (commit 7421677): the boot's
+own policy checked by the launcher and the SEP's device again at prepare (before: a module absent at the
+launch could have been loaded later, and `disp_hs=1` alone loaded with the driver bound); no clear while
+the enclave reads powered; interrupts off around each guarded group; a sample after each table; the
+decoder and this section saying where the bit was first seen, not what set it; the docs' errors (the PMP
+requests *are* withdrawn; where the handshake sits in the table; the dark ending); a 64-bit span check.
+`tests/m1_crumbs_test.py` (1,595 ok): the header's helpers; `m1_sp_clear()` and K3b compiled in user space
+against fake pages with a write log (at most one write, of the word less bit 2, never with the SEP's word
+reading powered, in 28 runs of steps 7 and 8; per block the table, the sample, the CPU0 word, the
+handshake, the FE word in that order, every block write inside an interrupts-off group that opens with
+that block's FE read; an FE that reads off: no write to the block; without `disp_hs`, K3b's accesses
+identical to a copy of the function before the change, in eight scenarios); the tables against the
+reference's file and their checksums; `m1_pmu_ok()`, K1 and the undo over every combination of the three
+options, with the real functions; the load's refusals and the recheck at prepare; the decoder over each
+field, together and alone, leftovers, the stages each record can stand under, `--clear`.
+`tests/e1a_launcher_test.py` (3,306 ok in full): the two options, their refusals with `apple_sep` loaded
+and over fourteen command lines, every other option unchanged. 95 `sp` and 96 `dh` mutants: in the run of
+197 (with older ones whose lines moved) one was missed and two were caught only by a build failure; the
+three were rewritten or given checks and are each caught by a failing check. The 197 weren't run again
+after those last edits, which touched only the tests; the stale check and both test files were.
+Not checked by anything here: that the FE words read powered at K3b on this Mac (if not, no block is
+written and the record says so), and the read of the SEP's device without its lock at prepare, which
+rests on reading the kernel (user space frozen, probes deferred from the suspend's `dpm_prepare()` on).
 
 ### The weekend's answers: a J314s that completes the entry, and a bit that makes the engine wait for the SEP (2026-11-23)
 
