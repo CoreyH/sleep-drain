@@ -22,13 +22,14 @@
 # The regular initramfs and boot entry stay as they are. The GRUB entry is
 # never the default: "boot" selects it for one restart with grub-reboot.
 #
-# "boot --no-sep" adds module_blacklist=apple_sep to that safe boot's kernel
-# command line, so the Secure Enclave's driver can't load in it by any path:
-# Linux then never starts the enclave, and nothing can service a write to its
-# store (xART: an APFS extent the driver writes directly, which the read-only
-# root doesn't cover). For a run that lets the SoC go down around the enclave
-# (e1-hook's sep_pg=1). Touch ID doesn't work in that boot; the password does.
-# A plain "boot" afterwards writes the entry without it again.
+# "boot --no-sep" selects a second entry, the same but with apple_sep on the
+# kernel's module blacklist, so the Secure Enclave's driver can't load in that
+# boot by any path: Linux then never starts the enclave, and nothing can
+# service a write to its store (xART: an APFS extent the driver writes
+# directly, which the read-only root doesn't cover). For a run that lets the
+# SoC go down around the enclave (e1-hook's sep_pg=1). Touch ID doesn't work
+# in that boot; the password does. Both entries are always in grub.cfg, each
+# with its own id, so choosing one never changes what an earlier "boot" queued.
 set -euo pipefail
 
 GRUB_CFG=/boot/grub/grub.cfg
@@ -36,8 +37,8 @@ SCRIPT=/etc/grub.d/44_sleep_drain_safe
 IMAGE_DIR=/boot/sleep-drain-safe
 IMAGE=$IMAGE_DIR/initramfs.img
 ENTRY=sleep-drain-safe
+ENTRY_NOSEP=sleep-drain-safe-nosep
 RUN=/run/sleep-drain-safe
-NO_SEP=module_blacklist=apple_sep
 
 die() { echo "sleep-drain-safe: $*" >&2; exit 1; }
 need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }
@@ -76,8 +77,14 @@ regen_grub() {
     return 1
   fi
   if ! cmp -s <(without_section "$new" "$SCRIPT") <(without_section "$GRUB_CFG" "$SCRIPT"); then
-    echo "sleep-drain-safe: grub-mkconfig would change more than the safe entry; grub.cfg left as it is:" >&2
+    echo "sleep-drain-safe: grub-mkconfig would change more than the safe entries; grub.cfg left as it is:" >&2
     diff <(without_section "$GRUB_CFG" "$SCRIPT") <(without_section "$new" "$SCRIPT") >&2 || true
+    rm -f "$new"
+    return 1
+  fi
+  # regen_grub CHECK: CHECK is called with the candidate and must pass before it replaces the live grub.cfg.
+  if [[ -n ${1:-} ]] && ! "$1" "$new"; then
+    echo "sleep-drain-safe: the regenerated grub.cfg doesn't have the safe entries as written; grub.cfg left as it is" >&2
     rm -f "$new"
     return 1
   fi
@@ -93,8 +100,42 @@ regen_grub() {
   fi
 }
 
+# Whether apple_sep is in the module blacklist of a kernel command line. The
+# kernel keeps the last module_blacklist= it is given, not the sum of them.
+sep_blacklisted() {
+  local a last=
+  for a in $1; do
+    [[ $a != module_blacklist=* ]] || last=${a#module_blacklist=}
+  done
+  [[ ,$last, == *,apple_sep,* ]]
+}
+
+# A command line with apple_sep added to its module blacklist: one more
+# module_blacklist= at the end that repeats the last one's list, since a second
+# argument replaces the first and would let that one's modules load again.
+no_sep_cmdline() {
+  local a last=
+  if sep_blacklisted "$1"; then
+    echo "$1"
+    return
+  fi
+  for a in $1; do
+    [[ $a != module_blacklist=* ]] || last=${a#module_blacklist=}
+  done
+  echo "$1 module_blacklist=${last:+$last,}apple_sep"
+}
+
+# have_entry CFG ID LINE: CFG's menu entry ID has exactly LINE as its linux line.
+have_entry() {
+  awk -v id="--id $2 " -v want="$3" '
+    index($0, id) { inside = 1; next }
+    inside && $1 == "linux" { sub(/^[ \t]+/, ""); if ($0 == want) found = 1; inside = 0 }
+    inside && $0 ~ /^}/ { inside = 0 }
+    END { exit !found }' "$1"
+}
+
 cmd_boot() {
-  local nosep=0 extra=
+  local nosep=0
   if [[ ${1:-} == --no-sep ]]; then
     nosep=1
     shift
@@ -102,7 +143,7 @@ cmd_boot() {
   (($# == 0)) || die "usage: sleep-drain-safe boot [--no-sep]"
   need_root
   ! is_safe || die "this is a safe boot already; restart first"
-  local release cmdline boot_uuid want
+  local release cmdline boot_uuid want plain_line nosep_line id line old
   release=$(regular_release)
   [[ -f /etc/initcpio/hooks/sleepdrain-safe && -f /etc/initcpio/install/sleepdrain-safe ]] ||
     die "the sleepdrain-safe hook isn't installed: run install.sh"
@@ -120,11 +161,13 @@ cmd_boot() {
   cmdline=$(awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }' "$GRUB_CFG")
   [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"
   cmdline=${cmdline% sleepdrain.safe}
-  # The regular entry never carries it: a line that did would mean the copy came from the safe entry itself.
-  [[ " $cmdline " != *" $NO_SEP "* ]] || die "the regular entry's command line already has $NO_SEP: not the line to copy"
-  ((!nosep)) || extra=" $NO_SEP"
   boot_uuid=$(grub-probe --target=fs_uuid /boot)
+  plain_line="linux /vmlinuz-linux-aurora $cmdline sleepdrain.safe"
+  nosep_line="linux /vmlinuz-linux-aurora $(no_sep_cmdline "$cmdline") sleepdrain.safe"
+  sep_blacklisted "${nosep_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep on the module blacklist of: $cmdline"
 
+  # Two entries with ids of their own, both always there, so that selecting
+  # one never rewrites the entry an earlier "boot" has queued.
   want=$(cat <<EOF
 #!/bin/sh
 # Written by sleep-drain-safe for linux-aurora; remove with: sleep-drain-safe remove
@@ -135,26 +178,43 @@ menuentry 'Safe boot for sleep experiments (disk read-only)' --class omarchy --c
     insmod part_gpt
     insmod fat
     search --no-floppy --fs-uuid --set=root $boot_uuid
-    linux /vmlinuz-linux-aurora $cmdline$extra sleepdrain.safe
+    $plain_line
+    initrd /sleep-drain-safe/initramfs.img
+}
+menuentry 'Safe boot for sleep experiments (disk read-only, no Secure Enclave driver)' --class omarchy --class gnu-linux --id $ENTRY_NOSEP {
+    load_video
+    set gfxpayload=keep
+    insmod part_gpt
+    insmod fat
+    search --no-floppy --fs-uuid --set=root $boot_uuid
+    $nosep_line
     initrd /sleep-drain-safe/initramfs.img
 }
 MENU
 EOF
 )
-  if [[ ! -f $SCRIPT || $(< "$SCRIPT") != "$want" ]] || ! grep -q -- "--id $ENTRY " "$GRUB_CFG"; then
+  entries_ok() { have_entry "$1" "$ENTRY" "$plain_line" && have_entry "$1" "$ENTRY_NOSEP" "$nosep_line"; }
+  # By what grub.cfg has now, not by whether the script was written before: a
+  # regeneration that failed last time is made again.
+  if [[ ! -f $SCRIPT || $(< "$SCRIPT") != "$want" ]] || ! entries_ok "$GRUB_CFG"; then
+    old=
+    [[ ! -f $SCRIPT ]] || old=$(< "$SCRIPT")
     printf '%s\n' "$want" > "$SCRIPT"
     chmod 755 "$SCRIPT"
-    regen_grub || die "the safe entry isn't in grub.cfg (see above); nothing selected"
+    if ! regen_grub entries_ok; then
+      # The script goes back to what grub.cfg was made from.
+      if [[ -n $old ]]; then printf '%s\n' "$old" > "$SCRIPT"; else rm -f "$SCRIPT"; fi
+      die "the safe entries aren't in grub.cfg as written (see above); nothing selected"
+    fi
   fi
-  grep -q -- "--id $ENTRY " "$GRUB_CFG" || die "no $ENTRY entry in $GRUB_CFG"
-  # What the entry in grub.cfg says now, not what was asked for, and before anything is selected.
-  if grep -A8 -- "--id $ENTRY " "$GRUB_CFG" | grep -q -- " $NO_SEP sleepdrain.safe\$"; then
-    ((nosep)) || die "the safe entry in $GRUB_CFG still has $NO_SEP; nothing selected"
-    grub-reboot "$ENTRY"
-    echo "the next restart is a safe boot ($release, disk read-only) without the Secure Enclave's driver ($NO_SEP); every restart after that is the regular one"
+  if ((nosep)); then id=$ENTRY_NOSEP line=$nosep_line; else id=$ENTRY line=$plain_line; fi
+  have_entry "$GRUB_CFG" "$id" "$line" || die "no $id entry with its command line in $GRUB_CFG; nothing selected"
+  grub-reboot "$id" || die "grub-reboot failed; nothing new selected"
+  if ((nosep)); then
+    echo "the next restart is a safe boot ($release, disk read-only) without the Secure Enclave's driver (apple_sep on the module blacklist); every restart after that is the regular one"
+  elif sep_blacklisted "$cmdline"; then
+    echo "the next restart is a safe boot ($release, disk read-only); the regular command line already keeps apple_sep out; every restart after that is the regular one"
   else
-    ((!nosep)) || die "the safe entry in $GRUB_CFG doesn't have $NO_SEP; nothing selected"
-    grub-reboot "$ENTRY"
     echo "the next restart is a safe boot ($release, disk read-only); every restart after that is the regular one"
   fi
 }
@@ -169,8 +229,8 @@ cmd_status() {
     echo "this boot is a safe boot: $dev read-only $([[ $ro == 1 ]] && echo yes || echo "NO ($ro)")," \
       "/ on $(findmnt -no FSTYPE /)"
     df -h --output=used,size "$RUN/rw" | tail -1 | awk '{ print "RAM used by changes: " $1 " of " $2 }'
-    if [[ " $(< /proc/cmdline) " == *" $NO_SEP "* ]]; then
-      echo "the Secure Enclave's driver is kept out of this boot ($NO_SEP): apple_sep $([[ -d /sys/module/apple_sep ]] && echo "IS LOADED all the same" || echo "isn't loaded")"
+    if sep_blacklisted "$(< /proc/cmdline)"; then
+      echo "the Secure Enclave's driver is kept out of this boot (apple_sep on the module blacklist): apple_sep $([[ -d /sys/module/apple_sep ]] && echo "IS LOADED all the same" || echo "isn't loaded")"
     else
       echo "the Secure Enclave's driver may load in this boot: apple_sep $([[ -d /sys/module/apple_sep ]] && echo "is loaded" || echo "isn't loaded")"
     fi
@@ -183,6 +243,8 @@ cmd_status() {
   next=$(grub-editenv - list 2> /dev/null | sed -n 's/^next_entry=//p')
   if [[ $next == "$ENTRY" ]]; then
     echo "the next restart is a safe boot"
+  elif [[ $next == "$ENTRY_NOSEP" ]]; then
+    echo "the next restart is a safe boot without the Secure Enclave's driver"
   else
     echo "the next restart is a regular boot"
   fi
@@ -342,7 +404,7 @@ cmd_remove() {
   ! compgen -G "$IMAGE_DIR/saved/*.tar" > /dev/null || die "uncollected results in $IMAGE_DIR/saved: collect first"
   rm -f "$SCRIPT"
   regen_grub || die "grub.cfg not regenerated; the image is still in place"
-  if grub-editenv - list | grep -x "next_entry=$ENTRY" > /dev/null; then
+  if grub-editenv - list | grep -x -e "next_entry=$ENTRY" -e "next_entry=$ENTRY_NOSEP" > /dev/null; then
     grub-editenv - unset next_entry
   fi
   rm -rf -- "${IMAGE_DIR:?}"
