@@ -274,7 +274,7 @@
  * would come about 10 s later, if the panic's restart works.
  *
  * sep_pg=1 is one byte more, 0x6009 alone, in a run of the same family, with
- * wake_all=1 or without it (the two bytes are apart, and each is read by
+ * wake_all=1 or without it (the two options' bytes are apart, and each is read by
  * itself). Every run has ended with the reconfig engine stuck before its
  * power-downs. Ante042, whose J314s completes the entry with a driver of
  * their own, wrote on 2026-11-22 that a PMGR control word has a bit, set at
@@ -290,18 +290,24 @@
  * Mac on 2026-11-23 the word read 0x00000004 and the SEP's power word,
  * 0x28e580c00, 0x1000030f (target f, actual 0).
  * In step 7, right after the wake masks and wake_all=1's reads, CPU0 reads the
- * control word; if its bit 2 is set it writes the word back with that bit
- * clear (one write, to that one address: a PMGR register, not a write to the
- * SEP, and a restart undoes it; Corey's OK of 2026-11-23); it reads the word
- * again, then the SEP's power word and 0x2922c0044. The byte they make goes
+ * control word and the SEP's power word; if the control word's bit 2 is set
+ * and the SEP's power word reads actual state 0, it writes the control word
+ * back with that bit clear (one write, to that one address: a PMGR register,
+ * not a write to the SEP, and a restart undoes it; Corey's OK of 2026-11-23);
+ * it reads the word again, then 0x2922c0044. The wait is never cleared while
+ * the enclave reads powered: the reference refuses to sleep at all unless
+ * that word reads 0, and in a boot without the enclave's driver the word may
+ * read otherwise than it did with it (sp_writes()). The byte they make goes
  * out in step 8 after that step's own record and after wake_all=1's byte, for
  * the reason given there. It is:
  *   0x6009  bit 7 set (SP_MARK); bit 6 (SP_FOUND): the control word's bit 2
  *           was set as found (clear: step 7 wrote nothing); bit 5 (SP_CLEAR):
  *           read again after that, the word had bit 2 clear and every other
  *           bit as found; bit 4 (SP_SEP_OFF): the SEP's power word read actual
- *           state 0 (bits 7:4) then; bits 3:0 0x2922c0044's low nibble then,
- *           with CPU0 up (awake it reads 8)
+ *           state 0 (bits 7:4), before the write (clear with bit 6 set: the
+ *           write was not made); bits 3:0 0x2922c0044's low nibble after it,
+ *           with CPU0 up: the last sample of that word before the commit
+ *           (awake it reads 8)
  * K1 zeroes the seven bytes as in every run, writes wake_all=1's mark at
  * 0x6008 if that is set too, and leaves 0x6009 as SP_ARMED, so a byte that
  * never landed shows; 0x600a-0x600e stay 0. The stage tells the byte from the
@@ -321,7 +327,7 @@
  * bit) with SP_ARMED at 0x6009, and the restart would come about 10 s later,
  * if the panic's restart works.
  *
- * disp_hs=1 is two bytes more, 0x600a and 0x600b, in a run of the same family
+ * disp_hs=1 is four bytes more, 0x600a to 0x600d, in a run of the same family
  * with disp_off=1, with either of the two options above or without them. The
  * reference driver (Ante042/linux, branch t600x-s2r-reference,
  * drivers/soc/apple/s2r.c, GPL-2.0-only OR MIT; credited) says in
@@ -345,22 +351,40 @@
  *                  state non-zero: block + 0x8014 := 1, block + 0x82bc := 1,
  *                  then 2, then 4
  *   the FE word    powered down as in every run
- * and it reads 0x2922c0044 before the first DCP and after each one's place in
- * the loop, stopped or not. Neither block is ever read. The record, two bytes
- * in one command through the kernel's path, after the loop and before K3b's
- * own stage:
+ * Each FE read and the writes it guards are made with interrupts off on that
+ * CPU. Each table has the handshake's own four writes in it already (entries
+ * 29, 41, 53 and 63 of the 65, counted from 0: +0x8014 := 1 and +0x82bc := 1,
+ * 2 and 4), so the block gets them twice, before and after its CPU0 word goes
+ * down. K3b reads 0x2922c0044 before the first DCP, right after each table it
+ * wrote, and after each DCP's place in the loop, stopped or not: up to five
+ * samples, which tell a table from a handshake. Neither block is ever read.
+ * The record, four bytes in one command through the kernel's path, after the
+ * loop and before K3b's own stage:
  *   0x600a  bit 7 set (DH_MARK); bit 6 (DH_EXT): dispext0's handshake was
  *           made; bit 5 (DH_INT): disp0's was; bit 4 always 0; bits 3:0
  *           0x2922c0044's low nibble before K3b touched anything
  *   0x600b  bits 7:4 0x2922c0044's low nibble after dispext0's place in the
  *           loop, the second; bits 3:0 after disp0's, the first
+ *   0x600c  bit 7 set; bit 6: dispext0's set-up table was written; bit 5:
+ *           disp0's was; bit 4 always 0; bits 3:0 0x2922c0044's low nibble
+ *           right after dispext0's table (0 if it wasn't written)
+ *   0x600d  bit 7 set; bits 6:4 0; bits 3:0 the nibble right after disp0's
+ *           table (0 if it wasn't written). Best effort: 0x600d and 0x600e
+ *           were lost across the restart in three runs
+ * A handshake that wasn't made doesn't mean a block wasn't written: its table
+ * may have been (the CPU0 word didn't read off, or the FE word went off with
+ * it). 0x600c's flags say.
  * K1 leaves 0x600a as DH_ARMED after the seven zeros and the other options'
- * marks, so a record that never landed shows; 0x600c-0x600e stay 0. dh_ok()
- * and DH_ARMED are all that m1_pmu_ok() lets a disp_hs=1 run write there.
+ * marks, so a record that never landed shows; 0x600e stays 0. dh_ok() and
+ * DH_ARMED are all that m1_pmu_ok() lets a disp_hs=1 run write there.
  * New on the hardware: two fabric blocks that nothing here has written (or
  * read) before, up to 69 writes to each; a write to a block that has lost its
  * power faults, and panics the safe boot (the FE reads are the guard, as in
- * the reference). 0x2922c0044 CPU0 has not read at K3b before.
+ * the reference). 0x2922c0044 CPU0 has not read at K3b before. No watchdog is
+ * armed at K3b and the keyboard's light isn't on yet: a write that faults
+ * where the panic's restart fails, or one that stalls, leaves the Mac dark
+ * with no light ever having blinked and no restart, and stage 0x02 with K1's
+ * marks in the PMU.
  */
 #ifndef LAST_LOOK_H
 #define LAST_LOOK_H
@@ -455,10 +479,11 @@ typedef uint64_t u64;
 /* disp_hs=1: the handshake's two words are Ante042's (apple_s2r_disp_down() in drivers/soc/apple/s2r.c, Ante042/linux t600x-s2r-reference). */
 #define DH_HS_A			0x8014		/* in a display's fabric block: written 1 */
 #define DH_HS_B			0x82bc		/* then this one: written 1, 2, 4 */
-#define DH_ARMED		(1U << 0)	/* 0x600a (LL_AT + 2) as K1 leaves it with disp_hs=1, until K3b's two bytes */
-#define DH_MARK			(1U << 7)	/* 0x600a, disp_hs=1's first byte */
-#define DH_EXT			(1U << 6)	/* under DH_MARK: dispext0's handshake was made */
-#define DH_INT			(1U << 5)	/* under DH_MARK: disp0's was */
+#define DH_ARMED		(1U << 0)	/* 0x600a (LL_AT + 2) as K1 leaves it with disp_hs=1, until K3b's four bytes */
+#define DH_MARK			(1U << 7)	/* 0x600a, 0x600c and 0x600d: disp_hs=1's first, third and fourth byte */
+#define DH_EXT			(1U << 6)	/* under DH_MARK: dispext0's handshake was made (0x600a); its set-up table was written (0x600c) */
+#define DH_INT			(1U << 5)	/* under DH_MARK: disp0's was (0x600a, 0x600c) */
+#define DH_N			4		/* the record: 0x600a-0x600d */
 
 /*
  * wake_all=1's byte at 0x6008. named: words 0 to 5 read back 0xffffffff and word 6's bits 12:0 all set; unnamed: word 6's
@@ -476,13 +501,22 @@ static inline bool wa_ok(u8 v)
 }
 
 /*
- * sep_pg=1's byte at 0x6009. found: the control word as step 7 read it first; back: as it read after the write, or with no
- * write made if bit 2 was clear as found; sep_ps: the SEP's power word then; gate44: 0x2922c0044 then.
+ * sep_pg=1's byte at 0x6009. found: the control word as step 7 read it first; sep_ps: the SEP's power word, read before the
+ * write; back: the control word as it read after the write, or after none (sp_writes()); gate44: 0x2922c0044 then.
  */
 static inline u8 sp_byte(u32 found, u32 back, u32 sep_ps, u32 gate44)
 {
 	return (u8)(SP_MARK | (found & SP_WAIT ? SP_FOUND : 0) | (back == (found & ~SP_WAIT) ? SP_CLEAR : 0) |
 		    (sep_ps & LL_PS_ACTUAL ? 0 : SP_SEP_OFF) | (gate44 & 0xf));
+}
+
+/*
+ * Whether step 7 writes the control word: its bit 2 is set as found, and the SEP's power word reads actual state 0. Never
+ * while the enclave reads powered.
+ */
+static inline bool sp_writes(u32 found, u32 sep_ps)
+{
+	return (found & SP_WAIT) && !(sep_ps & LL_PS_ACTUAL);
 }
 
 /* What a sep_pg=1 run may write to 0x6009 by itself: K1's mark, or a byte sp_byte() makes (bit 7 set). */
@@ -503,10 +537,28 @@ static inline u8 dh_b1(u32 g_ext, u32 g_int)
 	return (u8)((g_ext & 0xf) << 4 | (g_int & 0xf));
 }
 
-/* What a disp_hs=1 run may write as the first of its two bytes at 0x600a: one dh_b0() makes (bit 7 set, bit 4 clear). */
-static inline bool dh_ok(u8 v)
+/* Its third, 0x600c: which set-up tables were written, and 0x2922c0044's low nibble right after dispext0's (0 if it wasn't). Bit 4 stays 0. */
+static inline u8 dh_b2(bool ext, bool intl, u32 g_ext_set)
 {
-	return (v & DH_MARK) && !(v & (1U << 4));
+	return (u8)(DH_MARK | (ext ? DH_EXT | (g_ext_set & 0xf) : 0) | (intl ? DH_INT : 0));
+}
+
+/* Its fourth, 0x600d, best effort: the nibble right after disp0's set-up table (0 if it wasn't written). */
+static inline u8 dh_b3(bool intl, u32 g_int_set)
+{
+	return (u8)(DH_MARK | (intl ? g_int_set & 0xf : 0));
+}
+
+/*
+ * What a disp_hs=1 run may write as its four bytes at 0x600a: ones dh_b0() to dh_b3() make. The first and the third have bit
+ * 7 set and bit 4 clear; the third has no nibble without dispext0's flag; the fourth is bit 7 and a nibble, and has none
+ * without disp0's flag in the third.
+ */
+static inline bool dh_ok(const u8 *b)
+{
+	return (b[0] & DH_MARK) && !(b[0] & (1U << 4)) &&
+	       (b[2] & DH_MARK) && !(b[2] & (1U << 4)) && ((b[2] & DH_EXT) || !(b[2] & 0xf)) &&
+	       (b[3] & 0xf0) == DH_MARK && ((b[2] & DH_INT) || !(b[3] & 0xf));
 }
 
 /* The four power words, each true if it read off: 0x6008. */

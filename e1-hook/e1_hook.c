@@ -415,10 +415,10 @@ module_param(wake_all, bool, 0444);
 MODULE_PARM_DESC(wake_all, "With gates_mark=1, never with observe=1: in step 7 all seven AP wake-mask words (0x292004008-0x292004020) are written 0xffffffff, where the recipe leaves source 54 (the PMU's interrupt) and word 6's bits 31:13 open; CPU0 then reads the seven back and the seven status words after them, and after step 8's record sends one byte to the PMU's 0x6008 (last_look.h). No wake source is left open: a Mac whose entry completed wakes for no key and no lid, and comes back only by holding the power button");
 static bool sep_pg;
 module_param(sep_pg, bool, 0444);
-MODULE_PARM_DESC(sep_pg, "With gates_mark=1, never with observe=1: in step 7, after the AP wake-mask words, CPU0 clears bit 2 of the PMGR control word 0x28e0cc200, the bit that makes the S2R sequencer wait for the SEP to power-gate (Ante042's T6000_PMGR_SEP_PG and PMGR_WAIT_SEP_PG; set at boot): one write, made only if the bit reads set, of the word as found less that bit. CPU0 then reads the word again, the SEP's power word (0x28e580c00) and 0x2922c0044, and after step 8's record sends one byte to the PMU's 0x6009 (last_look.h). A PMGR register, not a write to the SEP; a restart undoes it. A Mac whose entry completed isn't known to wake by itself, and comes back by holding the power button");
+MODULE_PARM_DESC(sep_pg, "With gates_mark=1, never with observe=1: in step 7, after the AP wake-mask words, CPU0 clears bit 2 of the PMGR control word 0x28e0cc200, the bit that makes the S2R sequencer wait for the SEP to power-gate (Ante042's T6000_PMGR_SEP_PG and PMGR_WAIT_SEP_PG; set at boot): one write, made only if the bit reads set and the SEP's power word (0x28e580c00) reads actual state 0, of the word as found less that bit. CPU0 then reads the word again and 0x2922c0044, and after step 8's record sends one byte to the PMU's 0x6009 (last_look.h). A PMGR register, not a write to the SEP; a restart undoes it. A Mac whose entry completed isn't known to wake by itself, and comes back by holding the power button");
 static bool disp_hs;
 module_param(disp_hs, bool, 0444);
-MODULE_PARM_DESC(disp_hs, "With disp_off=1 and gates_mark=1, never with observe=1: in K3b, for each DCP that stopped, the set-up table and the fabric handshake Ante042's driver makes on the display's fabric block (0x38c000000 for disp0, 0x28a000000 for dispext0) around the power-down of its CPU0 word: the table's 65 writes if the FE power word reads powered, then, after the CPU0 word, block + 0x8014 := 1 and block + 0x82bc := 1, 2, 4 if it still does. 0x2922c0044 is read before and after each, and two bytes go to the PMU's 0x600a-0x600b (last_look.h). A write to a block that has lost its power faults and panics: the FE reads are the guard");
+MODULE_PARM_DESC(disp_hs, "With disp_off=1 and gates_mark=1, never with observe=1: in K3b, for each DCP that stopped, the set-up table and the fabric handshake Ante042's driver makes on the display's fabric block (0x38c000000 for disp0, 0x28a000000 for dispext0) around the power-down of its CPU0 word: the table's 65 writes if the FE power word reads powered, then, after the CPU0 word, block + 0x8014 := 1 and block + 0x82bc := 1, 2, 4 if it still does. 0x2922c0044 is read before K3b, after each table and after each DCP, and four bytes go to the PMU's 0x600a-0x600d (last_look.h). Like sep_pg=1 it refuses to load, and calls its replay off at the suspend's prepare, while a driver is bound to the SEP's device. A write to a block that has lost its power faults and panics: the FE reads are the guard");
 static bool gate_look;
 module_param(gate_look, bool, 0444);
 MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
@@ -764,6 +764,24 @@ static int e1_begin(void)
 static void m1_dcp_shutdown(void);
 static void m1_sio_fw_stop(void);
 static void m1_probe_prepare(void);
+static bool m1_sep_bound(bool locked);
+
+/*
+ * sep_pg=1 and disp_hs=1, at the first suspend's prepare, before the DCPs' shutdown or anything else that is one-way:
+ * the SEP's device looked at once more. The load refused a bound driver; one bound since (apple_sep loaded by hand, or
+ * by anything, in a boot that doesn't keep it out) calls the replay off the way a write to cancel does: replay_done
+ * becomes 2, so that this prepare stops no firmware, and prepare_late fails the suspend with -EIO and the Mac wakes with
+ * this log. Nothing has been written to any register or to the PMU by then: K1 is prepare_late's. Returns whether it
+ * called the replay off.
+ */
+static bool m1_sep_recheck(unsigned int n)
+{
+	if (!(sep_pg || disp_hs) || n != 1 || READ_ONCE(replay_done) || !m1_sep_bound(false))
+		return false;
+	WRITE_ONCE(replay_done, 2);
+	pr_emerg("replay: called off at prepare: a driver is bound to the SEP's device now; nothing stopped, nothing written, nothing sent\n");
+	return true;
+}
 
 static int e1_prepare(void)
 {
@@ -779,6 +797,8 @@ static int e1_prepare(void)
 			m1_probe_prepare();
 		return 0;
 	}
+	/* sep_pg=1, disp_hs=1: no driver on the SEP's device, looked at again before anything one-way; else the replay is off. */
+	m1_sep_recheck(n);
 	/* disp_off=1: only the suspend that will replay can get here with n == 1 and replay_done 0. */
 	if (disp_off && n == 1 && !READ_ONCE(replay_done))
 		m1_dcp_shutdown();
@@ -1759,26 +1779,31 @@ static void e1_after_slpa(void)
  * mask is written, on the boot CPU alone with IRQs off; every run here has
  * ended with the engine stuck before its power-downs, and nothing here puts
  * the SEP to sleep (awake on 2026-11-23, with apple_sep loaded, the SEP's
- * power word read target f, actual 0). Right after the wake masks, nub-spmi0's enables and
- * wake_all=1's reads, still in step 7, m1_sp_clear() reads the word, writes
- * it back with bit 2 clear if the bit was set (one writel(), the module's one
- * new write site: a PMGR register, not a write to the SEP, and a restart
- * undoes it; Corey's OK of 2026-11-23), reads it again, and reads the SEP's
- * power word (0x28e580c00) and 0x2922c0044: reads this state hasn't seen
- * (its comment), with SError unmasked. Their byte (last_look.h has it) goes
+ * power word read target f, actual 0). Right after the wake masks,
+ * nub-spmi0's enables and wake_all=1's reads, still in step 7, m1_sp_clear()
+ * reads the word and the SEP's power word (0x28e580c00), writes the control
+ * word back with bit 2 clear if the bit was set and the SEP's power word read
+ * actual state 0 (one writel(), the module's one new write site: a PMGR
+ * register, not a write to the SEP, and a restart undoes it; Corey's OK of
+ * 2026-11-23; never while the enclave reads powered, as the reference won't
+ * sleep unless that word reads 0), reads it again, and reads 0x2922c0044:
+ * reads this state hasn't seen (its comment), with SError unmasked. Their byte (last_look.h has it) goes
  * to the PMU's 0x6009 in step 8, after that step's record at 0x6010 and
  * after wake_all=1's byte, for the reason given above. With sep_pg=1
  * m1_pmu_ok() lets one byte through at 0x6009, K1's mark or the byte
  * (sp_ok()), and K1 leaves 0x6009 as 0x02 until that byte, after the seven
- * zeros of every run. No stage of its own. At the load m1_sp_init() refuses
- * if a driver is bound to the SEP's device (apple_sep writes the enclave's
- * key store, which a safe boot's read-only root doesn't cover: the run is
- * made in a safe boot started without it, sleep-drain-safe boot --no-sep),
- * checks the word against the never-write list, refuses without SIO's power
- * page or the engine's, maps the word's page and logs the control word, the
- * SEP's power word and 0x2922c0044 awake; a word whose bit 2 reads clear there is
- * said, and the load goes on (step 7 then writes nothing, unless the bit is
- * set by then). The keyboard's light is the witness, as in
+ * zeros of every run. No stage of its own. The load refuses, for this option
+ * and for disp_hs=1, if a driver is bound to the SEP's device (m1_sep_bound():
+ * apple_sep writes the enclave's key store, which a safe boot's read-only
+ * root doesn't cover: the run is made in a safe boot started without it,
+ * sleep-drain-safe boot --no-sep), and the first suspend's prepare looks
+ * again, before anything one-way, and calls the replay off if one is bound by
+ * then (m1_sep_recheck()). m1_sp_init() checks the word against the
+ * never-write list, refuses without SIO's power page or the engine's, maps
+ * the word's page and logs the control word, the SEP's power word and
+ * 0x2922c0044 awake; a word whose bit 2 reads clear there, or a SEP's power
+ * word that reads powered, is said, and the load goes on (step 7 looks again
+ * and writes only if the bit is set and the SEP's word reads off then). The keyboard's light is the witness, as in
  * --m1-a2-pre-blink. A Mac whose entry completed isn't known to come back by
  * itself (nub-spmi0's enables are zeroed, every AP wake source but the PMU's
  * is masked, and the RTC alarm is an hour out): hold the power button.
@@ -1801,20 +1826,45 @@ static void e1_after_slpa(void)
  * state non-zero, m1_dh_shake() makes the four writes of the handshake; the FE
  * word goes down as in every run. The FE reads are the reference's guard: "The
  * fabric block is only there while its fe is powered: a write to it otherwise
- * is an SError", which here panics the safe boot. Neither block is ever read.
- * 0x2922c0044 is read before the first DCP and after each one's place in the
- * loop, and two bytes (last_look.h has them) go to the PMU's 0x600a-0x600b in
- * one command through the kernel's path, after the loop and before K3b's own
- * stage. With disp_hs=1 m1_pmu_ok() lets through at 0x600a K1's mark alone or
- * two bytes whose first passes dh_ok(), and K1 leaves 0x600a as 0x01 until
- * they land, after the seven zeros and the other options' marks. At the load
- * m1_dh_init() checks that the two blocks are paired with the DCPs and power
- * words m1_dcp_info[] names, every address the step writes against the
- * never-write list and the span it maps, refuses without the engine's page
- * or the FE words' mappings, maps the two blocks and logs whether each FE
- * word reads powered. What the reference does and this doesn't: it drops each
- * block's request at the PMP before the CPU0 word (its PTD words), writes the
- * power words macOS's values, and takes dispext1 and the GPU's port down too.
+ * is an SError", which here panics the safe boot; each read and the writes it
+ * guards are made with interrupts off on this CPU. Neither block is ever read.
+ * Each table already has the handshake's four writes in it (its entries 29,
+ * 41, 53 and 63, counted from 0), so a block gets them twice. 0x2922c0044 is
+ * read before the first DCP, right after each table that was written and
+ * after each DCP's place in the loop, and four bytes (last_look.h has them)
+ * go to the PMU's 0x600a-0x600d in one command through the kernel's path,
+ * after the loop and before K3b's own stage: which handshakes were made,
+ * which tables were written, and the five nibbles. A handshake not made
+ * doesn't mean the block wasn't written: its table may have been. With
+ * disp_hs=1 m1_pmu_ok() lets through at 0x600a K1's mark alone or four bytes
+ * that pass dh_ok(), and K1 leaves 0x600a as 0x01 until they land, after the
+ * seven zeros and the other options' marks. At the load m1_dh_init() checks
+ * that the module's two tables of blocks and DCPs agree (m1_dh[] with
+ * m1_dcp_info[]: not the live tree), every address the step writes against
+ * the never-write list and the span it maps, refuses without the engine's
+ * page or the FE words' mappings, maps the two blocks and logs whether each
+ * FE word reads powered; the SEP's device is checked as for sep_pg=1, at the
+ * load and at prepare.
+ * The run does withdraw the two displays' requests at the PMP, earlier than
+ * the reference does: sio_on=1's launcher runs sleep-drain-pmp release 0xc
+ * 0xd, and pmp-sleep-release withdraws them at the suspend's noirq and waits
+ * for the ack (the reference's PTD_PS_REQ bits 0x1000 and 0x2000). So the
+ * table is written with the request already withdrawn and the PMP still
+ * running (K4 stops it after K3b).
+ * Where this differs from the reference: it takes the displays down before
+ * slpa, and K3b is after it; it makes the handshake and the FE word's
+ * power-down even if the CPU0 word didn't read off, and here neither is made
+ * then; it takes down every block whose FE word reads powered, whatever its
+ * DCP's state, and here only the blocks of DCPs that stopped; it refuses to
+ * sleep if a display's word doesn't read off, and here the run goes on (byte
+ * B's bit 4 says); it takes dispext1 and the GPU's port down too; and it
+ * writes the power words macOS's values, where m1_ps_off() clears the target
+ * as the power-state driver does.
+ * No watchdog is armed at K3b (WD1's marker is step 4's) and the keyboard's
+ * light is step 8's: a block write that faults where the panic's restart
+ * fails, or one that stalls, leaves the Mac dark with no light ever having
+ * blinked and no restart. The record then is stage 0x02 with K1's marks. No
+ * light at all is what tells that from an entry that completed.
  *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
@@ -2137,7 +2187,7 @@ static void __iomem *m1_cpu_start, *m1_ps, *m1_aic, *m1_aic_event, *m1_aon, *m1_
 static void __iomem *m1_soc, *m1_sio, *m1_wdx, *m1_cpm;
 /* position=1: the page B2 opens on, read only. */
 static void __iomem *m1_pos;
-/* sep_pg=1: what the live device tree calls the SEP's node; the load refuses while a driver is bound to it. */
+/* sep_pg=1 and disp_hs=1: what the live device tree calls the SEP's node; the load refuses while a driver is bound to it, and prepare looks again. */
 #define M1_SEP_COMPATIBLE	"apple,sep"
 /* sep_pg=1: the PMGR control word 0x28e0cc200 itself, in a page of its own mapping: read, and written once, by m1_sp_clear(). */
 static void __iomem *m1_sp;
@@ -2381,8 +2431,8 @@ static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n
 	/* sep_pg=1: 0x6009 by itself, and there only K1's mark or the byte, bit 7 set (sp_ok(); last_look.h). */
 	if (sep_pg && addr == LL_AT + 1 && one && sp_ok(b[0]))
 		return true;
-	/* disp_hs=1: at 0x600a, K1's mark by itself, or K3b's two bytes, the first with bit 7 set and bit 4 clear (dh_ok(); last_look.h). */
-	if (disp_hs && addr == LL_AT + 2 && ((one && b[0] == DH_ARMED) || (n == 2 && dh_ok(b[0]))))
+	/* disp_hs=1: at 0x600a, K1's mark by itself, or K3b's four bytes as dh_b0() to dh_b3() make them (dh_ok(); last_look.h). */
+	if (disp_hs && addr == LL_AT + 2 && ((one && b[0] == DH_ARMED) || (n == DH_N && dh_ok(b))))
 		return true;
 	/*
 	 * Any run: seven zeros at 0x6008-0x600e, K1's and the undo's, and nothing else there: a record or a mark that an
@@ -2453,7 +2503,7 @@ static int m1_pmu_start(void)
 		v = SP_ARMED;
 		ret = m1_kwrite(LL_AT + 1, &v, 1);
 	}
-	/* disp_hs=1: its mark at 0x600a, over the same zeros: K3b's two bytes write over it. */
+	/* disp_hs=1: its mark at 0x600a, over the same zeros: K3b's four bytes write over it. */
 	if (!ret && disp_hs) {
 		v = DH_ARMED;
 		ret = m1_kwrite(LL_AT + 2, &v, 1);
@@ -3190,10 +3240,12 @@ static u8 m1_wa_read(void)
  * sep_pg=1, step 7, CPU0 alone, IRQs off, right after the AP wake-mask words,
  * nub-spmi0's enables and wake_all=1's reads (last_look.h has the byte, where
  * the word and its bit come from, and why): the PMGR control word read as
- * found; written back with bit 2 clear, the bit that makes the S2R sequencer
- * wait for the SEP to power-gate (Ante042's T6000_PMGR_SEP_PG and
- * PMGR_WAIT_SEP_PG), only if the bit is set as found; read again; then the
- * SEP's power word and 0x2922c0044. It returns their byte, which step 8 sends
+ * found, then the SEP's power word; the control word written back with bit 2
+ * clear, the bit that makes the S2R sequencer wait for the SEP to power-gate
+ * (Ante042's T6000_PMGR_SEP_PG and PMGR_WAIT_SEP_PG), only if the bit is set
+ * as found and the SEP's power word read actual state 0 (sp_writes()): the
+ * wait is never cleared while the enclave reads powered; the control word
+ * read again; then 0x2922c0044. It returns their byte, which step 8 sends
  * after its own record. One write, the writel() below, to the one address, of
  * the word as found less bit 2: a PMGR register, not a write to the SEP, and
  * a restart undoes it (Corey's OK of 2026-11-23). Two of the reads CPU0 has
@@ -3209,12 +3261,12 @@ static u8 m1_sp_clear(void)
 {
 	u32 found, back, sep, g44;
 
-	found = readl(m1_sp);
-	if (found & SP_WAIT)
-		writel(found & ~SP_WAIT, m1_sp);
 	/* Each read into its own variable, in this order: an argument list has none. */
-	back = readl(m1_sp);
+	found = readl(m1_sp);
 	sep = readl(m1_sio + SP_SEP_PS);
+	if (sp_writes(found, sep))
+		writel(found & ~SP_WAIT, m1_sp);
+	back = readl(m1_sp);
 	g44 = readl(m1_pos + M1_POS_GATE44);
 	return sp_byte(found, back, sep, g44);
 }
@@ -3819,26 +3871,45 @@ static void m1_dh_shake(unsigned int i)
 	dsb(sy);
 }
 
+/* disp_hs=1: what K3b did to one DCP's fabric block, for its record. */
+struct m1_dh_res {
+	bool set_up;	/* the set-up table was written */
+	bool made;	/* the handshake was made */
+	u32 g_set;	/* 0x2922c0044 right after the table, if it was written */
+};
+
 /*
  * disp_hs=1, K3b, for one DCP that stopped (the m1 comment and last_look.h have the source and why), in place of the two
- * power-downs alone: the set-up table if the FE word reads powered; the CPU0 word's power-down, the call every run makes;
- * and, as in every run, only if that word read off, the FE word's, with the handshake before it if the FE word still reads
- * powered. A block gets no write unless its FE word read powered right before: a write to a block without power is an
- * SError, which panics here. Neither block is read. Returns whether both words read off; *made says the handshake was made.
+ * power-downs alone: the set-up table if the FE word reads powered, and 0x2922c0044 right after it; the CPU0 word's
+ * power-down, the call every run makes; and, as in every run, only if that word read off, the FE word's, with the
+ * handshake before it if the FE word still reads powered. A block gets no write unless its FE word read powered right
+ * before: a write to a block without power is an SError, which panics here. Each of those reads and the writes it guards
+ * are made with interrupts off on this CPU, so that nothing can come between them; m1_ps_off()'s polls are not. Neither
+ * block is read. Returns whether both words read off; *r says what was done to the block.
  */
-static bool m1_dh_down(unsigned int i, bool *made)
+static bool m1_dh_down(unsigned int i, struct m1_dh_res *r)
 {
 	const struct m1_dcp *d = &m1_dcp_info[i];
 	void __iomem *fe = m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK);
+	unsigned long flags;
 
-	if (m1_dh_on(fe))
+	local_irq_save(flags);
+	if (m1_dh_on(fe)) {
 		m1_dh_setup(i);
+		r->set_up = true;
+	}
+	local_irq_restore(flags);
+	/* The table has the handshake's own four writes in it: this sample tells what followed the table from what follows the handshake. */
+	if (r->set_up)
+		r->g_set = readl(m1_pos + M1_POS_GATE44);
 	if (!m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK)))
 		return false;
+	local_irq_save(flags);
 	if (m1_dh_on(fe)) {
 		m1_dh_shake(i);
-		*made = true;
+		r->made = true;
 	}
+	local_irq_restore(flags);
 	return m1_ps_off(fe);
 }
 
@@ -3847,16 +3918,17 @@ static bool m1_dh_down(unsigned int i, bool *made)
  * that stopped at prepare. A DCP that didn't keeps its domains. Returns byte B's
  * five bits. disp_hs=1: the set-up and the handshake on each stopped DCP's
  * fabric block around those power-downs (m1_dh_down()), 0x2922c0044 read
- * before the first DCP and after each one's place, stopped or not, and two
- * bytes to the PMU's 0x600a-0x600b before the stage.
+ * before the first DCP, after each table and after each DCP's place, stopped
+ * or not, and four bytes to the PMU's 0x600a-0x600d before the stage.
  */
 static u8 m1_disp_stop(void)
 {
 	static const u8 stage = 0x84;
-	bool turned = false, all_off = true, made[ARRAY_SIZE(m1_dcp_info)] = {};
+	bool turned = false, all_off = true;
+	struct m1_dh_res dr[ARRAY_SIZE(m1_dcp_info)] = {};
 	u32 g0 = 0, g[ARRAY_SIZE(m1_dcp_info)] = {};
 	unsigned int i;
-	u8 res = 0, dh[2];
+	u8 res = 0, dh[DH_N];
 
 	if (disp_hs)
 		g0 = readl(m1_pos + M1_POS_GATE44);
@@ -3866,7 +3938,7 @@ static u8 m1_disp_stop(void)
 		if (m1_dcp_code[i] == M1_DCP_STOPPED) {
 			turned = true;
 			if (disp_hs) {
-				if (!m1_dh_down(i, &made[i]))
+				if (!m1_dh_down(i, &dr[i]))
 					all_off = false;
 			} else if (!m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK)) ||
 				   !m1_ps_off(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK))) {
@@ -3879,11 +3951,13 @@ static u8 m1_disp_stop(void)
 	}
 	if (turned && all_off)
 		res |= BIT(4);
-	/* disp_hs=1: its two bytes, through the kernel's path too, before the stage: a failure here doesn't stop the stage's command. */
+	/* disp_hs=1: its four bytes, through the kernel's path too, before the stage: a failure here doesn't stop the stage's command. */
 	if (disp_hs) {
-		dh[0] = dh_b0(made[M1_DH_EXT], made[M1_DH_INT], g0);
+		dh[0] = dh_b0(dr[M1_DH_EXT].made, dr[M1_DH_INT].made, g0);
 		dh[1] = dh_b1(g[M1_DH_EXT], g[M1_DH_INT]);
-		m1_kwrite(LL_AT + 2, dh, 2);
+		dh[2] = dh_b2(dr[M1_DH_EXT].set_up, dr[M1_DH_INT].set_up, dr[M1_DH_EXT].g_set);
+		dh[3] = dh_b3(dr[M1_DH_INT].set_up, dr[M1_DH_INT].g_set);
+		m1_kwrite(LL_AT + 2, dh, DH_N);
 	}
 	/* Through the kernel's path, as K4's. */
 	m1_kwrite(0x6004, &stage, 1);
@@ -4713,8 +4787,8 @@ static void __noreturn m1_after_slpa(void)
 	if (wake_all)
 		wa = m1_wa_read();
 	/*
-	 * sep_pg=1: bit 2 of the PMGR control word 0x28e0cc200 cleared if it is set, where Ante042's driver clears it; the word read
-	 * again, the SEP's power word and 0x2922c0044, into the byte step 8 sends (last_look.h).
+	 * sep_pg=1: bit 2 of the PMGR control word 0x28e0cc200 cleared, where Ante042's driver clears it, if it is set and the SEP's
+	 * power word reads off; the word read again and 0x2922c0044, into the byte step 8 sends (last_look.h).
 	 */
 	if (sep_pg)
 		sp = m1_sp_clear();
@@ -6468,13 +6542,16 @@ static_assert(SP_CTL == 0x28e0cc200ULL && SP_WAIT == BIT(2) && (SP_CTL & ~PAGE_M
 	      SP_ARMED == 0x02 && SP_MARK == 0x80 && SP_FOUND == 0x40 && SP_CLEAR == 0x20 && SP_SEP_OFF == 0x10 && LL_AT + 1 == 0x6009);
 
 /*
- * sep_pg=1 at load: whether a driver is bound to the SEP's device, any node the live tree marks "apple,sep". On this Mac
- * apple_sep runs with xART writes enabled: it writes the enclave's key store, which macOS shares and a safe boot's read-only
- * root doesn't cover. A run that clears the PMGR's wait for the SEP's power gate and lets the SoC go down around a live
- * enclave isn't made with that driver present: it is made in a safe boot started with sleep-drain-safe boot --no-sep, and
- * run-floor refuses apple_sep as a loaded module too. It looks once, at the load: a driver bound later isn't seen. Reads only.
+ * sep_pg=1 and disp_hs=1: whether a driver is bound to the SEP's device, any node the live tree marks "apple,sep". On this
+ * Mac apple_sep runs with xART writes enabled: it writes the enclave's key store, which macOS shares and a safe boot's
+ * read-only root doesn't cover. A run that lets the SoC go down around a live enclave isn't made with that driver present:
+ * it is made in a safe boot started with sleep-drain-safe boot --no-sep, and run-floor refuses apple_sep as a loaded
+ * module, and a boot whose command line doesn't keep it out, too. Asked twice: at the load (locked: under each device's
+ * lock), and at the first suspend's prepare (not locked: user space is frozen and the driver core defers every probe
+ * from the suspend's own prepare on, so the pointer can't change under the read, and a lock something held would hang
+ * the suspend). Reads only.
  */
-static bool __init m1_sp_sep_bound(void)
+static bool m1_sep_bound(bool locked)
 {
 	struct device_node *np;
 	bool bound = false;
@@ -6484,10 +6561,12 @@ static bool __init m1_sp_sep_bound(void)
 
 		if (!pdev)
 			continue;
-		device_lock(&pdev->dev);
-		if (pdev->dev.driver)
+		if (locked)
+			device_lock(&pdev->dev);
+		if (READ_ONCE(pdev->dev.driver))
 			bound = true;
-		device_unlock(&pdev->dev);
+		if (locked)
+			device_unlock(&pdev->dev);
 		put_device(&pdev->dev);
 	}
 	return bound;
@@ -6495,21 +6574,16 @@ static bool __init m1_sp_sep_bound(void)
 
 /*
  * sep_pg=1 at load, after m1_wd2_init(), which maps the engine's page in every run this loads with, as pmgr_late=1 maps
- * SIO's power page: no driver is bound to the SEP's device (m1_sp_sep_bound()); the control word isn't on the never-write
- * list; both of those pages are mapped (a refusal, should the family ever load without them); the word's own page is mapped here (m1_unmap() unmaps it, at the exit and after any
+ * SIO's power page (m1_init() has refused by now if a driver is bound to the SEP's device): the control word isn't on the
+ * never-write list; both of those pages are mapped (a refusal, should the family ever load without them); the word's own page is mapped here (m1_unmap() unmaps it, at the exit and after any
  * later refusal of the load); and the control word, the SEP's power word and 0x2922c0044 are logged as they read awake, with
- * what step 7 will do. A word whose bit 2 reads clear already is said and the load goes on: step 7 looks again, and
- * writes only if the bit is set then. Reads only.
+ * what step 7 will do. A word whose bit 2 reads clear already, or a SEP's power word that reads powered, is said and the
+ * load goes on: step 7 looks again, and writes only if the bit is set and the SEP's power word reads off then. Reads only.
  */
 static int __init m1_sp_init(void)
 {
 	u32 ctl, sep, g44;
 
-	if (m1_sp_sep_bound()) {
-		pr_err("m1: sep_pg: a driver is bound to the SEP's device (%s): this run clears the PMGR's wait for the SEP's power gate, and is only made in a safe boot without the enclave's driver: pkexec sleep-drain-safe boot --no-sep; refusing\n",
-		       M1_SEP_COMPATIBLE);
-		return -EBUSY;
-	}
 	if (m1_never(SP_CTL, 1)) {
 		pr_err("m1: sep_pg: 0x%llx is on the never-write list; refusing\n", SP_CTL);
 		return -EPERM;
@@ -6528,24 +6602,28 @@ static int __init m1_sp_init(void)
 	ctl = readl(m1_sp);
 	sep = readl(m1_sio + SP_SEP_PS);
 	g44 = readl(m1_pos + M1_POS_GATE44);
-	if (ctl & SP_WAIT)
-		pr_info("m1: sep_pg: awake: the PMGR control word 0x%llx %08x, bit 2 (wait for the SEP's power gate) set; the SEP's power word 0x%llx %08x; 0x%llx %08x. Step 7 writes the control word back with bit 2 clear if it still reads set, reads all three, and step 8 sends one byte to the PMU's 0x%x\n",
+	if (!(ctl & SP_WAIT))
+		pr_info("m1: sep_pg: awake: the PMGR control word 0x%llx %08x, bit 2 (wait for the SEP's power gate) ALREADY CLEAR; the SEP's power word 0x%llx %08x; 0x%llx %08x. If it still reads clear in step 7 nothing is written and this run changes nothing: the byte step 8 sends to the PMU's 0x%x will say the bit was found clear\n",
+			SP_CTL, ctl, M1_PS_SIO_PAGE + SP_SEP_PS, sep, M1_POS_PAGE + M1_POS_GATE44, g44, LL_AT + 1);
+	else if (!sp_writes(ctl, sep))
+		pr_info("m1: sep_pg: awake: the PMGR control word 0x%llx %08x, bit 2 (wait for the SEP's power gate) set; the SEP's power word 0x%llx %08x reads POWERED (its actual state isn't 0); 0x%llx %08x. If the SEP's power word still reads powered in step 7 the bit is LEFT as it is and nothing is written: the wait is never cleared while the enclave reads powered. The byte step 8 sends to the PMU's 0x%x will say so\n",
 			SP_CTL, ctl, M1_PS_SIO_PAGE + SP_SEP_PS, sep, M1_POS_PAGE + M1_POS_GATE44, g44, LL_AT + 1);
 	else
-		pr_info("m1: sep_pg: awake: the PMGR control word 0x%llx %08x, bit 2 (wait for the SEP's power gate) ALREADY CLEAR; the SEP's power word 0x%llx %08x; 0x%llx %08x. If it still reads clear in step 7 nothing is written and this run changes nothing: the byte step 8 sends to the PMU's 0x%x will say the bit was found clear\n",
+		pr_info("m1: sep_pg: awake: the PMGR control word 0x%llx %08x, bit 2 (wait for the SEP's power gate) set; the SEP's power word 0x%llx %08x, its actual state 0; 0x%llx %08x. Step 7 writes the control word back with bit 2 clear if the bit still reads set and the SEP's power word still reads off, reads all three, and step 8 sends one byte to the PMU's 0x%x\n",
 			SP_CTL, ctl, M1_PS_SIO_PAGE + SP_SEP_PS, sep, M1_POS_PAGE + M1_POS_GATE44, g44, LL_AT + 1);
 	return 0;
 }
 
-/* disp_hs=1's two bytes: K1's mark is none of the record's bits, and the record's fields are apart. */
+/* disp_hs=1's four bytes: K1's mark is none of the record's bits, the record's fields are apart, and it ends inside the seven. */
 static_assert(DH_ARMED == 0x01 && DH_MARK == 0x80 && DH_EXT == 0x40 && DH_INT == 0x20 && !(DH_ARMED & (DH_MARK | DH_EXT | DH_INT)) &&
-	      LL_AT + 2 == 0x600a && M1_DH_INT == 0 && M1_DH_EXT == 1 && ARRAY_SIZE(m1_dcp_info) == 2);
+	      LL_AT + 2 == 0x600a && DH_N == 4 && LL_AT + 2 + DH_N <= LL_AT + LL_N && M1_DH_INT == 0 && M1_DH_EXT == 1 && ARRAY_SIZE(m1_dcp_info) == 2);
 
 /*
  * disp_hs=1 at load, after m1_disp_init(), which maps the DCPs' power words, and m1_wd2_init(), which maps the engine's
  * page: each fabric block is paired with the DCP and the two power words m1_dcp_info[] names for it (disp0: dcp@38bc00000,
  * disp0_cpu0 0x28e580350, disp0_fe 0x28e580328; dispext0: dcp@289c00000, dispext0_cpu0 0x28e080280, dispext0_fe
- * 0x28e080258); every address K3b writes in a block, each table entry's and the handshake's two, is a whole word inside
+ * 0x28e080258: a check of the module's own two tables against each other, which catches one edited without the other; it
+ * doesn't look at the live device tree); every address K3b writes in a block, each table entry's and the handshake's two, is a whole word inside
  * the span mapped and off the never-write list; the engine's page and the FE words are mapped (a refusal otherwise); the
  * two blocks are mapped here (m1_unmap() unmaps them, at the exit and after any later refusal of the load); and one line
  * says whether each FE word reads powered now and what K3b will do. No word of either block is read, here or ever: the
@@ -6565,7 +6643,7 @@ static int __init m1_dh_init(void)
 			return -EINVAL;
 		}
 		for (j = 0; j < h->n; j++) {
-			if ((h->init[j][0] & 3) || h->init[j][0] + 4 > DH_SPAN) {
+			if ((h->init[j][0] & 3) || (u64)h->init[j][0] + 4 > DH_SPAN) {
 				pr_err("m1: disp_hs: entry %u of %s's table isn't a word inside the 0x%lx mapped; refusing\n", j, h->name, DH_SPAN);
 				return -EINVAL;
 			}
@@ -6589,9 +6667,9 @@ static int __init m1_dh_init(void)
 		}
 		fe[i] = readl(m1_dcp_ps[i][1] + (m1_dcp_info[i].ps[1] & ~PAGE_MASK));
 	}
-	pr_info("m1: disp_hs: disp0's block 0x%llx, its FE word %08x (%s now); dispext0's block 0x%llx, its FE word %08x (%s now). K3b, for each DCP that stopped and whose FE word reads powered then: %u set-up writes to its block, its CPU0 word down, 0x%x := 1 and 0x%x := 1, 2, 4 in the block if the FE word still reads powered, its FE word down; 0x2922c0044 read before and after each, and two bytes to the PMU's 0x%x-0x%x. Neither block is ever read\n",
+	pr_info("m1: disp_hs: disp0's block 0x%llx, its FE word %08x (%s now); dispext0's block 0x%llx, its FE word %08x (%s now). K3b, for each DCP that stopped and whose FE word reads powered then: %u set-up writes to its block, its CPU0 word down, 0x%x := 1 and 0x%x := 1, 2, 4 in the block if the FE word still reads powered, its FE word down; 0x2922c0044 read before K3b, after each table and after each DCP, and four bytes to the PMU's 0x%x-0x%x. Neither block is ever read\n",
 		m1_dh[M1_DH_INT].blk, fe[M1_DH_INT], (fe[M1_DH_INT] >> 4) & 0xf ? "powered" : "NOT powered", m1_dh[M1_DH_EXT].blk, fe[M1_DH_EXT],
-		(fe[M1_DH_EXT] >> 4) & 0xf ? "powered" : "NOT powered", m1_dh[M1_DH_INT].n, DH_HS_A, DH_HS_B, LL_AT + 2, LL_AT + 3);
+		(fe[M1_DH_EXT] >> 4) & 0xf ? "powered" : "NOT powered", m1_dh[M1_DH_INT].n, DH_HS_A, DH_HS_B, LL_AT + 2, LL_AT + 1 + DH_N);
 	return 0;
 }
 
@@ -7004,6 +7082,15 @@ static int __init m1_init(void)
 	}
 	if (wake_all)
 		m1_wa_init();
+	/*
+	 * sep_pg=1 and disp_hs=1: neither loads while a driver is bound to the SEP's device (m1_sep_bound()); the first suspend's
+	 * prepare looks again (m1_sep_recheck()).
+	 */
+	if ((sep_pg || disp_hs) && m1_sep_bound(true)) {
+		pr_err("m1: a driver is bound to the SEP's device (%s): sep_pg=1 and disp_hs=1 let the SoC go down around the enclave, and are only loaded in a safe boot without its driver: pkexec sleep-drain-safe boot --no-sep; refusing\n",
+		       M1_SEP_COMPATIBLE);
+		return -EBUSY;
+	}
 	/* After m1_wd2_init(), which maps the engine's page: m1_sp_init() refuses without it. */
 	if (sep_pg) {
 		int ret = m1_sp_init();
@@ -7559,7 +7646,7 @@ static int __init e1_check_params(void)
 		return -EINVAL;
 	}
 	if (disp_hs && (!disp_off || !gates_mark || observe)) {
-		pr_err("disp_hs=1 needs disp_off=1, gates_mark=1 and no observe=1 (it's that family's run with the set-up and the handshake on each display's fabric block in K3b, and two bytes at 0x600a-0x600b; in an observer's run those bytes are CPU7's)\n");
+		pr_err("disp_hs=1 needs disp_off=1, gates_mark=1 and no observe=1 (it's that family's run with the set-up and the handshake on each display's fabric block in K3b, and four bytes at 0x600a-0x600d; in an observer's run those bytes are CPU7's)\n");
 		return -EINVAL;
 	}
 	if (gate_look && !last_look) {

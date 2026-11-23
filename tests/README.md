@@ -93,65 +93,84 @@ used to sit in CLAUDE.md, entry for entry):
   it, and fourteen other runs' stages, where it is not read; junk in the other six bytes, bit 3; never as wake_all=1's
   under one of last_look=1's stages or an observer's, obs_gate=1's mark and record as before; and `--clear`, which zeroes
   the seven only after a byte or a mark with six zeros behind it and bit 3 clear, under stage 0x00 and the probe's too.
-  For sep_pg=1 it compiles `last_look.h`'s `sp_byte()` and `sp_ok()` against a second writing-out (7,056 cases: the word
-  read again as found, less bit 2, with it, with another bit flipped; the SEP's actual state; every nibble of the gate
-  word), and runs the module's own lines of steps 7 and 8 with `m1_sp_clear()`, `m1_wa_read()`, `m1_crumb()` and
-  `m1_pmu_ok()` as they stand, in the harness wake_all=1's tests use, in 24 runs: neither option (the two steps as they
-  were, nothing of either), wake_all=1 alone (as before), sep_pg=1 alone and both (wake_all=1's accesses first, then the
-  control word read, written once, read again, the SEP's power word, 0x2922c0044; in step 8 the record, wake_all=1's
-  byte, sep_pg=1's at 0x6009, the stage); a word with other bits set (written back as found); a word found clear (no
-  write at all); a bit that doesn't take the write; another bit that reads changed after it; a word found clear that
-  reads otherwise the second time; the SEP's actual state f, 1 and 0; five gate words; a record, a first byte or a
-  second byte that isn't acked; raw SPMI off beforehand (the write is still made). Every access is logged, so each run
-  shows exactly one write, to that word, of the value found less bit 2, or none. (What is mocked: the three words are
-  words of the harness's own pages, and the raw SPMI command is a stub that asks the real `m1_pmu_ok()` first, as
-  `m1_spmi_raw()` does, and stands for the PMU's answer.) Then the two steps' order in the source, the one write through
-  the word's pointer in the file, and the MMIO-write tripwire, which goes from 74 to 75 in the file and stays 11 in
-  `m1_after_slpa()` itself (the write is in `m1_sp_clear()`). `m1_sp_init()`, `m1_sp_sep_bound()` and `m1_never()` as they
-  stand, against stand-ins for the never-write list, the mapping, the device tree and the driver core: bit 2 set or
-  clear awake (logged, and the load goes on), a driver bound to the SEP's device (refused first of all; the first node's
-  or the third's), no such node or no device, the word on the list, SIO's power page or the engine's missing, the
-  word's page not mapping; and the module's own `e1_never_write()`, compiled by itself, says the word isn't on the list
-  and the list's two still are. `m1_pmu_ok()` over every address from 0x5ff8 to 0x6027, every length, written and read,
-  with fifteen contents, and one byte of every value at each of the seven, in the four combinations of wake_all=1 and
-  sep_pg=1, against a second writing-out; the real `m1_pmu_start()` and `m1_pmu_undo()` behind it in seven kinds of run
-  over six leftovers (the seven zeroed in every kind, then 0x02 at 0x6009 with sep_pg=1, 0x20 at 0x6008 with wake_all=1,
-  both with both). And the record through m1-crumbs: every value of the byte against a second writing-out of its four
-  lines; under each of the family's stages and step 7's own; both options' bytes together, each alone (wake_all=1's
-  alone reads exactly as it did), one landed and the other's mark left; K1's mark under a later stage, the stages a run
-  passes before its byte, and fourteen other runs' stages (not read, and the byte there not read either); anything in
-  0x600a-0x600e, or a 0x6008 that is neither 0 nor wake_all=1's (no field of either byte read); last_look=1's,
+  For sep_pg=1 it compiles `last_look.h`'s `sp_byte()`, `sp_ok()` and `sp_writes()` against a second writing-out (7,056
+  cases: the word read again as found, less bit 2, with it, with another bit flipped; the SEP's actual state; every
+  nibble of the gate word; and when step 7 writes at all: bit 2 set and the SEP's power word off), and runs the module's
+  own lines of steps 7 and 8 with `m1_sp_clear()`, `m1_wa_read()`, `m1_crumb()` and `m1_pmu_ok()` as they stand, in the
+  harness wake_all=1's tests use, in 28 runs: neither option (the two steps as they were, nothing of either), wake_all=1
+  alone (as before), sep_pg=1 alone and both (wake_all=1's accesses first, then the control word read, the SEP's power
+  word read, the control word written once and read again, 0x2922c0044; in step 8 the record, wake_all=1's byte,
+  sep_pg=1's at 0x6009, the stage); a word with other bits set (written back as found); a word found clear (no write at
+  all); **the SEP's power word reading powered, actual state f or 1, with the bit set, with other bits, clear, or
+  clearing by itself, and with wake_all=1: no write to the control word anywhere in the log**; a bit that doesn't take
+  the write; another bit that reads changed after it; a word found clear that reads otherwise the second time; five
+  gate words; a record, a first byte or a second byte that isn't acked; raw SPMI off beforehand (the write is still
+  made). Every access is logged, so each run shows exactly one write, to that word, of the value found less bit 2, or
+  none. (What is mocked: the three words are words of the harness's own pages, and the raw SPMI command is a stub that
+  asks the real `m1_pmu_ok()` first, as `m1_spmi_raw()` does, and stands for the PMU's answer.) Then the two steps'
+  order in the source, the one write through the word's pointer in the file, the SEP's word read before the write it
+  decides, and the MMIO-write tripwire (75 with this option; 80 since disp_hs=1; 11 in `m1_after_slpa()` itself).
+  `m1_sp_init()` and `m1_never()` as they stand, against stand-ins for the never-write list and the mapping: bit 2 set
+  or clear awake, the SEP's power word reading powered awake (each said in the log, and the load goes on), the word on
+  the list, SIO's power page or the engine's missing, the word's page not mapping; and the module's own
+  `e1_never_write()`, compiled by itself, says the word isn't on the list and the list's two still are. **The SEP's
+  device**, for sep_pg=1 and disp_hs=1: `m1_sep_bound()`, `m1_sep_recheck()` and the last lines of `e1_prepare()` as they
+  stand, against stand-ins for the device tree, the driver core and the two firmware stops (which only log): a driver
+  on the first such node's device or the third's, no such node, no device; under each device's lock at the load and
+  with no lock at prepare; at the first prepare with either option a bound driver calls the replay off (`replay_done`
+  2, a line that says why) and neither the DCPs' shutdown nor SIO's stop is made; without either option, at a later
+  prepare, or with the replay already off, nothing is looked at. (`e1_prepare()`'s head, its read of the SMC and the
+  probe's branch, isn't run; that prepare_late then fails the suspend is pinned in the source, not run.) `m1_pmu_ok()`
+  over every address from 0x5ff8 to 0x6027, every length, written and read, with fifteen contents, and one byte of every
+  value at each of the seven, in the four combinations of wake_all=1 and sep_pg=1, against a second writing-out; the
+  real `m1_pmu_start()` and `m1_pmu_undo()` behind it in seven kinds of run over six leftovers. And the record through
+  m1-crumbs: every value of the byte against a second writing-out of its four lines (the write made, not made for a
+  word found clear, or not made because the SEP's word read powered; the nibble as the last sample before the commit,
+  bit 2 named); under each of the family's stages and step 7's own; both options' bytes together, each alone
+  (wake_all=1's alone reads exactly as it did), one landed and the other's mark left; K1's mark under a later stage,
+  the stages a run passes before its byte, and fourteen other runs' stages (not read, and the byte there not read
+  either); anything a run can't have left elsewhere in the seven (no field of either byte read); last_look=1's,
   ll_retn=1's and an observer's stages (never read as sep_pg=1's); a family run without the option after one with it;
   and `--clear` in fourteen cases that zero the seven and fourteen that leave them.
-  For disp_hs=1 it compiles `last_look.h`'s `dh_b0()`, `dh_b1()` and `dh_ok()` against a second writing-out; holds the two
-  set-up tables in `e1_hook.c` against the reference driver's own file, entry for entry, if it is where Corey keeps it
-  (`~/.local/share/sleep-drain/ante042-20261123/s2r.c`; it says so and skips that check if not), and in any case against a
-  sha256 of each as copied (65 entries each, which the build asserts); and runs K3b as it stands, `m1_disp_stop()` with
-  `m1_dh_down()`, `m1_dh_on()`, `m1_dh_setup()`, `m1_dh_shake()` and `m1_ps_off()`, against a model of the two DCPs' power
-  words, the two fabric blocks and the gate word that logs every access, in fifteen runs with the option: both DCPs
-  stopped and powered (per block, in this exact order: the FE word read, the table's 65 writes, the CPU0 word down, the
-  FE word read again, the handshake's four writes, the FE word down, the gate word read; the gate word read first of all;
-  the two bytes and then the stage last); an FE word off as found (no write to that block at all); an FE word that goes
-  off with its CPU0 word (the table, no handshake); a DCP that didn't stop, or neither (nothing but the gate word's
-  reads); a CPU0 word or an FE word that stays up; the bit-2 flip at either handshake or none; the two bytes' command
-  failing (the stage still goes out). And in eight runs without the option, beside the function as it was before it,
-  kept in the test word for word: the same accesses, one for one. (What is mocked: every word is the harness's own; a
-  power word written with target 0 reads off afterwards unless told to stay up; a write to a block whose FE word doesn't
-  read powered is logged as a fault, where the Mac would take an SError, and a read of a block as illegal; `m1_kwrite()`
-  is a stand-in that asks the real `m1_pmu_ok()`.) The MMIO-write tripwire goes from 75 to 80 in the file (the table's
-  one write in its loop and the handshake's four) and stays 11 in `m1_after_slpa()`. `m1_dh_init()` and `m1_never()` as
-  they stand: the 134 addresses asked of the list, in order; the refusals for a listed table entry or handshake word in
-  either block, for the engine's page or an FE word's mapping missing, for a block that doesn't map; and, over a copy
-  with one thing changed, for a block paired with another DCP's words and for a table entry that isn't a word inside
-  the span; no word of either block is read. `m1_pmu_ok()` over every address, length and nineteen contents, one byte
-  and two bytes of every value at each of the seven, in the eight combinations of wake_all=1, sep_pg=1 and disp_hs=1,
-  against a second writing-out; the real K1 and undo behind it in eleven kinds of run over six leftovers. And the record
-  through m1-crumbs: all 64 by 256 records through the decoder's own function against a second writing-out of their
-  lines, the one sentence about bit 2 where it applies and nowhere else; the two bytes under each stage a run can have
-  them at, K3's with its own line; all three options' records together and in pairs; K1's mark under each kind of
-  stage; other runs' stages, K1's stage and none (not read); anything a run can't have left in any of the other fields
-  (no field of any record read); a family run without the option after one with it; and `--clear` in thirteen cases
-  that zero the seven and fourteen that leave them.
+  For disp_hs=1 it compiles `last_look.h`'s `dh_b0()` to `dh_b3()` and `dh_ok()` against a second writing-out (every
+  first byte, every second, and all 65,536 pairs of third and fourth: 289 pass); holds the two set-up tables in
+  `e1_hook.c` against the reference driver's own file, entry for entry, if it is where Corey keeps it
+  (`~/.local/share/sleep-drain/ante042-20261123/s2r.c`; it says so and skips that check if not), and in any case against
+  a sha256 of each as copied (65 entries each, which the build asserts), and finds the handshake's own four writes at
+  entries 29, 41, 53 and 63 of each; and runs K3b as it stands, `m1_disp_stop()` with `m1_dh_down()`, `m1_dh_on()`,
+  `m1_dh_setup()`, `m1_dh_shake()` and `m1_ps_off()`, against a model of the two DCPs' power words, the two fabric blocks
+  and the gate word that logs every access, in eighteen runs with the option, each against a second writing-out of K3b
+  written in the test, its whole log: both DCPs stopped and powered (per block, in this exact order: interrupts off,
+  the FE word read, the table's 65 writes, interrupts on, the gate word read; the CPU0 word down; interrupts off, the
+  FE word read again, the handshake's four writes, interrupts on; the FE word down; the gate word read; the gate word
+  read first of all; the four bytes and then the stage last); the gate word's bit 2 flipping at either table, at either
+  handshake, at a table and back at the handshake, or never (the record tells them apart); an FE word off as found (no
+  write to that block at all, no sample after a table that wasn't written); an FE word that goes off with its CPU0
+  word (the table and its sample, no handshake); a DCP that didn't stop, or neither; a CPU0 word or an FE word that
+  stays up; the four bytes' command failing (the stage still goes out). Every write to a block lies inside an
+  interrupts-off group that opens with the read of that block's FE word and holds nothing else. And in eight runs
+  without the option, beside the function as it was before it, kept in the test word for word: the same accesses, one
+  for one, and interrupts never off. (What is mocked: every word is the harness's own; a power word written with
+  target 0 reads off afterwards unless told to stay up; a write to a block whose FE word doesn't read powered is logged
+  as a fault, where the Mac would take an SError, and a read of a block as illegal; `local_irq_save()` and
+  `local_irq_restore()` only log; `m1_kwrite()` is a stand-in that asks the real `m1_pmu_ok()`.) The MMIO-write tripwire
+  stands at 80 in the file (the table's one write in its loop and the handshake's four) and 11 in `m1_after_slpa()`.
+  `m1_dh_init()` and `m1_never()` as they stand: the 134 addresses asked of the list, in order; the refusals for a
+  listed table entry or handshake word in either block, for the engine's page or an FE word's mapping missing, for a
+  block that doesn't map; and, over a copy with one thing changed, for a block paired with another DCP's words or
+  another ASC and for a table entry that isn't a word inside the span; no word of either block is read. `m1_pmu_ok()`
+  over every address, length and twenty-five contents, one byte of every value at each of the seven, and four bytes at
+  each place with every value of each in turn, in the eight combinations of wake_all=1, sep_pg=1 and disp_hs=1,
+  against a second writing-out; the real K1 and undo behind it in eleven kinds of run over six leftovers. And the
+  record through m1-crumbs: 64 first bytes by six second ones by the 323 third and fourth bytes a record can have (a
+  fourth of 0x00, lost across the restart, among them), every second byte, and sep_pg=1's nibble as a sixth sample,
+  through the decoder's own function against a second writing-out: the handshake flags and the set-up flags said
+  separately, the samples in the order they were taken, the first with bit 2 set named, and no line that says which
+  write set it or that it stayed set; the four bytes under each stage a run can have them at, K3's with its own line;
+  all three options' records together and in pairs; K1's mark under each kind of stage (under K3's: no watchdog, no
+  light yet); other runs' stages, K1's stage and none (not read); anything a run can't have left in any of the other
+  fields, and four bytes that aren't a record's (no field of any record read); a family run without the option after
+  one with it; and `--clear` in fourteen cases that zero the seven and eighteen that leave them.
   For ll_retn=1 it compiles `last_look.h`'s `llr_empty_code()`, `llr_b0()`, `llr_past()`, `llr_b2()`, `llr_b3()`, `llr_b4()`,
   `llr_wide()` and `ll_stage()`'s three sets against a second writing-out (every bit of each word alone for `llr_wide()`, the
   time bound to the tick, the empties' code at each edge), and runs `m1_deep_wfi()`, `m1_llr_empty()`,
@@ -261,7 +280,10 @@ used to sit in CLAUDE.md, entry for entry):
   `--m1-sep-pg`'s line and `disp_hs=1`), the hand-off
   and the watch after it, every refusal (an older build without the option's parameter, a build that
   ignored it, two options together; `--m1-sep-pg` and `--m1-disp-hs` with `apple_sep` loaded, a directory beside
-  the fake `e1_hook`'s, which every other option runs past), and every way out. A launcher that ends before the hand-off, where a check needs
+  the fake `e1_hook`'s, which every other option runs past; and those two against a kernel command line, a file the
+  test points the launcher at: taken only if the last `module_blacklist=` or `module-blacklist=` lists `apple_sep`,
+  fourteen lines in all, an ordinary safe boot's, an earlier list overridden by a later one, the hyphen spelling,
+  other modules' names, quoting and no file among them, which every other option runs past too), and every way out. A launcher that ends before the hand-off, where a check needs
   it running, fails a check that shows what it printed, and that function's other checks are skipped: it doesn't stop
   the test. It takes about half a minute a launcher; options as
   arguments run only those launchers (`run-floor` by itself is the plain floor, which has the usage cases).
