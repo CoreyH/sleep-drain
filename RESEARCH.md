@@ -5481,10 +5481,11 @@ notes says how often that path ran (Pullfrog on #130). Here the SEP has a driver
 kernel's `apple_sep` (`drivers/soc/apple/sep.rs` and `pm.rs` on omacom's `integration/aurora`, read today;
 the installed 7.2.11-15 build is taken to match: inferred) holds Touch ID captures and entropy requests over
 a suspend and keeps the node's power domains on across it, and sends the enclave no sleep message. So the
-run clears the wait with the enclave up and a driver bound, which neither macOS nor the reference's tested
-path does. What the enclave sees when the rest of the SoC goes down around it isn't known. It is not shown
-to be the same as a watchdog restart, though every run so far has ended in one with the enclave in this
-same state.
+run as first proposed, in an ordinary safe boot, would have cleared the wait with the enclave up and a
+driver bound, which neither macOS nor the reference's tested path does. What the enclave sees when the rest
+of the SoC goes down around it isn't known. It is not shown to be the same as a watchdog restart, though
+every run so far has ended in one with the enclave in this same state. **That proposal is superseded** by
+the next paragraph: no run is made that way.
 
 **And on this Mac the enclave's store is open to it** (Pullfrog on #130, then read here). The guard's default
 is narrower than "refuses xART writes": it protects records this Linux didn't create and still lets Linux's

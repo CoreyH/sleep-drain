@@ -51,32 +51,40 @@ this section where they differ.
   2026-11-16).
 
 **Next, in this order:**
-1. **The ninth run: the SEP's power-gate wait cleared** (`sep_pg=1`, `run-floor --m1-sep-pg`: being
-   built on 2026-11-23; RESEARCH.md, "The weekend's answers"). Ante042's J314s completes the entry and
-   wakes; their driver clears bit 2 of the PMGR control word 0x28e0cc200, which makes the sequencer
-   wait for the SEP to power-gate, when nothing puts the SEP to sleep. Here the word reads 4. The run
-   is `--m1-a2-pre-blink`'s with that one write and a byte at 0x6009; the light is the result. If the
-   light stops and no restart comes, the entry may have completed: the power button held.
+1. **The ninth run, BLOCKED until its three safeguards are in place: the reference's two steps for the
+   engine's opening, in a safe boot without the enclave's driver** (RESEARCH.md, "The weekend's
+   answers", 2026-11-23). Ante042's J314s completes the entry and wakes. Two things its driver does
+   that this recipe never did, both at B2's opening:
+   - the display blocks' fabric handshake (block + 0x8014 := 1, + 0x82bc := 1, 2, 4, after a set-up
+     table) while the displays go down: by the driver's comment dispext0's sets bit 2 of 0x2922c0044,
+     which is B2's first poll (`disp_hs=1`);
+   - bit 2 of the PMGR control word 0x28e0cc200, "wait for the SEP to power-gate", cleared when no
+     driver puts the SEP to sleep; here it reads 4 (`sep_pg=1`).
+   **The one recipe to run is `run-floor --no-reading --m1-disp-hs`**: `--m1-a2-pre-blink`'s line with
+   both, after `pkexec sleep-drain-safe boot --no-sep`. Three changes at once against the last run,
+   then: the handshakes, the bit, and no `apple_sep` in the boot. A light that stops is evidence about
+   that combination and says B2 reached its tenth SIO word, not that the entry finished and not which
+   change did it; the record's read-backs say what each write did to the gate word with CPU0 up (the
+   nibble before the handshakes and after each; the control word and the nibble after the clear).
+   - **Not to be handed over before all of:** `sleep-drain-safe boot --no-sep` merged (#131) *and
+     installed* (`pkexec bash install.sh`: the installed copy would otherwise ignore the option and
+     make an ordinary safe boot); `run/sep-pg` merged with `run-floor`'s refusal when `apple_sep` is
+     loaded, both reviews done, and the module built from `main`; and, in the safe boot itself before
+     the run, `sleep-drain-safe status` saying the driver is kept out and isn't loaded. Why: on this
+     Mac `apple_sep` runs with `xart_guard=0` and xART writes enabled, and the safe boot's read-only
+     root doesn't cover that store.
+   - `--m1-sep-pg` (the bit alone) is built with it and not planned as a run of its own.
    - `ll_retn=1` (`--m1-ll-retn`) is built and merged and **not run**: held behind this.
-   - At the desk meanwhile: the reference driver against the recipe, difference by difference
-     (`~/.local/share/sleep-drain/ante042-20261123/`), for what stops the entry next if the gate opens
-     (the 16 DCS words, `ps_late[]`, the quiesce's order).
-   - A reply to Ante042 and RyanTheTide on #2198, with the run's result: needs Corey's OK.
+   - At the desk: the reference driver against the recipe, difference by difference
+     (`~/.local/share/sleep-drain/ante042-20261123/diff-vs-recipe.md`), for what stops the entry next
+     if the opening passes: the PMP powered off (its word is on this project's never-write list: a
+     fresh OK), `ps_late[]`'s fifty words, the memory controller's drain, `a2_pre=1`'s three moves,
+     which the reference never makes, and two late reads of APCIe power words it found fatal.
+   - A reply to Ante042 and RyanTheTide on #2198, with the run's result: needs Corey's OK. A question
+     for Ante042 in it: how often their no-driver fallback ran.
    - Open asks: malik-na/linux-aurora#77 and omacom/linux-aurora#290 (11-20), unanswered. They stay
-     open: a light that stops says B2 reached its tenth SIO word, not that the entry finished, and
-     macOS's commit state would still serve for whatever stops it next. Only an entry shown complete
-     retires them.
-   - The reference's tested path sends the SEP its SLEEP through a driver; this kernel's `apple_sep`
-     sends none, and on this Mac it runs with `xart_guard=0` and xART writes enabled. So the run is
-     made in a safe boot without that driver (`pkexec sleep-drain-safe boot --no-sep`, which adds
-     `module_blacklist=apple_sep`), the reference's no-driver case, and `run-floor` refuses
-     `--m1-sep-pg` and `--m1-disp-hs` with the module loaded. A question for Ante042 in the reply: how
-     often their no-driver fallback ran.
-   - The comparison with the reference (`ante042-20261123/diff-vs-recipe.md`) found a second step for
-     the opening: macOS sets bit 2 of 0x2922c0044, B2's first poll, by dispext0's fabric handshake
-     (block + 0x8014 := 1, + 0x82bc := 1, 2, 4) while it takes the displays down, and the recipe's K3b
-     lowers them with none. `disp_hs=1` makes it for disp0 and dispext0 and reads the gate word after
-     each; the run has both steps (`--m1-disp-hs`).
+     open: macOS's commit state would still serve for whatever stops the entry next. Only an entry
+     shown complete retires them.
    - **After an entry that completes**, the fix is a port: Ante042's t6000 core onto upstream's
      `sleep.c` (their notes map it area by area), and a wake needs the loader's mailbox, which is
      m1n1's or aura's side and not Claude's to write.
