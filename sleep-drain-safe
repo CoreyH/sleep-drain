@@ -184,9 +184,13 @@ cmd_boot() {
 
   # The regular entry's command line, so the safe boot opens the same root
   # the same way, plus the flag the hook looks for.
-  cmdline=$(awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }' "$GRUB_CFG")
+  regular_cmdline() {
+    local c
+    c=$(awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }' "$GRUB_CFG")
+    echo "${c% sleepdrain.safe}"
+  }
+  cmdline=$(regular_cmdline)
   [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"
-  cmdline=${cmdline% sleepdrain.safe}
   boot_uuid=$(grub-probe --target=fs_uuid /boot)
   # Refusals first, before the image, the script or grub.cfg is touched: what an
   # earlier "boot" queued stays what it was, image included.
@@ -206,6 +210,9 @@ cmd_boot() {
     { rm -f "$IMAGE.new"; die "mkinitcpio failed; see $IMAGE_DIR/mkinitcpio.log"; }
   lsinitcpio -a "$IMAGE.new" 2> /dev/null | grep 'sleepdrain-safe' > /dev/null ||
     { rm -f "$IMAGE.new"; die "the new image has no sleepdrain-safe hook"; }
+  # The build takes a while: the line the checks above passed must still be the regular entry's.
+  [[ $(regular_cmdline) == "$cmdline" ]] ||
+    { rm -f "$IMAGE.new"; die "the regular entry's command line changed while the image was built; the old image and entries stay, nothing selected: run it again"; }
   mv -f "$IMAGE.new" "$IMAGE"
 
   # Two entries with ids of their own, both always there, so that selecting

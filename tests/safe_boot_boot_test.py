@@ -332,6 +332,31 @@ def main():
         p = run(t, tool, "boot", "--no-sep")
         check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP).endswith(f" {NO_SEP} sleepdrain.safe"),
               "a line whose no-SEP entry lands exactly on the last byte that fits: taken", p.stdout + p.stderr)
+    # The regular line changes while the image is being built: the entries would be made from a line that is no longer the regular
+    # one. Refused, with the image that was there, if any, left in place.
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t)
+        p = run(t, tool, "boot", "--no-sep")
+        cfg, img = cfg_of(t), image(t)
+        check(p.returncode == 0 and img == ("image\n", 1), "(a first boot --no-sep, for the next case)", p.stdout + p.stderr)
+        mk = os.path.join(t, "bin", "mkinitcpio")
+        body = open(mk).read()
+        with open(mk, "w") as f:
+            f.write(body.replace("#!/bin/bash\n", f"#!/bin/bash\nsed -i 's/quiet splash$/quiet splash module_blacklist=apple_pmp/' {t}/boot/grub/grub.cfg {t}/regular\n", 1))
+        with open(os.path.join(t, "boot/sleep-drain-safe/initramfs.img"), "w") as f:
+            f.write("the image the queued entry boots\n")
+        p = run(t, tool, "boot", "--no-sep")
+        now = cfg_of(t)
+        check(p.returncode != 0 and "changed while the image was built" in p.stderr and nxt(t) == NOSEP
+              and image(t) == ("the image the queued entry boots\n", 2) and not os.path.exists(os.path.join(t, "boot/sleep-drain-safe/initramfs.img.new"))
+              and entry_line(now, NOSEP) == f"linux /vmlinuz-linux-aurora {REG} {NO_SEP} sleepdrain.safe" and "module_blacklist=apple_pmp\n" in now,
+              "the regular line gaining a blacklist during the image build: refused; the old image, the entries and the queued selection stay; no staged image is left",
+              p.stdout + p.stderr + now)
+        with open(mk, "w") as f:
+            f.write(body)
+        p = run(t, tool, "boot", "--no-sep")
+        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP).endswith(" module_blacklist=apple_pmp,apple_sep sleepdrain.safe"),
+              "run again: the entries are made from the new line, with both modules excluded", p.stdout + p.stderr + cfg_of(t))
     # Bytes, not characters: a line of two-byte characters that fits by count and not by size.
     with tempfile.TemporaryDirectory() as t:
         base = "root=UUID=aaaa rw pad="
