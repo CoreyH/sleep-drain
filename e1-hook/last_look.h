@@ -272,6 +272,54 @@
  * panic there, SError still unmasked: the record would be step 7's stage
  * (0x39; 0xb9 with pmp_out=1's bit) with WA_ARMED at 0x6008, and the restart
  * would come about 10 s later, if the panic's restart works.
+ *
+ * sep_pg=1 is one byte more, 0x6009 alone, in a run of the same family, with
+ * wake_all=1 or without it (the two bytes are apart, and each is read by
+ * itself). Every run has ended with the reconfig engine stuck before its
+ * power-downs. Ante042, whose J314s completes the entry with a driver of
+ * their own, wrote on 2026-11-22 that a PMGR control word has a bit, set at
+ * boot, that makes the S2R sequencer wait for the SEP to power-gate, which
+ * never comes if nothing puts the SEP to sleep. From their
+ * drivers/soc/apple/s2r.c (Ante042/linux, branch t600x-s2r-reference,
+ * GPL-2.0-only OR MIT, read on 2026-11-23 with Corey's OK; credited):
+ * T6000_PMGR_SEP_PG is 0x28e0cc200 ("ADT /arm-io/pmgr reg[0] + 0x4c200") and
+ * PMGR_WAIT_SEP_PG its bit 2; macOS clears it only for its wait-sep-pg=0
+ * boot-arg (AppleT6000PMGR::_enableWaitSEPPG); their apple_s2r_sep_pg_clear()
+ * reads the word, writes it back with bit 2 clear and reads it again, on the
+ * boot CPU alone with IRQs off, where the wake mask is written. Awake on this
+ * Mac on 2026-11-23 the word read 0x00000004 and the SEP's power word,
+ * 0x28e580c00, 0x1000030f (target f, actual 0).
+ * In step 7, right after the wake masks and wake_all=1's reads, CPU0 reads the
+ * control word; if its bit 2 is set it writes the word back with that bit
+ * clear (one write, to that one address: a PMGR register, not a write to the
+ * SEP, and a restart undoes it; Corey's OK of 2026-11-23); it reads the word
+ * again, then the SEP's power word and 0x2922c0044. The byte they make goes
+ * out in step 8 after that step's own record and after wake_all=1's byte, for
+ * the reason given there. It is:
+ *   0x6009  bit 7 set (SP_MARK); bit 6 (SP_FOUND): the control word's bit 2
+ *           was set as found (clear: step 7 wrote nothing); bit 5 (SP_CLEAR):
+ *           read again after that, the word had bit 2 clear and every other
+ *           bit as found; bit 4 (SP_SEP_OFF): the SEP's power word read actual
+ *           state 0 (bits 7:4) then; bits 3:0 0x2922c0044's low nibble then,
+ *           with CPU0 up (awake it reads 8)
+ * K1 zeroes the seven bytes as in every run, writes wake_all=1's mark at
+ * 0x6008 if that is set too, and leaves 0x6009 as SP_ARMED, so a byte that
+ * never landed shows; 0x600a-0x600e stay 0. The stage tells the byte from the
+ * other records' second byte (last_look=1's and an observer's, which sep_pg=1
+ * never loads with); sp_ok() is all that m1_pmu_ok() lets a sep_pg=1 run write
+ * there, beside the zeros.
+ * A Mac whose entry completed is not known to come back by itself: nub-spmi0's
+ * enables are zeroed, every AP wake source but the PMU's is masked (all of
+ * them with wake_all=1) and the run's RTC alarm is an hour out. It comes back
+ * by holding the power button.
+ * One MMIO write is new, and two reads CPU0 has not made in this state: the
+ * control word and the SEP's power word have only been read awake.
+ * 0x2922c0044 CPU0 has read after a commit (runs 6 to 10 and last_look=1's
+ * looks) and awake at the loads, not in step 7 either; its page is the
+ * always-on one. A read that faulted would panic there, SError still
+ * unmasked: the record would be step 7's stage (0x39; 0xb9 with pmp_out=1's
+ * bit) with SP_ARMED at 0x6009, and the restart would come about 10 s later,
+ * if the panic's restart works.
  */
 #ifndef LAST_LOOK_H
 #define LAST_LOOK_H
@@ -353,6 +401,16 @@ typedef uint64_t u64;
 #define WA_NAMED		(1U << 5)	/* under WA_MARK: words 0 to 5 and word 6's bits 12:0 read back all set */
 #define WA_UNNAMED		(1U << 4)	/* under WA_MARK: word 6's bits 31:13 read back all set too */
 
+/* sep_pg=1: the word and its bit are Ante042's (drivers/soc/apple/s2r.c, Ante042/linux t600x-s2r-reference: T6000_PMGR_SEP_PG, PMGR_WAIT_SEP_PG). */
+#define SP_CTL			0x28e0cc200ULL	/* the PMGR control word: /arm-io/pmgr reg[0] + 0x4c200 */
+#define SP_WAIT			(1U << 2)	/* in it: the S2R sequencer waits for the SEP to power-gate. Set at boot */
+#define SP_SEP_PS		0xc00		/* the SEP's power word, in SIO's page: 0x28e580c00. Read only */
+#define SP_ARMED		(1U << 1)	/* 0x6009 (LL_AT + 1) as K1 leaves it with sep_pg=1, until the byte's command in step 8 */
+#define SP_MARK			(1U << 7)	/* 0x6009, sep_pg=1's byte */
+#define SP_FOUND		(1U << 6)	/* under SP_MARK: the control word's bit 2 was set as found */
+#define SP_CLEAR		(1U << 5)	/* under SP_MARK: read again, it had bit 2 clear and every other bit as found */
+#define SP_SEP_OFF		(1U << 4)	/* under SP_MARK: the SEP's power word read actual state 0 then */
+
 /*
  * wake_all=1's byte at 0x6008. named: words 0 to 5 read back 0xffffffff and word 6's bits 12:0 all set; unnamed: word 6's
  * bits 31:13 all set; status: how many of the seven status words read non-zero. Bit 3 stays 0.
@@ -366,6 +424,22 @@ static inline u8 wa_byte(bool named, bool unnamed, unsigned int status)
 static inline bool wa_ok(u8 v)
 {
 	return v == WA_ARMED || ((v & WA_MARK) == WA_MARK && !(v & (1U << 3)));
+}
+
+/*
+ * sep_pg=1's byte at 0x6009. found: the control word as step 7 read it first; back: as it read after the write, or with no
+ * write made if bit 2 was clear as found; sep_ps: the SEP's power word then; gate44: 0x2922c0044 then.
+ */
+static inline u8 sp_byte(u32 found, u32 back, u32 sep_ps, u32 gate44)
+{
+	return (u8)(SP_MARK | (found & SP_WAIT ? SP_FOUND : 0) | (back == (found & ~SP_WAIT) ? SP_CLEAR : 0) |
+		    (sep_ps & LL_PS_ACTUAL ? 0 : SP_SEP_OFF) | (gate44 & 0xf));
+}
+
+/* What a sep_pg=1 run may write to 0x6009 by itself: K1's mark, or a byte sp_byte() makes (bit 7 set). */
+static inline bool sp_ok(u8 v)
+{
+	return v == SP_ARMED || (v & SP_MARK);
 }
 
 /* The four power words, each true if it read off: 0x6008. */

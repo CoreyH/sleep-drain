@@ -87,6 +87,36 @@ used to sit in CLAUDE.md, entry for entry):
   it, and fourteen other runs' stages, where it is not read; junk in the other six bytes, bit 3; never as wake_all=1's
   under one of last_look=1's stages or an observer's, obs_gate=1's mark and record as before; and `--clear`, which zeroes
   the seven only after a byte or a mark with six zeros behind it and bit 3 clear, under stage 0x00 and the probe's too.
+  For sep_pg=1 it compiles `last_look.h`'s `sp_byte()` and `sp_ok()` against a second writing-out (7,056 cases: the word
+  read again as found, less bit 2, with it, with another bit flipped; the SEP's actual state; every nibble of the gate
+  word), and runs the module's own lines of steps 7 and 8 with `m1_sp_clear()`, `m1_wa_read()`, `m1_crumb()` and
+  `m1_pmu_ok()` as they stand, in the harness wake_all=1's tests use, in 24 runs: neither option (the two steps as they
+  were, nothing of either), wake_all=1 alone (as before), sep_pg=1 alone and both (wake_all=1's accesses first, then the
+  control word read, written once, read again, the SEP's power word, 0x2922c0044; in step 8 the record, wake_all=1's
+  byte, sep_pg=1's at 0x6009, the stage); a word with other bits set (written back as found); a word found clear (no
+  write at all); a bit that doesn't take the write; another bit that reads changed after it; a word found clear that
+  reads otherwise the second time; the SEP's actual state f, 1 and 0; five gate words; a record, a first byte or a
+  second byte that isn't acked; raw SPMI off beforehand (the write is still made). Every access is logged, so each run
+  shows exactly one write, to that word, of the value found less bit 2, or none. (What is mocked: the three words are
+  words of the harness's own pages, and the raw SPMI command is a stub that asks the real `m1_pmu_ok()` first, as
+  `m1_spmi_raw()` does, and stands for the PMU's answer.) Then the two steps' order in the source, the one write through
+  the word's pointer in the file, and the MMIO-write tripwire, which goes from 74 to 75 in the file and stays 11 in
+  `m1_after_slpa()` itself (the write is in `m1_sp_clear()`). `m1_sp_init()`, `m1_sp_sep_bound()` and `m1_never()` as they
+  stand, against stand-ins for the never-write list, the mapping, the device tree and the driver core: bit 2 set or
+  clear awake (logged, and the load goes on), a driver bound to the SEP's device (refused first of all; the first node's
+  or the third's), no such node or no device, the word on the list, SIO's power page or the engine's missing, the
+  word's page not mapping; and the module's own `e1_never_write()`, compiled by itself, says the word isn't on the list
+  and the list's two still are. `m1_pmu_ok()` over every address from 0x5ff8 to 0x6027, every length, written and read,
+  with fifteen contents, and one byte of every value at each of the seven, in the four combinations of wake_all=1 and
+  sep_pg=1, against a second writing-out; the real `m1_pmu_start()` and `m1_pmu_undo()` behind it in seven kinds of run
+  over six leftovers (the seven zeroed in every kind, then 0x02 at 0x6009 with sep_pg=1, 0x20 at 0x6008 with wake_all=1,
+  both with both). And the record through m1-crumbs: every value of the byte against a second writing-out of its four
+  lines; under each of the family's stages and step 7's own; both options' bytes together, each alone (wake_all=1's
+  alone reads exactly as it did), one landed and the other's mark left; K1's mark under a later stage, the stages a run
+  passes before its byte, and fourteen other runs' stages (not read, and the byte there not read either); anything in
+  0x600a-0x600e, or a 0x6008 that is neither 0 nor wake_all=1's (no field of either byte read); last_look=1's,
+  ll_retn=1's and an observer's stages (never read as sep_pg=1's); a family run without the option after one with it;
+  and `--clear` in fourteen cases that zero the seven and fourteen that leave them.
   For ll_retn=1 it compiles `last_look.h`'s `llr_empty_code()`, `llr_b0()`, `llr_past()`, `llr_b2()`, `llr_b3()`, `llr_b4()`,
   `llr_wide()` and `ll_stage()`'s three sets against a second writing-out (every bit of each word alone for `llr_wide()`, the
   time bound to the tick, the empties' code at each edge), and runs `m1_deep_wfi()`, `m1_llr_empty()`,
@@ -192,9 +222,10 @@ used to sit in CLAUDE.md, entry for entry):
 - `tests/e1a_launcher_test.py` runs `e1-hook/run-e1a` and every `run-floor` option as uid 0 in a bubblewrap
   user namespace against stub `insmod`, `rmmod`, `modinfo` and `sleep-drain-reading`: the parameters and the
   label each option loads with (`--m1-wake-all`: `--m1-a2-pre-blink`'s line and `wake_all=1`; `--m1-ll-retn`:
-  `--m1-atc-down`'s line and `ll_retn=1`), the hand-off
+  `--m1-atc-down`'s line and `ll_retn=1`; `--m1-sep-pg`: `--m1-a2-pre-blink`'s line and `sep_pg=1`), the hand-off
   and the watch after it, every refusal (an older build without the option's parameter, a build that
-  ignored it, two options together), and every way out. A launcher that ends before the hand-off, where a check needs
+  ignored it, two options together; `--m1-sep-pg` with `apple_sep` loaded, a directory beside the fake
+  `e1_hook`'s, which every other option runs past), and every way out. A launcher that ends before the hand-off, where a check needs
   it running, fails a check that shows what it printed, and that function's other checks are skipped: it doesn't stop
   the test. It takes about half a minute a launcher; options as
   arguments run only those launchers (`run-floor` by itself is the plain floor, which has the usage cases).
@@ -204,8 +235,9 @@ used to sit in CLAUDE.md, entry for entry):
   launchers, `tests/e1_hook_probe_test.py` and, for the launchers its `ARGS` names, `tests/e1a_launcher_test.py`)
   didn't notice. Run it after changing any of them, and give it the
   mutants a new rung calls for. A word as its argument runs only the mutants whose names have it
-  (wake_all=1's are `"wa:" "wa "`: `wa` by itself is in ninety other names; ll_retn=1's are `llr`). Its `ARGS` names five
-  launchers for a mutant of `run-floor` (the plain floor, `--m1-a2-pre-blink`, `--m1-wake-all`, `--m1-atc-down` and
-  `--m1-ll-retn`): about three minutes each.
+  (wake_all=1's are `"wa:" "wa "`: `wa` by itself is in ninety other names; ll_retn=1's are `llr`; sep_pg=1's are
+  `"sp:" "sp header" "sp decoder" "sp launcher"`). Its `ARGS` names six
+  launchers for a mutant of `run-floor` (the plain floor, `--m1-a2-pre-blink`, `--m1-wake-all`, `--m1-atc-down`,
+  `--m1-ll-retn` and `--m1-sep-pg`): about three and a half minutes each.
   Either way it first checks the whole list against the tree, in a second, and stops if a mutant's text
   isn't there exactly once: a rung that moved an older mutant's line fixes the list before anything runs.

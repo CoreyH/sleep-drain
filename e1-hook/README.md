@@ -264,6 +264,53 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   is the witness, as in `--m1-a2-pre-blink`. With every wake source masked, a Mac whose entry completed would
   not wake for a key, the lid or the PMU's alarm: it comes back only by holding the power button. Run it
   with `--no-reading`, the nights off around it and nothing in the USB-C ports.
+- `sep_pg=1` (`run-floor --m1-sep-pg`, on `gates_mark=1`, never with `observe=1`, with `wake_all=1` or without
+  it; the launcher's line is `--m1-a2-pre-blink`'s with it; `e1-hook/last_look.h` has the byte) adds one write
+  to step 7 and changes nothing else. Every run has ended with the reconfig engine stuck before its
+  power-downs. Ante042, whose J314s completes the entry with a driver of their own, wrote on 2026-11-22 that
+  a PMGR control word has a bit, set at boot, that makes the S2R sequencer wait for the SEP to power-gate,
+  which never comes if nothing puts the SEP to sleep. The word and the bit are from their
+  `drivers/soc/apple/s2r.c` (Ante042/linux, branch `t600x-s2r-reference`, `GPL-2.0-only OR MIT`, read on
+  2026-11-23 with Corey's OK, credited): `T6000_PMGR_SEP_PG` 0x28e0cc200 and `PMGR_WAIT_SEP_PG`, bit 2;
+  macOS clears it only for its `wait-sep-pg=0` boot-arg, and their `apple_s2r_sep_pg_clear()` reads the
+  word, writes it back with bit 2 clear and reads it again where the wake mask is written, on the boot CPU
+  alone with IRQs off. Here, right after the wake masks, nub-spmi0's enables and `wake_all=1`'s reads, still
+  in step 7, `m1_sp_clear()` reads the word, writes it back with bit 2 clear if the bit is set, reads it
+  again, then reads the SEP's power word (0x28e580c00) and 0x2922c0044. **What is new on the hardware:** one
+  write, of one bit, in one PMGR control word: 0x28e0cc200's bit 2, the word 0x00000004 before and 0x00000000
+  after as it read awake on 2026-11-23 (whatever its other bits read, they are written back as found, and a
+  word found with bit 2 clear gets no write at all). It is a PMGR register, not a write to the SEP; the
+  restart undoes it; Corey OK'd it on 2026-11-23. Two reads are new in this state: the control word and the
+  SEP's power word have only been read awake (0x1000030f there: target f, actual 0). 0x2922c0044 CPU0 has
+  read awake and after a commit, not in step 7 either. A read that faulted would panic there, SError still
+  unmasked: stage 0xb9 with 0x02 at 0x6009, and a restart about 10 s after the dark screen. And one more byte
+  of the PMU's scratch is written, 0x6009, inside the range OK'd on 2026-11-16: K1 zeroes 0x6008-0x600e as in
+  every run and leaves 0x02 there; the byte goes out in step 8 after that step's record at 0x6010 and after
+  `wake_all=1`'s byte, and `m1_pmu_ok()` lets through, with `sep_pg=1`, one byte at 0x6009 that is the mark
+  or has bit 7 set. So 0x6009 reads one of three ways after such a run: 0x00, the run didn't get as far as
+  K1; 0x02, the byte never landed; or the byte, bit 7 set, with bit 6 saying the control word's bit 2 was
+  set as found, bit 5 that the word read again had bit 2 clear and every other bit as found, bit 4 that the
+  SEP's power word read actual state 0 then, and bits 3:0 0x2922c0044's low nibble then, read with CPU0 up
+  (awake it reads 8). `m1-crumbs` reads 0x6008 and 0x6009 each by itself under the family's stages and step
+  7's own, by the rules `wake_all=1`'s byte has: a mark by the stage, a byte or a mark under another run's
+  stage not at all, and no field of either if the rest of the seven holds anything a run of the family can't
+  have left. `--clear` zeroes the seven when each of the two bytes is its option's byte or mark, or 0, with
+  at least one there, and 0x600a-0x600e are 0; anything else it leaves, and says so. At the load
+  `m1_sp_init()` refuses if a driver is bound to the SEP's device (the tree's `apple,sep` node), checks the
+  word against the never-write list, refuses without SIO's power page or the engine's, maps the word's page
+  and logs the three words awake; a word whose bit 2 reads clear already is said in the log and the load
+  goes on. **The run is only made in a safe boot started without the SEP's driver, `pkexec
+  sleep-drain-safe boot --no-sep`:** `apple_sep` writes the enclave's key store (xART, which macOS shares),
+  which the safe boot's read-only root doesn't cover, and this run lets the SoC go down around the enclave.
+  `run-floor --m1-sep-pg` refuses while `apple_sep` is loaded, before anything is loaded or written, and the
+  module refuses as said. The stages are `a2_pre=1`'s and the keyboard's light is the witness, as in
+  `--m1-a2-pre-blink`. It ends one of three ways: the light blinks until the restart, 90 s after the dark
+  screen, as before; the light stops and the restart comes later than 90 s (B2 moved: it zeroes WD1's count
+  at its op 223, so WD1's bite comes up to about 150 s after that; WD2's bite is 120 s after the commit); or
+  the light stops and no restart comes: the entry may have completed, and nothing this recipe leaves armed
+  is known to wake the Mac (nub-spmi0's enables are zeroed and every AP wake source but the PMU's is
+  masked), so hold the power button. Run it with `--no-reading`, the nights off around it, nothing in the
+  USB-C ports, and the keyboard filmed.
 - `ll_retn=1` (`run-floor --m1-ll-retn`, on `ll_wake=1`, never with `gate_look=1`; the launcher's line is
   `--m1-atc-down`'s with it; `e1-hook/last_look.h` has why, the record's form and the stages) changes how CPU0
   takes its very last WFI, and nothing before it. CYC_OVRD's bit 0 is XNU's `disWfiRetn`, "disable WFI

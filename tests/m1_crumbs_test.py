@@ -1146,6 +1146,7 @@ def main():
     acc_last_tests(g, src)
     last_look_tests(g, src)
     wake_all_tests(g, src)
+    sep_pg_tests(g, src)
     ll_retn_tests(g, src)
     sio_steps_tests(g, src)
     with tempfile.TemporaryDirectory() as tmp:
@@ -1643,8 +1644,10 @@ def mark_tests(g, src):
     # 68 since acc_last=1 (acc_last_tests() has its two: the three cluster words' own write, moved, and the acks after its last command).
     # 73 since last_look=1 (last_look_tests() has its five: the acks after each of its commands, and ll_wake=1's four, FPWM0's power
     # word and the PWM's three).
-    check(len(re.findall(wr, code_only)) == 74 and len(re.findall(wr, after_code)) == 11,
-          "e1_hook.c makes 74 MMIO write calls (the last added: m1_atc_write()'s one), 11 of them in m1_after_slpa() itself: none has been added without this count",
+    # 75 since sep_pg=1 (sep_pg_tests() has its one: m1_sp_clear()'s write of the PMGR control word less bit 2; it is called from
+    # m1_after_slpa() and isn't in it, so that function's own count stays 11).
+    check(len(re.findall(wr, code_only)) == 75 and len(re.findall(wr, after_code)) == 11,
+          "e1_hook.c makes 75 MMIO write calls (the last added: m1_sp_clear()'s one), 11 of them in m1_after_slpa() itself: none has been added without this count",
           f"{len(re.findall(wr, code_only))} {len(re.findall(wr, after_code))}")
     check("\tif (!m1_fab_awake(v)) {\n\t\tpr_err(" in cut("static int __init m1_fab_init(void)", "\n}\n")
           and "if (e1_never_write(FAB_PS)) {" in src and "m1_never(WD1_WDT + WD1_COUNT, 1) || m1_never(WD1_WDT + WD1_BITE, 1) || m1_never(WD1_WDT + WD1_CTRL, 1)" in src,
@@ -8109,8 +8112,8 @@ def last_look_tests(g, src):
         want = bytearray(before)
         want[0x6004:0x6008], want[0x6010:0x6017] = bytes(4), bytes(7)
         check(rc == 0 and after == bytes(want) and "cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros" in out
-              and "0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage, no obs_gate=1 record and no wake_all=1 byte or mark with six"
-              " zeros after it says they're a run's" in out,
+              and "0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage, no obs_gate=1 record and no wake_all=1 or sep_pg=1 byte or mark"
+              " with zeros in the rest says they're a run's" in out,
               "--clear leaves bytes that are neither run's alone, and says so", out + err)
     tool = open(TOOL).read()
     check("    try:\n        r0201 = os.pread(fd, 1, R0201)\n    except OSError:\n        r0201 = b\"\"\n" in tool and "\"PMU 0x0201: not read\"" in tool
@@ -8148,9 +8151,23 @@ WA_FN_PRELUDE = r"""
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define U32_MAX 0xffffffffU
 #define pr_info(...) printf("info " __VA_ARGS__)
-static bool wake_all, m1_raw = true;
+static bool wake_all, sep_pg, alarm, last_look, observe, m1_raw = true;
 static u8 m1_pmp_tag;
 static int fail_at = -1, sent;
+static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n);
+/* The two functions step 7 calls: a step 7 that doesn't call one still builds, and its log shows it. */
+static u8 m1_wa_read(void) __attribute__((unused));
+static u8 m1_sp_clear(void) __attribute__((unused));
+/*
+ * sep_pg=1's three words, each at its place in a page of its own: the PMGR control word, the SEP's power word in SIO's
+ * power page and 0x2922c0044 in the engine's. A write to the control word keeps of its value only the bits in ctl_keep (a
+ * bit that isn't there stays as it was) and then flips ctl_after in the word; ctl_drift is flipped in it after its first
+ * read, written or not.
+ */
+static u32 ctl_pg[0x4000 / 4], sio_pg[0x4000 / 4], pos_pg[0x4000 / 4], ctl_keep = 0xffffffffU, ctl_after, ctl_drift;
+static unsigned int ctl_reads;
+#define CTL_WORD (ctl_pg + (SP_CTL & 0x3fff) / 4)
+static void *m1_sp = CTL_WORD, *m1_sio = sio_pg, *m1_pos = pos_pg;
 /*
  * The seven AP wake-mask words with the seven status words after them, and nub-spmi0's page: every access logged. A mask
  * word keeps of a write only the bits in keep[]: a bit that isn't there doesn't take.
@@ -8161,6 +8178,18 @@ static u32 readl(const void *p)
 {
 	const u32 *w = p;
 
+	if (w == CTL_WORD) {
+		u32 v = *w;
+
+		printf("r C\n");
+		if (!ctl_reads++)
+			*CTL_WORD ^= ctl_drift;
+		return v;
+	}
+	if (w == sio_pg + SP_SEP_PS / 4 || w == pos_pg + M1_POS_GATE44 / 4) {
+		printf("r %c\n", w == sio_pg + SP_SEP_PS / 4 ? 'P' : 'G');
+		return *w;
+	}
 	if (w < aon || w >= aon + 2 * WA_WORDS) {
 		printf("r X\n");
 		return 0;
@@ -8177,16 +8206,27 @@ static void writel(u32 v, void *p)
 		*w = v & keep[w - aon];
 	} else if (w >= en && w < en + 0x20) {
 		printf("w E %x %x\n", (unsigned int)((unsigned char *)w - (unsigned char *)en), v);
+	} else if (w == CTL_WORD) {
+		printf("w C %x\n", v);
+		*w = ((*w & ~ctl_keep) | (v & ctl_keep)) ^ ctl_after;
 	} else {
 		printf("w X %x\n", v);
 	}
 }
-/* The raw command under e1_hook.c's own m1_crumb(), which is compiled as it stands: logged, and the fail_at'th isn't acked. */
+/*
+ * The raw command under e1_hook.c's own m1_crumb(), which is compiled as it stands: refused, as the module's own refuses it, if
+ * the real m1_pmu_ok() doesn't let it through; logged, and the fail_at'th isn't acked.
+ */
 static int m1_spmi_raw(bool write, unsigned int addr, u8 *b, unsigned int n)
 {
-	bool fails = sent++ == fail_at;
+	bool fails;
 	unsigned int i;
 
+	if (!m1_pmu_ok(write, addr, b, n)) {
+		printf("refused %x\n", addr);
+		return -1;
+	}
+	fails = sent++ == fail_at;
 	printf("%s %x", !write ? "read" : fails ? "cfail" : "c", addr);
 	for (i = 0; i < n; i++)
 		printf(" %02x", b[i]);
@@ -8256,11 +8296,14 @@ int main(int argc, char **argv)
 WA_FN_STEPS = """static void steps(void)
 {
 	static const u8 stage = 0x19;
-	u8 b[7] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 }, wa = 0;
+	u8 b[7] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77 }, wa = 0, sp = 0;
 	unsigned int i;
 
 %s	printf("step 8\\n");
 %s	m1_crumb(0x6004, &stage, 1);
+	/* A step 8 that doesn't send one of the two bytes still builds, and its log shows it. */
+	(void)wa;
+	(void)sp;
 }
 """
 K1_PRELUDE = r"""
@@ -8271,7 +8314,7 @@ K1_PRELUDE = r"""
 #define EIO 5
 #define EPERM 1
 #define pr_emerg(...) do { } while (0)
-static bool alarm, last_look, gate_look, obs_gate, observe, wake_all, m1_sent_50;
+static bool alarm, last_look, gate_look, obs_gate, observe, wake_all, sep_pg, m1_sent_50;
 static int m1_undo, refused;
 static u8 pmu[0x10000];
 static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n);
@@ -8304,7 +8347,7 @@ static void seven(const char *hex)
 	for (i = 0; i < LL_N && sscanf(hex + 2 * i, "%2x", &x) == 1; i++)
 		pmu[LL_AT + i] = (u8)x;
 }
-/* argv: the run (plain, observe, obsgate, lastlook, wakeall); what an earlier run left at 0x6008-0x600e; what is there at the undo, if one is asked for. */
+/* argv: the run (plain, observe, obsgate, lastlook, wakeall, seppg, both); what an earlier run left at 0x6008-0x600e; what is there at the undo, if one is asked for. */
 int main(int argc, char **argv)
 {
 	static const u8 old[] = { 0x00, 0x30, 0x00, 0x50, 0x7f, 0xff, 0x04, 0x1d, 0x87, 0xa8, 0x01, 0x0d, 0x84, 0x0d, 0xb9 };
@@ -8318,7 +8361,8 @@ int main(int argc, char **argv)
 	observe = !strcmp(m, "observe") || !strcmp(m, "obsgate");
 	obs_gate = !strcmp(m, "obsgate");
 	last_look = !strcmp(m, "lastlook");
-	wake_all = !strcmp(m, "wakeall");
+	wake_all = !strcmp(m, "wakeall") || !strcmp(m, "both");
+	sep_pg = !strcmp(m, "seppg") || !strcmp(m, "both");
 	ret = m1_pmu_start();
 	if (!ret && argc > 3) {
 		seven(argv[3]);
@@ -8357,12 +8401,12 @@ def k1_build(tmp, src):
 
 def pmu_ok_defs():
     """What m1_pmu_ok() needs beside its own text, for the harnesses that compile it without last_look.h: the run's flags, the seven
-    bytes' place, and wake_all=1's two marks and wa_ok() as that header has them."""
+    bytes' place, and wake_all=1's two marks and wa_ok() and sep_pg=1's two and sp_ok() as that header has them."""
     hdr = open(os.path.join(os.path.dirname(HOOK), "last_look.h")).read()
-    at = hdr.index("static inline bool wa_ok(u8 v)")
-    return ("static bool alarm = true, last_look, observe, wake_all;\n#define LL_AT 0x6008\n#define LL_N 7\n"
-            + "".join(line + "\n" for line in hdr.splitlines() if re.match(r"#define (WA_ARMED|WA_MARK)\s", line))
-            + hdr[at:hdr.index("\n}\n", at) + 3])
+    at, sp_at = hdr.index("static inline bool wa_ok(u8 v)"), hdr.index("static inline bool sp_ok(u8 v)")
+    return ("static bool alarm = true, last_look, observe, wake_all;\nstatic bool sep_pg __attribute__((unused));\n#define LL_AT 0x6008\n#define LL_N 7\n"
+            + "".join(line + "\n" for line in hdr.splitlines() if re.match(r"#define (WA_ARMED|WA_MARK|SP_ARMED|SP_MARK)\s", line))
+            + hdr[at:hdr.index("\n}\n", at) + 3] + hdr[sp_at:hdr.index("\n}\n", sp_at) + 3])
 
 
 def wake_all_tests(g, src):
@@ -8379,12 +8423,14 @@ def wake_all_tests(g, src):
     after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
     read_fn, init_fn = cut("static u8 m1_wa_read(void)", "\n}\n"), cut("static void __init m1_wa_init(void)", "\n}\n")
     crumb_fn = cut("static void m1_crumb(unsigned int addr, const u8 *b, unsigned int n)", "\n}\n")
+    # sep_pg=1's lines are in the same two steps (sep_pg_tests() has them): its function and the module's own gate go in too.
+    sp_fn, gate_fn = cut("static u8 m1_sp_clear(void)", "\n}\n"), sp_gate(src)
     table = cut("static const u32 m1_wake_mask[7] = {", "\n};\n")
     # Step 7 from its first write to its end, and step 8 from its record to the line before the marker's read, as they stand.
     step7 = after[after.index("\tfor (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)\n"):after.index("\n\t/* 8 */\n") + 1]
     send = after[after.index("\tm1_crumb(0x6010, b, 7);\n"):after.index("\t/* wd1_mark=1: does the marker stand?")]
     defs = "".join(line + "\n" for line in src.splitlines()
-                   if re.match(r"#define (M1_AON_WAKE|M1_AON_WAKE_STATUS|m1_wake_status|M1_SPMI_WORDS|M1_SPMI_EN\(w\))\s", line))
+                   if re.match(r"#define (M1_AON_WAKE|M1_AON_WAKE_STATUS|m1_wake_status|M1_SPMI_WORDS|M1_SPMI_EN\(w\)|M1_POS_GATE44)\s", line))
     scenarios = ("plain", "all", "rawoff", "failrec", "failbyte", "w6", "w6low", "w6top", "w6edge", "w6none", "w0", "w1", "w5", "both", "status",
                  "status0", "status6", "status7", "init")
     with tempfile.TemporaryDirectory() as tmp:
@@ -8396,7 +8442,7 @@ def wake_all_tests(g, src):
             return os.path.join(tmp, name)
 
         hdr = [l.split() for l in subprocess.run([build("wahdr", WA_HDR)], capture_output=True, text=True, check=True).stdout.splitlines()]
-        fn = build("wafn", WA_FN_PRELUDE + defs + table + crumb_fn + read_fn + init_fn + WA_FN_STEPS % (step7, send) + WA_FN_MAIN)
+        fn = build("wafn", defs + WA_FN_PRELUDE + gate_fn + table + crumb_fn + read_fn + sp_fn + init_fn + WA_FN_STEPS % (step7, send) + WA_FN_MAIN)
         runs = {sc: subprocess.run([fn, sc], capture_output=True, text=True, check=True).stdout.splitlines() for sc in scenarios}
         k1 = k1_build(tmp, src)
         f0, mark, zeros = "f0000000000000", "20000000000000", "00000000000000"
@@ -8427,7 +8473,8 @@ def wake_all_tests(g, src):
           and g["WA_EARLY"] == (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39)
           and not set(g["WA_EARLY"]) & set(g["WA_STAGES"] + g["LL_STAGES"] + g["OG_STAGES"])
           and "m1_stage((hold ? 0x31 : pmgr_late ? 0x29 : 0x21) + i);" in after and "\t\tb[0] = 0x28;\n" in after and "\tb[0] = 0x10;\n" in after
-          and "    if wa_record(s, r):\n        return wa_lines(s, r)\n" in tool and "or wa_clear(st, b[8:0x0f])\n" in tool,
+          and "    if fam_record(s, r):\n        return fam_lines(s, r)\n" in tool and "    if not sp_record(s, r):\n        return wa_lines(s, r)\n" in tool
+          and "or fam_clear(st, b[8:0x0f])\n" in tool,
           "m1-crumbs has the header's four values; it reads the byte under the gates_mark=1 family's stages, none of which is last_look=1's"
           " or an observer's, and under step 7's own, 0x39; the stages it takes a run to be at before its byte are none, K1's to K5's,"
           " step 4's 0x10, step 5's 0x28, step 6's seven and 0x39, as the module sends them with hold=1 and pmgr_late=1")
@@ -8471,11 +8518,12 @@ def wake_all_tests(g, src):
     check(in_order_of(after, ["\t/* 7 */\n", "\tm1_crumb(0x6004, b, 4);\n\tfor (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)\n"
                               "\t\twritel(wake_all ? U32_MAX : m1_wake_mask[i], m1_aon + 4 * i);",
                               "\n\tfor (i = 0; i < M1_SPMI_WORDS; i++)\n\t\twritel(0, m1_spmi + M1_SPMI_EN(i));\n",
-                              "\tif (wake_all)\n\t\twa = m1_wa_read();\n\n\t/* 8 */\n\tm1_quiet_core();\n", "\tif (m1_raw && m1_spmi_raw(false, M1_PMU_RTC, rtc, 6))\n",
-                              "\tm1_crumb(0x6010, b, 7);\n", "\tif (wake_all)\n\t\tm1_crumb(LL_AT, &wa, 1);\n\t/* wd1_mark=1: does the marker stand?",
+                              "\tif (wake_all)\n\t\twa = m1_wa_read();\n\t/*\n\t * sep_pg=1:", "\n\t/* 8 */\n\tm1_quiet_core();\n", "\tif (m1_raw && m1_spmi_raw(false, M1_PMU_RTC, rtc, 6))\n",
+                              "\tm1_crumb(0x6010, b, 7);\n", "\tif (wake_all)\n\t\tm1_crumb(LL_AT, &wa, 1);\n\t/* sep_pg=1:", "\t/* wd1_mark=1: does the marker stand?",
                               "\t\tm1_crumb(0x6004, b, 4);\n\t\tif (sio_stop) {", "\tif (a2_pre)\n\t\tm1_gates = m1_a2_pre();\n", "/* 9 */",
                               "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));", "\tlocal_daif_mask();", "writel_relaxed(1, commit);"])
-          and re.search(r"\tm1_crumb\(0x6010, b, 7\);\n\t/\*[^/]*\*/\n\tif \(wake_all\)\n\t\tm1_crumb\(LL_AT, &wa, 1\);\n\t/\* wd1_mark=1", after)
+          and re.search(r"\tm1_crumb\(0x6010, b, 7\);\n\t/\*[^/]*\*/\n\tif \(wake_all\)\n\t\tm1_crumb\(LL_AT, &wa, 1\);\n\t/\* sep_pg=1", after)
+          and after.index("\tif (sep_pg)\n\t\tsp = m1_sp_clear();\n") > after.index("\t\twa = m1_wa_read();\n")
           and "\tu8 wa = 0;\t/* wake_all=1: the byte m1_wa_read() makes in step 7, sent in step 8 */\n" in after
           and len(re.findall(r"\bm1_wa_read\(", code_only)) == 2 and len(re.findall(r"writel\([^;]*\bm1_aon\b", code_only)) == 1
           and len(re.findall(r"\bwa\b", re.sub(r"/\*.*?\*/", "", after, flags=re.S))) == 3 and len(re.findall(r"m1_crumb\(LL_AT, &wa, 1\)", code_only)) == 1
@@ -8500,7 +8548,7 @@ def wake_all_tests(g, src):
                              "\tif (!m1_cpu_start || !m1_ps || !m1_aic || !m1_aic_event || !m1_aon || !m1_wdt || !m1_spmi_page) {\n", "\t\treturn -ENOMEM;\n",
                              "\tm1_aon += M1_AON_WAKE & ~PAGE_MASK;\n",
                              "m1_never(M1_AON_WAKE, ARRAY_SIZE(m1_wake_mask)) ||", "\t\treturn -EPERM;\n", "int ret = m1_blink_init();",
-                             "\tif (wake_all)\n\t\tm1_wa_init();\n\t/* Last: it reads through pages"])
+                             "\tif (wake_all)\n\t\tm1_wa_init();\n\t/* After m1_wd2_init(), which maps the engine's page: m1_sp_init() refuses", "\t/* Last: it reads through pages"])
           and len(re.findall(r"\bm1_wa_init\(", code_only)) == 2
           and "static_assert(WA_ARMED == 0x20 && WA_MARK == 0xc0 && !(WA_ARMED & (WA_MARK | LL_ARMED | OG_ARMED)) && !((WA_NAMED | WA_UNNAMED | 0xf) & WA_MARK) &&\n"
               "\t      WA_W6_NAMED == 0x00001fffU && ARRAY_SIZE(m1_wake_mask) == WA_WORDS && M1_AON_WAKE == 0x292004008ULL &&\n"
@@ -8681,8 +8729,8 @@ def wake_all_tests(g, src):
 
         # --clear: the seven bytes go with the rest after the byte or K1's mark for it, with six zeros behind it and bit 3 clear: what
         # e1_hook can have left. Anything else at 0x6009-0x600e stays, whatever 0x6008 reads, and --clear says so.
-        left_alone = ("0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage, no obs_gate=1 record and no wake_all=1 byte or mark with six"
-                      " zeros after it says they're a run's")
+        left_alone = ("0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage, no obs_gate=1 record and no wake_all=1 or sep_pg=1 byte or mark"
+                      " with zeros in the rest says they're a run's")
         for stage, r, armed in ((0x9b, b"\xf0", 0x41), (0x9b, b"\x20", 0x41), (0xb9, b"\x20", 0x01), (0xb9, b"\xe3", 0x01), (0x00, b"\x20", 0x01),
                                 (0x0e, b"\x20", 0x01), (0xd3, b"\x20", 0x41)):
             rc, out, err, before, after_ = wdec(r, stage, clear=True, armed=armed)
@@ -8703,6 +8751,797 @@ def wake_all_tests(g, src):
                   f"--clear with {(r + bytes(7))[:7].hex(' ')} at 0x6008-0x600e under stage 0x{stage:02x}: not what a wake_all=1 run leaves (something in the six"
                   " after it, bit 3, or the byte under another run's stage), so the seven are left as they are, and said to be",
                   out + err + f"\n{after_[0x6000:0x6020].hex(' ')}")
+
+
+SP_HDR = r"""
+#include <stdio.h>
+#include "last_look.h"
+int main(void)
+{
+	static const u32 founds[] = { 0, 4, 5, 0x100, 0x104, 0xffffffffU, 0xfffffffbU, 0x80000004U };
+	static const u32 seps[] = { 0x1000030f, 0x100003ff, 0x0000031f, 0x000000f0, 0, 0x80, 0xffffff0f };
+	unsigned int i, j, k, g, v;
+
+	printf("const %llx %x %x %x %x %x %x %x %x %u %x %x %x\n", (unsigned long long)SP_CTL, SP_WAIT, SP_SEP_PS, SP_ARMED, SP_MARK, SP_FOUND, SP_CLEAR,
+	       SP_SEP_OFF, LL_AT, LL_N, WA_ARMED, LL_ARMED, OG_ARMED);
+	for (i = 0; i < sizeof(founds) / sizeof(founds[0]); i++) {
+		/* What the word may read after step 7: as found, less bit 2, with it, less it and with another bit flipped, 0, all ones. */
+		const u32 f = founds[i], backs[] = { f, f & ~4U, f | 4, (f & ~4U) ^ 0x10, (f & ~4U) ^ 0x80000000U, 0, 0xffffffffU };
+
+		for (j = 0; j < sizeof(backs) / sizeof(backs[0]); j++)
+			for (k = 0; k < sizeof(seps) / sizeof(seps[0]); k++)
+				for (g = 0; g < 18; g++) {
+					/* Every nibble, then two words with bits above it. */
+					const u32 gate = g < 16 ? g : g == 16 ? 0x1230000dU : 0xfffffff0U;
+
+					printf("b %x %x %x %x %x\n", f, backs[j], seps[k], gate, sp_byte(f, backs[j], seps[k], gate));
+				}
+	}
+	for (v = 0; v < 256; v++)
+		if (sp_ok((u8)v))
+			printf("okv %x\n", v);
+	return 0;
+}
+"""
+# Steps 7 and 8 with either option, both or neither, over WA_FN_PRELUDE's words. argv: the run (plain, wa, sp, both); the control
+# word as found; the bits of it that take a write; the bits flipped in it after a write; the bits flipped in it after its first
+# read; the SEP's power word; 0x2922c0044; which command isn't acked (-1 none; -2: raw SPMI off before step 7).
+SP_FN_MAIN = r"""
+#include <stdlib.h>
+int main(int argc, char **argv)
+{
+	unsigned int i;
+
+	if (argc != 9)
+		return 2;
+	for (i = 0; i < WA_WORDS; i++) {
+		keep[i] = 0xffffffffU;
+		aon[i] = i == 1 ? 0x40 : 0;	/* the masks as Linux runs with them */
+	}
+	wake_all = !strcmp(argv[1], "wa") || !strcmp(argv[1], "both");
+	sep_pg = !strcmp(argv[1], "sp") || !strcmp(argv[1], "both");
+	*CTL_WORD = (u32)strtoul(argv[2], NULL, 16);
+	ctl_keep = (u32)strtoul(argv[3], NULL, 16);
+	ctl_after = (u32)strtoul(argv[4], NULL, 16);
+	ctl_drift = (u32)strtoul(argv[5], NULL, 16);
+	sio_pg[SP_SEP_PS / 4] = (u32)strtoul(argv[6], NULL, 16);
+	pos_pg[M1_POS_GATE44 / 4] = (u32)strtoul(argv[7], NULL, 16);
+	fail_at = atoi(argv[8]);
+	if (fail_at == -2)
+		m1_raw = false;
+	steps();
+	printf("end %x\n", *CTL_WORD);
+	return 0;
+}
+"""
+# m1_sp_init(), m1_sp_sep_bound() and m1_never() as they stand. What is mocked: e1_never_write() is a stand-in that logs the
+# address it is asked about and says yes for one (the module's own is run by itself, SP_NEVER_MAIN); ioremap_np() logs and
+# hands out a page, or NULL; readl() logs which of the three words was read; and the device tree and the driver core are
+# stand-ins: sep_nodes nodes answer to the compatible asked for, the first sep_devs of them have a device, and the one
+# numbered sep_bound has a driver. The kernel's for_each_compatible_node() is written out as the kernel has it.
+SP_INIT = r"""
+#include <stdio.h>
+#include <string.h>
+#include "last_look.h"
+#define __iomem
+#define __init
+#define PAGE_SIZE 0x4000UL
+#define PAGE_MASK (~(PAGE_SIZE - 1))
+#define EPERM 1
+#define ENOMEM 12
+#define ENODEV 19
+#define EBUSY 16
+#define EINVAL 22
+#define pr_err(...) printf("err " __VA_ARGS__)
+#define pr_info(...) printf("info " __VA_ARGS__)
+struct device_node {
+	int unused;
+};
+struct device_driver {
+	const char *name;
+};
+struct device {
+	struct device_driver *driver;
+};
+struct platform_device {
+	struct device dev;
+};
+static struct device_node sep_node[3];
+static struct platform_device sep_pdev[3];
+static struct device_driver sep_drv = { "apple_sep" };
+static int sep_nodes = 1, sep_devs = 1, sep_bound = -1, locked;
+static struct device_node *of_find_compatible_node(struct device_node *from, const char *type, const char *compat)
+{
+	int next = from ? (int)(from - sep_node) + 1 : 0;
+
+	if (!from)
+		printf("compatible %s %s\n", type ? type : "-", compat);
+	return next < sep_nodes ? &sep_node[next] : NULL;
+}
+#define for_each_compatible_node(dn, type, compatible) \
+	for (dn = of_find_compatible_node(NULL, type, compatible); dn; dn = of_find_compatible_node(dn, type, compatible))
+static struct platform_device *of_find_device_by_node(struct device_node *np)
+{
+	int i = (int)(np - sep_node);
+
+	printf("device %d\n", i);
+	sep_pdev[i].dev.driver = i == sep_bound ? &sep_drv : NULL;
+	return i < sep_devs ? &sep_pdev[i] : NULL;
+}
+static void device_lock(struct device *dev)
+{
+	printf("lock %d\n", (int)((struct platform_device *)dev - sep_pdev));
+	locked++;
+}
+static void device_unlock(struct device *dev)
+{
+	printf("unlock %d\n", (int)((struct platform_device *)dev - sep_pdev));
+	locked--;
+}
+static void put_device(struct device *dev)
+{
+	printf("put %d%s\n", (int)((struct platform_device *)dev - sep_pdev), locked ? " LOCKED" : "");
+}
+static u32 ctl_pg[PAGE_SIZE / 4], sio_pg[PAGE_SIZE / 4], pos_pg[PAGE_SIZE / 4];
+static void *m1_sp, *m1_sio = sio_pg, *m1_pos = pos_pg;
+static bool map_fails;
+static u64 never = ~0ULL;
+static bool e1_never_write(u64 addr)
+{
+	printf("never? %llx\n", (unsigned long long)addr);
+	return addr == never;
+}
+static void *ioremap_np(u64 pa, unsigned long size)
+{
+	printf("map %llx %lx\n", (unsigned long long)pa, size);
+	return map_fails ? NULL : ctl_pg;
+}
+static u32 readl(const void *p)
+{
+	const u32 *w = p;
+
+	/* A pointer that is none of the three words (through a page that isn't mapped, say) is logged and not followed. */
+	if (w != ctl_pg + 0x200 / 4 && w != sio_pg + 0xc00 / 4 && w != pos_pg + 0x44 / 4) {
+		printf("r X\n");
+		return 0;
+	}
+	printf("r %s\n", w == ctl_pg + 0x200 / 4 ? "C" : w == sio_pg + 0xc00 / 4 ? "P" : "G");
+	return *w;
+}
+static void writel(u32 v, void *p) __attribute__((unused));
+static void writel(u32 v, void *p)
+{
+	printf("w %x\n", v);
+	(void)p;
+}
+"""
+SP_INIT_MAIN = r"""
+int main(int argc, char **argv)
+{
+	const char *sc = argc > 1 ? argv[1] : "";
+	int ret;
+
+	ctl_pg[0x200 / 4] = !strcmp(sc, "clear") ? 0 : !strcmp(sc, "other") ? 0x80000100U : !strcmp(sc, "setother") ? 0x80000104U : 4;
+	sio_pg[0xc00 / 4] = 0x1000030f;
+	pos_pg[0x44 / 4] = 8;
+	if (!strcmp(sc, "nosio"))
+		m1_sio = NULL;
+	if (!strcmp(sc, "nopos"))
+		m1_pos = NULL;
+	map_fails = !strcmp(sc, "mapfail");
+	if (!strcmp(sc, "never"))
+		never = SP_CTL;
+	if (!strcmp(sc, "never4"))
+		never = SP_CTL + 4;	/* the word after it: not asked about, since the run writes one word */
+	if (!strcmp(sc, "sepbound") || !strcmp(sc, "sepall"))
+		sep_bound = 0;
+	if (!strcmp(sc, "sepall"))
+		never = SP_CTL;	/* a bound driver and a listed word: the driver is what is said */
+	if (!strcmp(sc, "sepnone"))
+		sep_nodes = 0;	/* no node with the compatible */
+	if (!strcmp(sc, "sepnodev"))
+		sep_devs = 0;	/* a node, and no device for it */
+	if (!strcmp(sc, "septhird")) {
+		sep_nodes = 3;	/* three nodes with a device each, the third's bound */
+		sep_devs = 3;
+		sep_bound = 2;
+	}
+	ret = m1_sp_init();
+	printf("ret %d\n", ret);
+	printf("sp %s\n", !m1_sp ? "none" : m1_sp == (void *)(ctl_pg + 0x200 / 4) ? "word" : "elsewhere");
+	return 0;
+}
+"""
+# The module's own never-write list, e1_never_write() and its two addresses as they stand, asked about sep_pg=1's word.
+SP_NEVER_MAIN = r"""
+int main(void)
+{
+	printf("%d %d %d %d %d %d %d %d\n", e1_never_write(SP_CTL), e1_never_write(SP_CTL + 4), e1_never_write(0x28e0802d8ULL), e1_never_write(0x28e0802dcULL),
+	       e1_never_write(0x28e700000ULL), e1_never_write(0x28e700004ULL), e1_never_write(0x28e0802d0ULL), e1_never_write(0x28e700008ULL));
+	return 0;
+}
+"""
+# m1_pmu_ok() as it stands in the four runs of the family: neither option, wake_all=1, sep_pg=1, both. Every address from 0x5ff8
+# to 0x6027, every length, written and read, with each of these contents; then one byte of every value at each of the seven.
+SP_OK_MAIN = r"""
+int main(void)
+{
+	static const u8 fill[][8] = {
+		{ 0 }, { 1, 1, 1, 1, 1, 1, 1, 1 }, { 0, 0, 0, 0, 0, 0, 1 }, { 0x20 }, { 0xf0 }, { 0x02 }, { 0xf8 }, { 0x20, 0x02 }, { 0xf0, 0xf8 },
+		{ 0, 0x02 }, { 0, 0xf8 }, { 0x80 }, { 0x40 }, { 0x02, 0x02 }, { 0xf8, 0, 0, 0, 0, 0, 0 },
+	};
+	unsigned int c, addr, n, w, k, v, i;
+	u8 one;
+
+	for (c = 0; c < 4; c++) {
+		wake_all = c & 1;
+		sep_pg = c >> 1;
+		for (k = 0; k < sizeof(fill) / sizeof(fill[0]); k++)
+			for (w = 0; w < 2; w++)
+				for (addr = 0x5ff8; addr < 0x6028; addr++)
+					for (n = 1; n <= 8; n++)
+						if (m1_pmu_ok(w, addr, fill[k], n)) {
+							printf("ok %u %u %x %u", c, w, addr, n);
+							for (i = 0; i < n; i++)
+								printf(" %02x", fill[k][i]);
+							printf("\n");
+						}
+		for (addr = LL_AT; addr < LL_AT + LL_N; addr++)
+			for (v = 0; v < 256; v++) {
+				one = (u8)v;
+				if (m1_pmu_ok(1, addr, &one, 1))
+					printf("one %u %x %x\n", c, addr, v);
+			}
+	}
+	return 0;
+}
+"""
+
+
+def sp_gate(src):
+    """The module's own m1_pmu_ok() with the definitions it needs, for the harness of steps 7 and 8: its stand-in for the raw
+    SPMI command asks it first, as m1_spmi_raw() does."""
+    at = src.index("static bool m1_pmu_ok(bool write,")
+    return ("".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_ALARM_ON|M1_PMU_RTC)\s", line))
+            + src[at:src.index("\n}\n", at) + 3])
+
+
+def sep_pg_tests(g, src):
+    """sep_pg=1: last_look.h's byte against a second writing-out of it; step 7's and step 8's lines with m1_sp_clear(), m1_wa_read(),
+    m1_crumb() and m1_pmu_ok() compiled as they stand against words that log every access, in the four runs of the family (neither
+    option, each, both); m1_sp_init() and m1_never() against a stand-in for the never-write list and for the mapping; m1_pmu_ok(),
+    K1 and the undo, compiled, in those four runs; the places in e1_hook.c that use them; and the byte, K1's mark, both options'
+    bytes together and --clear through m1-crumbs."""
+    def cut(start, end):
+        at = src.index(start)
+        return src[at:src.index(end, at) + len(end)]
+
+    code_only = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', re.sub(r"/\*.*?\*/", "", src, flags=re.S))
+    wr = r"(?<![A-Za-z0-9_])write[bwlq](?:_relaxed)?\("
+    after = cut("static void __noreturn m1_after_slpa(void)", "\n}\n")
+    clear_fn, init_fn = cut("static u8 m1_sp_clear(void)", "\n}\n"), cut("static int __init m1_sp_init(void)", "\n}\n")
+    read_fn = cut("static u8 m1_wa_read(void)", "\n}\n")
+    crumb_fn = cut("static void m1_crumb(unsigned int addr, const u8 *b, unsigned int n)", "\n}\n")
+    never_fn = cut("static bool __init m1_never(u64 pa, unsigned int n)", "\n}\n")
+    bound_fn = "#define M1_SEP_COMPATIBLE\t\"apple,sep\"\n" + cut("static bool __init m1_sp_sep_bound(void)", "\n}\n")
+    list_fn = cut("#define E1_NEVER_PS_PMP", "\n}\n")
+    table = cut("static const u32 m1_wake_mask[7] = {", "\n};\n")
+    step7 = after[after.index("\tfor (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)\n"):after.index("\n\t/* 8 */\n") + 1]
+    send = after[after.index("\tm1_crumb(0x6010, b, 7);\n"):after.index("\t/* wd1_mark=1: does the marker stand?")]
+    defs = "".join(line + "\n" for line in src.splitlines()
+                   if re.match(r"#define (M1_AON_WAKE|M1_AON_WAKE_STATUS|m1_wake_status|M1_SPMI_WORDS|M1_SPMI_EN\(w\)|M1_POS_GATE44)\s", line))
+    init_defs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PS_SIO_PAGE|M1_POS_PAGE|M1_POS_GATE44)\s", line))
+    okdefs = "".join(line + "\n" for line in src.splitlines() if re.match(r"#define (M1_PMU_ALARM\w*|M1_ALARM_ON|M1_PMU_RTC)\s", line))
+    SEP_OFF, SEP_ON = "1000030f", "100003ff"
+    # (the run, the word as found, the bits that take a write, flipped after a write, flipped after the first read, the SEP's power
+    # word, 0x2922c0044, the command that isn't acked)
+    cases = {
+        "plain": ("plain", "4", "ffffffff", "0", "0", SEP_OFF, "8", "-1"),
+        "wa": ("wa", "4", "ffffffff", "0", "0", SEP_OFF, "8", "-1"),
+        "sp": ("sp", "4", "ffffffff", "0", "0", SEP_OFF, "8", "-1"),
+        "both": ("both", "4", "ffffffff", "0", "0", SEP_OFF, "8", "-1"),
+        "others": ("sp", "80000105", "ffffffff", "0", "0", SEP_OFF, "8", "-1"),  # other bits set: they are written back as found
+        "clear": ("sp", "0", "ffffffff", "0", "0", SEP_OFF, "8", "-1"),  # bit 2 clear as found: no write
+        "clearothers": ("sp", "80000101", "ffffffff", "0", "0", SEP_OFF, "8", "-1"),
+        "notake": ("sp", "4", "fffffffb", "0", "0", SEP_OFF, "8", "-1"),  # the bit doesn't take the write
+        "flip": ("sp", "4", "ffffffff", "10", "0", SEP_OFF, "8", "-1"),  # the write takes, and another bit reads changed after it
+        "fliptop": ("sp", "104", "ffffffff", "80000000", "0", SEP_OFF, "8", "-1"),
+        "drift": ("sp", "100", "ffffffff", "0", "1", SEP_OFF, "8", "-1"),  # clear as found, and another bit changes with no write
+        "driftset": ("sp", "0", "ffffffff", "0", "4", SEP_OFF, "8", "-1"),  # clear as found, set by the second read
+        "sepon": ("sp", "4", "ffffffff", "0", "0", SEP_ON, "8", "-1"),
+        "sephalf": ("sp", "4", "ffffffff", "0", "0", "0000031f", "8", "-1"),  # actual state 1: not off
+        "septop": ("sp", "4", "ffffffff", "0", "0", "ffffff0f", "8", "-1"),  # every bit but the actual state: off
+        "gate0": ("sp", "4", "ffffffff", "0", "0", SEP_OFF, "0", "-1"),
+        "gateb": ("sp", "4", "ffffffff", "0", "0", SEP_OFF, "b", "-1"),
+        "gatef": ("sp", "4", "ffffffff", "0", "0", SEP_OFF, "f", "-1"),
+        "gatewide": ("sp", "4", "ffffffff", "0", "0", SEP_OFF, "1230000d", "-1"),
+        "failrec": ("both", "4", "ffffffff", "0", "0", SEP_OFF, "8", "0"),  # step 8's record isn't acked
+        "failwa": ("both", "4", "ffffffff", "0", "0", SEP_OFF, "8", "1"),  # wake_all=1's byte isn't
+        "failsp": ("both", "4", "ffffffff", "0", "0", SEP_OFF, "8", "2"),  # sep_pg=1's byte isn't
+        "failsp1": ("sp", "4", "ffffffff", "0", "0", SEP_OFF, "8", "1"),  # the same without wake_all=1
+        "rawoff": ("both", "4", "ffffffff", "0", "0", SEP_OFF, "8", "-2"),
+    }
+    left = {"f0f8": "f0f80000000000", "marks": "20020000000000", "sp": "00f80000000000", "spmark": "00020000000000", "junk": "20020304050607",
+            "zeros": "00000000000000"}
+    kinds = ("plain", "wakeall", "seppg", "both", "lastlook", "observe", "obsgate")
+    with tempfile.TemporaryDirectory() as tmp:
+        def build(name, code):
+            c = os.path.join(tmp, name + ".c")
+            with open(c, "w") as f:
+                f.write(code)
+            subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", os.path.dirname(HOOK), "-o", os.path.join(tmp, name), c], check=True)
+            return os.path.join(tmp, name)
+
+        def lines(exe, *args):
+            return subprocess.run([exe, *args], capture_output=True, text=True, check=True).stdout.splitlines()
+
+        hdr = [l.split() for l in lines(build("sphdr", SP_HDR))]
+        fn = build("spfn", defs + WA_FN_PRELUDE + sp_gate(src) + table + crumb_fn + read_fn + clear_fn + WA_FN_STEPS % (step7, send) + SP_FN_MAIN)
+        runs = {name: lines(fn, *args) for name, args in cases.items()}
+        initfn = build("spinit", SP_INIT + init_defs + never_fn + bound_fn + init_fn + SP_INIT_MAIN)
+        inits = {sc: lines(initfn, sc) for sc in ("set", "setother", "clear", "other", "nosio", "nopos", "mapfail", "never", "never4", "sepbound", "sepnone",
+                                                  "sepnodev", "septhird", "sepall")}
+        listed = lines(build("spnever", "#include <stdio.h>\n#include \"last_look.h\"\n#define E1_PMGR_SLEEP_REQ 0ULL\n#define E1_PMP_DVFS4 0ULL\n"
+                             "#define static_assert(...) _Static_assert(__VA_ARGS__, \"\")\n" + list_fn + SP_NEVER_MAIN))
+        okl = [l.split() for l in lines(build("spok", "#include <stdio.h>\n#include <stdbool.h>\n#include <stdint.h>\ntypedef uint8_t u8;\n"
+                                              + pmu_ok_defs() + okdefs + cut("static bool m1_pmu_ok(bool write,", "\n}\n") + SP_OK_MAIN))]
+        k1 = k1_build(tmp, src)
+        started = {(m, l): k1(m, v) for m in kinds for l, v in left.items()}
+        undone = {(m, l): k1(m, left["zeros"], v) for m in kinds if m != "obsgate" for l, v in left.items() if l != "zeros"}
+
+    # The header, against the numbers as the brief and last_look.h's comment have them.
+    def byte(found, back, sep, gate):
+        return 0x80 | (0x40 if found & 4 else 0) | (0x20 if back == found & 0xfffffffb else 0) | (0 if sep & 0xf0 else 0x10) | gate & 0xf
+
+    b = [[int(x, 16) for x in r[1:]] for r in hdr if r[0] == "b"]
+    okv = {int(r[1], 16) for r in hdr if r[0] == "okv"}
+    check([r for r in hdr if r[0] == "const"] == [["const", "28e0cc200", "4", "c00", "2", "80", "40", "20", "10", "6008", "7", "20", "4", "40"]]
+          and len(b) == 8 * 7 * 7 * 18 and all(v == byte(f, k, s_, g_) for f, k, s_, g_, v in b)
+          and {v for *_, v in b} == set(range(0x80, 0x100)),
+          "last_look.h: sep_pg=1's word is 0x28e0cc200 and its bit bit 2, the SEP's power word is at 0xc00 of its page, K1's mark is 0x02;"
+          " sp_byte(): bit 7 always, bit 6 the bit as found, bit 5 only if the word read again is the word found less bit 2 exactly"
+          " (not with the bit still set, not with any other bit changed, not 0 or all ones unless that is it), bit 4 the SEP's actual"
+          " state 0 whatever its other bits, bits 3:0 the gate word's low nibble and nothing above it; 7,056 cases against a second"
+          " writing-out, which make every value from 0x80 to 0xff", str(hdr[:2]))
+    check(okv == {0x02} | set(range(0x80, 0x100)) and not okv & {0x00, 0x04, 0x20, 0x40, 0x7f},
+          "sp_ok(): of the 256 values, K1's mark, 0x02, and the 128 with bit 7, which sp_byte() makes, and no other: not 0, not the other"
+          " marks 0x04, 0x20 and 0x40", str(sorted(okv)))
+    tool = open(TOOL).read()
+    check((g["SP_ARMED"], g["SP_MARK"], g["SP_FOUND"], g["SP_CLEAR"], g["SP_SEP_OFF"]) == (0x02, 0x80, 0x40, 0x20, 0x10)
+          and "(s in WA_STAGES or s == WA_STEP7) and bool(r[1] & SP_MARK))" in tool and "if b1 == SP_ARMED and s not in WA_EARLY and s not in WA_STAGES:" in tool
+          and "    if fam_record(s, r):\n        return fam_lines(s, r)\n" in tool and "or fam_clear(st, b[8:0x0f])\n" in tool,
+          "m1-crumbs has the header's five values, reads the byte under the stages it reads wake_all=1's under (the gates_mark=1"
+          " family's and step 7's own) and takes the same stages for where a run can be before its byte")
+
+    # Steps 7 and 8, m1_sp_clear(), m1_wa_read(), m1_crumb() and m1_pmu_ok(), as they stand.
+    masks = [0xffffffff, 0xffbfffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x00001fff]
+    enables = [f"w E {0x20 + 4 * i:x} 0" for i in range(9)]
+    table_w, ones_w = [f"w M {i} {v:x}" for i, v in enumerate(masks)] + enables, [f"w M {i} ffffffff" for i in range(7)] + enables
+    wa_reads = [f"r M {i}" for i in range(7)] + [f"r S {i}" for i in range(7)]
+    rec, stage = "c 6010 11 22 33 44 55 66 77", "c 6004 19"
+
+    def sp_reads(wrote):
+        return ["r C"] + ([f"w C {wrote:x}"] if wrote is not None else []) + ["r C", "r P", "r G"]
+
+    check(runs["plain"] == table_w + ["step 8", rec, stage, "end 4"],
+          "without sep_pg=1 and wake_all=1 the two steps are as they were: the table's masks, the enables, no read of the masks, the"
+          " control word, the SEP's power word or the gate word, no write to the control word, the record and then the stage with no"
+          " byte between them; the control word still reads 4 at the end", "\n".join(runs["plain"]))
+    check(runs["wa"] == ones_w + wa_reads + ["step 8", rec, "c 6008 f0", stage, "end 4"],
+          "with wake_all=1 alone the two steps are that option's as before, and nothing of sep_pg=1's: the control word isn't read or"
+          " written and still reads 4, and no byte goes to 0x6009", "\n".join(runs["wa"]))
+    check(runs["sp"] == table_w + sp_reads(0) + ["step 8", rec, "c 6009 f8", stage, "end 0"],
+          "with sep_pg=1 alone: the table's masks and the enables as in any run, then m1_sp_clear() in step 7: the control word read (4),"
+          " ONE write, to that word, of 0 (the word found less bit 2), the word read again, the SEP's power word, 0x2922c0044; in step 8"
+          " the byte, 0xf8 (found set, read back clear, the SEP's actual state 0, the gate word's nibble 8), to 0x6009 after the record"
+          " and before the stage, through the real m1_pmu_ok(); nothing sent to 0x6008; the word reads 0 at the end", "\n".join(runs["sp"]))
+    check(runs["both"] == ones_w + wa_reads + sp_reads(0) + ["step 8", rec, "c 6008 f0", "c 6009 f8", stage, "end 0"],
+          "with both: wake_all=1's masks and reads first, then m1_sp_clear()'s five accesses, still in step 7; in step 8 the record,"
+          " wake_all=1's byte to 0x6008, then sep_pg=1's to 0x6009, then the stage", "\n".join(runs["both"]))
+    want = {"others": (0x80000101, 0xf8, 0x80000101), "clear": (None, 0xb8, 0), "clearothers": (None, 0xb8, 0x80000101), "notake": (0, 0xd8, 4),
+            "flip": (0, 0xd8, 0x10), "fliptop": (0x100, 0xd8, 0x80000100), "drift": (None, 0x98, 0x101), "driftset": (None, 0x98, 4),
+            "sepon": (0, 0xe8, 0), "sephalf": (0, 0xe8, 0), "septop": (0, 0xf8, 0), "gate0": (0, 0xf0, 0), "gateb": (0, 0xfb, 0), "gatef": (0, 0xff, 0),
+            "gatewide": (0, 0xfd, 0)}
+    check(all(runs[sc] == table_w + sp_reads(w) + ["step 8", rec, f"c 6009 {v:02x}", stage, f"end {e:x}"] for sc, (w, v, e) in want.items()),
+          "m1_sp_clear(), each case with its whole log: other bits of the word are written back as found (0x80000105 gives one write of"
+          " 0x80000101); a word found with bit 2 clear gets NO write (0xb8: found clear, read again as found), whatever its other bits; a"
+          " bit that doesn't take the write, or another bit that reads changed after it, clears bit 5 (0xd8); a word found clear that"
+          " reads otherwise the second time, bit 2 or another, is 0x98, with no write; the SEP's actual state f or 1 clears bit 4, every"
+          " other bit of that word set doesn't; the gate word gives its low nibble and nothing above it. Never more than the one write,"
+          " and always the value found less bit 2", str({sc: runs[sc][16:] for sc in want}))
+    check(runs["failrec"] == ones_w + wa_reads + sp_reads(0) + ["step 8", rec.replace("c ", "cfail ", 1), "end 0"]
+          and runs["failwa"] == ones_w + wa_reads + sp_reads(0) + ["step 8", rec, "cfail 6008 f0", "end 0"]
+          and runs["failsp"] == ones_w + wa_reads + sp_reads(0) + ["step 8", rec, "c 6008 f0", "cfail 6009 f8", "end 0"]
+          and runs["failsp1"] == table_w + sp_reads(0) + ["step 8", rec, "cfail 6009 f8", "end 0"]
+          and runs["rawoff"] == ones_w + wa_reads + sp_reads(0) + ["step 8", "end 0"],
+          "through the module's own m1_crumb(): a record that isn't acked stops both bytes and the stage; wake_all=1's byte not acked stops"
+          " sep_pg=1's and the stage, with the record out already; sep_pg=1's not acked stops the stage, with the record and wake_all=1's"
+          " byte out already; with raw SPMI off before step 7 the write to the control word is still made and nothing is sent: the write"
+          " doesn't wait on the PMU", "\n".join(runs["failwa"][-4:] + runs["failsp"][-5:] + runs["rawoff"][-3:]))
+    everything = [l for r in runs.values() for l in r]
+    check(not [l for l in everything if l.startswith(("r X", "w X", "read ", "refused"))]
+          and all(sum(l.startswith("w C") for l in r) == (0 if name in ("plain", "wa", "clear", "clearothers", "drift", "driftset") else 1) for name, r in runs.items())
+          and len(re.findall(wr, clear_fn)) == 1 and "\tif (found & SP_WAIT)\n\t\twritel(found & ~SP_WAIT, m1_sp);\n" in clear_fn
+          and clear_fn.count("readl(") == 4 and not re.search(r"\w\([^;]*readl\([^;]*,[^;]*readl\(", clear_fn)
+          and "sysreg" not in clear_fn and "m1_crumb" not in clear_fn and "m1_spmi" not in clear_fn
+          and in_order_of(clear_fn, ["\tfound = readl(m1_sp);\n", "\tif (found & SP_WAIT)\n\t\twritel(found & ~SP_WAIT, m1_sp);\n", "\tback = readl(m1_sp);\n",
+                                     "\tsep = readl(m1_sio + SP_SEP_PS);\n", "\tg44 = readl(m1_pos + M1_POS_GATE44);\n", "\treturn sp_byte(found, back, sep, g44);\n}"])
+          and re.findall(wr[:-2] + r"\([^;]*\bm1_sp\b[^;]*;", code_only) == ["writel(found & ~SP_WAIT, m1_sp);"]
+          and not re.search(wr[:-2] + r"\([^;]*\bSP_\w+[^;]*\b(?:m1_sio|m1_pos)\b", code_only),
+          "in all 24 runs no access is to any word but those named, no command is refused by m1_pmu_ok() and none is a read; a run"
+          " writes the control word once, or not at all if the option is off or the bit was clear as found. m1_sp_clear() has one MMIO"
+          " write, of found & ~SP_WAIT to m1_sp under if (found & SP_WAIT), the only write through that pointer in the file; four reads,"
+          " each into its own variable, in the order found, back, the SEP's power word, the gate word; no system register and no command")
+    check(in_order_of(after, ["\t/* 7 */\n", "\tm1_crumb(0x6004, b, 4);\n\tfor (i = 0; i < ARRAY_SIZE(m1_wake_mask); i++)\n",
+                              "\n\tfor (i = 0; i < M1_SPMI_WORDS; i++)\n\t\twritel(0, m1_spmi + M1_SPMI_EN(i));\n",
+                              "\tif (wake_all)\n\t\twa = m1_wa_read();\n", "\tif (sep_pg)\n\t\tsp = m1_sp_clear();\n\n\t/* 8 */\n\tm1_quiet_core();\n",
+                              "\tif (m1_raw && m1_spmi_raw(false, M1_PMU_RTC, rtc, 6))\n", "\tm1_crumb(0x6010, b, 7);\n", "\tif (wake_all)\n\t\tm1_crumb(LL_AT, &wa, 1);\n",
+                              "\tif (sep_pg)\n\t\tm1_crumb(LL_AT + 1, &sp, 1);\n\t/* wd1_mark=1: does the marker stand?",
+                              "\t\tm1_crumb(0x6004, b, 4);\n\t\tif (sio_stop) {", "\tif (a2_pre)\n\t\tm1_gates = m1_a2_pre();\n", "/* 9 */",
+                              "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));", "\tlocal_daif_mask();", "writel_relaxed(1, commit);"])
+          and re.search(r"\tif \(wake_all\)\n\t\tm1_crumb\(LL_AT, &wa, 1\);\n\t/\*[^/]*\*/\n\tif \(sep_pg\)\n\t\tm1_crumb\(LL_AT \+ 1, &sp, 1\);\n\t/\* wd1_mark=1", after)
+          and re.search(r"\tif \(wake_all\)\n\t\twa = m1_wa_read\(\);\n\t/\*[^/]*\*/\n\tif \(sep_pg\)\n\t\tsp = m1_sp_clear\(\);\n\n\t/\* 8 \*/\n", after)
+          and "\tu8 sp = 0;\t/* sep_pg=1: the byte m1_sp_clear() makes in step 7, sent in step 8 */\n" in after
+          and len(re.findall(r"\bm1_sp_clear\(", code_only)) == 2 and len(re.findall(r"m1_crumb\(LL_AT \+ 1, &sp, 1\)", code_only)) == 1
+          and len(re.findall(r"\bsp\b", re.sub(r"/\*.*?\*/", "", after, flags=re.S))) == 3 and len(re.findall(wr, step7)) == 2 and not re.search(wr, send),
+          "step 7: stage 0x39's command, the seven masks, nub-spmi0's enables, wake_all=1's read, then m1_sp_clear() with sep_pg=1 alone,"
+          " its one caller, with nothing but its comment before it and step 8 right after. Step 8: the RTC's read and the record at"
+          " 0x6010, wake_all=1's byte, then sep_pg=1's to 0x6009 with sep_pg=1 alone, the one place it is sent, before the marker's"
+          " read, the family's stage, the outcomes and a2_pre=1's moves, and all of it before step 9's acks, its mask and the commit")
+
+    # The load: m1_sp_init(), m1_never() and the module's own list.
+    set_line = ("info m1: sep_pg: awake: the PMGR control word 0x28e0cc200 {:08x}, bit 2 (wait for the SEP's power gate) set; the SEP's power word"
+                " 0x28e580c00 1000030f; 0x2922c0044 00000008. Step 7 writes the control word back with bit 2 clear if it still reads set, reads"
+                " all three, and step 8 sends one byte to the PMU's 0x6009")
+    clear_line = ("info m1: sep_pg: awake: the PMGR control word 0x28e0cc200 {:08x}, bit 2 (wait for the SEP's power gate) ALREADY CLEAR; the SEP's"
+                  " power word 0x28e580c00 1000030f; 0x2922c0044 00000008. If it still reads clear in step 7 nothing is written and this run"
+                  " changes nothing: the byte step 8 sends to the PMU's 0x6009 will say the bit was found clear")
+    unbound = ["compatible - apple,sep", "device 0", "lock 0", "unlock 0", "put 0"]
+    mapped = unbound + ["never? 28e0cc200", "map 28e0cc000 4000", "r C", "r P", "r G"]
+    refusal = ("err m1: sep_pg: a driver is bound to the SEP's device (apple,sep): this run clears the PMGR's wait for the SEP's power gate, and is"
+               " only made in a safe boot without the enclave's driver: pkexec sleep-drain-safe boot --no-sep; refusing")
+    check(inits["sepbound"] == unbound + [refusal, "ret -16", "sp none"] and inits["sepall"] == inits["sepbound"]
+          and inits["septhird"] == ["compatible - apple,sep"] + [f"{w} {i}" for i in range(3) for w in ("device", "lock", "unlock", "put")] + [refusal, "ret -16", "sp none"]
+          and inits["sepnone"] == ["compatible - apple,sep"] + mapped[5:] + [set_line.format(4), "ret 0", "sp word"]
+          and inits["sepnodev"] == ["compatible - apple,sep", "device 0"] + mapped[5:] + [set_line.format(4), "ret 0", "sp word"]
+          and '#define M1_SEP_COMPATIBLE\t"apple,sep"\n' in src and len(re.findall(r"\bm1_sp_sep_bound\(", code_only)) == 2
+          and in_order_of(init_fn, ["\tif (m1_sp_sep_bound()) {\n", "\t\treturn -EBUSY;\n\t}\n\tif (m1_never(SP_CTL, 1)) {\n"])
+          and not re.search(wr, bound_fn) and "readl" not in bound_fn,
+          "m1_sp_init() refuses first of all, before the list is asked, anything is mapped or a word is read, if a driver is bound to a"
+          " device of a node the tree marks apple,sep: the first such node's or a later one's (each device looked at under its lock and"
+          " put back, the lock dropped first); with no such node, or a node without a device, the load goes on. (The device tree and"
+          " the driver core are stand-ins here; m1_sp_sep_bound() and m1_sp_init() are the module's.)",
+          "\n".join(inits["sepbound"] + inits["septhird"] + inits["sepnone"]))
+    check(inits["set"] == mapped + [set_line.format(4), "ret 0", "sp word"] and inits["setother"] == mapped + [set_line.format(0x80000104), "ret 0", "sp word"]
+          and inits["never4"] == inits["set"],
+          "m1_sp_init() with bit 2 set awake: the one word asked of the never-write list (0x28e0cc200, and not the word after it), one"
+          " page mapped at 0x28e0cc000, the pointer left on the word itself, the three words read once each and logged with what step 7"
+          " will do; nothing written", "\n".join(inits["set"]))
+    check(inits["clear"] == mapped + [clear_line.format(0), "ret 0", "sp word"] and inits["other"] == mapped + [clear_line.format(0x80000100), "ret 0", "sp word"],
+          "m1_sp_init() with bit 2 clear awake, whatever the word's other bits: said plainly in the log, with what the run then is, and the"
+          " load goes on", "\n".join(inits["clear"]))
+    check(inits["never"] == unbound + ["never? 28e0cc200", "err m1: sep_pg: 0x28e0cc200 is on the never-write list; refusing", "ret -1", "sp none"]
+          and inits["nosio"] == unbound + ["never? 28e0cc200", "err m1: sep_pg: SIO's power page or the engine's page isn't mapped; refusing", "ret -19", "sp none"]
+          and inits["nopos"] == inits["nosio"]
+          and inits["mapfail"] == unbound + ["never? 28e0cc200", "map 28e0cc000 4000", "err m1: sep_pg: the control word's page didn't map; refusing", "ret -12", "sp none"],
+          "m1_sp_init() refuses a word on the never-write list before anything is mapped; refuses without SIO's power page or the"
+          " engine's, with nothing mapped and nothing read; and refuses if the word's page doesn't map, with nothing read. (The list"
+          " here is a stand-in that says yes when told to; m1_never() is the module's.)", str(inits["never"]) + str(inits["nosio"]) + str(inits["mapfail"]))
+    check(listed == ["0 0 1 1 1 1 0 0"] and "\tu64 block = addr & ~7ULL;\n\n\treturn block == E1_NEVER_PS_PMP || block == E1_NEVER_28E700000;\n}" in list_fn
+          and "#define E1_NEVER_PS_PMP\t\t0x28e0802d8ULL\n#define E1_NEVER_28E700000\t0x28e700000ULL\n" in list_fn
+          and "\t\tif (e1_never_write(pa + 4 * i))\n\t\t\treturn true;\n" in never_fn,
+          "the module's own e1_never_write(), compiled as it stands: ps_pmp's word and 0x28e700000, each with the word after it, are on"
+          " the list as before, and 0x28e0cc200 and the word after it are not; the list's two addresses and its test are unchanged")
+    m1_init, e1_init = cut("static int __init m1_init(void)", "\n}\n"), cut("static int __init e1_hook_init(void)", "\n}\n")
+    unmap = cut("static void m1_unmap(void)", "\n}\n")
+    after_m1 = e1_init[e1_init.index("\t\tret = m1_init();\n\t\tif (ret)\n\t\t\tgoto unmap;\n"):e1_init.index("\tset_ops(&e1_ops);")]
+    check(not re.search(wr, init_fn) and init_fn.count("readl(") == 3 and not re.search(r"\w\([^;]*readl\([^;]*,[^;]*readl\(", init_fn)
+          and in_order_of(init_fn, ["\tif (m1_never(SP_CTL, 1)) {\n", "\t\treturn -EPERM;\n", "\tif (!m1_sio || !m1_pos) {\n", "\t\treturn -ENODEV;\n",
+                                    "\tm1_sp = ioremap_np(SP_CTL & PAGE_MASK, PAGE_SIZE);\n\tif (!m1_sp) {\n", "\t\treturn -ENOMEM;\n",
+                                    "\tm1_sp += SP_CTL & ~PAGE_MASK;\n", "\tctl = readl(m1_sp);\n\tsep = readl(m1_sio + SP_SEP_PS);\n\tg44 = readl(m1_pos + M1_POS_GATE44);\n",
+                                    "\tif (ctl & SP_WAIT)\n", "\treturn 0;\n}"])
+          and in_order_of(m1_init, ["\tif (observe || pmgr_late) {\n\t\tm1_soc = ioremap_np(M1_SOC_CLUSTERS, PAGE_SIZE);\n\t\tm1_sio = ioremap_np(M1_PS_SIO_PAGE, PAGE_SIZE);\n",
+                                    "\tif (wd2_bite) {\n\t\tint ret = m1_wd2_init();\n", "\tif (wake_all)\n\t\tm1_wa_init();\n",
+                                    "\tif (sep_pg) {\n\t\tint ret = m1_sp_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\t/* Last: it reads through pages"])
+          and "\tif (!m1_pos)\n\t\tm1_pos = ioremap_np(M1_POS_PAGE, PAGE_SIZE);\n\tif (!m1_pos) {\n" in cut("static int __init m1_wd2_init(void)", "\n}\n")
+          and len(re.findall(r"\bm1_sp_init\(", code_only)) == 2 and len(re.findall(r"\bm1_sp = ", code_only)) == 1 and len(re.findall(r"\bm1_sp\b", code_only)) == 10
+          and "\tif (m1_sp)\n\t\tiounmap((void __iomem *)((unsigned long)m1_sp & PAGE_MASK));\n" in unmap and src.count("iounmap((void __iomem *)((unsigned long)m1_sp & PAGE_MASK))") == 1
+          and "\tm1_unmap();\n}" in cut("static void e1_unmap(void)", "\n}\n")
+          and not re.search(r"\breturn\b", after_m1) and after_m1.count("goto unmap;") >= 3 and "\nunmap:\n\te1_unmap();\n" in e1_init
+          and "\te1_unmap();\n\tmodule_put(smc_owner);\n\tput_device(&smc_pdev->dev);\n" in cut("static void __exit e1_hook_exit(void)", "\n}\n")
+          and ("static_assert(SP_CTL == 0x28e0cc200ULL && SP_WAIT == BIT(2) && (SP_CTL & ~PAGE_MASK) + 4 <= PAGE_SIZE &&\n"
+               "\t      M1_PS_SIO_PAGE + SP_SEP_PS == 0x28e580c00ULL && SP_SEP_PS + 4 <= PAGE_SIZE && M1_POS_PAGE + M1_POS_GATE44 == 0x2922c0044ULL &&\n"
+               "\t      SP_ARMED == 0x02 && SP_MARK == 0x80 && SP_FOUND == 0x40 && SP_CLEAR == 0x20 && SP_SEP_OFF == 0x10 && LL_AT + 1 == 0x6009);\n") in src
+          and "#define M1_PS_SIO_PAGE\t\t0x28e580000ULL\n" in src and "#define M1_POS_PAGE\t\t0x2922c0000ULL\n" in src
+          and not {0x28e0cc200, 0x28e0cc204} & {0x28e0802d8, 0x28e0802dc, 0x28e700000, 0x28e700004},
+          "m1_sp_init() writes nothing; checks the list, then the two pages, then maps, then reads, each read into its own variable; it"
+          " runs with sep_pg=1 alone, after pmgr_late=1's mapping of SIO's power page and m1_wd2_init()'s of the engine's and after"
+          " wake_all=1's log, its refusal returned, before the look's start-up; the word has one pointer, assigned once, and one unmap, of"
+          " its page, in m1_unmap(), which the exit reaches through e1_unmap() and so does every failure of the load from m1_init() on"
+          " (each a goto unmap, none a return); the build asserts the word, its bit, the SEP's power word at 0x28e580c00 inside the mapped"
+          " page, the gate word and the byte's bits")
+
+    # The parameter, K1, the undo, m1_pmu_ok().
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    start, undo, pmu_ok = cut("static int m1_pmu_start(void)", "\n}\n"), cut("static void m1_pmu_undo(void)", "\n}\n"), cut("static bool m1_pmu_ok(bool write,", "\n}\n")
+    check(in_order_of(params, ["\tif (wake_all && (!gates_mark || observe)) {\n",
+                               "\tif (sep_pg && (!gates_mark || observe)) {\n\t\tpr_err(\"sep_pg=1 needs gates_mark=1 and no observe=1 (it's that family's run with bit 2 of"
+                               " the PMGR control word 0x28e0cc200 cleared in step 7 and one byte at 0x6009;", "\t\treturn -EINVAL;\n\t}\n\tif (gate_look && !last_look) {\n"])
+          and "\nstatic bool sep_pg;\nmodule_param(sep_pg, bool, 0444);\nMODULE_PARM_DESC(sep_pg, \"With gates_mark=1, never with observe=1:" in src
+          and 'll_retn ? " ll_retn=1" : "", sep_pg ? " sep_pg=1" : "", pre_test ?' in src
+          and src.count("%s", src.index('pr_info("loaded: s2idle ops set through'), src.index("sym, replay, quiet ?")) == 38
+          and " *   pkexec e1-hook/run-floor --m1-sep-pg          (--m1-a2-pre-blink's and sep_pg=1:" in src
+          and not re.search(r"\bsep_pg\s*=[^=]", code_only) and len(re.findall(r"\bsep_pg\b", code_only)) == 10
+          and "if (last_look && (!wd1_mark || gates_mark ||" in src and not re.search(r"sep_pg[^\n]*wake_all|wake_all[^\n]*sep_pg", params),
+          "sep_pg=1 is off unless asked for, refuses without gates_mark=1 or with observe=1, can't be set after the load and is named in the"
+          " load line, which has a %s for it, and in the header's list of launchers; it can't meet last_look=1, which refuses gates_mark=1,"
+          " and no check sets it against wake_all=1; it is named in ten places (its declaration, parameter and description, m1_pmu_ok(),"
+          " K1, steps 7 and 8, the load, the refusal, the load line) and assigned in none")
+    check(in_order_of(start, ["\t\tret = m1_kwrite(0x6010, zero, 7);\n", "\tif (!ret && !wake_all && !last_look && !observe)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n",
+                              "\tif (!ret && wake_all) {\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n\t\tv = WA_ARMED;\n\t\tif (!ret)\n\t\t\tret = m1_kwrite(LL_AT, &v, 1);\n\t}\n",
+                              "\tif (!ret && sep_pg) {\n\t\tv = SP_ARMED;\n\t\tret = m1_kwrite(LL_AT + 1, &v, 1);\n\t}\n",
+                              "\tif (!ret && last_look)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n", "\tif (!ret && observe)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n",
+                              "\tif (ret)\n\t\treturn ret;\n\tm1_sent_50 = true;\n"])
+          and start.count("m1_kwrite(LL_AT, zero, LL_N)") == 4 and undo.count("m1_kwrite(LL_AT, zero, LL_N)") == 4 and "sep_pg" not in re.sub(r"/\*.*?\*/", "", undo, flags=re.S)
+          and in_order_of(pmu_ok, ["\tif (wake_all && addr == LL_AT && one && wa_ok(b[0]))\n\t\treturn true;\n",
+                                   "\tif (sep_pg && addr == LL_AT + 1 && one && sp_ok(b[0]))\n\t\treturn true;\n",
+                                   "\tif (addr == LL_AT && n == LL_N) {\n\t\tunsigned int i;\n",
+                                   "\treturn (addr >= 0x6004 && end <= (last_look ? LL_AT + LL_N : 0x6008)) || (addr >= 0x6010 && end <= 0x6017);\n}"]),
+          "K1 writes sep_pg=1's mark to 0x6009 after the two clauses of which one has zeroed the seven in such a run (the one for runs with"
+          " no clause of their own, or wake_all=1's) and before last_look=1's and an observer's zeros, which would wipe it if the options"
+          " could ever meet, and before boot stage 0x50; the undo has no clause for it and needs none; m1_pmu_ok() has its one byte"
+          " after wake_all=1's and before the seven zeros of any run")
+    # m1_pmu_ok(), compiled, against a second writing-out of it for this window, in the four runs.
+    def ok_model(c, w, addr, bs):
+        n, end = len(bs), addr + len(bs)
+        if not w:
+            return addr >= 0x6000 and end <= 0x6020
+        if addr == 0x6001:
+            return n == 1 and bs[0] in (0x50, 0x30)
+        if c & 1 and addr == 0x6008 and n == 1 and (bs[0] == 0x20 or (bs[0] & 0xc8) == 0xc0):
+            return True
+        if c & 2 and addr == 0x6009 and n == 1 and (bs[0] == 0x02 or bs[0] & 0x80):
+            return True
+        if addr == 0x6008 and n == 7 and not any(bs):
+            return True
+        return (addr >= 0x6004 and end <= 0x6008) or (addr >= 0x6010 and end <= 0x6017)
+
+    fills = ((0,) * 8, (1,) * 8, (0, 0, 0, 0, 0, 0, 1, 0), (0x20,) + (0,) * 7, (0xf0,) + (0,) * 7, (0x02,) + (0,) * 7, (0xf8,) + (0,) * 7, (0x20, 0x02) + (0,) * 6,
+             (0xf0, 0xf8) + (0,) * 6, (0, 0x02) + (0,) * 6, (0, 0xf8) + (0,) * 6, (0x80,) + (0,) * 7, (0x40,) + (0,) * 7, (0x02, 0x02) + (0,) * 6, (0xf8,) + (0,) * 7)
+    got_ok = {(int(r[1]), int(r[2]), int(r[3], 16), tuple(int(x, 16) for x in r[5:])) for r in okl if r[0] == "ok"}
+    want_ok = {(c, w, addr, f[:n]) for c in range(4) for w in range(2) for addr in range(0x5ff8, 0x6028) for n in range(1, 9) for f in fills
+               if ok_model(c, w, addr, f[:n])}
+    got_one = {(int(r[1]), int(r[2], 16), int(r[3], 16)) for r in okl if r[0] == "one"}
+    wa_vals, sp_vals = {0x20} | {v for v in range(0xc0, 0x100) if not v & 0x08}, {0x02} | set(range(0x80, 0x100))
+    want_one = {(c, 0x6008, v) for c in (1, 3) for v in wa_vals} | {(c, 0x6009, v) for c in (2, 3) for v in sp_vals}
+    there = lambda c: {(a, bs) for c_, w, a, bs in got_ok if c_ == c and w and a < 0x600f and a + len(bs) > 0x6008}
+    check(got_ok == want_ok and got_one == want_one and len(want_ok) > 2000
+          and there(0) == {(0x6008, (0,) * 7)} and there(1) == there(0) | {(0x6008, (0x20,)), (0x6008, (0xf0,))}
+          and there(2) == there(0) | {(0x6009, (v,)) for v in (0x02, 0xf8, 0x80, 0xf0)} and there(3) == there(1) | there(2)
+          and {(w, a, bs) for c, w, a, bs in got_ok if c == 0 and not (w and a < 0x600f and a + len(bs) > 0x6008)}
+          == {(w, a, bs) for c, w, a, bs in got_ok if c == 3 and not (w and a < 0x600f and a + len(bs) > 0x6008)},
+          "m1_pmu_ok() in the four runs of the family, every address from 0x5ff8 to 0x6027, every length, written and read, with fifteen"
+          " contents, and one byte of every value at each of 0x6008-0x600e, against a second writing-out. Without either option: seven"
+          " zeros at 0x6008 and nothing else there. With sep_pg=1: one byte more, at 0x6009 alone, K1's mark 0x02 or a byte with bit 7"
+          " (not 0, not 0x20, not 0x40; not two bytes, not at 0x6008, not at 0x600a-0x600e). With wake_all=1: its one byte at 0x6008 as"
+          " before, and nothing at 0x6009. With both: each one's byte at its own address and neither's at the other's (0x02 not at"
+          " 0x6008, 0x20 not at 0x6009), never the two in one command. Everything outside those seven bytes, and every read, is the"
+          " same in all four", str(sorted(there(3))) + f" {len(got_ok)} {len(want_ok)} {len(got_one)} {len(want_one)}")
+    # K1 and the undo, compiled, through the real m1_pmu_ok(), over what a run of the family can have left.
+    mark = {"plain": bytes(7), "wakeall": bytes((0x20,)) + bytes(6), "seppg": bytes((0, 0x02)) + bytes(5), "both": bytes((0x20, 0x02)) + bytes(5),
+            "lastlook": bytes(7), "observe": bytes(7), "obsgate": bytes((0x40,)) + bytes(6)}
+    plain0 = started[("plain", "zeros")]
+    check(all(started[(m, l)][8:0x0f] == mark[m] for m in kinds for l in left)
+          and all(v[:8] == plain0[:8] and v[0x0f:] == plain0[0x0f:] and v[1] == 0x50 and v[4] == 0x01 for v in started.values())
+          and plain0[0x0f:] == bytes(0x11),
+          "K1, the real m1_pmu_start() behind the real m1_pmu_ok(), in seven kinds of run over 0x6008-0x600e as a run of the family left"
+          " them (both bytes, both marks, sep_pg=1's byte or mark alone, marks with junk after them, or zeros): the seven are zeroed in"
+          " every kind; then a sep_pg=1 run has 0x02 at 0x6009 and nothing else, a wake_all=1 run 0x20 at 0x6008 and nothing else, a run"
+          " with both has both, each at its own byte, and a run with neither, a last_look=1 run and an observer's have seven zeros; no"
+          " write is refused, and no other byte differs", str({k: v.hex(' ') for k, v in started.items()}))
+    check(all(v[8:0x0f] == bytes(7) and v[1] == 0x30 and not any(v[4:8]) and not any(v[0x10:0x17]) for v in undone.values()) and len(undone) == 30,
+          "the undo, the real m1_pmu_undo(), with 0x6008-0x600e holding bytes or marks again: all seven zeroed in every kind of run,"
+          " sep_pg=1 alone, with wake_all=1 and neither among them, boot stage 0x30 again, the breadcrumbs zeroed, no write refused",
+          str({k: v.hex(' ') for k, v in undone.items()}))
+
+    # The byte through m1-crumbs, on the a2_pre=1 run with the light's own record, as wake_all_tests() has it.
+    base = bytes.fromhex("003000509b7d00f5 0000000000000000 13b8ff5f908eff00 0000000000000000")
+    wa_head = ("wake_all=1's record: step 7 writes 0xffffffff to all seven AP wake-mask words (0x292004008-0x292004020) and reads them back and"
+               " the seven words after them, and step 8 sends the byte after its own record:\n")
+    wa_f0 = ("  0x6008 = 0xf0, bit 5: the masks read back 0xffffffff in words 0 to 5 and all set in word 6's low 13 bits: every source with a name"
+             " is masked\n  bit 4: the ids with no name (0xcd to 0xdf, word 6's bits 31:13) took the mask: they read back all set\n"
+             "  bits 2:0: none of the seven words inferred to be the AP's wake status read non-zero after the masks\n")
+    head = ("sep_pg=1's record: step 7 reads the PMGR control word 0x28e0cc200, writes it back with bit 2 clear if that bit is set (the bit that"
+            " makes the S2R sequencer wait for the SEP to power-gate), and reads it again, then the SEP's power word (0x28e580c00) and"
+            " 0x2922c0044, and step 8 sends the byte after its own record:\n")
+
+    def fields(v):
+        """The four lines of a byte, written out a second time."""
+        n = v & 0xf
+        if v & 0x40:
+            l0 = "was set as found: step 7 wrote the word back with it clear"
+            l1 = ("read again after the write, the control word had "
+                  + ("bit 2 clear and every other bit as found" if v & 0x20 else "NOT bit 2 clear and every other bit as found: the write isn't shown to have taken"))
+        else:
+            l0 = "was already clear as found: step 7 wrote nothing"
+            l1 = ("read again, the control word had "
+                  + ("every bit as found, bit 2 clear" if v & 0x20 else "NOT every bit as found: the word changed between two reads with no write of this run's between them"))
+        return (f"  0x6009 = 0x{v:02x}, bit 6: the control word's bit 2 {l0}\n  bit 5: {l1}\n"
+                "  bit 4: the SEP's power word read " + ("actual state 0 (its bits 7:4) then\n" if v & 0x10 else "an actual state that is NOT 0 (its bits 7:4) then\n")
+                + f"  bits 3:0: 0x2922c0044's low nibble read 0x{n:x} then, with CPU0 up and before the commit, so its bits 2:0 say nothing new; bit 3 "
+                + ("set, as it reads awake\n" if n & 8 else "clear (awake it reads set)\n"))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+
+        def sdec(r, stage=0x9b, clear=False, armed=0x41):
+            sc = bytearray(base)
+            sc[4] = stage
+            sc[8:8 + len(r)] = r
+            before = fake(path, bytes(sc), rtc_secs=112659 + 130, alarm=(armed, 112659 + 3600, 0, 0))
+            p = run(path, *(["--clear"] if clear else []), cnt="960000000 24000000")
+            return p.returncode, p.stdout, p.stderr, before, open(path, "rb").read()
+
+        rc0, out0, err0, _, _ = sdec(bytes(7))
+        rc, out, err, _, _ = sdec(b"\x00\xf8")
+        rest = [l for l in out0.splitlines() if not l.startswith("0x6000:") and l not in out.splitlines()]
+        check(rc == 0 and rc0 == 0 and "0x6008-0x600e = 00 f8 00 00 00 00 00: " + head + fields(0xf8) in out
+              and "was set as found: step 7 wrote the word back with it clear\n  bit 5: read again after the write, the control word had bit 2 clear and every"
+                  " other bit as found\n  bit 4: the SEP's power word read actual state 0 (its bits 7:4) then\n  bits 3:0: 0x2922c0044's low nibble read 0x8" in out
+              and "last_look=1" not in out and "obs_gate" not in out and "wake_all" not in out and "NOT READ" not in out
+              and "sep_pg" not in out0 and "0x6008-0x600e" not in out0 and not rest
+              and "0x6016 = 0xff: a2_pre=1's byte, in place of the alarm's result:" in out
+              and "stage 0x6004 = 0x9b (pmp_out=1: bit 7, so the stage is 0x1b) (pmgr_late=1): a2_pre=1: gates_mark=1's 0x55:" in out,
+              "sep_pg=1's byte alone, 0xf8 at 0x6009 with 0x6008 zero, under --m1-a2-pre's last stage: its four fields, as read, and nothing"
+              " of wake_all=1's; every other line of the record is as without the byte, and without it nothing is said of these bytes",
+              out + err + "\n".join(rest))
+        bad = []
+        for v in range(0x80, 0x100):
+            rc, out, err, _, _ = sdec(bytes((0, v)))
+            block = out[out.index("0x6008-0x600e = "):] if "0x6008-0x600e = " in out else ""
+            block = "".join(l + "\n" for l in block.splitlines()[:5])
+            if not (rc == 0 and block == f"0x6008-0x600e = 00 {v:02x} 00 00 00 00 00: " + head + fields(v)
+                    and not any(w in block[block.index(head) + len(head):] for w in ("stall", "engine", "B2", "held", "NOT READ"))):
+                bad.append((v, out + err))
+        check(not bad, "every value of the byte, 0x80 to 0xff, under that stage: four lines, each field as a second writing-out has it (the bit"
+              " as found, set or already clear with no write made; the read-back, with the write not shown to have taken, or a word that"
+              " changed with no write; the SEP's actual state; the gate word's nibble, bit 3 as read, read with CPU0 up), and nothing"
+              " concluded about the stall", "".join(f"0x{v:02x}:\n{o}" for v, o in bad[:2]))
+        for stage in (0xcb, 0xd4, 0xd5, 0xbd, 0xbe, 0xbf, 0x9d, 0x9e, 0x9f, 0x95, 0x96, 0x97, 0x99, 0x9a, 0x9b, 0x91, 0x92, 0x93):
+            rc, out, err, _, _ = sdec(b"\x00\xd3", stage)
+            check(rc == 0 and head + fields(0xd3) in out and "step 7's own" not in out,
+                  f"the byte under stage 0x{stage:02x}, one of the gates_mark=1 family's: read as sep_pg=1's", out + err)
+        # Both options' bytes, each read by itself.
+        rc, out, err, _, _ = sdec(b"\xf0\xf8")
+        rc2, out2, err2, _, _ = sdec(b"\xf0")
+        check(rc == 0 and "0x6008-0x600e = f0 f8 00 00 00 00 00: " + wa_head + wa_f0 + "0x6008-0x600e = f0 f8 00 00 00 00 00: " + head + fields(0xf8) in out
+              and "NOT READ" not in out and rc2 == 0 and "0x6008-0x600e = f0 00 00 00 00 00 00: " + wa_head + wa_f0 in out2 and "sep_pg" not in out2
+              and [l for l in out2.splitlines() if not l.startswith(("0x6000:", "0x6008-0x600e", "  0x600", "  bit"))]
+              == [l for l in out.splitlines() if not l.startswith(("0x6000:", "0x6008-0x600e", "  0x600", "  bit"))],
+              "both bytes together, 0xf0 at 0x6008 and 0xf8 at 0x6009: wake_all=1's three fields as that option's own reading has them, then"
+              " sep_pg=1's four, neither NOT READ for the other's sake; wake_all=1's byte alone reads exactly as it did, with nothing of"
+              " sep_pg=1", out + err + out2 + err2)
+        # K1's mark alone, and with wake_all=1's mark or byte: what the stage allows to be said.
+        armed_line = ("  0x6009 = 0x02: sep_pg=1 was set and its byte never landed: K1 writes this, and the byte's command, after step 8's record,"
+                      " writes over it. ")
+        wa_armed = ("  0x6008 = 0x20: wake_all=1 was set and its byte never landed: K1 writes this, and the byte's command, after step 8's record,"
+                    " writes over it. ")
+        early = ("Stage 0x{:02x} is as far as the record goes: the run stopped before the byte's command, or that command failed, which stops every"
+                 " later one")
+        fault = (". Step 7's write to the control word and its reads of that word, the SEP's power word and 0x2922c0044 come between this stage"
+                 " and the byte: an access that faulted there panics, and the Mac restarts about 10 s later")
+        later = "Stage 0x{:02x} is a later command's, and a command that fails stops every later one: the byte's command was acked and the byte didn't land"
+        said = ("the control word's bit 2", "the control word had", "the SEP's power word read", "low nibble read")
+        for stage, how in ((0x9b, later), (0x99, later), (0xd5, later), (0x93, later), (0xb9, early + fault), (0xa8, early), (0xb1, early), (0xb7, early),
+                           (0x90, early), (0x82, early), (0x83, early), (0x84, early), (0x85, early), (0x01, early), (0x00, early)):
+            rc, out, err, _, _ = sdec(b"\x00\x02", stage)
+            rc2, out2, err2, _, _ = sdec(b"\x20\x02", stage)
+            check(rc == 0 and "0x6008-0x600e = 00 02 00 00 00 00 00: " + head + armed_line + how.format(stage & 0x7f) + "\n" in out and not any(f in out for f in said)
+                  and ("faulted there" in out) == (stage == 0xb9) and "last_look=1" not in out and "obs_gate" not in out and "wake_all" not in out and "NOT READ" not in out
+                  and rc2 == 0 and wa_head + wa_armed in out2 and head + armed_line + how.format(stage & 0x7f) + "\n" in out2 and "NOT READ" not in out2
+                  and not any(f in out2 for f in said),
+                  f"K1's mark alone, 0x02 at 0x6009, under stage 0x{stage:02x}: sep_pg=1's byte never landed, said with what the stage allows (a"
+                  " stage sent after the byte can't follow a command that failed; one the run passes before it can; under step 7's own, the"
+                  " write and the reads that could fault are named), no field read from it; with wake_all=1's mark at 0x6008 too, each mark"
+                  " is said by itself", out + err + out2 + err2)
+        stale = ("0x6008-0x600e = 00 02 00 00 00 00 00: K1's mark for sep_pg=1 (0x02 at 0x6009), under a stage no such run is at:\n"
+                 "  NOT READ: stage 0x{:02x} isn't this mark's run's. A sep_pg=1 run is at one of K1's to step 7's stages before its byte goes out and"
+                 " at one of the gates_mark=1 family's after it: the mark was left by an earlier run\n")
+        for stage in (0xd3, 0x50, 0x53, 0xce, 0xcf, 0xd7, 0xa0, 0xb0, 0xb8, 0x38, 0x30, 0x20, 0xc5, 0xdb):
+            rc, out, err, _, _ = sdec(b"\x00\x02", stage)
+            rc2, out2, err2, _, _ = sdec(b"\x00\xf8", stage)
+            check(rc == 0 and stale.format(stage & 0x7f) in out and "sep_pg=1's record" not in out and "sep_pg=1 was set" not in out
+                  and "the run stopped" not in out and not any(f in out for f in said)
+                  and rc2 == 0 and "sep_pg=1's record" not in out2 and "K1's mark for sep_pg=1" not in out2 and not any(f in out2 for f in said)
+                  and "NOT READ: the stage isn't one of last_look=1's, and the bytes are neither an obs_gate=1 record nor a wake_all=1 or sep_pg=1 one." in out2,
+                  f"under stage 0x{stage:02x}, which no sep_pg=1 run sends: K1's mark is a mark an earlier run left, NOT READ, with nothing said"
+                  " of where a run stopped; and the byte, 0xf8, isn't read as sep_pg=1's at all: a leftover, NOT READ", out + err + out2 + err2)
+        # One byte landed and the other's mark stayed: each is said by itself.
+        rc, out, err, _, _ = sdec(b"\xf0\x02", 0xb9)
+        rc2, out2, err2, _, _ = sdec(b"\x20\xf8")
+        check(rc == 0 and wa_head in out and "  0x6008 = 0xf0, bit 5:" in out and head + armed_line + early.format(0x39) + fault + "\n" in out
+              and rc2 == 0 and wa_head + wa_armed + later.format(0x1b) + "\n" in out2 and head + fields(0xf8) in out2 and "NOT READ" not in out + out2,
+              "wake_all=1's byte landed and sep_pg=1's mark stayed, under step 7's stage (the run stopped between the two commands, or the"
+              " second failed): the first is read and the second said not to have landed; and the other way round under a later stage",
+              out + err + out2 + err2)
+        # Step 7's own stage: the byte landed and no later command did.
+        rc, out, err, _, _ = sdec(b"\x00\xf8", 0xb9)
+        check(rc == 0 and head + "  the stage, 0x39, is step 7's own, still the stage when the byte goes out: this byte landed and no later command did\n"
+              + fields(0xf8) in out and "NOT READ" not in out,
+              "sep_pg=1's byte under step 7's own stage (0xb9, 0x39 with pmp_out=1's bit): read as the run's, with a line saying no later command landed", out + err)
+        # What such a run can't have left beside the byte: nothing of it is read then.
+        junk_line = "  {}: not what e1_hook writes in such a run (K1 zeroes the seven, and the run sends 0x6009 alone, or wake_all=1's byte at 0x6008 too): NOT READ\n"
+        rc, out, err, _, _ = sdec(bytes((0, 0xf8, 0, 5, 0, 0, 0)))
+        rc2, out2, err2, _, _ = sdec(b"\x40\xf8")
+        rc3, out3, err3, _, _ = sdec(b"\xf8\xf8")
+        rc4, out4, err4, _, _ = sdec(bytes((0xf0, 0xf8, 0, 0, 0, 0, 0x80)))
+        rc5, out5, err5, _, _ = sdec(bytes((0x40, 0x02, 0, 0, 1, 0, 0)))
+        rc6, out6, err6, _, _ = sdec(b"\x01\xf8")
+        check(rc == 0 and head + junk_line.format("0x600a-0x600e = 00 05 00 00 00") in out
+              and rc2 == 0 and head + junk_line.format("0x6008 = 0x40") in out2 and "obs_gate" not in out2
+              and rc3 == 0 and wa_head + "  0x6008 = 0xf8: not what e1_hook writes (its bit 3 is never set): NOT READ\n" in out3 and head + junk_line.format("0x6008 = 0xf8") in out3
+              and rc4 == 0 and wa_head + "  0x600a-0x600e = 00 00 00 00 80: not what e1_hook writes (K1 zeroes them, and this run sends 0x6008 and 0x6009 alone): NOT READ\n" in out4
+              and head + junk_line.format("0x600a-0x600e = 00 00 00 00 80") in out4
+              and rc5 == 0 and head + armed_line + later.format(0x1b) + "; 0x6008 = 0x40 and 0x600a-0x600e = 00 00 01 00 00: not what e1_hook writes in such a run: NOT READ\n" in out5
+              and rc6 == 0 and head + junk_line.format("0x6008 = 0x01") in out6
+              and not any(f in o for f in said + ("the masks read back",) for o in (out, out2, out3, out4, out5, out6)),
+              "sep_pg=1's byte with anything in 0x600a-0x600e, or with 0x6008 neither 0 nor wake_all=1's (0x40, 0x01, or 0xf8 with its bit 3):"
+              " said not to be what e1_hook writes, and no field of either byte read; K1's mark with such bytes beside it is still said,"
+              " with them named", out + err + out2 + err2 + out3 + err3 + out4 + err4 + out5 + err5 + out6 + err6)
+        # wake_all=1's byte with something at 0x6009 that isn't sep_pg=1's: that option's own reading, as before this one.
+        rc, out, err, _, _ = sdec(b"\xf0\x45")
+        rc2, out2, err2, _, _ = sdec(b"\x20\x01")
+        check(rc == 0 and wa_head + "  0x6009-0x600e = 45 00 00 00 00 00: not what e1_hook writes (K1 zeroes them, and this run sends 0x6008 alone): NOT READ\n" in out
+              and rc2 == 0 and wa_head + wa_armed + later.format(0x1b) + "; 0x6009-0x600e = 01 00 00 00 00 00 are not what e1_hook writes: NOT READ\n" in out2
+              and "sep_pg" not in out + out2,
+              "wake_all=1's byte or mark with a 0x6009 that is neither 0, 0x02 nor a byte with bit 7 (0x45, 0x01): that option's reading as"
+              " it was, 0x6009 among the six it never writes, and nothing said of sep_pg=1", out + err + out2 + err2)
+        # Whose bytes: the stage says. last_look=1's stages and an observer's keep their own readings.
+        nosp = lambda o: "sep_pg=1's record" not in o and "sep_pg=1 was set" not in o and "K1's mark for sep_pg=1" not in o
+        outs = {(stage, r): sdec(r, stage) for stage in (0x8b, 0x88, 0x94, 0x7f, 0x6e) for r in (b"\x00\xf8", b"\x00\x02", b"\x80\xf8", b"\x40\x02")}
+        check(all(rc == 0 and nosp(o) for rc, o, _, _, _ in outs.values())
+              and all(("ll_retn=1's record" if stage == 0x94 else "last_look=1's record of CPU0's own last WFI") in outs[(stage, r)][1]
+                      for stage in (0x8b, 0x88, 0x94) for r in (b"\x00\xf8", b"\x00\x02", b"\x80\xf8", b"\x40\x02"))
+              and all("NOT READ: the stage isn't one of last_look=1's" in outs[(stage, r)][1] for stage in (0x7f, 0x6e) for r in (b"\x00\xf8", b"\x00\x02"))
+              and all("obs_gate=1's record" in outs[(stage, b"\x80\xf8")][1] and "obs_gate=1 was set and CPU7's look never landed" in outs[(stage, b"\x40\x02")][1]
+                      for stage in (0x7f, 0x6e)),
+              "under one of last_look=1's stages (ll_retn=1's among them) a second byte of 0xf8 or 0x02 is that run's to read, and under an"
+              " observer's it is obs_gate=1's or nobody's: none decodes as sep_pg=1's", "".join(f"{k}: {v[1]}{v[2]}" for k, v in outs.items()))
+        # The cross-recipe case: a sep_pg=1 run's bytes left uncleared, then a run of the family without it. Its real K1 zeroes them.
+        crossed = [sdec(started[("plain", l)][8:0x0f], stage) for l in ("f0f8", "marks", "sp", "spmark") for stage in (0xb9, 0x9b, 0x99)]
+        wa_next = [sdec(started[("wakeall", l)][8:0x0f], stage) for l in ("f0f8", "sp") for stage in (0xb9, 0x9b)]
+        check(all(rc == 0 and "sep_pg" not in o and "wake_all" not in o and "0x6008-0x600e" not in o for rc, o, _, _, _ in crossed)
+              and all(rc == 0 and "sep_pg" not in o and wa_head + wa_armed in o for rc, o, _, _, _ in wa_next),
+              "a sep_pg=1 run's byte or mark left uncleared, then a run of the family without it: after that run's real K1 its record says"
+              " nothing of sep_pg=1, under step 7's stage and --m1-a2-pre's; and a wake_all=1 run after it shows its own mark and nothing"
+              " at 0x6009", crossed[0][1] + crossed[0][2])
+
+        # --clear: the seven go with the rest when each of the two bytes is its option's byte or mark, or 0, with at least one there,
+        # and the other five are 0. Anything else stays, and --clear says so.
+        left_alone = ("0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage, no obs_gate=1 record and no wake_all=1 or sep_pg=1 byte or mark"
+                      " with zeros in the rest says they're a run's")
+        for stage, r, armed in ((0x9b, b"\x00\xf8", 0x41), (0x9b, b"\x00\x02", 0x41), (0x9b, b"\xf0\xf8", 0x41), (0x9b, b"\x20\x02", 0x41), (0x9b, b"\xf0\x02", 0x41),
+                                (0x9b, b"\x20\xf8", 0x41), (0x9b, b"\x00\x80", 0x41), (0xb9, b"\x00\x02", 0x01), (0xb9, b"\x00\xb3", 0x01), (0xb9, b"\xf0\x02", 0x01),
+                                (0x00, b"\x00\x02", 0x01), (0x00, b"\x20\x02", 0x01), (0x0e, b"\x00\x02", 0x01), (0xd3, b"\x00\x02", 0x41)):
+            rc, out, err, before, after_ = sdec(r, stage, clear=True, armed=armed)
+            want_ = bytearray(before)
+            want_[0x6004:0x600f], want_[0x6010:0x6017], want_[0x1401] = bytes(11), bytes(7), 0x01
+            check(rc == 0 and after_ == bytes(want_) and "cleared: 0x6004-0x600e and 0x6010-0x6016 read back as zeros" in out and "weren't zeroed" not in out
+                  and ("disarmed: 0x1401 = 0x01" in out) == (armed == 0x41),
+                  f"--clear after {(r + bytes(7))[:2].hex(' ')} and five zeros at 0x6008-0x600e under stage 0x{stage:02x}: the seven zeroed with the rest,"
+                  " the run's alarm disarmed if it armed one, nothing else", out + err + f"\n{after_[0x6000:0x6020].hex(' ')}")
+        for stage, r, armed in ((0x9b, bytes((0, 0xf8, 0, 5, 0, 0, 0)), 0x41), (0x9b, bytes((0, 0x02, 0, 0, 0, 0, 0x80)), 0x41), (0x9b, b"\x04\xf8", 0x41),
+                                (0x9b, b"\xf8\xf8", 0x41), (0x9b, b"\x01\x02", 0x41), (0x9b, b"\xf0\x45", 0x41), (0x9b, b"\x20\x01", 0x41), (0x9b, b"\x80\xf8", 0x41),
+                                (0x9b, bytes((0xf0, 0xf8, 1)), 0x41), (0xd3, b"\x00\xf8", 0x41), (0x00, b"\x00\xf8", 0x01), (0x0e, b"\x00\xf8", 0x01),
+                                (0xd3, b"\xf0\x02", 0x41), (0xb9, bytes((0x20, 0x02, 0, 0, 0, 0, 1)), 0x01)):
+            rc, out, err, before, after_ = sdec(r, stage, clear=True, armed=armed)
+            want_ = bytearray(before)
+            want_[0x6004:0x6008], want_[0x6010:0x6017], want_[0x1401] = bytes(4), bytes(7), 0x01
+            check(rc == 0 and after_ == bytes(want_) and "cleared: 0x6004-0x6007 and 0x6010-0x6016 read back as zeros" in out and left_alone in out
+                  and after_[0x6008:0x600f] == (r + bytes(7))[:7],
+                  f"--clear with {(r + bytes(7))[:7].hex(' ')} at 0x6008-0x600e under stage 0x{stage:02x}: not what a run of the family leaves (something in"
+                  " the five after the two bytes, a 0x6008 or a 0x6009 that is neither 0 nor its option's, or a byte under another run's"
+                  " stage), so the seven are left as they are, and said to be", out + err + f"\n{after_[0x6000:0x6020].hex(' ')}")
 
 
 LLR_HDR = r"""
@@ -9281,8 +10120,8 @@ def ll_retn_tests(g, src):
     check("\nstatic bool ll_retn;\nmodule_param(ll_retn, bool, 0444);\nMODULE_PARM_DESC(ll_retn, \"With ll_wake=1, never with gate_look=1:" in src
           and in_order_of(params, ["\tif (ll_wake && !last_look) {\n", "\tif (gate_look && !last_look) {\n",
                                    "\tif (ll_retn && (!ll_wake || gate_look)) {\n\t\tpr_err(\"ll_retn=1 needs ll_wake=1 and no gate_look=1 (", "\t\treturn -EINVAL;\n\t}\n"])
-          and 'wake_all ? " wake_all=1" : "", ll_retn ? " ll_retn=1" : "", pre_test ?' in src
-          and src.count("%s", src.index('pr_info("loaded: s2idle ops set through'), src.index("sym, replay, quiet ?")) == 37
+          and 'wake_all ? " wake_all=1" : "", ll_retn ? " ll_retn=1" : "", sep_pg ? " sep_pg=1" : "", pre_test ?' in src
+          and src.count("%s", src.index('pr_info("loaded: s2idle ops set through'), src.index("sym, replay, quiet ?")) == 38
           and " *   pkexec e1-hook/run-floor --m1-ll-retn         (--m1-atc-down's and ll_retn=1:" in src
           and not re.search(r"\bll_retn\s*=[^=]", code_only) and len(re.findall(r"\bll_retn\b", code_only)) == 10,
           "ll_retn=1 is off unless asked for, can't be set after the load, refuses without ll_wake=1 (and so without last_look=1) and with"
@@ -9630,7 +10469,7 @@ def ll_retn_tests(g, src):
           and tool.index("    if og_record(s, r):\n        return og_lines(s, r)\n") < tool.index("    if s in LLR_STAGES:\n        return llr_lines(s, r) + blink\n")
           and tool.count("llr_lines(s, r)") == 2 and "\ndef llr_lines(s, r):\n" in tool and "LLW_STAGES = (LLW_PRE,) + LLW_WD2 + LLR_STAGES" in tool
           and "    pre = LLR_PRE if s in LLR_STAGES else LLW_PRE if s in LLW_STAGES else LL_PRE if s in LL_STAGES else" in tool
-          and "            seven = st in LL_STAGES or og_record(st, b[8:0x0f]) or wa_clear(st, b[8:0x0f])\n" in tool,
+          and "            seven = st in LL_STAGES or og_record(st, b[8:0x0f]) or fam_clear(st, b[8:0x0f])\n" in tool,
           "m1-crumbs reads the form by the stage alone, after the checks that keep another run's record out and before last_look=1's own"
           " reading; the three stages are ll_wake=1's for the alarm, the timer and the light, and last_look=1's for --clear and the marker")
 
@@ -10946,8 +11785,10 @@ def position_tests(g, src):
            "\tif (last_look) {\n\t\tint ret = m1_ll_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
            "\tif (ll_retn) {\n\t\tint ret = m1_llr_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
            "\tif (blink) {\n\t\tint ret = m1_blink_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n"
-           "\tif (wake_all)\n\t\tm1_wa_init();\n\t/* Last: it reads through pages") in src,
-          "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and then m1_wd2_init(), for wd2_bite=1 alone, with only last_look=1's, ll_retn=1's, blink=1's, wake_all=1's and the look's start-up"
+           "\tif (wake_all)\n\t\tm1_wa_init();\n"
+           "\t/* After m1_wd2_init(), which maps the engine's page: m1_sp_init() refuses without it. */\n"
+           "\tif (sep_pg) {\n\t\tint ret = m1_sp_init();\n\n\t\tif (ret)\n\t\t\treturn ret;\n\t}\n\t/* Last: it reads through pages") in src,
+          "m1_init() runs m1_recfg_init() for recfg_bite=1 alone and then m1_wd2_init(), for wd2_bite=1 alone, with only last_look=1's, ll_retn=1's, blink=1's, wake_all=1's, sep_pg=1's and the look's start-up"
           " after it, and returns their refusals (wake_all=1's has none)")
 
     # wd2_bite=1: one write to WD2, its bite, by CPU0 after the release, and only if WD2 showed RESET_EN; the sample in one command with its stage.

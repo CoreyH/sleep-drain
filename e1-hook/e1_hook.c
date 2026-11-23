@@ -105,6 +105,7 @@
  *   pkexec e1-hook/run-floor --m1-a2-pre-blink    (--m1-a2-pre's, atc_down=1 and blink=1: the same)
  *   pkexec e1-hook/run-floor --m1-wake-all        (--m1-a2-pre-blink's and wake_all=1: the same)
  *   pkexec e1-hook/run-floor --m1-ll-retn         (--m1-atc-down's and ll_retn=1: RESEARCH.md, "The desk step of 2026-11-20")
+ *   pkexec e1-hook/run-floor --m1-sep-pg          (--m1-a2-pre-blink's and sep_pg=1: the same, or dark for good if the entry completes)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -411,6 +412,9 @@ MODULE_PARM_DESC(blink, "With gates_mark=1, never with sio_down=1 or sio_steps=1
 static bool wake_all;
 module_param(wake_all, bool, 0444);
 MODULE_PARM_DESC(wake_all, "With gates_mark=1, never with observe=1: in step 7 all seven AP wake-mask words (0x292004008-0x292004020) are written 0xffffffff, where the recipe leaves source 54 (the PMU's interrupt) and word 6's bits 31:13 open; CPU0 then reads the seven back and the seven status words after them, and after step 8's record sends one byte to the PMU's 0x6008 (last_look.h). No wake source is left open: a Mac whose entry completed wakes for no key and no lid, and comes back only by holding the power button");
+static bool sep_pg;
+module_param(sep_pg, bool, 0444);
+MODULE_PARM_DESC(sep_pg, "With gates_mark=1, never with observe=1: in step 7, after the AP wake-mask words, CPU0 clears bit 2 of the PMGR control word 0x28e0cc200, the bit that makes the S2R sequencer wait for the SEP to power-gate (Ante042's T6000_PMGR_SEP_PG and PMGR_WAIT_SEP_PG; set at boot): one write, made only if the bit reads set, of the word as found less that bit. CPU0 then reads the word again, the SEP's power word (0x28e580c00) and 0x2922c0044, and after step 8's record sends one byte to the PMU's 0x6009 (last_look.h). A PMGR register, not a write to the SEP; a restart undoes it. A Mac whose entry completed isn't known to wake by itself, and comes back by holding the power button");
 static bool gate_look;
 module_param(gate_look, bool, 0444);
 MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
@@ -1003,8 +1007,8 @@ static void e1_after_slpa(void)
  * (0x50 or 0x30), 0x6004-0x6007 and 0x6010-0x6016, the spare legacy-scratch
  * bytes DeepIdle uses (Corey's OK of 2026-11-07, PLAN.md); reads only there,
  * of the RTC and of the alarm's control (0x1401, every m1 load's check that
- * no alarm is armed). alarm=1 adds its own, below, and last_look=1, observe=1
- * and wake_all=1 their records at 0x6008-0x600e (Corey's OK of 2026-11-16 for
+ * no alarm is armed). alarm=1 adds its own, below, and last_look=1, observe=1,
+ * wake_all=1 and sep_pg=1 their records at 0x6008-0x600e (Corey's OK of 2026-11-16 for
  * those bytes); since wake_all=1, K1 and the undo write seven zeros there in
  * every run, and m1_pmu_ok() lets that one write through in any. Every way
  * back from the
@@ -1670,8 +1674,8 @@ static void e1_after_slpa(void)
  * the SoC 70 s after it. Nothing else changes up to step 10. There
  * m1_deep_wfi() calls m1_ll_ret() each time CPU0's WFI returns: at the first
  * return it sends seven bytes to the PMU's 0x6008-0x600e in three commands
- * (m1_pmu_ok() lets those bytes through with last_look=1, and with observe=1
- * or wake_all=1 for their own records there, and K1 and
+ * (m1_pmu_ok() lets those bytes through with last_look=1, and with observe=1,
+ * wake_all=1 or sep_pg=1 for their own records there, and K1 and
  * the undo zero them), at the second and the hundredth the first byte again.
  * Reads only, but for CPU0's timer control, written 0. ll_wake=1 (run-floor
  * --m1-last-look-wake; with last_look=1) adds, in step 8, FPWM0's power word
@@ -1738,6 +1742,42 @@ static void e1_after_slpa(void)
  * awake. With every source masked a Mac whose entry completed wakes for no
  * key and no lid, the PMU's alarm included: it comes back only by holding
  * the power button.
+ *
+ * sep_pg=1 (run-floor --m1-sep-pg; with gates_mark=1, never with observe=1;
+ * with wake_all=1 or without it) adds one write to step 7 and changes nothing
+ * else: bit 2 of the PMGR control word 0x28e0cc200 is cleared. The word and
+ * the bit are Ante042's (drivers/soc/apple/s2r.c in Ante042/linux, branch
+ * t600x-s2r-reference, GPL-2.0-only OR MIT, read on 2026-11-23 with Corey's
+ * OK; credited): T6000_PMGR_SEP_PG and PMGR_WAIT_SEP_PG, the bit that makes
+ * the S2R sequencer wait for the SEP to power-gate. It is set at boot, and
+ * macOS clears it only for its wait-sep-pg=0 boot-arg. Their J314s, the same
+ * model, completes the entry with a driver that clears it where the wake
+ * mask is written, on the boot CPU alone with IRQs off; every run here has
+ * ended with the engine stuck before its power-downs, and nothing here puts
+ * the SEP to sleep (awake on 2026-11-23, with apple_sep loaded, the SEP's
+ * power word read target f, actual 0). Right after the wake masks, nub-spmi0's enables and
+ * wake_all=1's reads, still in step 7, m1_sp_clear() reads the word, writes
+ * it back with bit 2 clear if the bit was set (one writel(), the module's one
+ * new write site: a PMGR register, not a write to the SEP, and a restart
+ * undoes it; Corey's OK of 2026-11-23), reads it again, and reads the SEP's
+ * power word (0x28e580c00) and 0x2922c0044: reads this state hasn't seen
+ * (its comment), with SError unmasked. Their byte (last_look.h has it) goes
+ * to the PMU's 0x6009 in step 8, after that step's record at 0x6010 and
+ * after wake_all=1's byte, for the reason given above. With sep_pg=1
+ * m1_pmu_ok() lets one byte through at 0x6009, K1's mark or the byte
+ * (sp_ok()), and K1 leaves 0x6009 as 0x02 until that byte, after the seven
+ * zeros of every run. No stage of its own. At the load m1_sp_init() refuses
+ * if a driver is bound to the SEP's device (apple_sep writes the enclave's
+ * key store, which a safe boot's read-only root doesn't cover: the run is
+ * made in a safe boot started without it, sleep-drain-safe boot --no-sep),
+ * checks the word against the never-write list, refuses without SIO's power
+ * page or the engine's, maps the word's page and logs the control word, the
+ * SEP's power word and 0x2922c0044 awake; a word whose bit 2 reads clear there is
+ * said, and the load goes on (step 7 then writes nothing, unless the bit is
+ * set by then). The keyboard's light is the witness, as in
+ * --m1-a2-pre-blink. A Mac whose entry completed isn't known to come back by
+ * itself (nub-spmi0's enables are zeroed, every AP wake source but the PMU's
+ * is masked, and the RTC alarm is an hour out): hold the power button.
  *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
@@ -2060,6 +2100,10 @@ static void __iomem *m1_cpu_start, *m1_ps, *m1_aic, *m1_aic_event, *m1_aon, *m1_
 static void __iomem *m1_soc, *m1_sio, *m1_wdx, *m1_cpm;
 /* position=1: the page B2 opens on, read only. */
 static void __iomem *m1_pos;
+/* sep_pg=1: what the live device tree calls the SEP's node; the load refuses while a driver is bound to it. */
+#define M1_SEP_COMPATIBLE	"apple,sep"
+/* sep_pg=1: the PMGR control word 0x28e0cc200 itself, in a page of its own mapping: read, and written once, by m1_sp_clear(). */
+static void __iomem *m1_sp;
 /* look=1 and gates_mark=1, which never load together: the two pages with the six gate-status words (look.h), read only. */
 static void __iomem *m1_look_ga, *m1_look_gb;
 /* The pages of the 22 words B2 writes first: look=1 reads them, sio_steps=1 writes them in step 8. */
@@ -2232,6 +2276,9 @@ static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n
 	/* wake_all=1: 0x6008 by itself, and there only K1's mark or the byte, bits 7:6 set and bit 3 clear (wa_ok(); last_look.h). */
 	if (wake_all && addr == LL_AT && one && wa_ok(b[0]))
 		return true;
+	/* sep_pg=1: 0x6009 by itself, and there only K1's mark or the byte, bit 7 set (sp_ok(); last_look.h). */
+	if (sep_pg && addr == LL_AT + 1 && one && sp_ok(b[0]))
+		return true;
 	/*
 	 * Any run: seven zeros at 0x6008-0x600e, K1's and the undo's, and nothing else there: a record or a mark that an
 	 * earlier run left would read as this run's under the stages the two share (Pullfrog on #127).
@@ -2293,6 +2340,14 @@ static int m1_pmu_start(void)
 		if (!ret)
 			ret = m1_kwrite(LL_AT, &v, 1);
 	}
+	/*
+	 * sep_pg=1: its mark at 0x6009, over the zeros one of the two clauses above has written (it loads with neither
+	 * last_look=1 nor observe=1): the byte, sent after step 8's record, writes over it.
+	 */
+	if (!ret && sep_pg) {
+		v = SP_ARMED;
+		ret = m1_kwrite(LL_AT + 1, &v, 1);
+	}
 	if (!ret && last_look)
 		ret = m1_kwrite(LL_AT, zero, LL_N);
 	if (!ret && gate_look) {
@@ -2351,7 +2406,10 @@ static void m1_pmu_undo(void)
 	ret = ret ?: err;
 	err = m1_kwrite(0x6010, zero, 7);
 	ret = ret ?: err;
-	/* 0x6008-0x600e in every run, as K1: this clause for the runs with none of their own below. */
+	/*
+	 * 0x6008-0x600e in every run, as K1: this clause for the runs with none of their own below. sep_pg=1 has none: it
+	 * loads with neither last_look=1 nor observe=1, so this clause or wake_all=1's zeroes its byte with the rest.
+	 */
 	if (!wake_all && !last_look && !observe) {
 		err = m1_kwrite(LL_AT, zero, LL_N);
 		ret = ret ?: err;
@@ -3016,6 +3074,39 @@ static u8 m1_wa_read(void)
 			pending++;
 	}
 	return wa_byte(named, unnamed, pending);
+}
+
+/*
+ * sep_pg=1, step 7, CPU0 alone, IRQs off, right after the AP wake-mask words,
+ * nub-spmi0's enables and wake_all=1's reads (last_look.h has the byte, where
+ * the word and its bit come from, and why): the PMGR control word read as
+ * found; written back with bit 2 clear, the bit that makes the S2R sequencer
+ * wait for the SEP to power-gate (Ante042's T6000_PMGR_SEP_PG and
+ * PMGR_WAIT_SEP_PG), only if the bit is set as found; read again; then the
+ * SEP's power word and 0x2922c0044. It returns their byte, which step 8 sends
+ * after its own record. One write, the writel() below, to the one address, of
+ * the word as found less bit 2: a PMGR register, not a write to the SEP, and
+ * a restart undoes it (Corey's OK of 2026-11-23). Two of the reads CPU0 has
+ * not made in this state before: the control word and the SEP's power word
+ * have been read awake and nowhere else. 0x2922c0044 CPU0 has read awake, at
+ * the loads, and after a commit (runs 6 to 10, last_look=1's looks), not here
+ * in step 7 either. SError is still unmasked: a read that faulted panics
+ * here, and leaves step 7's stage (0x39: 0xb9 in this recipe's record), K1's
+ * 0x02 at 0x6009 and a restart about 10 s later, if the panic's restart
+ * works.
+ */
+static u8 m1_sp_clear(void)
+{
+	u32 found, back, sep, g44;
+
+	found = readl(m1_sp);
+	if (found & SP_WAIT)
+		writel(found & ~SP_WAIT, m1_sp);
+	/* Each read into its own variable, in this order: an argument list has none. */
+	back = readl(m1_sp);
+	sep = readl(m1_sio + SP_SEP_PS);
+	g44 = readl(m1_pos + M1_POS_GATE44);
+	return sp_byte(found, back, sep, g44);
 }
 
 /*
@@ -4286,6 +4377,7 @@ static void __noreturn m1_after_slpa(void)
 	void __iomem *commit = post_map[ARRAY_SIZE(e1_post_slpa) - 1];
 	u8 parked = 0, left = 0, down = 0, held = 0, isrs = 0, flags = BIT(7), qto = 0, b[7], rtc[6] = {}, pmpb = 0, wd1 = 0;
 	u8 wa = 0;	/* wake_all=1: the byte m1_wa_read() makes in step 7, sent in step 8 */
+	u8 sp = 0;	/* sep_pg=1: the byte m1_sp_clear() makes in step 7, sent in step 8 */
 	u32 fab_pre = 0;
 	bool fab_set = false, fab_end = false;
 	struct m1_core *o = &m1_core[7];
@@ -4444,6 +4536,12 @@ static void __noreturn m1_after_slpa(void)
 	/* wake_all=1: the seven read back and the seven status words after them, into the byte step 8 sends (last_look.h). */
 	if (wake_all)
 		wa = m1_wa_read();
+	/*
+	 * sep_pg=1: bit 2 of the PMGR control word 0x28e0cc200 cleared if it is set, where Ante042's driver clears it; the word read
+	 * again, the SEP's power word and 0x2922c0044, into the byte step 8 sends (last_look.h).
+	 */
+	if (sep_pg)
+		sp = m1_sp_clear();
 
 	/* 8 */
 	m1_quiet_core();
@@ -4462,6 +4560,9 @@ static void __noreturn m1_after_slpa(void)
 	 */
 	if (wake_all)
 		m1_crumb(LL_AT, &wa, 1);
+	/* sep_pg=1: m1_sp_clear()'s byte to 0x6009, here for the same reason, and after wake_all=1's if both are set. */
+	if (sep_pg)
+		m1_crumb(LL_AT + 1, &sp, 1);
 	/* wd1_mark=1: does the marker stand? The last look before the commit: nothing here touches WD1 after it. */
 	if (wd1_mark)
 		wd1 = m1_wd1_bits_at(readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_BITE), readl(m1_wdt + WD1_COUNT),
@@ -6182,6 +6283,84 @@ static void __init m1_wa_init(void)
 		mask[0], mask[1], mask[2], mask[3], mask[4], mask[5], mask[6], st[0], st[1], st[2], st[3], st[4], st[5], st[6], LL_AT);
 }
 
+/*
+ * sep_pg=1's word is Ante042's T6000_PMGR_SEP_PG and its bit their PMGR_WAIT_SEP_PG; the SEP's power word is 0x28e580c00, inside
+ * SIO's power page as it is mapped; the gate word is 0x2922c0044; the byte's mark, K1's mark and its fields are apart.
+ */
+static_assert(SP_CTL == 0x28e0cc200ULL && SP_WAIT == BIT(2) && (SP_CTL & ~PAGE_MASK) + 4 <= PAGE_SIZE &&
+	      M1_PS_SIO_PAGE + SP_SEP_PS == 0x28e580c00ULL && SP_SEP_PS + 4 <= PAGE_SIZE && M1_POS_PAGE + M1_POS_GATE44 == 0x2922c0044ULL &&
+	      SP_ARMED == 0x02 && SP_MARK == 0x80 && SP_FOUND == 0x40 && SP_CLEAR == 0x20 && SP_SEP_OFF == 0x10 && LL_AT + 1 == 0x6009);
+
+/*
+ * sep_pg=1 at load: whether a driver is bound to the SEP's device, any node the live tree marks "apple,sep". On this Mac
+ * apple_sep runs with xART writes enabled: it writes the enclave's key store, which macOS shares and a safe boot's read-only
+ * root doesn't cover. A run that clears the PMGR's wait for the SEP's power gate and lets the SoC go down around a live
+ * enclave isn't made with that driver present: it is made in a safe boot started with sleep-drain-safe boot --no-sep, and
+ * run-floor refuses apple_sep as a loaded module too. It looks once, at the load: a driver bound later isn't seen. Reads only.
+ */
+static bool __init m1_sp_sep_bound(void)
+{
+	struct device_node *np;
+	bool bound = false;
+
+	for_each_compatible_node(np, NULL, M1_SEP_COMPATIBLE) {
+		struct platform_device *pdev = of_find_device_by_node(np);
+
+		if (!pdev)
+			continue;
+		device_lock(&pdev->dev);
+		if (pdev->dev.driver)
+			bound = true;
+		device_unlock(&pdev->dev);
+		put_device(&pdev->dev);
+	}
+	return bound;
+}
+
+/*
+ * sep_pg=1 at load, after m1_wd2_init(), which maps the engine's page in every run this loads with, as pmgr_late=1 maps
+ * SIO's power page: no driver is bound to the SEP's device (m1_sp_sep_bound()); the control word isn't on the never-write
+ * list; both of those pages are mapped (a refusal, should the family ever load without them); the word's own page is mapped here (m1_unmap() unmaps it, at the exit and after any
+ * later refusal of the load); and the control word, the SEP's power word and 0x2922c0044 are logged as they read awake, with
+ * what step 7 will do. A word whose bit 2 reads clear already is said and the load goes on: step 7 looks again, and
+ * writes only if the bit is set then. Reads only.
+ */
+static int __init m1_sp_init(void)
+{
+	u32 ctl, sep, g44;
+
+	if (m1_sp_sep_bound()) {
+		pr_err("m1: sep_pg: a driver is bound to the SEP's device (%s): this run clears the PMGR's wait for the SEP's power gate, and is only made in a safe boot without the enclave's driver: pkexec sleep-drain-safe boot --no-sep; refusing\n",
+		       M1_SEP_COMPATIBLE);
+		return -EBUSY;
+	}
+	if (m1_never(SP_CTL, 1)) {
+		pr_err("m1: sep_pg: 0x%llx is on the never-write list; refusing\n", SP_CTL);
+		return -EPERM;
+	}
+	if (!m1_sio || !m1_pos) {
+		pr_err("m1: sep_pg: SIO's power page or the engine's page isn't mapped; refusing\n");
+		return -ENODEV;
+	}
+	m1_sp = ioremap_np(SP_CTL & PAGE_MASK, PAGE_SIZE);
+	if (!m1_sp) {
+		pr_err("m1: sep_pg: the control word's page didn't map; refusing\n");
+		return -ENOMEM;
+	}
+	m1_sp += SP_CTL & ~PAGE_MASK;
+	/* Each read into its own variable, in this order: an argument list has none. */
+	ctl = readl(m1_sp);
+	sep = readl(m1_sio + SP_SEP_PS);
+	g44 = readl(m1_pos + M1_POS_GATE44);
+	if (ctl & SP_WAIT)
+		pr_info("m1: sep_pg: awake: the PMGR control word 0x%llx %08x, bit 2 (wait for the SEP's power gate) set; the SEP's power word 0x%llx %08x; 0x%llx %08x. Step 7 writes the control word back with bit 2 clear if it still reads set, reads all three, and step 8 sends one byte to the PMU's 0x%x\n",
+			SP_CTL, ctl, M1_PS_SIO_PAGE + SP_SEP_PS, sep, M1_POS_PAGE + M1_POS_GATE44, g44, LL_AT + 1);
+	else
+		pr_info("m1: sep_pg: awake: the PMGR control word 0x%llx %08x, bit 2 (wait for the SEP's power gate) ALREADY CLEAR; the SEP's power word 0x%llx %08x; 0x%llx %08x. If it still reads clear in step 7 nothing is written and this run changes nothing: the byte step 8 sends to the PMU's 0x%x will say the bit was found clear\n",
+			SP_CTL, ctl, M1_PS_SIO_PAGE + SP_SEP_PS, sep, M1_POS_PAGE + M1_POS_GATE44, g44, LL_AT + 1);
+	return 0;
+}
+
 /* fabric_up=1 at load: the word off the never-write list and as it is awake, 0x333, so that 3 is its awake value. Reads only. */
 static int __init m1_fab_init(void)
 {
@@ -6591,6 +6770,13 @@ static int __init m1_init(void)
 	}
 	if (wake_all)
 		m1_wa_init();
+	/* After m1_wd2_init(), which maps the engine's page: m1_sp_init() refuses without it. */
+	if (sep_pg) {
+		int ret = m1_sp_init();
+
+		if (ret)
+			return ret;
+	}
 	/* Last: it reads through pages the initializers above map, the engine's among them (m1_wd2_init()'s here). */
 	if (look) {
 		int ret = m1_look_init();
@@ -6629,6 +6815,8 @@ static void m1_unmap(void)
 		iounmap(m1_cpm);
 	if (m1_pos)
 		iounmap(m1_pos);
+	if (m1_sp)
+		iounmap((void __iomem *)((unsigned long)m1_sp & PAGE_MASK));
 	if (m1_ll_pwm)
 		iounmap(m1_ll_pwm);
 	if (m1_recfg)
@@ -7122,6 +7310,10 @@ static int __init e1_check_params(void)
 		pr_err("wake_all=1 needs gates_mark=1 and no observe=1 (it's that family's run with all seven AP wake-mask words written 0xffffffff in step 7 and one byte at 0x6008; in an observer's run that byte is CPU7's)\n");
 		return -EINVAL;
 	}
+	if (sep_pg && (!gates_mark || observe)) {
+		pr_err("sep_pg=1 needs gates_mark=1 and no observe=1 (it's that family's run with bit 2 of the PMGR control word 0x28e0cc200 cleared in step 7 and one byte at 0x6009; in an observer's run that byte is CPU7's)\n");
+		return -EINVAL;
+	}
 	if (gate_look && !last_look) {
 		pr_err("gate_look=1 needs last_look=1 (it's that run with the return's reads made once before CPU0's last WFI, 1 s after the commit)\n");
 		return -EINVAL;
@@ -7303,7 +7495,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "", obs_gate ? " obs_gate=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -7311,7 +7503,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", atc_down ? " atc_down=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", blink ? " blink=1" : "", wake_all ? " wake_all=1" : "", ll_retn ? " ll_retn=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", blink ? " blink=1" : "", wake_all ? " wake_all=1" : "", ll_retn ? " ll_retn=1" : "", sep_pg ? " sep_pg=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
 		gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;
