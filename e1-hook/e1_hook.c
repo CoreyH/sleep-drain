@@ -106,6 +106,7 @@
  *   pkexec e1-hook/run-floor --m1-wake-all        (--m1-a2-pre-blink's and wake_all=1: the same)
  *   pkexec e1-hook/run-floor --m1-ll-retn         (--m1-atc-down's and ll_retn=1: RESEARCH.md, "The desk step of 2026-11-20")
  *   pkexec e1-hook/run-floor --m1-sep-pg          (--m1-a2-pre-blink's and sep_pg=1: the same, or dark for good if the entry completes)
+ *   pkexec e1-hook/run-floor --m1-disp-hs         (--m1-sep-pg's and disp_hs=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -415,6 +416,9 @@ MODULE_PARM_DESC(wake_all, "With gates_mark=1, never with observe=1: in step 7 a
 static bool sep_pg;
 module_param(sep_pg, bool, 0444);
 MODULE_PARM_DESC(sep_pg, "With gates_mark=1, never with observe=1: in step 7, after the AP wake-mask words, CPU0 clears bit 2 of the PMGR control word 0x28e0cc200, the bit that makes the S2R sequencer wait for the SEP to power-gate (Ante042's T6000_PMGR_SEP_PG and PMGR_WAIT_SEP_PG; set at boot): one write, made only if the bit reads set, of the word as found less that bit. CPU0 then reads the word again, the SEP's power word (0x28e580c00) and 0x2922c0044, and after step 8's record sends one byte to the PMU's 0x6009 (last_look.h). A PMGR register, not a write to the SEP; a restart undoes it. A Mac whose entry completed isn't known to wake by itself, and comes back by holding the power button");
+static bool disp_hs;
+module_param(disp_hs, bool, 0444);
+MODULE_PARM_DESC(disp_hs, "With disp_off=1 and gates_mark=1, never with observe=1: in K3b, for each DCP that stopped, the set-up table and the fabric handshake Ante042's driver makes on the display's fabric block (0x38c000000 for disp0, 0x28a000000 for dispext0) around the power-down of its CPU0 word: the table's 65 writes if the FE power word reads powered, then, after the CPU0 word, block + 0x8014 := 1 and block + 0x82bc := 1, 2, 4 if it still does. 0x2922c0044 is read before and after each, and two bytes go to the PMU's 0x600a-0x600b (last_look.h). A write to a block that has lost its power faults and panics: the FE reads are the guard");
 static bool gate_look;
 module_param(gate_look, bool, 0444);
 MODULE_PARM_DESC(gate_look, "With last_look=1: in step 10, 1 s after the commit's last write and before CPU0's last WFI, CPU0 reads the engine's two gate words, PHASE, the handshake words and B2's power words, as a return of that WFI would, and sends them to the PMU's 0x6008-0x600e with bit 3 of the first byte; a WFI that returns after that sends the first byte alone. Reads only");
@@ -1008,7 +1012,7 @@ static void e1_after_slpa(void)
  * bytes DeepIdle uses (Corey's OK of 2026-11-07, PLAN.md); reads only there,
  * of the RTC and of the alarm's control (0x1401, every m1 load's check that
  * no alarm is armed). alarm=1 adds its own, below, and last_look=1, observe=1,
- * wake_all=1 and sep_pg=1 their records at 0x6008-0x600e (Corey's OK of 2026-11-16 for
+ * wake_all=1, sep_pg=1 and disp_hs=1 their records at 0x6008-0x600e (Corey's OK of 2026-11-16 for
  * those bytes); since wake_all=1, K1 and the undo write seven zeros there in
  * every run, and m1_pmu_ok() lets that one write through in any. Every way
  * back from the
@@ -1675,7 +1679,7 @@ static void e1_after_slpa(void)
  * m1_deep_wfi() calls m1_ll_ret() each time CPU0's WFI returns: at the first
  * return it sends seven bytes to the PMU's 0x6008-0x600e in three commands
  * (m1_pmu_ok() lets those bytes through with last_look=1, and with observe=1,
- * wake_all=1 or sep_pg=1 for their own records there, and K1 and
+ * wake_all=1, sep_pg=1 or disp_hs=1 for their own records there, and K1 and
  * the undo zero them), at the second and the hundredth the first byte again.
  * Reads only, but for CPU0's timer control, written 0. ll_wake=1 (run-floor
  * --m1-last-look-wake; with last_look=1) adds, in step 8, FPWM0's power word
@@ -1778,6 +1782,39 @@ static void e1_after_slpa(void)
  * --m1-a2-pre-blink. A Mac whose entry completed isn't known to come back by
  * itself (nub-spmi0's enables are zeroed, every AP wake source but the PMU's
  * is masked, and the RTC alarm is an hour out): hold the power button.
+ *
+ * disp_hs=1 (run-floor --m1-disp-hs; with disp_off=1 and gates_mark=1, never
+ * with observe=1; with wake_all=1 and sep_pg=1 or without them) changes K3b,
+ * the display step, and nothing else. The reference driver (Ante042/linux,
+ * branch t600x-s2r-reference, drivers/soc/apple/s2r.c, GPL-2.0-only OR MIT;
+ * credited) takes each display block down as macOS does: a set-up table
+ * written to the display's fabric block, the CPU0 power word down, a
+ * handshake on the block (+0x8014 := 1, +0x82bc := 1, 2, 4), the FE power word
+ * down; and it says that dispext0's handshake sets bit 2 of 0x2922c0044, which
+ * the PMGR's S2R engine waits for: B2's first poll, which every run here has
+ * ended behind. K3b lowers the two words with no handshake. With disp_hs=1,
+ * for each DCP that stopped at prepare, disp0's first: if its FE power word
+ * reads actual state non-zero, m1_dh_setup() writes the reference's table
+ * (disp_init_38c[] to 0x38c000000 for disp0, disp_init_28a[] to 0x28a000000
+ * for dispext0: 65 writes each, copied entry for entry); the CPU0 word goes
+ * down as in every run; if it read off and the FE word still reads actual
+ * state non-zero, m1_dh_shake() makes the four writes of the handshake; the FE
+ * word goes down as in every run. The FE reads are the reference's guard: "The
+ * fabric block is only there while its fe is powered: a write to it otherwise
+ * is an SError", which here panics the safe boot. Neither block is ever read.
+ * 0x2922c0044 is read before the first DCP and after each one's place in the
+ * loop, and two bytes (last_look.h has them) go to the PMU's 0x600a-0x600b in
+ * one command through the kernel's path, after the loop and before K3b's own
+ * stage. With disp_hs=1 m1_pmu_ok() lets through at 0x600a K1's mark alone or
+ * two bytes whose first passes dh_ok(), and K1 leaves 0x600a as 0x01 until
+ * they land, after the seven zeros and the other options' marks. At the load
+ * m1_dh_init() checks that the two blocks are paired with the DCPs and power
+ * words m1_dcp_info[] names, every address the step writes against the
+ * never-write list and the span it maps, refuses without the engine's page
+ * or the FE words' mappings, maps the two blocks and logs whether each FE
+ * word reads powered. What the reference does and this doesn't: it drops each
+ * block's request at the PMP before the CPU0 word (its PTD words), writes the
+ * power words macOS's values, and takes dispext1 and the GPU's port down too.
  *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
@@ -2142,6 +2179,71 @@ static struct apple_rtkit *m1_dcp_rtk[ARRAY_SIZE(m1_dcp_info)];
 static void __iomem *m1_dcp_asc[ARRAY_SIZE(m1_dcp_info)];
 static void __iomem *m1_dcp_ps[ARRAY_SIZE(m1_dcp_info)][2];	/* their pages; the words are at each address's page offset */
 static u8 m1_disp_bits;		/* disp_off=1: K3b's five bits, for byte B */
+/*
+ * disp_hs=1: the set-up macOS writes to a display's fabric block when it powers the block up, which Linux leaves at its
+ * reset values. Copied entry for entry, offset and value, from Ante042/linux, branch t600x-s2r-reference,
+ * drivers/soc/apple/s2r.c (GPL-2.0-only OR MIT): disp_init_38c[] for disp0's block at 0x38c000000 and disp_init_28a[] for
+ * dispext0's at 0x28a000000, there "hv trace 1/11, macOS 13.7.8 boot". 65 writes each; the order is the trace's.
+ */
+static const u32 disp_init_38c[][2] = {
+	{ 0x00000, 0x11 }, { 0x00010, 0x610000 }, { 0x00014, 0x8 }, { 0x00018, 0x8 },
+	{ 0x0001c, 0x18 }, { 0x00020, 0x18 }, { 0x00024, 0x1 }, { 0x00028, 0x1 },
+	{ 0x0002c, 0x18 }, { 0x00030, 0x18 }, { 0x00034, 0x18 }, { 0x00400, 0x40a10001 },
+	{ 0x00600, 0xaab }, { 0x00700, 0x1ffffff }, { 0x008a8, 0x2000005 }, { 0x008ac, 0x14d004e },
+	{ 0x008b0, 0x14d004e }, { 0x008b4, 0x14d004e }, { 0x008b8, 0x14d004e }, { 0x008bc, 0x14d004e },
+	{ 0x008c0, 0x14d004e }, { 0x008c4, 0x14d004e }, { 0x008c8, 0x14d004e }, { 0x00410, 0x1100 },
+	{ 0x00420, 0x1100 }, { 0x00430, 0x1100 }, { 0x08000, 0x9 }, { 0x00a20, 0x2 },
+	{ 0x08008, 0x7 }, { 0x08014, 0x1 }, { 0x08018, 0x1 }, { 0x00920, 0x3fff0001 },
+	{ 0x08208, 0x8 }, { 0x08280, 0x20 }, { 0x08288, 0x3 }, { 0x0828c, 0xc },
+	{ 0x08290, 0x18 }, { 0x08294, 0x30 }, { 0x08298, 0x78 }, { 0x0829c, 0xf0 },
+	{ 0x082b8, 0x1 }, { 0x082bc, 0x1 }, { 0x082c0, 0x1 }, { 0x00860, 0x1 },
+	{ 0x0820c, 0x5 }, { 0x08284, 0x20 }, { 0x082a0, 0x3 }, { 0x082a4, 0xc },
+	{ 0x082a8, 0x18 }, { 0x082ac, 0x30 }, { 0x082b0, 0x78 }, { 0x082b4, 0xf0 },
+	{ 0x082b8, 0x3 }, { 0x082bc, 0x2 }, { 0x082c0, 0x3 }, { 0x08210, 0x0 },
+	{ 0x08408, 0x3 }, { 0x08418, 0x3 }, { 0x0841c, 0x0 }, { 0x08420, 0xffffffff },
+	{ 0x08424, 0x0 }, { 0x08428, 0xfff }, { 0x082b8, 0x7 }, { 0x082bc, 0x4 },
+	{ 0x082c0, 0x7 },
+};
+static const u32 disp_init_28a[][2] = {
+	{ 0x00000, 0x11 }, { 0x00010, 0x6d0000 }, { 0x00014, 0x9 }, { 0x00018, 0x9 },
+	{ 0x0001c, 0x1b }, { 0x00020, 0x1b }, { 0x00024, 0x1 }, { 0x00028, 0x1 },
+	{ 0x0002c, 0x1b }, { 0x00030, 0x1b }, { 0x00034, 0x1b }, { 0x00400, 0x40a10001 },
+	{ 0x00600, 0xaab }, { 0x00700, 0x1ffffff }, { 0x008a8, 0x2000005 }, { 0x008ac, 0x14d004e },
+	{ 0x008b0, 0x14d004e }, { 0x008b4, 0x14d004e }, { 0x008b8, 0x14d004e }, { 0x008bc, 0x14d004e },
+	{ 0x008c0, 0x14d004e }, { 0x008c4, 0x14d004e }, { 0x008c8, 0x14d004e }, { 0x00410, 0x1100 },
+	{ 0x00420, 0x1100 }, { 0x00430, 0x1100 }, { 0x08000, 0x9 }, { 0x00a20, 0x2 },
+	{ 0x08008, 0x7 }, { 0x08014, 0x1 }, { 0x08018, 0x1 }, { 0x00860, 0x1 },
+	{ 0x08208, 0x4 }, { 0x08280, 0x20 }, { 0x08288, 0x3 }, { 0x0828c, 0xc },
+	{ 0x08290, 0x18 }, { 0x08294, 0x30 }, { 0x08298, 0x78 }, { 0x0829c, 0xf0 },
+	{ 0x082b8, 0x1 }, { 0x082bc, 0x1 }, { 0x082c0, 0x1 }, { 0x00800, 0x1 },
+	{ 0x0820c, 0x3 }, { 0x08284, 0x20 }, { 0x082a0, 0x3 }, { 0x082a4, 0xc },
+	{ 0x082a8, 0x18 }, { 0x082ac, 0x30 }, { 0x082b0, 0x78 }, { 0x082b4, 0xf0 },
+	{ 0x082b8, 0x3 }, { 0x082bc, 0x2 }, { 0x082c0, 0x3 }, { 0x08210, 0x0 },
+	{ 0x08408, 0x3 }, { 0x08418, 0x3 }, { 0x0841c, 0x0 }, { 0x08420, 0xffffffff },
+	{ 0x08424, 0x0 }, { 0x08428, 0xfff }, { 0x082b8, 0x7 }, { 0x082bc, 0x4 },
+	{ 0x082c0, 0x7 },
+};
+static_assert(ARRAY_SIZE(disp_init_38c) == 65 && ARRAY_SIZE(disp_init_28a) == 65);
+/* What is mapped of each block, as the reference maps it: the tables' last word is at 0x8428 and the handshake's at 0x82bc. */
+#define DH_SPAN			0xc000UL
+static_assert(DH_HS_A == 0x8014 && DH_HS_B == 0x82bc && DH_HS_A + 4 <= DH_SPAN && DH_HS_B + 4 <= DH_SPAN && !(DH_SPAN & ~PAGE_MASK));
+/*
+ * disp_hs=1: each DCP's fabric block and its table, in m1_dcp_info[]'s order, with the DCP's ASC and its two power words
+ * as the reference has them (s2r_disp_ps[]), which m1_dh_init() holds against m1_dcp_info[]'s own.
+ */
+static const struct m1_dh {
+	const char *name;
+	u64 blk;
+	const u32 (*init)[2];
+	unsigned int n;
+	u64 asc, cpu0, fe;
+} m1_dh[ARRAY_SIZE(m1_dcp_info)] = {
+	{ "disp0", 0x38c000000ULL, disp_init_38c, ARRAY_SIZE(disp_init_38c), 0x38bc00000ULL, 0x28e580350ULL, 0x28e580328ULL },	/* dcp@38bc00000, the internal */
+	{ "dispext0", 0x28a000000ULL, disp_init_28a, ARRAY_SIZE(disp_init_28a), 0x289c00000ULL, 0x28e080280ULL, 0x28e080258ULL },	/* dcp@289c00000, the external */
+};
+#define M1_DH_INT		0	/* disp0, the first in K3b's loop */
+#define M1_DH_EXT		1	/* dispext0 */
+static void __iomem *m1_dh_blk[ARRAY_SIZE(m1_dcp_info)];	/* the two blocks, DH_SPAN each: written by K3b, never read */
 /* smc_idle=1: the SMC's RTKit (through its mailbox's device, referenced), and whether it acked K5's notice. */
 #define M1_SMC_MBOX_NODE	"/soc/mbox@290408000"
 /* RTKit's management endpoint and SetAPPower (drivers/soc/apple/rtkit.c), for AP power alone. */
@@ -2279,6 +2381,9 @@ static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n
 	/* sep_pg=1: 0x6009 by itself, and there only K1's mark or the byte, bit 7 set (sp_ok(); last_look.h). */
 	if (sep_pg && addr == LL_AT + 1 && one && sp_ok(b[0]))
 		return true;
+	/* disp_hs=1: at 0x600a, K1's mark by itself, or K3b's two bytes, the first with bit 7 set and bit 4 clear (dh_ok(); last_look.h). */
+	if (disp_hs && addr == LL_AT + 2 && ((one && b[0] == DH_ARMED) || (n == 2 && dh_ok(b[0]))))
+		return true;
 	/*
 	 * Any run: seven zeros at 0x6008-0x600e, K1's and the undo's, and nothing else there: a record or a mark that an
 	 * earlier run left would read as this run's under the stages the two share (Pullfrog on #127).
@@ -2348,6 +2453,11 @@ static int m1_pmu_start(void)
 		v = SP_ARMED;
 		ret = m1_kwrite(LL_AT + 1, &v, 1);
 	}
+	/* disp_hs=1: its mark at 0x600a, over the same zeros: K3b's two bytes write over it. */
+	if (!ret && disp_hs) {
+		v = DH_ARMED;
+		ret = m1_kwrite(LL_AT + 2, &v, 1);
+	}
 	if (!ret && last_look)
 		ret = m1_kwrite(LL_AT, zero, LL_N);
 	if (!ret && gate_look) {
@@ -2407,8 +2517,8 @@ static void m1_pmu_undo(void)
 	err = m1_kwrite(0x6010, zero, 7);
 	ret = ret ?: err;
 	/*
-	 * 0x6008-0x600e in every run, as K1: this clause for the runs with none of their own below. sep_pg=1 has none: it
-	 * loads with neither last_look=1 nor observe=1, so this clause or wake_all=1's zeroes its byte with the rest.
+	 * 0x6008-0x600e in every run, as K1: this clause for the runs with none of their own below. sep_pg=1 and disp_hs=1 have
+	 * none: they load with neither last_look=1 nor observe=1, so this clause or wake_all=1's zeroes their bytes with the rest.
 	 */
 	if (!wake_all && !last_look && !observe) {
 		err = m1_kwrite(LL_AT, zero, LL_N);
@@ -3684,31 +3794,97 @@ static void m1_sio_fw_stop(void)
 	msleep(2);
 }
 
+/* disp_hs=1: whether a power word reads powered right now: its actual state, bits 7:4, isn't 0. */
+static bool m1_dh_on(void __iomem *ps)
+{
+	return (readl(ps) >> 4) & 0xf;
+}
+
+/* disp_hs=1: the reference's set-up table to DCP i's fabric block, in the table's order. Only ever called with its FE word just read powered. */
+static void m1_dh_setup(unsigned int i)
+{
+	unsigned int j;
+
+	for (j = 0; j < m1_dh[i].n; j++)
+		writel(m1_dh[i].init[j][1], m1_dh_blk[i] + m1_dh[i].init[j][0]);
+}
+
+/* disp_hs=1: the handshake on DCP i's fabric block, the reference's four writes. Only ever called with its FE word just read powered. */
+static void m1_dh_shake(unsigned int i)
+{
+	writel(1, m1_dh_blk[i] + DH_HS_A);
+	writel(1, m1_dh_blk[i] + DH_HS_B);
+	writel(2, m1_dh_blk[i] + DH_HS_B);
+	writel(4, m1_dh_blk[i] + DH_HS_B);
+	dsb(sy);
+}
+
+/*
+ * disp_hs=1, K3b, for one DCP that stopped (the m1 comment and last_look.h have the source and why), in place of the two
+ * power-downs alone: the set-up table if the FE word reads powered; the CPU0 word's power-down, the call every run makes;
+ * and, as in every run, only if that word read off, the FE word's, with the handshake before it if the FE word still reads
+ * powered. A block gets no write unless its FE word read powered right before: a write to a block without power is an
+ * SError, which panics here. Neither block is read. Returns whether both words read off; *made says the handshake was made.
+ */
+static bool m1_dh_down(unsigned int i, bool *made)
+{
+	const struct m1_dcp *d = &m1_dcp_info[i];
+	void __iomem *fe = m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK);
+
+	if (m1_dh_on(fe))
+		m1_dh_setup(i);
+	if (!m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK)))
+		return false;
+	if (m1_dh_on(fe)) {
+		m1_dh_shake(i);
+		*made = true;
+	}
+	return m1_ps_off(fe);
+}
+
 /*
  * disp_off=1, step K3b, right after K3 and before K4: the domains of the DCPs
  * that stopped at prepare. A DCP that didn't keeps its domains. Returns byte B's
- * five bits.
+ * five bits. disp_hs=1: the set-up and the handshake on each stopped DCP's
+ * fabric block around those power-downs (m1_dh_down()), 0x2922c0044 read
+ * before the first DCP and after each one's place, stopped or not, and two
+ * bytes to the PMU's 0x600a-0x600b before the stage.
  */
 static u8 m1_disp_stop(void)
 {
 	static const u8 stage = 0x84;
-	bool turned = false, all_off = true;
+	bool turned = false, all_off = true, made[ARRAY_SIZE(m1_dcp_info)] = {};
+	u32 g0 = 0, g[ARRAY_SIZE(m1_dcp_info)] = {};
 	unsigned int i;
-	u8 res = 0;
+	u8 res = 0, dh[2];
 
+	if (disp_hs)
+		g0 = readl(m1_pos + M1_POS_GATE44);
 	for (i = 0; i < ARRAY_SIZE(m1_dcp_info); i++) {
 		const struct m1_dcp *d = &m1_dcp_info[i];
 
 		if (m1_dcp_code[i] == M1_DCP_STOPPED) {
 			turned = true;
-			if (!m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK)) ||
-			    !m1_ps_off(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK)))
+			if (disp_hs) {
+				if (!m1_dh_down(i, &made[i]))
+					all_off = false;
+			} else if (!m1_ps_off(m1_dcp_ps[i][0] + (d->ps[0] & ~PAGE_MASK)) ||
+				   !m1_ps_off(m1_dcp_ps[i][1] + (d->ps[1] & ~PAGE_MASK))) {
 				all_off = false;
+			}
 		}
+		if (disp_hs)
+			g[i] = readl(m1_pos + M1_POS_GATE44);
 		res |= m1_dcp_code[i] << (2 * i);
 	}
 	if (turned && all_off)
 		res |= BIT(4);
+	/* disp_hs=1: its two bytes, through the kernel's path too, before the stage: a failure here doesn't stop the stage's command. */
+	if (disp_hs) {
+		dh[0] = dh_b0(made[M1_DH_EXT], made[M1_DH_INT], g0);
+		dh[1] = dh_b1(g[M1_DH_EXT], g[M1_DH_INT]);
+		m1_kwrite(LL_AT + 2, dh, 2);
+	}
 	/* Through the kernel's path, as K4's. */
 	m1_kwrite(0x6004, &stage, 1);
 	return res;
@@ -6361,6 +6537,64 @@ static int __init m1_sp_init(void)
 	return 0;
 }
 
+/* disp_hs=1's two bytes: K1's mark is none of the record's bits, and the record's fields are apart. */
+static_assert(DH_ARMED == 0x01 && DH_MARK == 0x80 && DH_EXT == 0x40 && DH_INT == 0x20 && !(DH_ARMED & (DH_MARK | DH_EXT | DH_INT)) &&
+	      LL_AT + 2 == 0x600a && M1_DH_INT == 0 && M1_DH_EXT == 1 && ARRAY_SIZE(m1_dcp_info) == 2);
+
+/*
+ * disp_hs=1 at load, after m1_disp_init(), which maps the DCPs' power words, and m1_wd2_init(), which maps the engine's
+ * page: each fabric block is paired with the DCP and the two power words m1_dcp_info[] names for it (disp0: dcp@38bc00000,
+ * disp0_cpu0 0x28e580350, disp0_fe 0x28e580328; dispext0: dcp@289c00000, dispext0_cpu0 0x28e080280, dispext0_fe
+ * 0x28e080258); every address K3b writes in a block, each table entry's and the handshake's two, is a whole word inside
+ * the span mapped and off the never-write list; the engine's page and the FE words are mapped (a refusal otherwise); the
+ * two blocks are mapped here (m1_unmap() unmaps them, at the exit and after any later refusal of the load); and one line
+ * says whether each FE word reads powered now and what K3b will do. No word of either block is read, here or ever: the
+ * reference never reads them, and a read of a block without power would fault. Reads only, of the two FE words.
+ */
+static int __init m1_dh_init(void)
+{
+	u32 fe[ARRAY_SIZE(m1_dcp_info)];
+	unsigned int i, j;
+
+	for (i = 0; i < ARRAY_SIZE(m1_dcp_info); i++) {
+		const struct m1_dcp *d = &m1_dcp_info[i];
+		const struct m1_dh *h = &m1_dh[i];
+
+		if (d->asc != h->asc || d->ps[0] != h->cpu0 || d->ps[1] != h->fe) {
+			pr_err("m1: disp_hs: %s's block isn't paired with the %s DCP's ASC and power words; refusing\n", h->name, d->name);
+			return -EINVAL;
+		}
+		for (j = 0; j < h->n; j++) {
+			if ((h->init[j][0] & 3) || h->init[j][0] + 4 > DH_SPAN) {
+				pr_err("m1: disp_hs: entry %u of %s's table isn't a word inside the 0x%lx mapped; refusing\n", j, h->name, DH_SPAN);
+				return -EINVAL;
+			}
+			if (m1_never(h->blk + h->init[j][0], 1))
+				break;
+		}
+		if (j < h->n || m1_never(h->blk + DH_HS_A, 1) || m1_never(h->blk + DH_HS_B, 1)) {
+			pr_err("m1: disp_hs: a write to %s's block would touch the never-write list; refusing\n", h->name);
+			return -EPERM;
+		}
+	}
+	if (!m1_pos || !m1_dcp_ps[M1_DH_INT][1] || !m1_dcp_ps[M1_DH_EXT][1]) {
+		pr_err("m1: disp_hs: the engine's page or a display's FE power word isn't mapped; refusing\n");
+		return -ENODEV;
+	}
+	for (i = 0; i < ARRAY_SIZE(m1_dcp_info); i++) {
+		m1_dh_blk[i] = ioremap_np(m1_dh[i].blk, DH_SPAN);
+		if (!m1_dh_blk[i]) {
+			pr_err("m1: disp_hs: %s's block didn't map; refusing\n", m1_dh[i].name);
+			return -ENOMEM;
+		}
+		fe[i] = readl(m1_dcp_ps[i][1] + (m1_dcp_info[i].ps[1] & ~PAGE_MASK));
+	}
+	pr_info("m1: disp_hs: disp0's block 0x%llx, its FE word %08x (%s now); dispext0's block 0x%llx, its FE word %08x (%s now). K3b, for each DCP that stopped and whose FE word reads powered then: %u set-up writes to its block, its CPU0 word down, 0x%x := 1 and 0x%x := 1, 2, 4 in the block if the FE word still reads powered, its FE word down; 0x2922c0044 read before and after each, and two bytes to the PMU's 0x%x-0x%x. Neither block is ever read\n",
+		m1_dh[M1_DH_INT].blk, fe[M1_DH_INT], (fe[M1_DH_INT] >> 4) & 0xf ? "powered" : "NOT powered", m1_dh[M1_DH_EXT].blk, fe[M1_DH_EXT],
+		(fe[M1_DH_EXT] >> 4) & 0xf ? "powered" : "NOT powered", m1_dh[M1_DH_INT].n, DH_HS_A, DH_HS_B, LL_AT + 2, LL_AT + 3);
+	return 0;
+}
+
 /* fabric_up=1 at load: the word off the never-write list and as it is awake, 0x333, so that 3 is its awake value. Reads only. */
 static int __init m1_fab_init(void)
 {
@@ -6777,6 +7011,13 @@ static int __init m1_init(void)
 		if (ret)
 			return ret;
 	}
+	/* After m1_disp_init() and m1_wd2_init(): m1_dh_init() refuses without the FE words' mappings and the engine's page. */
+	if (disp_hs) {
+		int ret = m1_dh_init();
+
+		if (ret)
+			return ret;
+	}
 	/* Last: it reads through pages the initializers above map, the engine's among them (m1_wd2_init()'s here). */
 	if (look) {
 		int ret = m1_look_init();
@@ -6817,6 +7058,9 @@ static void m1_unmap(void)
 		iounmap(m1_pos);
 	if (m1_sp)
 		iounmap((void __iomem *)((unsigned long)m1_sp & PAGE_MASK));
+	for (i = 0; i < ARRAY_SIZE(m1_dh_blk); i++)
+		if (m1_dh_blk[i])
+			iounmap(m1_dh_blk[i]);
 	if (m1_ll_pwm)
 		iounmap(m1_ll_pwm);
 	if (m1_recfg)
@@ -7314,6 +7558,10 @@ static int __init e1_check_params(void)
 		pr_err("sep_pg=1 needs gates_mark=1 and no observe=1 (it's that family's run with bit 2 of the PMGR control word 0x28e0cc200 cleared in step 7 and one byte at 0x6009; in an observer's run that byte is CPU7's)\n");
 		return -EINVAL;
 	}
+	if (disp_hs && (!disp_off || !gates_mark || observe)) {
+		pr_err("disp_hs=1 needs disp_off=1, gates_mark=1 and no observe=1 (it's that family's run with the set-up and the handshake on each display's fabric block in K3b, and two bytes at 0x600a-0x600b; in an observer's run those bytes are CPU7's)\n");
+		return -EINVAL;
+	}
 	if (gate_look && !last_look) {
 		pr_err("gate_look=1 needs last_look=1 (it's that run with the return's reads made once before CPU0's last WFI, 1 s after the commit)\n");
 		return -EINVAL;
@@ -7495,7 +7743,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "", obs_gate ? " obs_gate=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -7503,7 +7751,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", atc_down ? " atc_down=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", blink ? " blink=1" : "", wake_all ? " wake_all=1" : "", ll_retn ? " ll_retn=1" : "", sep_pg ? " sep_pg=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", blink ? " blink=1" : "", wake_all ? " wake_all=1" : "", ll_retn ? " ll_retn=1" : "", sep_pg ? " sep_pg=1" : "", disp_hs ? " disp_hs=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
 		gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;

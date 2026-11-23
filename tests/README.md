@@ -117,6 +117,35 @@ used to sit in CLAUDE.md, entry for entry):
   0x600a-0x600e, or a 0x6008 that is neither 0 nor wake_all=1's (no field of either byte read); last_look=1's,
   ll_retn=1's and an observer's stages (never read as sep_pg=1's); a family run without the option after one with it;
   and `--clear` in fourteen cases that zero the seven and fourteen that leave them.
+  For disp_hs=1 it compiles `last_look.h`'s `dh_b0()`, `dh_b1()` and `dh_ok()` against a second writing-out; holds the two
+  set-up tables in `e1_hook.c` against the reference driver's own file, entry for entry, if it is where Corey keeps it
+  (`~/.local/share/sleep-drain/ante042-20261123/s2r.c`; it says so and skips that check if not), and in any case against a
+  sha256 of each as copied (65 entries each, which the build asserts); and runs K3b as it stands, `m1_disp_stop()` with
+  `m1_dh_down()`, `m1_dh_on()`, `m1_dh_setup()`, `m1_dh_shake()` and `m1_ps_off()`, against a model of the two DCPs' power
+  words, the two fabric blocks and the gate word that logs every access, in fifteen runs with the option: both DCPs
+  stopped and powered (per block, in this exact order: the FE word read, the table's 65 writes, the CPU0 word down, the
+  FE word read again, the handshake's four writes, the FE word down, the gate word read; the gate word read first of all;
+  the two bytes and then the stage last); an FE word off as found (no write to that block at all); an FE word that goes
+  off with its CPU0 word (the table, no handshake); a DCP that didn't stop, or neither (nothing but the gate word's
+  reads); a CPU0 word or an FE word that stays up; the bit-2 flip at either handshake or none; the two bytes' command
+  failing (the stage still goes out). And in eight runs without the option, beside the function as it was before it,
+  kept in the test word for word: the same accesses, one for one. (What is mocked: every word is the harness's own; a
+  power word written with target 0 reads off afterwards unless told to stay up; a write to a block whose FE word doesn't
+  read powered is logged as a fault, where the Mac would take an SError, and a read of a block as illegal; `m1_kwrite()`
+  is a stand-in that asks the real `m1_pmu_ok()`.) The MMIO-write tripwire goes from 75 to 80 in the file (the table's
+  one write in its loop and the handshake's four) and stays 11 in `m1_after_slpa()`. `m1_dh_init()` and `m1_never()` as
+  they stand: the 134 addresses asked of the list, in order; the refusals for a listed table entry or handshake word in
+  either block, for the engine's page or an FE word's mapping missing, for a block that doesn't map; and, over a copy
+  with one thing changed, for a block paired with another DCP's words and for a table entry that isn't a word inside
+  the span; no word of either block is read. `m1_pmu_ok()` over every address, length and nineteen contents, one byte
+  and two bytes of every value at each of the seven, in the eight combinations of wake_all=1, sep_pg=1 and disp_hs=1,
+  against a second writing-out; the real K1 and undo behind it in eleven kinds of run over six leftovers. And the record
+  through m1-crumbs: all 64 by 256 records through the decoder's own function against a second writing-out of their
+  lines, the one sentence about bit 2 where it applies and nowhere else; the two bytes under each stage a run can have
+  them at, K3's with its own line; all three options' records together and in pairs; K1's mark under each kind of
+  stage; other runs' stages, K1's stage and none (not read); anything a run can't have left in any of the other fields
+  (no field of any record read); a family run without the option after one with it; and `--clear` in thirteen cases
+  that zero the seven and fourteen that leave them.
   For ll_retn=1 it compiles `last_look.h`'s `llr_empty_code()`, `llr_b0()`, `llr_past()`, `llr_b2()`, `llr_b3()`, `llr_b4()`,
   `llr_wide()` and `ll_stage()`'s three sets against a second writing-out (every bit of each word alone for `llr_wide()`, the
   time bound to the tick, the empties' code at each edge), and runs `m1_deep_wfi()`, `m1_llr_empty()`,
@@ -222,10 +251,11 @@ used to sit in CLAUDE.md, entry for entry):
 - `tests/e1a_launcher_test.py` runs `e1-hook/run-e1a` and every `run-floor` option as uid 0 in a bubblewrap
   user namespace against stub `insmod`, `rmmod`, `modinfo` and `sleep-drain-reading`: the parameters and the
   label each option loads with (`--m1-wake-all`: `--m1-a2-pre-blink`'s line and `wake_all=1`; `--m1-ll-retn`:
-  `--m1-atc-down`'s line and `ll_retn=1`; `--m1-sep-pg`: `--m1-a2-pre-blink`'s line and `sep_pg=1`), the hand-off
+  `--m1-atc-down`'s line and `ll_retn=1`; `--m1-sep-pg`: `--m1-a2-pre-blink`'s line and `sep_pg=1`; `--m1-disp-hs`:
+  `--m1-sep-pg`'s line and `disp_hs=1`), the hand-off
   and the watch after it, every refusal (an older build without the option's parameter, a build that
-  ignored it, two options together; `--m1-sep-pg` with `apple_sep` loaded, a directory beside the fake
-  `e1_hook`'s, which every other option runs past), and every way out. A launcher that ends before the hand-off, where a check needs
+  ignored it, two options together; `--m1-sep-pg` and `--m1-disp-hs` with `apple_sep` loaded, a directory beside
+  the fake `e1_hook`'s, which every other option runs past), and every way out. A launcher that ends before the hand-off, where a check needs
   it running, fails a check that shows what it printed, and that function's other checks are skipped: it doesn't stop
   the test. It takes about half a minute a launcher; options as
   arguments run only those launchers (`run-floor` by itself is the plain floor, which has the usage cases).
@@ -236,8 +266,8 @@ used to sit in CLAUDE.md, entry for entry):
   didn't notice. Run it after changing any of them, and give it the
   mutants a new rung calls for. A word as its argument runs only the mutants whose names have it
   (wake_all=1's are `"wa:" "wa "`: `wa` by itself is in ninety other names; ll_retn=1's are `llr`; sep_pg=1's are
-  `"sp:" "sp header" "sp decoder" "sp launcher"`). Its `ARGS` names six
-  launchers for a mutant of `run-floor` (the plain floor, `--m1-a2-pre-blink`, `--m1-wake-all`, `--m1-atc-down`,
-  `--m1-ll-retn` and `--m1-sep-pg`): about three and a half minutes each.
+  `"sp:" "sp header" "sp decoder" "sp launcher"`, disp_hs=1's `"dh:" "dh header" "dh decoder" "dh launcher"`). Its
+  `ARGS` names seven launchers for a mutant of `run-floor` (the plain floor, `--m1-a2-pre-blink`, `--m1-wake-all`,
+  `--m1-atc-down`, `--m1-ll-retn`, `--m1-sep-pg` and `--m1-disp-hs`): about four minutes each.
   Either way it first checks the whole list against the tree, in a second, and stops if a mutant's text
   isn't there exactly once: a rung that moved an older mutant's line fixes the list before anything runs.

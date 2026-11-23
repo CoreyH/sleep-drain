@@ -2,7 +2,7 @@
 """e1-hook/m1-crumbs: the breadcrumbs an M1-recipe run (run-floor --m1,
 --m1-observe, --m1-late, --m1-alarm, --m1-hold, --m1-hold-nowatch, --m1-pmp,
 --m1-pmp-idle, --m1-position, --m1-sio-pmp, --m1-disp-off, --m1-macos-end, --m1-sio-stop, --m1-power-words,
---m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark, --m1-gates, --m1-sio-down, --m1-pcie-down, --m1-sio-steps, --m1-a2-pre, --m1-acc-last, --m1-last-look, --m1-last-look-wake and the later ones, --m1-wake-all and --m1-sep-pg among them; e1_hook m1=1, observe=1, pmgr_late=1,
+--m1-recfg-bite, --m1-wd2-bite, --m1-cluster-ack, --m1-fabric-up, --m1-mark, --m1-gates, --m1-sio-down, --m1-pcie-down, --m1-sio-steps, --m1-a2-pre, --m1-acc-last, --m1-last-look, --m1-last-look-wake and the later ones, --m1-wake-all, --m1-sep-pg and --m1-disp-hs among them; e1_hook m1=1, observe=1, pmgr_late=1,
 alarm=1, hold=1, pmp_out=1, position=1, sio_on=1, disp_off=1, one_commit=1, smc_idle=1, sio_stop=1, ps_words=1, recfg_bite=1,
 wd2_bite=1, cluster_ack=1, fabric_up=1, wd1_mark=1, gates_mark=1, sio_down=1, pcie_down=1, sio_steps=1, a2_pre=1, acc_last=1, last_look=1, ll_wake=1) leaves in the PMU, read and decoded, and cleared again. And the
 three bytes e1-hook/probe (probe=1) leaves, which isn't a run: stage 0x0e.
@@ -16,8 +16,8 @@ and macOS are believed not to use (DeepIdle's notes; they read 0 here before
 the first run), 0x6008-0x600e, which a last_look=1 run writes if CPU0's last
 WFI returns (they read 0 in every log before it, with no Linux cell; Corey's
 OK of 2026-11-16; --clear zeroes them only after one of that run's stages, an obs_gate=1 record, or a wake_all=1 byte or
-mark at 0x6008 or a sep_pg=1 one at 0x6009 with zeros in the rest, the other three that use them; every run's K1 zeroes them
-since wake_all=1), and 0x6001, the boot stage, which macsmc-reboot sets back to
+mark at 0x6008, a sep_pg=1 one at 0x6009 or disp_hs=1's two bytes or mark at 0x600a with zeros in the rest, the other four
+that use them; every run's K1 zeroes them since wake_all=1), and 0x6001, the boot stage, which macsmc-reboot sets back to
 0x30 at every boot. 0x6003, the boot-error stage, is the PMU's own record of
 the stage an unclean end found. The PMU is reached through the kernel's nvmem
 interface for the pmic@f node, as pmu-alarm does. --clear writes zeros to the
@@ -53,7 +53,7 @@ CNTVCT = os.environ.get("M1_CRUMBS_CNTVCT")
 RTC = 0x1406        # info-rtc: 6 bytes LE, the seconds in the upper four; the
                     # read must start here (pmu-alarm)
 CRUMBS = ((0x6004, 4), (0x6010, 7))  # the bytes --clear zeroes
-LL_CRUMBS = (0x6008, 7)  # and these too, after a last_look=1 run (ll_retn=1's are such), an obs_gate=1 record, a wake_all=1 one or a sep_pg=1 one: no other run leaves anything there
+LL_CRUMBS = (0x6008, 7)  # and these too, after a last_look=1 run (ll_retn=1's are such), an obs_gate=1 record, a wake_all=1 one, a sep_pg=1 one or a disp_hs=1 one: no other run leaves anything there
 # The RTC alarm: control (bit 6 enable, bit 1 latched when it fired), the
 # compare value (4 bytes LE, the RTC's seconds), event, mask (pmu-alarm).
 ALARM_CTRL, ALARM, ALARM_EVENT, ALARM_MASK = 0x1401, 0x140c, 0x14c0, 0x14c2
@@ -181,6 +181,13 @@ SP_MARK = 0x80  # the byte's top bit
 SP_FOUND = 0x40  # under the mark: the control word's bit 2 was set as found
 SP_CLEAR = 0x20  # under the mark: read again, the word had bit 2 clear and every other bit as found
 SP_SEP_OFF = 0x10  # under the mark: the SEP's power word (0x28e580c00) read actual state 0 then
+# disp_hs=1 (last_look.h): two bytes at 0x600a-0x600b, in a run of the same family with disp_off=1: K3b makes the reference's
+# set-up and handshake on each stopped DCP's fabric block around its power-downs, and this is which handshakes were made
+# and what 0x2922c0044's low nibble read before K3b and after each DCP's place in its loop (disp0's first)
+DH_ARMED = 0x01  # 0x600a as K1 leaves it with disp_hs=1, until K3b's two bytes
+DH_MARK = 0x80  # the first byte's top bit; its bit 4 is never set
+DH_EXT = 0x40  # under the mark: dispext0's handshake was made
+DH_INT = 0x20  # under the mark: disp0's was
 
 
 def alarm_secs(s):
@@ -266,6 +273,12 @@ ACK_EARLY = (0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39)
 # The stages a wake_all=1 run can be at before its byte goes out: none yet (K1 writes its mark before its stage), K1, K3, K4, K3b,
 # K5, step 4, and that recipe's stages of steps 5 to 7 (pmgr_late=1's and hold=1's)
 WA_EARLY = (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10) + ACK_EARLY
+# disp_hs=1's two bytes go out in K3b, before its own stage: the stages such a run can be at before them (none yet, K1, K3) ...
+DH_K3 = 0x02  # K3's stage, still the stage when the two bytes go out: what stays if they land and K3b's own stage doesn't
+DH_BEFORE = (0x00, 0x01, DH_K3)
+# ... and those it can be at with them out: K3's, K3b's own (0x84 as written, 0x04 here), K4, K5, step 4, that recipe's
+# stages of steps 5 to 7 and the gates_mark=1 family's
+DH_STAGES = (DH_K3, 0x04, 0x03, 0x05, 0x10) + ACK_EARLY + WA_STAGES
 ACK_MARKED = (0x4e, 0x56, 0x57) + FAB_STAGES
 # 0x6013's buckets: when CPU7 first read a power-down's bit 4 clear after the
 # hand-over. Its first read is at the hand-over itself, so bucket 0 can't say
@@ -1287,28 +1300,57 @@ def sp_record(s, r):
     return (s not in LL_STAGES and s not in OG_STAGES and r[1] == SP_ARMED) or ((s in WA_STAGES or s == WA_STEP7) and bool(r[1] & SP_MARK))
 
 
+def dh_record(s, r):
+    """Whether 0x600a-0x600b hold disp_hs=1's two bytes, or K1's mark for them (0x01 and 0). The mark: under any stage that is
+    neither last_look=1's nor one of an observer's own (dh_lines() says which of those stages such a run can be at). The
+    two bytes: only under a stage the run can be at once K3b has sent them, DH_STAGES."""
+    return (s not in LL_STAGES and s not in OG_STAGES and r[2:4] == bytes((DH_ARMED, 0))) or (s in DH_STAGES and bool(r[2] & DH_MARK))
+
+
 def fam_record(s, r):
     """Whether 0x6008-0x600e hold what a run of the gates_mark=1 family leaves there: wake_all=1's byte or mark at 0x6008,
-    sep_pg=1's at 0x6009, or both. The two are apart, and each is told by itself."""
-    return wa_record(s, r) or sp_record(s, r)
+    sep_pg=1's at 0x6009, disp_hs=1's two bytes or mark at 0x600a, or any of them together. The three are apart, and each
+    is told by itself."""
+    return wa_record(s, r) or sp_record(s, r) or dh_record(s, r)
+
+
+def fam_parts(s, r):
+    """0x6008-0x600e field by field, for a run of that family: whether 0x6008 is wake_all=1's as e1_hook writes it (its byte
+    with bit 3 clear, or K1's mark), 0x6009 sep_pg=1's and 0x600a-0x600b disp_hs=1's (the two bytes with bit 4 of the first
+    clear, or K1's mark); and, by field, what holds something a run of the family can't have left there, as text."""
+    wa, sp = wa_record(s, r) and not r[0] & 0x08, sp_record(s, r)
+    dh = dh_record(s, r) and (r[2] == DH_ARMED or not r[2] & 0x10)
+    other = {}
+    if r[0] and not wa:
+        other["wa"] = f"0x6008 = 0x{r[0]:02x}"
+    if r[1] and not sp:
+        other["sp"] = f"0x6009 = 0x{r[1]:02x}"
+    if any(r[2:4]) and not dh:
+        other["dh"] = f"0x600a-0x600b = {r[2:4].hex(' ')}"
+    if any(r[4:]):
+        other["rest"] = f"0x600c-0x600e = {r[4:].hex(' ')}"
+    return wa, sp, dh, other
 
 
 def fam_clear(s, r):
-    """Whether --clear may take 0x6008-0x600e for such a run's and zero them: 0x6008 is wake_all=1's byte or K1's mark for it
-    (wa_record(), with bit 3 clear) or 0, 0x6009 is sep_pg=1's byte or mark (sp_record()) or 0, at least one of the two is
-    there, and the five bytes after them are all 0, which such a run never writes. One byte by itself doesn't vouch for what
-    is in the others."""
-    wa, sp = wa_record(s, r) and not r[0] & 0x08, sp_record(s, r)
-    return (wa or sp) and (wa or not r[0]) and (sp or not r[1]) and not any(r[2:])
+    """Whether --clear may take 0x6008-0x600e for such a run's and zero them: at least one of the three fields is its
+    option's (fam_parts()), each of the others is its option's too or 0, and 0x600c-0x600e are all 0, which such a run
+    never writes. One field by itself doesn't vouch for what is in the others."""
+    wa, sp, dh, other = fam_parts(s, r)
+    return (wa or sp or dh) and not other
 
 
-def wa_lines(s, r, sp=False):
+def wa_lines(s, r, others=None):
     """wake_all=1: 0x6008, what CPU0 read in step 7 right after it wrote 0xffffffff to all seven AP wake-mask words, sent
     after step 8's record (e1-hook/last_look.h has the byte). Fields as read, each named; what they say about the stall is
-    PLAN.md's to say. sp: 0x6009 is sep_pg=1's (sp_record()), which sp_lines() reads: what the run never writes is then
-    0x600a-0x600e."""
+    PLAN.md's to say. others: None if no other option's bytes are there: 0x6009-0x600e are then what this run never writes,
+    as before those options. Otherwise the fields beside this byte that hold something no run of the family leaves
+    (fam_parts()), as text."""
     b0 = r[0]
-    rest, at, alone = (r[2:], "0x600a-0x600e", "0x6008 and 0x6009 alone") if sp else (r[1:], "0x6009-0x600e", "0x6008 alone")
+    if others is None:
+        junk, alone = ([f"0x6009-0x600e = {r[1:].hex(' ')}"] if any(r[1:]) else []), "this run sends 0x6008 alone"
+    else:
+        junk, alone = others, "a run sends its options' bytes alone"
     if b0 == WA_ARMED and s not in WA_EARLY and s not in WA_STAGES:
         # K1 zeroes these bytes in every run, so a mark under another run's stage can only have been left before that K1 existed,
         # or isn't e1_hook's. Whichever: not this stage's run's.
@@ -1331,9 +1373,9 @@ def wa_lines(s, r, sp=False):
                         " there panics, and the Mac restarts about 10 s later")
         return out + [f"  0x6008 = 0x{b0:02x}: wake_all=1 was set and its byte never landed: K1 writes this, and the byte's command, after"
                       f" step 8's record, writes over it. {how}"
-                      + (f"; {at} = {rest.hex(' ')} are not what e1_hook writes: NOT READ" if any(rest) else "")]
-    if any(rest):
-        return out + [f"  {at} = {rest.hex(' ')}: not what e1_hook writes (K1 zeroes them, and this run sends {alone}): NOT READ"]
+                      + (f"; {' and '.join(junk)} are not what e1_hook writes: NOT READ" if junk else "")]
+    if junk:
+        return out + [f"  {' and '.join(junk)}: not what e1_hook writes (K1 zeroes them, and {alone}): NOT READ"]
     if b0 & 0x08:
         return out + [f"  0x6008 = 0x{b0:02x}: not what e1_hook writes (its bit 3 is never set): NOT READ"]
     n = b0 & 7
@@ -1350,10 +1392,11 @@ def wa_lines(s, r, sp=False):
                           "none of the seven words inferred to be the AP's wake status read non-zero after the masks")]
 
 
-def sp_lines(s, r):
+def sp_lines(s, r, beside):
     """sep_pg=1: 0x6009, what CPU0 read in step 7 around its one write to the PMGR control word 0x28e0cc200, sent after step
     8's record and after wake_all=1's byte (e1-hook/last_look.h has the byte). Fields as read, each named; what they say
-    about the stall is PLAN.md's to say."""
+    about the stall is PLAN.md's to say. beside: the fields beside this byte that hold something no run of the family
+    leaves (fam_parts()), as text."""
     b1 = r[1]
     if b1 == SP_ARMED and s not in WA_EARLY and s not in WA_STAGES:
         # As for wake_all=1's mark: K1 zeroes these bytes in every run, so this one isn't this stage's run's.
@@ -1363,8 +1406,6 @@ def sp_lines(s, r):
     out = [f"0x6008-0x600e = {r.hex(' ')}: sep_pg=1's record: step 7 reads the PMGR control word 0x28e0cc200, writes it back with bit 2"
            " clear if that bit is set (the bit that makes the S2R sequencer wait for the SEP to power-gate), and reads it again, then the"
            " SEP's power word (0x28e580c00) and 0x2922c0044, and step 8 sends the byte after its own record:"]
-    # What such a run can't have left beside this byte: 0x6008 is wake_all=1's byte or mark, or 0, and the other five are 0.
-    junk = ([f"0x6008 = 0x{r[0]:02x}"] if r[0] and not (wa_record(s, r) and not r[0] & 0x08) else []) + ([f"0x600a-0x600e = {r[2:].hex(' ')}"] if any(r[2:]) else [])
     if b1 == SP_ARMED:
         # A command that fails stops every later one (m1_crumb()), and the family's stages are all sent after the byte.
         if s in WA_STAGES:
@@ -1378,10 +1419,10 @@ def sp_lines(s, r):
                         " between this stage and the byte: an access that faulted there panics, and the Mac restarts about 10 s later")
         return out + [f"  0x6009 = 0x{b1:02x}: sep_pg=1 was set and its byte never landed: K1 writes this, and the byte's command, after"
                       f" step 8's record, writes over it. {how}"
-                      + (f"; {' and '.join(junk)}: not what e1_hook writes in such a run: NOT READ" if junk else "")]
-    if junk:
-        return out + [f"  {' and '.join(junk)}: not what e1_hook writes in such a run (K1 zeroes the seven, and the run sends 0x6009 alone, or"
-                      " wake_all=1's byte at 0x6008 too): NOT READ"]
+                      + (f"; {' and '.join(beside)}: not what e1_hook writes in such a run: NOT READ" if beside else "")]
+    if beside:
+        return out + [f"  {' and '.join(beside)}: not what e1_hook writes in such a run (K1 zeroes the seven, and a run sends its options' bytes"
+                      " alone): NOT READ"]
     if s == WA_STEP7:
         out.append(f"  the stage, 0x{s:02x}, is step 7's own, still the stage when the byte goes out: this byte landed and no later command did")
     found, n = bool(b1 & SP_FOUND), b1 & 0xf
@@ -1400,13 +1441,73 @@ def sp_lines(s, r):
         f" bit 3 {'set, as it reads awake' if n & 8 else 'clear (awake it reads set)'}"]
 
 
+def dh_lines(s, r, around):
+    """disp_hs=1: 0x600a-0x600b, which handshakes K3b made on the two displays' fabric blocks and what 0x2922c0044's low
+    nibble read before it and after each DCP's place in its loop (e1-hook/last_look.h has the bytes). Fields as read, each
+    named; what they say about the stall is PLAN.md's to say. around: the fields beside these two bytes that hold something
+    no run of the family leaves (fam_parts()), as text."""
+    b0, b1 = r[2], r[3]
+    mark = r[2:4] == bytes((DH_ARMED, 0))
+    if mark and s not in DH_BEFORE and s not in DH_STAGES:
+        # As for the other two marks: K1 zeroes these bytes in every run, so this one isn't this stage's run's.
+        return [f"0x6008-0x600e = {r.hex(' ')}: K1's mark for disp_hs=1 (0x{DH_ARMED:02x} at 0x600a), under a stage no such run is at:",
+                f"  NOT READ: stage 0x{s:02x} isn't this mark's run's. A disp_hs=1 run is at K1's or K3's stage before K3b sends its two bytes"
+                " and at K3b's, a later step's or one of the gates_mark=1 family's after it: the mark was left by an earlier run"]
+    out = [f"0x6008-0x600e = {r.hex(' ')}: disp_hs=1's record: K3b, for each DCP that stopped, writes the reference's set-up to the display's"
+           " fabric block if its FE power word reads powered, lowers its CPU0 word, makes the handshake on the block (+0x8014 := 1,"
+           " +0x82bc := 1, 2, 4) if the FE word still reads powered, and lowers the FE word; it reads 0x2922c0044 before and after each,"
+           " and sends two bytes before its own stage:"]
+    if mark:
+        if s in DH_BEFORE:
+            how = (f"Stage 0x{s:02x} is as far as the record goes: the run stopped before K3b's command for the two bytes, or that command"
+                   " failed and K3b's own stage after it didn't land either")
+            if s == DH_K3:
+                how += (". K3b's writes to the two fabric blocks come between this stage and the bytes: a write to a block that had lost"
+                        " its power faults there, and the kernel panics")
+        else:
+            # K3b sends them through the kernel's path, where a command that fails doesn't stop the ones after it.
+            how = (f"Stage 0x{s:02x} is K3b's own or a later one, so K3b ran to its end: its command for the two bytes, through the kernel's"
+                   " path, failed or didn't land, and a failure there doesn't stop the commands after it")
+        return out + [f"  0x600a = 0x{b0:02x}: disp_hs=1 was set and its two bytes never landed: K1 writes this, and K3b's command writes over"
+                      f" it. {how}"
+                      + (f"; {' and '.join(around)}: not what e1_hook writes in such a run: NOT READ" if around else "")]
+    if around:
+        return out + [f"  {' and '.join(around)}: not what e1_hook writes in such a run (K1 zeroes the seven, and a run sends its options' bytes"
+                      " alone): these two bytes are NOT READ"]
+    if b0 & 0x10:
+        return out + [f"  0x600a = 0x{b0:02x}: not what e1_hook writes (its bit 4 is never set): NOT READ"]
+    if s == DH_K3:
+        out.append(f"  the stage, 0x{s:02x}, is K3's, still the stage when the two bytes go out: they landed and K3b's own stage didn't")
+    g0, g_int, g_ext = b0 & 0xf, b1 & 0xf, b1 >> 4
+
+    def bit2(n):
+        return f"0x{n:x}, bit 2 (the engine's first poll) {'set' if n & 4 else 'clear'}"
+
+    not_made = "was NOT made: its DCP didn't stop, its CPU0 word didn't read off, or its FE word didn't read powered then (which isn't recorded)"
+    out += [f"  0x600a = 0x{b0:02x}, bit 5: disp0's handshake (the internal display's block, 0x38c000000) " + ("was made" if b0 & DH_INT else not_made),
+            "  bit 6: dispext0's handshake (the external's block, 0x28a000000) " + ("was made" if b0 & DH_EXT else not_made),
+            f"  bits 3:0: 0x2922c0044's low nibble before K3b touched anything: {bit2(g0)}",
+            f"  0x600b = 0x{b1:02x}, bits 3:0: after disp0's place in K3b's loop, the first: {bit2(g_int)}",
+            f"  bits 7:4: after dispext0's place, the second: {bit2(g_ext)}"]
+    # The one sentence: where bit 2 first read set, if it read clear before K3b.
+    if not g0 & 4 and (g_int | g_ext) & 4:
+        name, made = ("disp0", b0 & DH_INT) if g_int & 4 else ("dispext0", b0 & DH_EXT)
+        out.append(f"  bit 2 rose with {name}'s handshake" if made else f"  bit 2 rose at {name}'s place in the loop, where no handshake was made")
+    return out
+
+
 def fam_lines(s, r):
-    """0x6008-0x600e after a run of the gates_mark=1 family: wake_all=1's byte or mark at 0x6008, sep_pg=1's at 0x6009, or both,
-    each read by itself (wa_lines(), sp_lines()). Without sep_pg=1's, the reading is wake_all=1's as it was before that option,
-    0x6009 among the six bytes such a run never writes."""
-    if not sp_record(s, r):
+    """0x6008-0x600e after a run of the gates_mark=1 family: wake_all=1's byte or mark at 0x6008, sep_pg=1's at 0x6009,
+    disp_hs=1's two bytes or mark at 0x600a, each read by itself (wa_lines(), sp_lines(), dh_lines()) and none read if
+    another field holds what no such run leaves. Without sep_pg=1's and disp_hs=1's, the reading is wake_all=1's as it was
+    before those options, 0x6009-0x600e the six bytes such a run never writes."""
+    wa, sp, dh = wa_record(s, r), sp_record(s, r), dh_record(s, r)
+    if not sp and not dh:
         return wa_lines(s, r)
-    return (wa_lines(s, r, True) if wa_record(s, r) else []) + sp_lines(s, r)
+    other = fam_parts(s, r)[3]
+    return ((wa_lines(s, r, [v for k, v in other.items() if k != "wa"]) if wa else [])
+            + (sp_lines(s, r, [v for k, v in other.items() if k != "sp"]) if sp else [])
+            + (dh_lines(s, r, [v for k, v in other.items() if k != "dh"]) if dh else []))
 
 
 def og_clus_lines(r, words):
@@ -1582,7 +1683,7 @@ def ll_lines(s, b):
     r = b[8:0x0f]
     # wake_all=1's byte is in the first of them, in the gates_mark=1 family's runs: its two top bits under one of those stages, or
     # K1's mark for it. Neither is obs_gate=1's (0x40 alone, or bit 7 under one of CPU7's stages). sep_pg=1's is in the second,
-    # in the same runs: its top bit under one of those stages, or K1's mark for it.
+    # in the same runs: its top bit under one of those stages, or K1's mark for it. disp_hs=1's two are the third and fourth.
     if fam_record(s, r):
         return fam_lines(s, r)
     # obs_gate=1's record is in the same bytes, in observe=1's runs: its mark or K1's in 0x6008 under one of that run's stages.
@@ -1590,7 +1691,7 @@ def ll_lines(s, b):
         return og_lines(s, r)
     out = [f"0x6008-0x600e = {r.hex(' ')}: last_look=1's record of CPU0's own last WFI:"]
     if s not in LL_STAGES:
-        return out + ["  NOT READ: the stage isn't one of last_look=1's, and the bytes are neither an obs_gate=1 record nor a wake_all=1 or sep_pg=1 one. They read 0 in"
+        return out + ["  NOT READ: the stage isn't one of last_look=1's, and the bytes are neither an obs_gate=1 record nor a wake_all=1, sep_pg=1 or disp_hs=1 one. They read 0 in"
                       " every log before 2026-11-16: something else wrote them, or an older record is still there"]
     blink = []
     if s in LLW_STAGES:
@@ -2741,9 +2842,9 @@ def main():
             # The stage's block last: a clear that stops halfway then leaves the stage, and the launchers, which go by a
             # zero stage, refuse (Pullfrog on #80: a run's bytes at 0x6011-0x6016 left under a zero stage).
             # last_look=1's bytes go only after one of its own stages: under any other, whatever is there isn't a run's.
-            # obs_gate=1's record, or K1's mark for it, is a run's too, and so is wake_all=1's byte or its mark at 0x6008 and
-            # sep_pg=1's at 0x6009, with nothing else in the seven: with anything else there, one byte doesn't say whose the
-            # others are, and they stay.
+            # obs_gate=1's record, or K1's mark for it, is a run's too, and so is wake_all=1's byte or its mark at 0x6008,
+            # sep_pg=1's at 0x6009 and disp_hs=1's two bytes or mark at 0x600a, with nothing else in the seven: with anything
+            # else there, one field doesn't say whose the others are, and they stay.
             seven = st in LL_STAGES or og_record(st, b[8:0x0f]) or fam_clear(st, b[8:0x0f])
             crumbs = (CRUMBS[0], LL_CRUMBS) + CRUMBS[1:] if seven else CRUMBS
             for off, n in reversed(crumbs):
@@ -2756,8 +2857,8 @@ def main():
             die("cleared, but they don't read back as zeros")
         print(f"cleared: 0x6004-0x{'600e' if seven else '6007'} and 0x6010-0x6016 read back as zeros")
         if not seven and any(b[8:0x0f]):
-            print("0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage, no obs_gate=1 record and no wake_all=1 or sep_pg=1 byte"
-                  " or mark with zeros in the rest says they're a run's")
+            print("0x6008-0x600e aren't all 0 and weren't zeroed: no last_look=1 stage, no obs_gate=1 record and no wake_all=1, sep_pg=1 or"
+                  " disp_hs=1 bytes or mark with zeros in the rest says they're a run's")
     return 0
 
 

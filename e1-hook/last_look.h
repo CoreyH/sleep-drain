@@ -320,6 +320,47 @@
  * unmasked: the record would be step 7's stage (0x39; 0xb9 with pmp_out=1's
  * bit) with SP_ARMED at 0x6009, and the restart would come about 10 s later,
  * if the panic's restart works.
+ *
+ * disp_hs=1 is two bytes more, 0x600a and 0x600b, in a run of the same family
+ * with disp_off=1, with either of the two options above or without them. The
+ * reference driver (Ante042/linux, branch t600x-s2r-reference,
+ * drivers/soc/apple/s2r.c, GPL-2.0-only OR MIT; credited) says in
+ * apple_s2r_disp_down(): "macOS order and values per block: cpu0 0xf0400ff,
+ * 0xf0403f0, the fabric handshake +0x8014 = 1, +0x82bc = 1, 2, 4, then fe
+ * 0x3f0. The dispext0 handshake sets 0x2922c0044 bit 2, which the PMGR S2R
+ * engine 1 waits for after GO (hv trace 1/11)." Bit 2 of 0x2922c0044 is B2's
+ * first poll, which every run here has ended behind, and the recipe's display
+ * step, K3b, lowers each stopped DCP's two power words with no handshake.
+ * Before the handshake the reference writes a set-up table to the block
+ * ("Linux leaves 0x28a/0x28d/0x38c000000 at reset values"), and it touches a
+ * block only while its FE power word reads powered: "The fabric block is only
+ * there while its fe is powered: a write to it otherwise is an SError."
+ * With disp_hs=1, K3b does for each DCP that stopped, disp0's first:
+ *   the set-up     if the FE word reads actual state non-zero right then, the
+ *                  reference's table of 65 writes to the display's fabric
+ *                  block (e1_hook.c has the two tables, copied entry for
+ *                  entry: 0x38c000000 for disp0, 0x28a000000 for dispext0)
+ *   CPU0's word    powered down as K3b does it in every run
+ *   the handshake  if that word read off and the FE word still reads actual
+ *                  state non-zero: block + 0x8014 := 1, block + 0x82bc := 1,
+ *                  then 2, then 4
+ *   the FE word    powered down as in every run
+ * and it reads 0x2922c0044 before the first DCP and after each one's place in
+ * the loop, stopped or not. Neither block is ever read. The record, two bytes
+ * in one command through the kernel's path, after the loop and before K3b's
+ * own stage:
+ *   0x600a  bit 7 set (DH_MARK); bit 6 (DH_EXT): dispext0's handshake was
+ *           made; bit 5 (DH_INT): disp0's was; bit 4 always 0; bits 3:0
+ *           0x2922c0044's low nibble before K3b touched anything
+ *   0x600b  bits 7:4 0x2922c0044's low nibble after dispext0's place in the
+ *           loop, the second; bits 3:0 after disp0's, the first
+ * K1 leaves 0x600a as DH_ARMED after the seven zeros and the other options'
+ * marks, so a record that never landed shows; 0x600c-0x600e stay 0. dh_ok()
+ * and DH_ARMED are all that m1_pmu_ok() lets a disp_hs=1 run write there.
+ * New on the hardware: two fabric blocks that nothing here has written (or
+ * read) before, up to 69 writes to each; a write to a block that has lost its
+ * power faults, and panics the safe boot (the FE reads are the guard, as in
+ * the reference). 0x2922c0044 CPU0 has not read at K3b before.
  */
 #ifndef LAST_LOOK_H
 #define LAST_LOOK_H
@@ -411,6 +452,14 @@ typedef uint64_t u64;
 #define SP_CLEAR		(1U << 5)	/* under SP_MARK: read again, it had bit 2 clear and every other bit as found */
 #define SP_SEP_OFF		(1U << 4)	/* under SP_MARK: the SEP's power word read actual state 0 then */
 
+/* disp_hs=1: the handshake's two words are Ante042's (apple_s2r_disp_down() in drivers/soc/apple/s2r.c, Ante042/linux t600x-s2r-reference). */
+#define DH_HS_A			0x8014		/* in a display's fabric block: written 1 */
+#define DH_HS_B			0x82bc		/* then this one: written 1, 2, 4 */
+#define DH_ARMED		(1U << 0)	/* 0x600a (LL_AT + 2) as K1 leaves it with disp_hs=1, until K3b's two bytes */
+#define DH_MARK			(1U << 7)	/* 0x600a, disp_hs=1's first byte */
+#define DH_EXT			(1U << 6)	/* under DH_MARK: dispext0's handshake was made */
+#define DH_INT			(1U << 5)	/* under DH_MARK: disp0's was */
+
 /*
  * wake_all=1's byte at 0x6008. named: words 0 to 5 read back 0xffffffff and word 6's bits 12:0 all set; unnamed: word 6's
  * bits 31:13 all set; status: how many of the seven status words read non-zero. Bit 3 stays 0.
@@ -440,6 +489,24 @@ static inline u8 sp_byte(u32 found, u32 back, u32 sep_ps, u32 gate44)
 static inline bool sp_ok(u8 v)
 {
 	return v == SP_ARMED || (v & SP_MARK);
+}
+
+/* disp_hs=1's first byte, 0x600a. ext, intl: dispext0's and disp0's handshake was made; g0: 0x2922c0044 before K3b touched anything. Bit 4 stays 0. */
+static inline u8 dh_b0(bool ext, bool intl, u32 g0)
+{
+	return (u8)(DH_MARK | (ext ? DH_EXT : 0) | (intl ? DH_INT : 0) | (g0 & 0xf));
+}
+
+/* Its second, 0x600b: 0x2922c0044's low nibble after dispext0's place in K3b's loop, and after disp0's. */
+static inline u8 dh_b1(u32 g_ext, u32 g_int)
+{
+	return (u8)((g_ext & 0xf) << 4 | (g_int & 0xf));
+}
+
+/* What a disp_hs=1 run may write as the first of its two bytes at 0x600a: one dh_b0() makes (bit 7 set, bit 4 clear). */
+static inline bool dh_ok(u8 v)
+{
+	return (v & DH_MARK) && !(v & (1U << 4));
 }
 
 /* The four power words, each true if it read off: 0x6008. */

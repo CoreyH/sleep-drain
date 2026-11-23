@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn | --m1-sep-pg]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn | --m1-sep-pg | --m1-disp-hs]
 #
 # --quick, ahead of the recipe, makes the reading 1 minute instead of 10, with no need to wait
 # 20 minutes off the charger: for a run whose question is how it ends. If one ever goes dark for
@@ -289,6 +289,25 @@
 # read-only root doesn't cover, so this refuses while apple_sep is loaded, and so does the module while a driver is bound
 # to the SEP's device. Run it with --no-reading, the nights off around it (pkexec /usr/local/bin/sleep-drain-nights off),
 # nothing in the USB-C ports, and film the keyboard.
+# --m1-disp-hs (e1-hook/last_look.h has the two bytes and where the steps come from) is --m1-sep-pg's run with the
+# display step, K3b, done as Ante042's driver does it (disp_hs=1; drivers/soc/apple/s2r.c in Ante042/linux, branch
+# t600x-s2r-reference, credited): for each DCP that stopped, the reference's set-up table written to the display's
+# fabric block (65 writes: 0x38c000000 for the internal display, 0x28a000000 for the external), its CPU0 power word
+# down as before, the handshake on the block (+0x8014 := 1, +0x82bc := 1, 2, 4), its FE power word down as before. The
+# reference says that the external display's handshake sets bit 2 of 0x2922c0044, which the PMGR's S2R engine waits
+# for first: the poll every run here has ended behind. So this run has the reference's two steps for the engine's
+# opening, each with its own read-back in the record: the PMGR's wait for the SEP cleared (0x6009), and the displays'
+# handshakes with 0x2922c0044 read before them and after each (0x600a-0x600b; K1 leaves 0x01 at 0x600a until they
+# land); and the keyboard light says whether the whole moved B2. Neither fabric block has been written here before,
+# and neither is ever read. A write to a block that has lost its power faults, and the kernel panics: each block is
+# written only right after its FE power word read powered, the reference's guard, and a panic there would restart the
+# Mac about 10 s later, if the panic's restart works, with stage 0x02 and 0x01 at 0x600a. It ends as --m1-sep-pg
+# does, one of three ways: the light to the restart at 90 s; the light stops and the restart comes later (B2 moved);
+# or the light stops and no restart comes (the entry may have completed: hold the power button). Its stages are
+# --m1-a2-pre's; its label is floor-m1-disp-hs. Like --m1-sep-pg it is only made in a safe boot started without the
+# SEP's driver (pkexec sleep-drain-safe boot --no-sep), and refuses while apple_sep is loaded. Run it with
+# --no-reading, the nights off around it (pkexec /usr/local/bin/sleep-drain-nights off), nothing in the USB-C ports,
+# and film the keyboard.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
@@ -424,6 +443,7 @@ blink=0
 wakeall=0
 llretn=0
 seppg=0
+disphs=0
 obsgate=0
 quick=()
 label=floor
@@ -718,7 +738,7 @@ elif (($# == 1)) && [[ $1 == --m1-sio-steps ]]; then
   gates=1
   siosteps=1
   label=floor-m1-sio-steps
-elif (($# == 1)) && [[ $1 == --m1-a2-pre || $1 == --m1-a2-pre-blink || $1 == --m1-wake-all || $1 == --m1-sep-pg ]]; then
+elif (($# == 1)) && [[ $1 == --m1-a2-pre || $1 == --m1-a2-pre-blink || $1 == --m1-wake-all || $1 == --m1-sep-pg || $1 == --m1-disp-hs ]]; then
   quiet=1
   m1=1
   late=1
@@ -738,7 +758,7 @@ elif (($# == 1)) && [[ $1 == --m1-a2-pre || $1 == --m1-a2-pre-blink || $1 == --m
   gates=1
   a2pre=1
   label=floor-m1-a2-pre
-  if [[ $1 == --m1-a2-pre-blink || $1 == --m1-wake-all || $1 == --m1-sep-pg ]]; then
+  if [[ $1 == --m1-a2-pre-blink || $1 == --m1-wake-all || $1 == --m1-sep-pg || $1 == --m1-disp-hs ]]; then
     atcdown=1
     blink=1
     label=floor-m1-a2-pre-blink
@@ -747,9 +767,13 @@ elif (($# == 1)) && [[ $1 == --m1-a2-pre || $1 == --m1-a2-pre-blink || $1 == --m
     wakeall=1
     label=floor-m1-wake-all
   fi
-  if [[ $1 == --m1-sep-pg ]]; then
+  if [[ $1 == --m1-sep-pg || $1 == --m1-disp-hs ]]; then
     seppg=1
     label=floor-m1-sep-pg
+  fi
+  if [[ $1 == --m1-disp-hs ]]; then
+    disphs=1
+    label=floor-m1-disp-hs
   fi
 elif (($# == 1)) && [[ $1 == --m1-acc-last ]]; then
   quiet=1
@@ -811,7 +835,7 @@ elif (($# == 1)) && [[ $1 == --m1-last-look || $1 == --m1-last-look-wake || $1 =
     label=floor-m1-ll-retn
   fi
 elif (($# != 0)); then
-  die "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn | --m1-sep-pg]"
+  die "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn | --m1-sep-pg | --m1-disp-hs]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -868,12 +892,13 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!wakeall)) || [[ $parms == *$'\n'wake_all:* ]] || die "$ko is an older build, without wake_all: make -C $here"
 ((!llretn)) || [[ $parms == *$'\n'll_retn:* ]] || die "$ko is an older build, without ll_retn: make -C $here"
 ((!seppg)) || [[ $parms == *$'\n'sep_pg:* ]] || die "$ko is an older build, without sep_pg: make -C $here"
+((!disphs)) || [[ $parms == *$'\n'disp_hs:* ]] || die "$ko is an older build, without disp_hs: make -C $here"
 # sleep-drain-pmp's module is built by install.sh for one kernel. After a kernel update it's the old kernel's until
 # install.sh runs again, which a safe boot can't do: better to say so now than after the load.
 ((!sio)) || [[ $(modinfo -F vermagic "$PMP_KO" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] ||
   die "$PMP_KO isn't built for $(uname -r): restart into the regular boot and run pkexec bash install.sh there"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
-# --m1-sep-pg: never with the SEP's driver loaded. apple_sep writes the enclave's key store (xART, which macOS shares, and
+# --m1-sep-pg and --m1-disp-hs, which has its write too: never with the SEP's driver loaded. apple_sep writes the enclave's key store (xART, which macOS shares, and
 # which a safe boot's read-only root doesn't cover), and this run lets the SoC go down around the enclave. Its module is
 # looked for beside e1_hook's own; e1_hook itself refuses sep_pg=1 while a driver is bound to the SEP's device.
 ((!seppg)) || [[ ! -d ${MODDIR%/*}/apple_sep ]] ||
@@ -931,6 +956,7 @@ wd2opt=--m1-wd2-bite
 ((!wakeall)) || wd2opt=--m1-wake-all
 ((!llretn)) || wd2opt=--m1-ll-retn
 ((!seppg)) || wd2opt=--m1-sep-pg
+((!disphs)) || wd2opt=--m1-disp-hs
 reader=
 disarm() {
   local again
@@ -1088,6 +1114,7 @@ params=(replay=15 oneway=1)
 ((!wakeall)) || params+=(wake_all=1)
 ((!llretn)) || params+=(ll_retn=1)
 ((!seppg)) || params+=(sep_pg=1)
+((!disphs)) || params+=(disp_hs=1)
 armed=1
 if ! insmod "$ko" "${params[@]}"; then
   # The module says why in the kernel log, which a safe boot loses at the restart: show it now, and keep it.
@@ -1134,6 +1161,7 @@ fi
   { ((!blink)) || [[ $(cat "$MODDIR/parameters/blink") == Y ]]; } &&
   { ((!llretn)) || [[ $(cat "$MODDIR/parameters/ll_retn") == Y ]]; } &&
   { ((!seppg)) || [[ $(cat "$MODDIR/parameters/sep_pg") == Y ]]; } &&
+  { ((!disphs)) || [[ $(cat "$MODDIR/parameters/disp_hs") == Y ]]; } &&
   { ((!wakeall)) || [[ $(cat "$MODDIR/parameters/wake_all") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
 # --m1-sio-pmp: the PMP's display report requests withdrawn at this suspend's noirq (Corey's pick of 2026-11-09), as

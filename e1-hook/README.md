@@ -259,7 +259,8 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   the run can be at before its byte (the run stopped before the byte's command, or that command failed), one
   of the family's (the command was acked and the byte didn't land), or another run's (a mark an earlier run
   left: not read). `--clear` zeroes the seven bytes after the byte or the mark only if the six after it are 0
-  and bit 3 is clear; anything else there it leaves, and says so. The load logs both sets of seven awake. The
+  (or hold `sep_pg=1`'s byte and `disp_hs=1`'s two, below, as those options leave them) and bit 3 is clear;
+  anything else there it leaves, and says so. The load logs both sets of seven awake. The
   stages are `a2_pre=1`'s and the keyboard's light
   is the witness, as in `--m1-a2-pre-blink`. With every wake source masked, a Mac whose entry completed would
   not wake for a key, the lid or the PMU's alarm: it comes back only by holding the power button. Run it
@@ -311,6 +312,56 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   is known to wake the Mac (nub-spmi0's enables are zeroed and every AP wake source but the PMU's is
   masked), so hold the power button. Run it with `--no-reading`, the nights off around it, nothing in the
   USB-C ports, and the keyboard filmed.
+- `disp_hs=1` (`run-floor --m1-disp-hs`, on `disp_off=1` and `gates_mark=1`, never with `observe=1`, with
+  `wake_all=1` and `sep_pg=1` or without them; the launcher's line is `--m1-sep-pg`'s with it;
+  `e1-hook/last_look.h` has the two bytes) changes K3b, the display step, and nothing else. The reference
+  driver (Ante042/linux, branch `t600x-s2r-reference`, `drivers/soc/apple/s2r.c`, `GPL-2.0-only OR MIT`,
+  credited) says in `apple_s2r_disp_down()`: "macOS order and values per block: cpu0 0xf0400ff, 0xf0403f0,
+  the fabric handshake +0x8014 = 1, +0x82bc = 1, 2, 4, then fe 0x3f0. The dispext0 handshake sets
+  0x2922c0044 bit 2, which the PMGR S2R engine 1 waits for after GO (hv trace 1/11)." Bit 2 of 0x2922c0044
+  is B2's first poll, which every run here has ended behind, and K3b lowers each stopped DCP's two power
+  words with no handshake. With `disp_hs=1` K3b does, for each DCP that stopped at prepare, disp0's (the
+  internal display's) first and dispext0's (the external's) second: if the DCP's FE power word reads
+  actual state non-zero, the reference's set-up table to its fabric block (`m1_dh_setup()`); the CPU0
+  power word down, the call every run makes; if that word read off and the FE word still reads actual
+  state non-zero, the handshake (`m1_dh_shake()`); the FE power word down, as in every run. It reads
+  0x2922c0044 before the first DCP and after each one's place in the loop, stopped or not, and sends two
+  bytes to the PMU's 0x600a-0x600b in one command through the kernel's path, before its own stage.
+  **What is new on the hardware:** two fabric blocks that nothing here has written or read before,
+  0x38c000000 (disp0's) and 0x28a000000 (dispext0's), 0xc000 mapped of each. To each, up to 69 writes: the
+  65 of its table, `disp_init_38c[]` or `disp_init_28a[]`, copied from the reference entry for entry
+  (offsets 0x0 to 0x8428; "hv trace 1/11, macOS 13.7.8 boot": the set-up macOS writes when it powers the
+  block up, which Linux leaves at reset values), and the handshake's four: block + 0x8014 := 1, then
+  block + 0x82bc := 1, 2, 4. Neither block is ever read. **The guard:** the reference's, "The fabric block
+  is only there while its fe is powered: a write to it otherwise is an SError", which here would panic the
+  safe boot: a block is written only right after its FE power word (disp0_fe 0x28e580328, dispext0_fe
+  0x28e080258) read actual state non-zero, once before the table and once more before the handshake; a
+  DCP that didn't stop, or whose FE word reads off, gets no write to its block at all, and as in every run
+  a CPU0 word that doesn't read off within 10 ms leaves its FE word, and now its handshake, alone. One read
+  is new at this point: 0x2922c0044, three times in K3b. And two more bytes of the PMU's scratch, 0x600a
+  and 0x600b, inside the range OK'd on 2026-11-16: K1 leaves 0x01 at 0x600a after the seven zeros and the
+  other options' marks; `m1_pmu_ok()` lets through, with `disp_hs=1`, that mark by itself or two bytes at
+  0x600a whose first has bit 7 set and bit 4 clear. The record: 0x600a's bit 6 says dispext0's handshake
+  was made, bit 5 disp0's, bits 3:0 are 0x2922c0044's low nibble before K3b touched anything; 0x600b's
+  bits 3:0 are that nibble after disp0's place in the loop and bits 7:4 after dispext0's. What the
+  reference does and this step doesn't: it drops each block's request at the PMP and waits for the ack
+  before the CPU0 word, writes the power words macOS's values (0xf0400ff, 0xf0403f0; 0x3f0), and takes
+  dispext1 and the GPU's port down as well. `m1-crumbs` reads the two bytes by themselves, as it reads
+  the other two options' bytes: under K3's stage (still the stage when K3b sends them: they landed and
+  K3b's own stage didn't), K3b's own, 0x84, and every later stage of such a run; K1's mark alone under
+  none, K1's or K3's stage (the run stopped before the bytes, in K3b's writes perhaps), or under a later
+  one (K3b ran and its command failed, which on the kernel's path stops nothing after it); under another
+  run's stage neither is read. It says which handshakes were made, the three nibbles in the order K3b
+  read them with bit 2 named, and, only if bit 2 read clear before K3b and set later, where it first read
+  set. `--clear` zeroes the seven when each of the three fields is its option's or 0, with at least one
+  there, and 0x600c-0x600e are 0. At the load `m1_dh_init()` checks that each block is paired with the
+  DCP and the two power words `m1_dcp_info[]` names, that every table entry is a whole word inside the
+  span mapped, and every address K3b writes, the two handshake words included, against the never-write
+  list; it refuses without the engine's page or an FE word's mapping, maps the two blocks, and logs
+  whether each FE word reads powered. The run is `--m1-sep-pg`'s otherwise, with its endings, and like it
+  is only made in a safe boot started with `pkexec sleep-drain-safe boot --no-sep` (`sep_pg=1` is in its
+  line; the launcher refuses while `apple_sep` is loaded). A panic in K3b's writes would restart the Mac
+  about 10 s later, with stage 0x02 and 0x01 at 0x600a.
 - `ll_retn=1` (`run-floor --m1-ll-retn`, on `ll_wake=1`, never with `gate_look=1`; the launcher's line is
   `--m1-atc-down`'s with it; `e1-hook/last_look.h` has why, the record's form and the stages) changes how CPU0
   takes its very last WFI, and nothing before it. CYC_OVRD's bit 0 is XNU's `disWfiRetn`, "disable WFI
