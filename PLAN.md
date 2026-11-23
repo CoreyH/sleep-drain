@@ -29,8 +29,10 @@ this section where they differ.
   for its own timer; the restart comes at the marker's time all the same.
 - CPU0's RVBAR reads 0x00100100059e4001 under m1n1-aurora: bit 0 set, the address 0x100059e4000. The
   other seven have the same address with bit 0 clear (`results/rvbar-20261119/`).
-- Nobody has macOS's commit state for a T600x, and no M1 Pro or Max has come back from a completed
-  entry anywhere (aurora-silicon/linux#2198, answered 2026-11-19). T6000 data is welcome there; the
+- Nobody has macOS's commit state for a T600x. `sleep.c` has no T6000 entry and nothing has completed
+  one on this Mac or with it (aurora-silicon/linux#2198, answered 2026-11-19). Since 2026-11-22 there
+  is a report of a J314s that completes the entry and wakes, on Ante042's own reference branch with
+  an m1n1 of their own: their result, not reproduced here. T6000 data is welcome there; the
   entry's data went up as a comment on 2026-11-19.
 - A record's bytes: 0x6008-0x600c have carried across the restart every time; 0x600d and 0x600e were
   lost in both runs that wrote them, though awake they take a write. Use the first five.
@@ -60,8 +62,14 @@ this section where they differ.
      (`~/.local/share/sleep-drain/ante042-20261123/`), for what stops the entry next if the gate opens
      (the 16 DCS words, `ps_late[]`, the quiesce's order).
    - A reply to Ante042 and RyanTheTide on #2198, with the run's result: needs Corey's OK.
-   - Open asks: malik-na/linux-aurora#77 and omacom/linux-aurora#290 (11-20), unanswered. If the run
-     moves the engine they are moot: say so there, with Corey's OK.
+   - Open asks: malik-na/linux-aurora#77 and omacom/linux-aurora#290 (11-20), unanswered. They stay
+     open: a light that stops says B2 reached its tenth SIO word, not that the entry finished, and
+     macOS's commit state would still serve for whatever stops it next. Only an entry shown complete
+     retires them.
+   - The reference's tested path sends the SEP its SLEEP through a driver; this run clears the wait
+     with the enclave up and this kernel's `apple_sep` bound, which sends no such message. Tell Corey
+     that with the run's steps. A question for Ante042 in the reply: how often their no-driver
+     fallback ran.
    - **After an entry that completes**, the fix is a port: Ante042's t6000 core onto upstream's
      `sleep.c` (their notes map it area by area), and a wake needs the loader's mailbox, which is
      m1n1's or aura's side and not Claude's to write.

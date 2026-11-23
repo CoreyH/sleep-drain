@@ -5435,8 +5435,9 @@ the second reply names a likelier hold, and the ninth run goes to that.
 - Bit 3 of the count word: "no name for it in our tree, and we have no T600x reading to compare against."
 - The wake masks: their driver "writes every AP wake-mask word to all ones and then unmasks only the sources
   asked for"; "macOS reads all ones outside the ADT's `ap-wake-sources` (measured). So leaving the PMU's
-  source open is how macOS has it." That agrees with word 6's upper bits not taking ones in the `wake_all=1`
-  run: bits that read as they are.
+  source open is how macOS has it." That is about the SoCs `sleep.c` supports, whose mask builder has a
+  last word of its own per SoC: it says nothing of T6000's word 6, whose bits 31:13 didn't take ones in the
+  `wake_all=1` run and stay unexplained. What that run verified is the named sources, masked.
 - A pending source: their entry checks for one before the cores' window, "not as a stall it has seen"; "the
   stalls we hit were power words left on". The `wake_all=1` run had already put this aside here.
 
@@ -5472,10 +5473,26 @@ never sent it). Whether this kernel's `apple_sep` sends one on suspend isn't kno
 reads actual 0 awake doesn't say the engine's wait is met (which signal the engine waits on isn't known: the
 gate word's bit 3, set in every reading, is a candidate and nothing more).
 
+**The reference's own SEP path isn't the one this run takes.** By its notes the tested setup loads `apple_sep`
+(with `xart_writes=0 provision_keybag=0`) from a boot service, the enclave "gets SLEEP" in the
+`PM_SUSPEND_PREPARE` notifiers, and the driver waits for the SEP's power word before `slpa`: the hundreds of
+sleeps ran that way. Clearing the wait bit is its fallback for a SEP with no driver, and nothing in the
+notes says how often that path ran (Pullfrog on #130). Here the SEP has a driver of another kind: this
+kernel's `apple_sep` (`drivers/soc/apple/sep.rs` and `pm.rs` on omacom's `integration/aurora`, read today;
+the installed 7.2.11-15 build is taken to match: inferred) holds Touch ID captures and entropy requests over
+a suspend and keeps the node's power domains on across it, and sends the enclave no sleep message. So the
+run clears the wait with the enclave up and a driver bound, which neither macOS nor the reference's tested
+path does. What the enclave sees when the rest of the SoC goes down around it isn't known. It is not shown
+to be the same as a watchdog restart, though every run so far has ended in one with the enclave in this
+same state. What bounds it: the write is to the PMGR and is gone at the restart; the driver's `xart_guard`
+defaults to refusing the enclave's writes and deletes of xART on M1; and the run ends in a restart or a
+power button held either way.
+
 **Corey's two OKs of 2026-11-23**, asked because the conventions name the SEP:
 - the write: "Yes, build it": the next run clears bit 2 of 0x28e0cc200 before the commit, one PMGR register,
-  not a write to the enclave, undone by the restart. The enclave then loses power without being told, as at
-  every watchdog restart of the 30-odd runs so far.
+  not a write to the enclave, undone by the restart. The question as put to Corey said the enclave then
+  loses power untold "as at every watchdog restart": that equivalence isn't shown (the paragraph above), and
+  Corey is told so with the run's steps, before it is run.
 - reading Ante042's kernel branch: "read whatever you need to read! I don't see why I would limit your
   ambition here, you're in the driver's seat :)". Taken for that branch, credited; m1n1 and its forks stay
   off limits by CLAUDE.md's rule, which rests on Asahi's policy and which Corey didn't name.
