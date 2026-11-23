@@ -357,6 +357,30 @@ def main():
         p = run(t, tool, "boot", "--no-sep")
         check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP).endswith(" module_blacklist=apple_pmp,apple_sep sleepdrain.safe"),
               "run again: the entries are made from the new line, with both modules excluded", p.stdout + p.stderr + cfg_of(t))
+    # The regular entry goes away while the image is built and the safe entries stay: they are not the line to copy.
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t)
+        p = run(t, tool, "boot", "--no-sep")
+        cfg = cfg_of(t)
+        mk = os.path.join(t, "bin", "mkinitcpio")
+        body = open(mk).read()
+        with open(mk, "w") as f:
+            f.write(body.replace("#!/bin/bash\n", f"#!/bin/bash\nsed -i '/^    linux .vmlinuz-linux-aurora {REG}$/d' {t}/boot/grub/grub.cfg\n", 1))
+        with open(os.path.join(t, "boot/sleep-drain-safe/initramfs.img"), "w") as f:
+            f.write("the image the queued entry boots\n")
+        p = run(t, tool, "boot")
+        now = cfg_of(t)
+        check(p.returncode != 0 and "changed while the image was built" in p.stderr and nxt(t) == NOSEP
+              and image(t)[0] == "the image the queued entry boots\n" and not os.path.exists(os.path.join(t, "boot/sleep-drain-safe/initramfs.img.new"))
+              and entry_line(now, NOSEP) == f"linux /vmlinuz-linux-aurora {REG} {NO_SEP} sleepdrain.safe" and f"{REG}\n" not in now,
+              "the regular entry removed during the image build, the safe entries left: refused; the old image and the queued selection stay",
+              p.stdout + p.stderr + now)
+        with open(mk, "w") as f:
+            f.write(body)
+        p = run(t, tool, "boot")
+        check(p.returncode != 0 and "no /vmlinuz-linux-aurora entry" in p.stderr and nxt(t) == NOSEP and image(t)[0] == "the image the queued entry boots\n",
+              "and with no regular entry to begin with, only this script's own: refused before the image is built; a safe entry isn't copied",
+              p.stdout + p.stderr)
     # Bytes, not characters: a line of two-byte characters that fits by count and not by size.
     with tempfile.TemporaryDirectory() as t:
         base = "root=UUID=aaaa rw pad="

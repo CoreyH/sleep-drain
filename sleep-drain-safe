@@ -184,10 +184,10 @@ cmd_boot() {
 
   # The regular entry's command line, so the safe boot opens the same root
   # the same way, plus the flag the hook looks for.
+  # From grub.cfg without this script's own section: a safe entry is never the line to copy.
   regular_cmdline() {
-    local c
-    c=$(awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }' "$GRUB_CFG")
-    echo "${c% sleepdrain.safe}"
+    without_section "$GRUB_CFG" "$SCRIPT" |
+      awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }'
   }
   cmdline=$(regular_cmdline)
   [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"
