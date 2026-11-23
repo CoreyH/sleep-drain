@@ -64,6 +64,7 @@ def setup(t, regular="root=UUID=aaaa rw quiet splash"):
     stub(b, "lsinitcpio", "echo hooks/sleepdrain-safe\n")
     stub(b, "grub-probe", "echo 553C-45DC\n")
     stub(b, "grub-reboot", f'echo "$1" > {t}/next\n')
+    stub(b, "grub-editenv", f'[[ -f {t}/next ]] && echo "next_entry=$(cat {t}/next)"; exit 0\n')
     stub(b, "sync", "exit 0\n")
     regular_section = ("### BEGIN /etc/grub.d/10_linux ###\nmenuentry 'Omarchy' --id regular {\n"
                        f"    linux /vmlinuz-linux-aurora {regular}\n    initrd /initramfs-linux-aurora.img\n}}\n### END /etc/grub.d/10_linux ###\n")
@@ -140,9 +141,23 @@ def main():
               and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {REG} {NO_SEP} sleepdrain.safe",
               "a plain boot whose grub-reboot fails after boot --no-sep: the queued entry still has the blacklist and is still the one selected",
               p.stdout + p.stderr)
+        # A grub-reboot that returns 0 and writes nothing: the plain entry must not be announced, and the queued one stays.
+        stub(os.path.join(t, "bin"), "grub-reboot", "exit 0\n")
+        p = run(t, tool, "boot")
+        check(p.returncode != 0 and f"the next entry isn't {PLAIN}: next_entry={NOSEP}" in p.stderr and "the next restart is" not in p.stdout
+              and nxt(t) == NOSEP,
+              "a grub-reboot that returns 0 without writing the selection: the command fails and says what is queued, where it would have announced a boot",
+              p.stdout + p.stderr)
         stub(os.path.join(t, "bin"), "grub-reboot", f'echo "$1" > {t}/next\n')
         p = run(t, tool, "boot")
         check(p.returncode == 0 and nxt(t) == PLAIN and cfg_of(t) == cfg, "a plain boot after it: the first entry is selected, grub.cfg as it was", p.stdout + p.stderr)
+        os.remove(os.path.join(t, "next"))
+        stub(os.path.join(t, "bin"), "grub-reboot", "exit 0\n")
+        p = run(t, tool, "boot", "--no-sep")
+        check(p.returncode != 0 and f"the next entry isn't {NOSEP}: none is set" in p.stderr and "without the Secure Enclave" not in p.stdout,
+              "the same with nothing queued and boot --no-sep: refused, no boot without the driver announced", p.stdout + p.stderr)
+        stub(os.path.join(t, "bin"), "grub-reboot", f'echo "$1" > {t}/next\n')
+        run(t, tool, "boot")
         os.remove(os.path.join(t, "next"))
         for args in (["boot", "--nosep"], ["boot", "--no-sep", "extra"], ["boot", "extra"]):
             p = run(t, tool, *args)
@@ -221,6 +236,27 @@ def main():
         check(p.returncode == 0 and entry_line(cfg_of(t), NOSEP).endswith(" quiet module_blacklist=foo,apple_sep sleepdrain.safe"),
               "apple_sep named only in an earlier module_blacklist, which the kernel drops: added to the last one's list all the same",
               p.stdout + p.stderr + cfg_of(t))
+    # Both spellings are one parameter to the kernel, and the last one given wins.
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t, regular="root=UUID=aaaa rw module_blacklist=apple_sep module-blacklist=apple_pmp quiet")
+        p = run(t, tool, "boot", "--no-sep")
+        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP).endswith(" quiet module_blacklist=apple_pmp,apple_sep sleepdrain.safe")
+              and "already keeps apple_sep out" not in p.stdout,
+              "module_blacklist=apple_sep followed by module-blacklist=apple_pmp: the kernel would block apple_pmp alone, so the second entry ends with both",
+              p.stdout + p.stderr + cfg_of(t))
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t, regular="root=UUID=aaaa rw module-blacklist=apple_sep,foo quiet")
+        p = run(t, tool, "boot")
+        same = "linux /vmlinuz-linux-aurora root=UUID=aaaa rw module-blacklist=apple_sep,foo quiet sleepdrain.safe"
+        check(p.returncode == 0 and entry_line(cfg_of(t), NOSEP) == same and "already keeps apple_sep out" in p.stdout,
+              "the hyphen spelling with apple_sep in its list is seen as keeping the driver out", p.stdout + p.stderr + cfg_of(t))
+    # A backslash in the regular line must compare as it is.
+    with tempfile.TemporaryDirectory() as t:
+        reg = r"root=UUID=aaaa rw systemd.mask=var-lib-sleep\x2ddrain.mount quiet"
+        tool = setup(t, regular=reg)
+        p = run(t, tool, "boot", "--no-sep")
+        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
+              "a regular line with a backslash escape in it: the entries are written and found as written", p.stdout + p.stderr + cfg_of(t))
     print("all ok" if not fails else f"{fails} failed")
     return 1 if fails else 0
 

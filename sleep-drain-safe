@@ -100,34 +100,40 @@ regen_grub() {
   fi
 }
 
-# Whether apple_sep is in the module blacklist of a kernel command line. The
-# kernel keeps the last module_blacklist= it is given, not the sum of them.
-sep_blacklisted() {
+# The list of the last module blacklist argument of a kernel command line. The
+# kernel keeps the last one it is given, not the sum of them, and takes
+# module-blacklist= for the same parameter (it reads - and _ alike in names).
+last_blacklist() {
   local a last=
   for a in $1; do
-    [[ $a != module_blacklist=* ]] || last=${a#module_blacklist=}
+    [[ $a != module_blacklist=* && $a != module-blacklist=* ]] || last=${a#*=}
   done
-  [[ ,$last, == *,apple_sep,* ]]
+  echo "$last"
+}
+
+# Whether apple_sep is in that list.
+sep_blacklisted() {
+  [[ ,$(last_blacklist "$1"), == *,apple_sep,* ]]
 }
 
 # A command line with apple_sep added to its module blacklist: one more
 # module_blacklist= at the end that repeats the last one's list, since a second
 # argument replaces the first and would let that one's modules load again.
 no_sep_cmdline() {
-  local a last=
+  local last
   if sep_blacklisted "$1"; then
     echo "$1"
     return
   fi
-  for a in $1; do
-    [[ $a != module_blacklist=* ]] || last=${a#module_blacklist=}
-  done
+  last=$(last_blacklist "$1")
   echo "$1 module_blacklist=${last:+$last,}apple_sep"
 }
 
 # have_entry CFG ID LINE: CFG's menu entry ID has exactly LINE as its linux line.
 have_entry() {
-  awk -v id="--id $2 " -v want="$3" '
+  # Through the environment: awk -v would read backslashes in the line as escapes.
+  SDS_ID="--id $2 " SDS_WANT=$3 awk '
+    BEGIN { id = ENVIRON["SDS_ID"]; want = ENVIRON["SDS_WANT"] }
     index($0, id) { inside = 1; next }
     inside && $1 == "linux" { sub(/^[ \t]+/, ""); if ($0 == want) found = 1; inside = 0 }
     inside && $0 ~ /^}/ { inside = 0 }
@@ -210,6 +216,9 @@ EOF
   if ((nosep)); then id=$ENTRY_NOSEP line=$nosep_line; else id=$ENTRY line=$plain_line; fi
   have_entry "$GRUB_CFG" "$id" "$line" || die "no $id entry with its command line in $GRUB_CFG; nothing selected"
   grub-reboot "$id" || die "grub-reboot failed; nothing new selected"
+  # grub-reboot can return 0 without having written the selection: read it back.
+  grub-editenv - list 2> /dev/null | grep -x -F "next_entry=$id" > /dev/null ||
+    die "grub-reboot returned 0, but the next entry isn't $id: $(grub-editenv - list 2> /dev/null | grep '^next_entry=' || echo 'none is set'). Not selected"
   if ((nosep)); then
     echo "the next restart is a safe boot ($release, disk read-only) without the Secure Enclave's driver (apple_sep on the module blacklist); every restart after that is the regular one"
   elif sep_blacklisted "$cmdline"; then
