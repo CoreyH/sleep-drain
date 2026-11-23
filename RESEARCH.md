@@ -5426,6 +5426,90 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### `disp_hs=1` and `sep_pg=1` as built: the reference's two steps for the engine's opening (2026-11-23)
+
+**Why.** "The weekend's answers", below, and the comparison made the same day of Ante042's driver with this
+recipe (`~/.local/share/sleep-drain/ante042-20261123/diff-vs-recipe.md`, by a subagent, read here). Two things
+that driver does and this recipe never did sit at B2's opening:
+- **The display blocks' fabric handshake.** macOS takes each display block down as: its CPU0 word down, then
+  block + 0x8014 := 1 and block + 0x82bc := 1, 2, 4, then its FE word down; before that the driver writes a
+  set-up table to the block ("Linux leaves 0x28a/0x28d/0x38c000000 at reset values"). Its comment: "The
+  dispext0 handshake sets 0x2922c0044 bit 2, which the PMGR S2R engine 1 waits for after GO (hv trace 1/11)."
+  **Bit 2 set on 0x2922c0044 is B2's first poll.** The recipe's K3b lowers the two words of each stopped DCP
+  with no handshake; maralcbr's tables, which the recipe copies, are macOS's late writes and don't have the
+  displays' teardown, which macOS makes before `slpa`. The same handshake on APCIe's block (0x58c008014,
+  0x58c0082bc) is in those tables and has been made by every run.
+- **The PMGR's wait for the SEP's power gate** (0x28e0cc200, bit 2), set here (it reads 4).
+If the comment is right, the reading of 11-18 and -19 was wrong: the gate word's bit 2 is not "the third
+complex down", it can be set with every core up, and a core can read it. The fit to a count stood on four
+readings in which bits 0 and 1 moved and bit 2 never did; what bits 0 and 1 are is open again. This run
+reads the word before and after each handshake, with CPU0 up, and so tests the comment directly.
+
+**What they are.**
+- `e1_hook disp_hs=1` (needs `disp_off=1` and `gates_mark=1`). In K3b, for each DCP that stopped, disp0 then
+  dispext0: if its FE power word reads powered, the reference's 65 set-up writes to its fabric block
+  (0x38c000000 with `disp_init_38c[]`, 0x28a000000 with `disp_init_28a[]`, copied from Ante042's `s2r.c` and
+  checked against it by the test, with a checksum pinned); the CPU0 word down, as K3b does it now; if the FE
+  word still reads powered, the handshake's four writes; the FE word down. A block whose FE reads off gets
+  no write: "the fabric block is only there while its fe is powered: a write to it otherwise is an SError".
+  Neither block is ever read. 0x2922c0044 is read at K3b's start and after each block.
+- `e1_hook sep_pg=1` (needs `gates_mark=1`). In step 7, where the wake masks are written: 0x28e0cc200 read,
+  written back with bit 2 clear if it is set, read again; then the SEP's power word and 0x2922c0044 read.
+- **Both refuse to load with a driver bound to the SEP's device**, and `run-floor` refuses both options while
+  `apple_sep` is loaded: the run is made after `pkexec sleep-drain-safe boot --no-sep` (the section below
+  says why: on this Mac the enclave's store is open to its driver).
+
+**The record**, in the bytes of 0x6008-0x600e the family doesn't use, each field with K1's mark until it lands:
+
+| bytes | |
+|---|---|
+| 0x6009 (`sep_pg=1`) | bit 7; bit 6 the wait bit was set as found; bit 5 the word read back with it clear and the rest as found; bit 4 the SEP's power word read actual 0; bits 3:0 0x2922c0044's low nibble then |
+| 0x600a (`disp_hs=1`) | bit 7; bit 6 dispext0's handshake was made; bit 5 disp0's; bits 3:0 0x2922c0044's low nibble at K3b's start |
+| 0x600b | bits 7:4 the nibble after dispext0's place in K3b; bits 3:0 after disp0's |
+
+`run-floor --m1-sep-pg` is `--m1-a2-pre-blink`'s line with `sep_pg=1`; `--m1-disp-hs` is that with
+`disp_hs=1`, and is the one to run.
+
+**How `--m1-disp-hs` reads** (the keyboard filmed or watched; WD1's marker at 90 s):
+- **the nibbles first, whatever the light does:** bit 2 clear before the handshakes and set after dispext0's
+  (or disp0's) says the comment is right and B2's first poll is met before the commit, with a core up. Bit 2
+  clear in all three says the handshake as made here doesn't set it: the reference also drops each block's
+  request at the PMP before its CPU0 word and writes macOS's own values to the power words (0x0f0400ff,
+  0x0f0403f0; 0x3f0), which this step doesn't, and takes dispext1's and the GPU's ports down too.
+- **0x600a's bits 6:5** say whether each block's FE was powered when its turn came; a handshake not made is
+  a block that had no power, and nothing was written to it.
+- **the light stops:** B2 reached its tenth SIO word, for the first time in any run. Evidence about the
+  three changes together (the handshakes, the bit, no `apple_sep`); the nibbles and 0x6009 say what each
+  write did. Then the restart's time says how far it went: WD1's marker at 90 s if B2 stopped before its
+  op 223; up to about 150 s after that op if it zeroed WD1's count; WD2's 120 s if A2 never closed.
+- **the light stops and no restart comes:** the entry may have completed. Nothing this recipe leaves armed
+  is known to wake the Mac (nub-spmi0's enables are zeroed, every AP wake source but the PMU's is masked,
+  the alarm is an hour out): wait five minutes from the dark screen, then hold the power button.
+- **the light to the restart at 90 s:** B2 still short of its power-downs, with the nibbles to say whether
+  its first poll was met.
+- **a restart about 10 s after the dark screen, stage 0x02 with 0x01 at 0x600a:** a write to a display
+  block faulted (inferred from `kernel.panic=10`; not seen).
+Odds that the light stops, mine: one in two.
+
+**What is new on hardware.** Writes to two fabric blocks nothing here has written: 65 set-up words and the
+handshake's four in each of 0x38c000000 and 0x28a000000 (the table's last four are the handshake's too, so a
+block gets it twice, as in the reference), guarded by the FE word's read. One bit of one PMGR control word.
+Reads new in this state: the control word, the SEP's power word, and 0x2922c0044 in step 7 and in K3b. Three
+more PMU scratch bytes (0x6009-0x600b), inside the range OK'd on 2026-11-16. Nothing outlasts the restart.
+The MMIO-write tripwire goes from 74 to 80, each site named in the test.
+
+**Checked.** Built by a subagent from three written briefs in its own worktree, then read here.
+`tests/m1_crumbs_test.py` (1,583 ok): the header's helpers; `m1_sp_clear()` and K3b compiled in user space
+against fake pages with a write log (exactly one write, of the word less bit 2, only if the bit is set; per
+block the table, the CPU0 word, the handshake, the FE word in that order; an FE that reads off: no write to
+the block; without `disp_hs`, K3b's accesses identical to a copy of the function before the change, in
+eight scenarios); the tables against the reference's file and their checksums; `m1_pmu_ok()`, K1 and the
+undo over every combination of the three options, with the real functions; the load's refusals, the SEP's
+driver among them; the decoder over each field, together and alone, leftovers, the stages each record can
+stand under, `--clear`. `tests/e1a_launcher_test.py` (3,208 ok in full): the two options, their refusal with
+`apple_sep` loaded, every other option unchanged by it. 73 `sp` and 65 `dh` mutants, none missed, each by a
+failing check.
+
 ### The weekend's answers: a J314s that completes the entry, and a bit that makes the engine wait for the SEP (2026-11-23)
 
 Two replies on aurora-silicon/linux#2198, read on Monday before the `ll_retn=1` run was run. It wasn't run:
