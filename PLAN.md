@@ -63,7 +63,7 @@ this section where they differ.
    **The one recipe to run is `run-floor --no-reading --m1-disp-hs`**: `--m1-a2-pre-blink`'s line with
    both, after `pkexec sleep-drain-safe boot --no-sep`. Three changes at once against
    `--m1-a2-pre-blink`'s run of 11-19, then: the handshakes, the bit, and no `apple_sep` in the boot.
-   (The last run made, the eighth, was `--m1-wake-all`, that recipe with every wake source masked;
+   (The last run made, the eighth, was `--m1-wake-all`, that recipe with every named AP wake source masked;
    this one has the recipe's own masks again, the PMU's source open: a fourth difference from run
    eight, none from the baseline.) A light that stops is evidence about
    that combination and says B2 reached its tenth SIO word, not that the entry finished and not which
