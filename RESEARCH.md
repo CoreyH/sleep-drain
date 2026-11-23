@@ -5426,6 +5426,98 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The weekend's answers: a J314s that completes the entry, and a bit that makes the engine wait for the SEP (2026-11-23)
+
+Two replies on aurora-silicon/linux#2198, read on Monday before the `ll_retn=1` run was run. It wasn't run:
+the second reply names a likelier hold, and the ninth run goes to that.
+
+**RyanTheTide, 2026-11-20** (from `drivers/soc/apple/sleep.c` on `integration/aurora`; his words in quotes):
+- Bit 3 of the count word: "no name for it in our tree, and we have no T600x reading to compare against."
+- The wake masks: their driver "writes every AP wake-mask word to all ones and then unmasks only the sources
+  asked for"; "macOS reads all ones outside the ADT's `ap-wake-sources` (measured). So leaving the PMU's
+  source open is how macOS has it." That is about the SoCs `sleep.c` supports, whose mask builder has a
+  last word of its own per SoC: it says nothing of T6000's word 6, whose bits 31:13 didn't take ones in the
+  `wake_all=1` run and stay unexplained. What that run verified is the named sources, masked.
+- A pending source: their entry checks for one before the cores' window, "not as a stall it has seen"; "the
+  stalls we hit were power words left on". The `wake_all=1` run had already put this aside here.
+
+**Ante042, 2026-11-22: "I have a J314s (M1 Pro, T6000) that does complete the entry and comes back, and has
+done so daily since early November."** A reference branch, not submitted: Ante042/linux
+`t600x-s2r-reference` (integration/aurora of 11 November plus `drivers/soc/apple/s2r.c`,
+`GPL-2.0-only OR MIT`, and `S2R-T600X-NOTES.md`), with an m1n1 side of its own. By its notes: several hundred
+sleeps, every wake source, nights at 130 to 170 mW against 150 to 185 mW for macOS measured the same way.
+This is the reference driver Naeem Malik's commit of 11-12 cited and nobody could find (inferred: the same
+facts, the same model). What the reply says that touches the stall here, in its words:
+- "A PMGR control bit set at boot makes the sequencer wait for the SEP to power-gate (`T6000_PMGR_SEP_PG`,
+  bit 2). With the SEP driver bound the enclave gets SLEEP and gates itself; without it the branch clears the
+  bit for the sleep. I do not know that it is what stops your entry, but a sequencer waiting on a gate that
+  never opens fits a commit followed by the watchdog."
+- The boot core's RVBAR is locked by iBoot to the boot loader on their J314s too, read back; every wake
+  starts in m1n1 and resumes through a mailbox it publishes. That agrees with this Mac's reading of 11-19.
+- "Secondaries have to stay parked until the boot core commits, because the global deep sleep bit hangs a
+  core that idles in WFI before then." The recipe's `hold=1` does that since run 5.
+
+**In the driver** (`s2r.c`, read with Corey's OK of the day): `T6000_PMGR_SEP_PG` is 0x28e0cc200 ("ADT
+/arm-io/pmgr reg[0] + 0x4c200"), the bit `BIT(2)`; "macOS sends the SEP its sleep message instead and only
+clears the bit for the wait-sep-pg=0 boot-arg (AppleT6000PMGR::_enableWaitSEPPG)". `apple_s2r_sep_pg_clear()`
+reads the word, writes it back without the bit and reads it again, on the boot CPU alone where the wake mask
+is written, before `cpu_suspend()`; the driver also waits up to 5 s for the SEP's power word (0x28e580c00) to
+read actual 0 before `slpa`.
+
+**On this Mac, awake, read-only** (`results/sep-pg-peek-20261123/`, 09:43, `apple_sep` loaded): **0x28e0cc200
+reads 0x00000004: the bit is set.** The SEP's power word reads 0x1000030f (target f, actual 0), as on
+2026-11-04; 0x2922c0044 reads 8 and 0x2922c0040 reads 3, as ever. So the engine here is told to wait for the
+SEP's power gate, and nothing in this recipe has ever touched that word or sent the SEP a sleep message
+(RESEARCH.md's own list of macOS's entry has the message: control endpoint 0, type 0x0c, param 2; the recipe
+never sent it). Whether this kernel's `apple_sep` sends one on suspend isn't known; that the power word
+reads actual 0 awake doesn't say the engine's wait is met (which signal the engine waits on isn't known: the
+gate word's bit 3, set in every reading, is a candidate and nothing more).
+
+**The reference's own SEP path isn't the one this run takes.** By its notes the tested setup loads `apple_sep`
+(with `xart_writes=0 provision_keybag=0`) from a boot service, the enclave "gets SLEEP" in the
+`PM_SUSPEND_PREPARE` notifiers, and the driver waits for the SEP's power word before `slpa`: the hundreds of
+sleeps ran that way. Clearing the wait bit is its fallback for a SEP with no driver, and nothing in the
+notes says how often that path ran (Pullfrog on #130). Here the SEP has a driver of another kind: this
+kernel's `apple_sep` (`drivers/soc/apple/sep.rs` and `pm.rs` on omacom's `integration/aurora`, read today;
+the installed 7.2.11-15 build is taken to match: inferred) holds Touch ID captures and entropy requests over
+a suspend and keeps the node's power domains on across it, and sends the enclave no sleep message. So the
+run as first proposed, in an ordinary safe boot, would have cleared the wait with the enclave up and a
+driver bound, which neither macOS nor the reference's tested path does. What the enclave sees when the rest
+of the SoC goes down around it isn't known. It is not shown to be the same as a watchdog restart, though
+every run so far has ended in one with the enclave in this same state. **That proposal is superseded** by
+the next paragraph: no run is made that way.
+
+**And on this Mac the enclave's store is open to it** (Pullfrog on #130, then read here). The guard's default
+is narrower than "refuses xART writes": it protects records this Linux didn't create and still lets Linux's
+own and the shared roots change. And this Mac doesn't run the default: `/etc/modprobe.d/apple-sep.conf` sets
+`xart_guard=0` (Corey's Touch ID fix of 2026-11-19, its risk written in the file: "the enclave may rewrite
+session records macOS also uses. If macOS rejects one, FileVault volumes may not unlock and recovery is a DFU
+restore"), and this boot's log says "xART guard off" and "writes ENABLED". The store is an APFS extent the
+driver writes directly; the safe boot makes the LUKS root read-only, not that. So a restart undoes the PMGR
+bit but not a write that reached the store, and a run that lets the SoC go down around a live enclave is
+not to be made with that driver loaded. **The run is therefore made with `apple_sep` kept from loading** (the
+safe boot with `module_blacklist=apple_sep`; `run-floor` refuses the option if the module is there): the
+enclave is then never started by Linux, nothing can service an xART write, and the state is the one the
+reference's fallback is written for, a SEP with no driver. Every earlier run had the driver loaded and ended
+in a hard restart; none of them let the engine past its opening.
+
+**Corey's two OKs of 2026-11-23**, asked because the conventions name the SEP:
+- the write: "Yes, build it": the next run clears bit 2 of 0x28e0cc200 before the commit, one PMGR register,
+  not a write to the enclave, undone by the restart. The question as put to Corey said the enclave then
+  loses power untold "as at every watchdog restart": that equivalence isn't shown (the paragraphs above),
+  Corey was told so the same morning, and the run as built doesn't rest on it: no enclave driver in that
+  boot.
+- reading Ante042's kernel branch: "read whatever you need to read! I don't see why I would limit your
+  ambition here, you're in the driver's seat :)". Taken for that branch, credited; m1n1 and its forks stay
+  off limits by CLAUDE.md's rule, which rests on Asahi's policy and which Corey didn't name.
+
+**What changes** (judgment). Until Sunday the hold was in a state no core reads and no candidate was better
+than one in twenty. Now there is a named register that reads as the reference says on this very Mac, a
+working driver for this model to compare the whole recipe with, and its author offering to read registers.
+Odds that the light stops with the bit cleared, mine: one in two. And the way to an upstream fix is no
+longer to find the entry: it is to port what works onto `sleep.c`, whose author has said a `t6000` entry
+needs one completed entry shown.
+
 ### `ll_retn=1` as built: CPU0's last WFI with retention left on, and a look if it comes back (2026-11-20)
 
 **Why.** "The desk step of 2026-11-20", below: the hold is in a state no core reads, and a core that goes
