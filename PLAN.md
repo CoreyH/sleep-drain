@@ -1,10 +1,10 @@
 # Plan
 
-Last updated 2026-11-20. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-23. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
-## Pick up here (2026-11-20)
+## Pick up here (2026-11-23)
 
 Read this first. "Where things stand" below is the long record and its order of work is superseded by
 this section where they differ.
@@ -49,31 +49,22 @@ this section where they differ.
   2026-11-16).
 
 **Next, in this order:**
-1. **Nothing is waiting for Corey. At the desk** (RESEARCH.md, "The `wake_all=1` run", 2026-11-20): with
-   every named wake source masked (read back) the light blinked to the restart at 90 s. A source the
-   masks let through isn't the hold. Eight of the review's ten one-way runs are used.
-   - **Read the answers first.** Three asks are out: aurora-silicon/linux#2198 (the follow-up of 11-19:
-     what bit 3 of the gate word is), malik-na/linux-aurora#77 (11-20: Naeem's commit-state tracer for a
-     J314s, or one snapshot under macOS on a T600x) and omacom/linux-aurora#290 (11-20: maralcbr's
-     J314s trace or a dump near the commit). Each reply needs Corey's OK.
-   - **macOS's commit state is the thing to get.** If a script or a capture comes back: Corey can run
-     m1n1 on this Mac from their Linux desktop (A3 and A4 below; a second volume with an older macOS,
-     since the installed 26.6.2 can't be the guest). Claude writes no m1n1 code; whether Claude may read
-     a capture is Corey's decision, still open. Claude's part that is free of both: T6000's address list
-     as a plain file, and this Mac's own state at the commit read by the look.
-   - **The ninth run, built and ready: `run-floor --no-reading --m1-ll-retn`** (RESEARCH.md,
-     "`ll_retn=1` as built", 2026-11-20): CPU0's last WFI with retention left on (CYC_OVRD's bit 0
-     clear) and its timer at 25 s, one value changed in run B's recipe with ATC0's chain lowered, and
-     a look when it comes back, with the E complex's state word in the record (0x44 until the
-     sequencer has cycled it; the gate word says nothing once CPU0 is up again). A return with the state
-     word changed, 0x2922c0040 no longer 3 or PHASE past 4 is a look into the dark state; a return with
-     all as found, or no return, closes the idea. The light filmed or watched to the restart at 70 s;
-     the nights off around it. Corey runs it when they choose; an answer upstream first would be read
-     before it.
-   - Kept as ideas, not built: a secondary core as the last one down with its RVBAR at a stub of ours
-     and an interrupt to start it with no core up (two unknown mechanisms); the other words on at the
-     commit that B2 doesn't lower (DEBUG, SOC_DPE, NUB_GPIO, PCIE1_REF, CLVR_SPMI0-4: macOS's table
-     doesn't lower them either).
+1. **The ninth run: the SEP's power-gate wait cleared** (`sep_pg=1`, `run-floor --m1-sep-pg`: being
+   built on 2026-11-23; RESEARCH.md, "The weekend's answers"). Ante042's J314s completes the entry and
+   wakes; their driver clears bit 2 of the PMGR control word 0x28e0cc200, which makes the sequencer
+   wait for the SEP to power-gate, when nothing puts the SEP to sleep. Here the word reads 4. The run
+   is `--m1-a2-pre-blink`'s with that one write and a byte at 0x6009; the light is the result. If the
+   light stops and no restart comes, the entry may have completed: the power button held.
+   - `ll_retn=1` (`--m1-ll-retn`) is built and merged and **not run**: held behind this.
+   - At the desk meanwhile: the reference driver against the recipe, difference by difference
+     (`~/.local/share/sleep-drain/ante042-20261123/`), for what stops the entry next if the gate opens
+     (the 16 DCS words, `ps_late[]`, the quiesce's order).
+   - A reply to Ante042 and RyanTheTide on #2198, with the run's result: needs Corey's OK.
+   - Open asks: malik-na/linux-aurora#77 and omacom/linux-aurora#290 (11-20), unanswered. If the run
+     moves the engine they are moot: say so there, with Corey's OK.
+   - **After an entry that completes**, the fix is a port: Ante042's t6000 core onto upstream's
+     `sleep.c` (their notes map it area by area), and a wake needs the loader's mailbox, which is
+     m1n1's or aura's side and not Claude's to write.
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
