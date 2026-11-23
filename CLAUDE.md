@@ -63,7 +63,10 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   read-only all session: `pkexec sleep-drain-safe save [PATH...]` writes what
   the boot added (new log lines, new snapshots, the journal, PATHs) as one tar
   to the boot partition, mounted just for that, and `pkexec sleep-drain-safe
-  collect` puts it in place after the next regular boot. The regular
+  collect` puts it in place after the next regular boot. `boot --no-sep` adds
+  `module_blacklist=apple_sep` to that one boot, so that Linux never starts
+  the Secure Enclave in it: for a run that lets the SoC go down around the
+  enclave, whose store (xART) the read-only root doesn't cover. The regular
   initramfs never gets the hook. The sleep log's `pre` line says `safe=yes`
   for a sleep in a safe boot.
 - `sleep-drain-reading`: idle battery readings that can span a reset (E1's
