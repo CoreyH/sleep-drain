@@ -68,15 +68,17 @@ this section where they differ.
      driver's probe refuses `xart_writes=0` with the keybag option at its default); Corey's OK of
      2026-11-24, asked with the alternative of forcing the bit under a powered enclave.
    - **Its own eligibility checks, each failing closed, none weakening the no-driver mode's:**
-     `run-floor` proves the store is read-only before anything is loaded or written (the driver's own
-     log line, "writes disabled", and never "ENABLED"). The module takes a bound SEP driver only with
-     a parameter of its own for this mode (`sep_ro=1`), which opts in and proves nothing: at the load
-     and again at the first suspend's prepare the module itself needs evidence that the binding it
-     sees has writes off (the two words in the boot's arguments, and the driver's "writes disabled"
-     line in the kernel's log with no "ENABLED" line there, read from inside the kernel), whatever the
-     power word says: this Mac read the enclave gated in a boot with writes enabled, so the power
-     state is no evidence of the policy. A binding it can't verify is refused as a bound driver is
-     now. Then the SEP's power word has to read actual 0, waited for up to 5 s as the reference does,
+     The proof is the bound driver's own status, not what the boot asked for and not a line in a
+     log (the log line comes before the probe ends and can be lost; the boot's words are a request):
+     the SEP device's `diag/xart` attribute, which the driver sets from the store as it opened it,
+     "enabled" or "disabled", and takes away when it unbinds (it reads "enabled" in a regular boot
+     here, 2026-11-24). `run-floor` needs it to read "disabled" before anything is loaded or written.
+     The module takes a bound SEP driver only with a parameter of its own for this mode (`sep_ro=1`),
+     which opts in and proves nothing: at the load and again at the first suspend's prepare the module
+     itself reads that attribute of every bound SEP device and needs "disabled", whatever the power
+     word says (this Mac read the enclave gated in a boot with writes enabled: the power state is no
+     evidence of the policy). Missing, unreadable or anything else: refused as a bound driver is now,
+     and the run stays blocked. Then the SEP's power word has to read actual 0, waited for up to 5 s as the reference does,
      at the load (else it refuses) and at prepare, before any firmware is stopped (else the replay is
      called off and the Mac wakes). No multi-second wait in step 7, which is interrupts-off with WD1 armed: there
      the check stays immediate, at the write, and a clear that was skipped or didn't read back is
