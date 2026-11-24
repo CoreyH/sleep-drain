@@ -5463,7 +5463,7 @@ battery at about 98%, nothing in the USB-C ports, the nights off around it, load
   gate: the word's auto level is f), and the wait for its power gate stood. The section "The weekend's
   answers" read the fallback as "no driver, so clear the bit", which missed that wait.
 - Runs 1 to 8 were made with `apple_sep` loaded. What the SEP's power word read at their commits was never
-  read; awake in such a boot it reads gated. This kernel's `apple_sep` sends the enclave no SLEEP.
+  read; awake in such a boot it read gated once (11-23). This kernel's `apple_sep` sends the enclave no SLEEP.
 - So two things are now tangled in the opening: what sets bit 2, and whether the engine can pass with the
   enclave up. Neither is shown to be the hold.
 
@@ -5475,13 +5475,15 @@ ten one-way runs are used.
 Gemini, through its command-line agent, read-only on this repository and the reference's files, advice
 only; the prompts and answers are in `~/.local/share/sleep-drain/spar-20261124/`). What came of two rounds,
 each claim checked here against `s2r.c` before it was taken:
-- **The SEP's wait was probably armed and unmet in all nine runs.** The reference's `s2r_sep_down` logic says
-  so in as many words: an enclave that is down with nobody telling it to power-gate leaves "a PMGR still
-  waiting for that" which "never sleeps", so the driver stops waiting (clears the bit) for it. Runs 1 to 8
-  had `apple_sep` loaded, which sends no SLEEP, and the bit set; run 9 had the enclave up and the bit set.
-  That alone would hold B2 at its opening whatever the display blocks do. Whether 0x2922c0044's bit 2 *is*
-  that wait's status isn't known: the reference never reads the word, and its comment rests on a trace
-  nobody here has seen.
+- **A hypothesis: the SEP's wait may have stood unmet in every run.** The reference's `s2r_sep_down`
+  comment says an enclave that is down with nobody telling it to power-gate leaves "a PMGR still waiting
+  for that" which "never sleeps", so the driver stops waiting (clears the bit) for it. Here the bit reads 4
+  awake and nothing ever cleared it; runs 1 to 8 had `apple_sep` loaded, which sends no SLEEP; run 9 had
+  the enclave up. What is measured is less than that: only run 9 read the bit and the SEP's power word
+  near its commit, and the 0x1000030f with the driver loaded is one awake reading of 11-23, not a reading
+  at any earlier commit. And where in the engine that wait sits isn't known: that it is B2's opening, or
+  that 0x2922c0044's bit 2 is its status, is a guess (the reference never reads the word, and its comment
+  rests on a trace nobody here has seen). The tenth run tests it.
 - **Which state to clear the bit in.** Mine was the no-driver boot with the guard dropped. Against it: the
   reference refuses to sleep with the enclave up, so that state is one nobody has slept in, and a run that
   failed there would say nothing. Better: `apple_sep` loaded with `xart_writes=0` (omacom's driver has the

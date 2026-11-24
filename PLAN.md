@@ -59,22 +59,35 @@ this section where they differ.
    display handshakes and never read bit 2 set; the enclave read powered with no driver in the boot,
    so the guard left the wait bit (0x28e0cc200 bit 2) set. Read again, the reference refuses to sleep
    unless the SEP's power word reads actual 0, and says a PMGR that waits for a power gate nobody
-   announces "never sleeps": that wait was armed and unmet in all nine runs. To build:
-   - **A safe boot with `apple_sep` loaded read-only** (`apple_sep.xart_writes=0` and
-     `provision_keybag=0` on the entry's command line; Corey's OK of 2026-11-24, asked with the
-     alternative of forcing the bit under a powered enclave). `run-floor` has to prove the store is
-     read-only in that boot before it arms anything (the driver's own log line; fail closed), and that
-     the SEP's power word reads actual 0 awake: a run with the enclave up would learn nothing.
+   announces "never sleeps". **A hypothesis, not a finding:** that wait may have stood unmet in every
+   run here (the bit reads 4 awake, nothing ever cleared it, and this kernel's `apple_sep` sends no
+   SLEEP); the SEP's power word was never read at the commits of runs 1 to 8, and whether B2's
+   opening is where that wait sits isn't known. To build:
+   - **A safe boot with `apple_sep` loaded read-only:** `apple_sep.xart_writes=0
+     apple_sep.provision_keybag=0` on the entry's command line, both with the module's prefix (the
+     driver's probe refuses `xart_writes=0` with the keybag option at its default); Corey's OK of
+     2026-11-24, asked with the alternative of forcing the bit under a powered enclave.
+   - **Its own eligibility checks, each failing closed, none weakening the no-driver mode's:**
+     `run-floor` proves the store is read-only before anything is loaded or written (the driver's own
+     log line, "writes disabled", and never "ENABLED"). The module takes a bound SEP driver only with
+     a parameter of its own for this mode (`sep_ro=1`), and then checks that the SEP's power word
+     reads actual 0, waiting up to 5 s as the reference does, at the load (else it refuses) and at
+     the first suspend's prepare, before any firmware is stopped (else the replay is called off and
+     the Mac wakes). No multi-second wait in step 7, which is interrupts-off with WD1 armed: there
+     the check stays immediate, at the write, and a clear that was skipped or didn't read back is
+     not a test of the bit.
    - **The recipe:** `--m1-disp-hs`'s, with the wait bit cleared under the guard as it stands (only
-     with the SEP's word at actual 0, waited for up to 5 s as the reference waits), without `a2_pre=1`
-     (the fabric stays at 0x333 at the commit, as the reference has it), and without the read-backs of
-     PCIE0_REF and APCIE_GP_SYS after `ps_words=1`'s writes (the reference: "stuck before sleep in 4
-     runs out of 4").
-   - **How it reads:** step 7's nibble after the clear says whether 0x2922c0044's bit 2 follows the
-     control bit. The light stops: B2 passed its opening, and the restart's time says how far. The
-     light to 90 s with the bit cleared and the enclave gated: the SEP's wait isn't the hold, or isn't
-     the only one; then the desk's next is a probe of the reference's whole display and GPU step
-     without a commit, sampling the gate word after each write.
+     with the SEP's word at actual 0), without `a2_pre=1` (the fabric stays at 0x333 at the commit, as
+     the reference has it), and without the read-backs of PCIE0_REF and APCIE_GP_SYS after
+     `ps_words=1`'s writes (the reference: "stuck before sleep in 4 runs out of 4").
+   - **How it reads:** step 7 samples 0x2922c0044 right before the write and right after the
+     read-back: bit 2 clear in the first and set in the second, with the clear confirmed, puts the
+     change between two samples of one step; a single sample after the clear is only what the word
+     read then. The run changes the boot and three things in the recipe against run 9, so its ending
+     is evidence about the combination. The light stops: B2 passed its opening, and the restart's
+     time says how far. The light to 90 s with the bit cleared and the enclave gated: the SEP's wait
+     isn't the hold, or isn't the only one; then the desk's next is a probe of the reference's whole
+     display and GPU step without a commit, sampling the gate word after each write.
    - It is the tenth of the strategy review's ten one-way runs. With a working reference to converge
      on, the count isn't the stop it was meant as: say so to Corey when it's used.
    - `--m1-sep-pg` and `--m1-ll-retn` are built and not planned as runs.
@@ -90,9 +103,13 @@ this section where they differ.
    - **After an entry that completes**, the fix is a port: Ante042's t6000 core onto upstream's
      `sleep.c` (their notes map it area by area), and a wake needs the loader's mailbox, which is
      m1n1's or aura's side and not Claude's to write.
-   - A second model can be asked to argue a result over (Corey, 2026-11-24): `agy --model
-     gemini-4-neon-high --sandbox --dangerously-skip-permissions -p ...` from the repo, read-only and
-     advisory by the prompt's own rules; check its citations before taking a claim.
+   - A second model can be asked to argue a result over (Corey, 2026-11-24, who allowed its
+     approval override: "you are in charge, it should only advise you"): Gemini through `agy -p`.
+     Its sandbox mounts the workspace read-write and the override approves every tool, so "read
+     only" in a prompt is a request, not a restriction. Run it in a disposable clone of the repo
+     (and of the reference's files), never in this tree; nothing it writes there is taken; check its
+     citations against the source before taking a claim. (The two rounds of 11-24 ran in this tree,
+     whose `git status` was compared before and after: unchanged.)
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
