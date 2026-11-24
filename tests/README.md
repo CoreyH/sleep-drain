@@ -22,7 +22,7 @@ used to sit in CLAUDE.md, entry for entry):
   list), which one each command selects, that a selection queued earlier outlasts a later command that fails,
   that a regeneration is made again after one that failed, that a candidate `grub.cfg` without the blacklist is
   refused before it replaces the live one, and the refusals (a regular line with `--`, bare or as GRUB would make it from quotes or backslashes, after which nothing is the
-  kernel's; a blacklist over the kernel's 1024 bytes); and `status` in a fake safe boot: kept out only by the kernel's
+  kernel's; one with a character GRUB may read another way than the script, a carriage return, `#`, `;` or one outside ASCII among them; a blacklist over the kernel's 1024 bytes); and `status` in a fake safe boot: kept out only by the kernel's
   own list, and not verified when that doesn't read, whatever the command line asks for. No boot is made.
 - `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe boot and `collect` in a fake next
   boot.

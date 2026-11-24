@@ -409,8 +409,9 @@ def main():
         assert len(reg) + fixed - len(base) + len(base) < 2047 and len(reg.encode()) + fixed - len(base) > 2047
         tool = setup(t, regular=reg)
         p = run(t, tool, "boot")
-        check(p.returncode != 0 and "lose its end" in p.stderr and nxt(t) is None and image(t) == (None, 0),
-              "a regular line that fits counted in characters and not in bytes: refused", p.stdout + p.stderr)
+        check(p.returncode != 0 and "GRUB may read another way" in p.stderr and nxt(t) is None and image(t) == (None, 0),
+              "a regular line that fits counted in characters and not in bytes: refused (for its characters outside ASCII, before its length is asked)",
+              p.stdout + p.stderr)
     # Quoting changes the line's length on its way to the kernel: taken only at under half the limit.
     with tempfile.TemporaryDirectory() as t:
         reg = 'root=UUID=aaaa rw "foo=a b" pad=' + "x" * 1100
@@ -445,8 +446,31 @@ def main():
                 check(p.returncode != 0 and "has a -- in it, or what GRUB could make one of" in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
                       and cfg_of(t) == before and image(t) == (None, 0),
                       f"{' '.join(args)} with the regular line {reg!r}: refused, nothing written, no image built", p.stdout + p.stderr)
+    # What GRUB reads another way than this script: it drops a carriage return (so a quoted -- before one is a bare -- to
+    # the kernel, and not a word here), starts a comment at #, ends the command at ;. Refused, in both modes, whatever else
+    # the line has, with a selection queued earlier and its image left as they were.
+    for reg in ('root=UUID=aaaa quiet "--"\r', "root=UUID=aaaa quiet --\r", "root=UUID=aaaa quiet\r", "root=UUID=aaaa quiet #", "root=UUID=aaaa quiet # --",
+                "root=UUID=aaaa quiet; true", "root=UUID=aaaa quiet | x", "root=UUID=aaaa quiet {", "root=UUID=aaaa quiet\x01", "root=UUID=aaaa quiet\x7f",
+                "root=UUID=aaaa quiet caf\u00e9", "root=UUID=aaaa quiet a*b", "root=UUID=aaaa quiet ~"):
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t)
+            p = run(t, tool, "boot", "--no-sep")
+            cfg, img = cfg_of(t), image(t)
+            ok0 = p.returncode == 0 and nxt(t) == NOSEP and img == ("image\n", 1)
+            for f in ("regular", "boot/grub/grub.cfg"):
+                with open(os.path.join(t, f), newline="") as fh:
+                    body = fh.read()
+                assert body.count(f"linux /vmlinuz-linux-aurora {REG}\n") == 1
+                with open(os.path.join(t, f), "w", newline="") as fh:
+                    fh.write(body.replace(f"linux /vmlinuz-linux-aurora {REG}\n", f"linux /vmlinuz-linux-aurora {reg}\n"))
+            cfg = cfg_of(t)
+            for args in (["boot"], ["boot", "--no-sep"]):
+                p = run(t, tool, *args)
+                check(ok0 and p.returncode != 0 and "GRUB may read another way" in p.stderr and "nothing selected" in p.stderr and nxt(t) == NOSEP
+                      and cfg_of(t) == cfg and image(t) == img,
+                      f"{' '.join(args)} with the regular line {reg!r}: refused, the queued selection, grub.cfg and the image as they were", p.stdout + p.stderr)
     with tempfile.TemporaryDirectory() as t:
-        reg = 'root=UUID=aaaa rw quiet foo=--bar --baz "x=a --b"'
+        reg = 'root=UUID=aaaa rw quiet foo=--bar --baz "x=a --b" a_b=c.d,e:f/g@h%i+j'
         tool = setup(t, regular=reg)
         p = run(t, tool, "boot", "--no-sep")
         check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",

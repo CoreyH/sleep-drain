@@ -136,6 +136,20 @@ no_sep_cmdline() {
   echo "$1 module_blacklist=${last:+$last,}apple_sep"
 }
 
+# Whether a command line is made only of characters this script can follow
+# from grub.cfg to the kernel: letters, digits, space and _ = . , : / @ % + -,
+# and quotes and backslashes, which have rules of their own below. Anything
+# else GRUB may read another way than this script does: it drops a carriage
+# return, starts a comment at a #, ends the command at a ; or a newline, and
+# gives | & < > { } meanings of their own, so that what is added at the line's
+# end (the read-only flag, the blacklist) might never reach the kernel, or
+# reach it behind a "--" that wasn't one here. Counted in bytes: nothing
+# outside ASCII either. A list of what is known, not of what is feared.
+followable() {
+  local LC_ALL=C
+  [[ $1 != *[!A-Za-z0-9\ _=.,:/@%+\"\'\\-]* ]]
+}
+
 # Whether a command line has a "--" word, after which nothing is the kernel's,
 # or could have one once GRUB has read it: GRUB takes quotes and backslashes
 # off, so "--", '--', -"-" and \-\- all reach the kernel as a bare --. Judged
@@ -223,6 +237,8 @@ cmd_boot() {
   # earlier "boot" queued stays what it was, image included.
   [[ $cmdline != *'$'* ]] ||
     die "the regular command line has a GRUB variable in it, so what the kernel gets is only known at boot; nothing written, nothing selected: $cmdline"
+  followable "$cmdline" ||
+    die "the regular command line has a character in it that GRUB may read another way than this script does (a carriage return or another control character, one of # ; | & < > { }, or one outside ASCII), so what the kernel gets can't be worked out here; nothing written, nothing selected: $(printf '%q' "$cmdline")"
   ! blacklist_unsure "$cmdline" ||
     die "the regular command line has a module blacklist and quoting, so what the kernel would end up blocking can't be worked out here; nothing written, nothing selected: $cmdline"
   # The flag and the blacklist are added at the line's end, and what follows a "--" goes to init, not the kernel.
