@@ -47,6 +47,8 @@ def setup(t, regular="root=UUID=aaaa rw quiet splash"):
             ("SCRIPT=/etc/grub.d/44_sleep_drain_safe", f"SCRIPT={t}/etc/grub.d/44_sleep_drain_safe"),
             ("IMAGE_DIR=/boot/sleep-drain-safe", f"IMAGE_DIR={t}/boot/sleep-drain-safe"),
             ("RUN=/run/sleep-drain-safe", f"RUN={t}/run/sleep-drain-safe"),
+            ("KPARAM=/sys/module/kernel/parameters/module_blacklist", f"KPARAM={t}/kparam"),
+            ("PROC_CMDLINE=/proc/cmdline", f"PROC_CMDLINE={t}/proc-cmdline"),
             ("[[ -f /etc/initcpio/hooks/sleepdrain-safe && -f /etc/initcpio/install/sleepdrain-safe ]]",
              f"[[ -f {t}/etc/initcpio/hooks/sleepdrain-safe && -f {t}/etc/initcpio/install/sleepdrain-safe ]]"),
             ('need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }', "need_root() { :; }")]
@@ -257,16 +259,12 @@ def main():
         check(p.returncode == 0 and entry_line(cfg_of(t), PLAIN) == same and entry_line(cfg_of(t), NOSEP) == same
               and "already keeps apple_sep out" in p.stdout,
               "the hyphen spelling with apple_sep in its list is seen as keeping the driver out", p.stdout + p.stderr + cfg_of(t))
-    # A backslash in the regular line must compare as it is.
-    with tempfile.TemporaryDirectory() as t:
-        reg = r"root=UUID=aaaa rw systemd.mask=var-lib-sleep\x2ddrain.mount quiet"
-        tool = setup(t, regular=reg)
-        p = run(t, tool, "boot", "--no-sep")
-        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
-              "a regular line with a backslash escape in it: the entries are written and found as written", p.stdout + p.stderr + cfg_of(t))
-    # Quoting: GRUB takes the quotes off, so a later quoted blacklist would win unseen. A GRUB variable: only known at boot.
-    # Refused in both modes, and before the image is built: nothing at all is written.
+    # Quoting and backslashes: GRUB takes them off, so a later quoted blacklist would win unseen. A GRUB variable: only known
+    # at boot. Refused in both modes, with or without a blacklist, and before the image is built: nothing at all is written.
     for reg in ('root=UUID=aaaa rw module-blacklist=apple_sep "module_blacklist=apple_pmp" quiet',
+                r"root=UUID=aaaa rw systemd.mask=var-lib-sleep\x2ddrain.mount quiet",
+                'root=UUID=aaaa rw "foo=a b" quiet',
+                'root=UUID=aaaa rw "foo=a b" pad=' + "x" * 1100,
                 "root=UUID=aaaa rw module_blacklist=apple_sep 'foo=a b' quiet",
                 'root=UUID=aaaa rw module_blacklist=apple_sep foo=a\\ b quiet',
                 'root=UUID=aaaa rw module_blacklist=apple_sep $extra_args quiet',
@@ -407,21 +405,9 @@ def main():
         assert len(reg) + fixed - len(base) + len(base) < 2047 and len(reg.encode()) + fixed - len(base) > 2047
         tool = setup(t, regular=reg)
         p = run(t, tool, "boot")
-        check(p.returncode != 0 and "lose its end" in p.stderr and nxt(t) is None and image(t) == (None, 0),
-              "a regular line that fits counted in characters and not in bytes: refused", p.stdout + p.stderr)
-    # Quoting changes the line's length on its way to the kernel: taken only at under half the limit.
-    with tempfile.TemporaryDirectory() as t:
-        reg = 'root=UUID=aaaa rw "foo=a b" pad=' + "x" * 1100
-        tool = setup(t, regular=reg)
-        p = run(t, tool, "boot")
-        check(p.returncode != 0 and "lose its end" in p.stderr and nxt(t) is None,
-              "a quoted line of 1.1 kB, which would fit as written: refused, since GRUB's own quoting could take it past the limit", p.stdout + p.stderr)
-    with tempfile.TemporaryDirectory() as t:
-        reg = 'root=UUID=aaaa rw "foo=a b" quiet'
-        tool = setup(t, regular=reg)
-        p = run(t, tool, "boot", "--no-sep")
-        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
-              "a short quoted line with no blacklist of its own: taken, apple_sep added at the end", p.stdout + p.stderr)
+        check(p.returncode != 0 and "GRUB may read another way" in p.stderr and nxt(t) is None and image(t) == (None, 0),
+              "a regular line that fits counted in characters and not in bytes: refused (for its characters outside ASCII, before its length is asked)",
+              p.stdout + p.stderr)
     # The read-back itself failing: the selection is unknown, and the message says that, not "not selected".
     with tempfile.TemporaryDirectory() as t:
         tool = setup(t)
@@ -430,6 +416,95 @@ def main():
         check(p.returncode != 0 and "couldn't be read back" in p.stderr and "isn't known" in p.stderr and "Not selected" not in p.stderr
               and "the next restart is" not in p.stdout,
               "a grub-editenv that can't read the block after grub-reboot: the command fails saying the selection isn't known", p.stdout + p.stderr)
+    # What follows "--" goes to init: a blacklist added at the end would set nothing in the kernel. Refused, in both modes.
+    # And what GRUB would make a bare -- of, with the quotes and backslashes it takes off: refused for those characters.
+    for reg in ("root=UUID=aaaa rw quiet -- single", "root=UUID=aaaa rw quiet --", "-- root=UUID=aaaa", "root=UUID=aaaa quiet\t--\tsingle",
+                'root=UUID=aaaa quiet "--" single', "root=UUID=aaaa quiet '--' single", 'root=UUID=aaaa quiet -"-" single',
+                "root=UUID=aaaa quiet \\-\\- single", 'root=UUID=aaaa "foo=a -- b" quiet'):
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t, regular=reg)
+            before = cfg_of(t)
+            for args in (["boot"], ["boot", "--no-sep"]):
+                p = run(t, tool, *args)
+                why = "GRUB may read another way" if any(c in reg for c in "\"'\\") else "has a -- in it"
+                check(p.returncode != 0 and why in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
+                      and cfg_of(t) == before and image(t) == (None, 0),
+                      f"{' '.join(args)} with the regular line {reg!r}: refused, nothing written, no image built", p.stdout + p.stderr)
+    # What GRUB reads another way than this script: it drops a carriage return (so a quoted -- before one is a bare -- to
+    # the kernel, and not a word here), starts a comment at #, ends the command at ;. Refused, in both modes, whatever else
+    # the line has, with a selection queued earlier and its image left as they were.
+    for reg in ('root=UUID=aaaa quiet "--"\r', "root=UUID=aaaa quiet --\r", "root=UUID=aaaa quiet\r", "root=UUID=aaaa quiet #", "root=UUID=aaaa quiet # --",
+                "root=UUID=aaaa quiet; true", "root=UUID=aaaa quiet | x", "root=UUID=aaaa quiet {", "root=UUID=aaaa quiet\x01", "root=UUID=aaaa quiet\x7f",
+                "root=UUID=aaaa quiet caf\u00e9", "root=UUID=aaaa quiet a*b", "root=UUID=aaaa quiet ~",
+                # A command GRUB carries on to the next line, of which only the first is copied: a backslash at the end, a quote left open.
+                "root=UUID=aaaa rw \\\n    quiet splash", "root=UUID=aaaa rw \\", 'root=UUID=aaaa rw "quiet\n    splash"', "root=UUID=aaaa rw 'quiet"):
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t)
+            p = run(t, tool, "boot", "--no-sep")
+            cfg, img = cfg_of(t), image(t)
+            ok0 = p.returncode == 0 and nxt(t) == NOSEP and img == ("image\n", 1)
+            for f in ("regular", "boot/grub/grub.cfg"):
+                with open(os.path.join(t, f), newline="") as fh:
+                    body = fh.read()
+                assert body.count(f"linux /vmlinuz-linux-aurora {REG}\n") == 1
+                with open(os.path.join(t, f), "w", newline="") as fh:
+                    fh.write(body.replace(f"linux /vmlinuz-linux-aurora {REG}\n", f"linux /vmlinuz-linux-aurora {reg}\n"))
+            cfg = cfg_of(t)
+            for args in (["boot"], ["boot", "--no-sep"]):
+                p = run(t, tool, *args)
+                check(ok0 and p.returncode != 0 and "GRUB may read another way" in p.stderr and "nothing selected" in p.stderr and nxt(t) == NOSEP
+                      and cfg_of(t) == cfg and image(t) == img,
+                      f"{' '.join(args)} with the regular line {reg!r}: refused, the queued selection, grub.cfg and the image as they were", p.stdout + p.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        reg = "root=UUID=aaaa rw quiet foo=--bar --baz x=a--b a_b=c.d,e:f/g@h%i+j"
+        tool = setup(t, regular=reg)
+        p = run(t, tool, "boot", "--no-sep")
+        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
+              "a line with -- only inside arguments: taken", p.stdout + p.stderr)
+    # The kernel drops a string parameter over 1024 bytes: a blacklist that long would keep nothing out. Only a line that
+    # has apple_sep in its list already can get there: one that gets the list a second time is past the line's limit first.
+    for n, fits_ in ((1024, True), (1025, False)):
+        with tempfile.TemporaryDirectory() as t:
+            lst = "m" * (n - len(",apple_sep"))
+            tool = setup(t, regular=f"root=UUID=aaaa rw module_blacklist={lst},apple_sep")
+            before = cfg_of(t)
+            p = run(t, tool, "boot", "--no-sep")
+            if fits_:
+                check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP).endswith(f" module_blacklist={lst},apple_sep sleepdrain.safe"),
+                      f"a blacklist of {n} bytes that has apple_sep already: taken", p.stdout + p.stderr)
+            else:
+                check(p.returncode != 0 and f"would be {n} bytes" in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
+                      and cfg_of(t) == before and image(t) == (None, 0),
+                      f"a blacklist of {n} bytes that has apple_sep already: refused, nothing written, no image built", p.stdout + p.stderr)
+    # status in a safe boot: "kept out" only by the kernel's own list; when that can't be read, not verified, with what the
+    # command line asks for (nothing after a "--" counted) said beside it.
+    KEPT, MAY = "the Secure Enclave's driver is kept out of this boot", "the Secure Enclave's driver may load in this boot"
+    UNV = "NOT VERIFIED whether the Secure Enclave's driver is kept out of this boot: the kernel's own module blacklist reads only as root (pkexec sleep-drain-safe status). The command line "
+    cases = (("the kernel's list has apple_sep", "apple_sep", "root=x rw sleepdrain.safe", KEPT + " (the kernel's module blacklist lists apple_sep)"),
+             ("the kernel's list is unset though the command line names apple_sep after --", "(null)", "root=x rw -- module_blacklist=apple_sep sleepdrain.safe", MAY),
+             ("the kernel's list has another module whose name has apple_sep in it", "apple_sep_x", "root=x module_blacklist=apple_sep", MAY),
+             ("the kernel's list can't be read and the command line's last blacklist has apple_sep", None, "root=x module_blacklist=foo,apple_sep sleepdrain.safe",
+              UNV + "asks for it;"),
+             ("the kernel's list can't be read and the command line has a blacklist of 1,025 bytes with apple_sep, which the kernel drops", None,
+              "root=x module_blacklist=" + "m" * 1015 + ",apple_sep sleepdrain.safe", UNV + "asks for it;"),
+             ("the kernel's list can't be read and the command line has the blacklist only after --", None, "root=x rw -- module_blacklist=apple_sep", UNV + "doesn't ask for it;"),
+             ("the kernel's list can't be read and the command line has no blacklist", None, "root=x rw sleepdrain.safe", UNV + "doesn't ask for it;"))
+    for what, kparam, cmdline, want in cases:
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t)
+            os.makedirs(os.path.join(t, "run/sleep-drain-safe/rw"))
+            with open(os.path.join(t, "run/sleep-drain-safe/active"), "w") as f:
+                f.write("/dev/null\n")
+            with open(os.path.join(t, "proc-cmdline"), "w") as f:
+                f.write(cmdline + "\n")
+            if kparam is not None:
+                with open(os.path.join(t, "kparam"), "w") as f:
+                    f.write(kparam + "\n")
+            p = run(t, tool, "status")
+            sep = [l for l in p.stdout.splitlines() if "Secure Enclave" in l]
+            unv = want.startswith(UNV)
+            check(len(sep) == 1 and sep[0].startswith(want + (" apple_sep " if unv else ": apple_sep ")) and (not unv or "is kept out of this boot (" not in sep[0]),
+                  f"status in a safe boot, {what}: {'not verified, never kept out' if unv else 'may load' if want == MAY else 'kept out'}", p.stdout + p.stderr)
     print("all ok" if not fails else f"{fails} failed")
     return 1 if fails else 0
 

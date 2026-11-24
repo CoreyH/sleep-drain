@@ -19,7 +19,9 @@ this section where they differ.
   are down (a fit to four readings from four runs: 000 awake; 011 with CPU0 up and both P complexes
   down; with CPU7 up and CPU0's and ECPM's power words off, 001 right after ECPM's poll on 11-18
   and 011 half a second after it on 11-19, whose own first sample was lost: no run has seen the
-  word change). So bit 2 would be all three down, and no core can read it set. Each complex's own down sequence runs to its end when
+  word change). So bit 2 would be all three down, and no core can read it set. **Open again since
+  2026-11-23:** the reference driver says dispext0's fabric handshake sets bit 2, with every core up; the
+  ninth run samples the word around those writes. Each complex's own down sequence runs to its end when
   its cores are gone (state word 0x1a; the E complex's too, read 2026-11-19). Bit 3 was set in
   every reading that kept it.
 - So with a core up the gate is closed because the core is up, and the stall of runs A and B is in
@@ -67,13 +69,17 @@ this section where they differ.
    this one has the recipe's own masks again, the PMU's source open: a fourth difference from run
    eight, none from the baseline.) A light that stops is evidence about
    that combination and says B2 reached its tenth SIO word, not that the entry finished and not which
-   change did it; the record's read-backs say what each write did to the gate word with CPU0 up (the
-   nibble before the handshakes and after each; the control word and the nibble after the clear).
-   - **Not to be handed over before all of:** `sleep-drain-safe boot --no-sep` merged (#131) *and
-     installed* (`pkexec bash install.sh`: the installed copy would otherwise ignore the option and
-     make an ordinary safe boot); `run/sep-pg` merged with `run-floor`'s refusal when `apple_sep` is
-     loaded, both reviews done, and the module built from `main`; and, in the safe boot itself before
-     the run, `sleep-drain-safe status` saying the driver is kept out and isn't loaded. Why: on this
+   change did it; the record's samples say where bit 2 of the gate word was first seen set with CPU0
+   up (K3b's start, after each block's table, after each block's place, step 7), not which write set
+   it; and whether the control word's bit was cleared (only under an enclave that reads off).
+   - **Not to be handed over before all of:** `sleep-drain-safe boot --no-sep` *installed* (merged as
+     #131 on 2026-11-23; `pkexec bash install.sh` is still to run: the installed copy would otherwise
+     ignore the option and make an ordinary safe boot); `run/sep-pg` merged (built: RESEARCH.md,
+     "`disp_hs=1` and `sep_pg=1` as built") with both reviews done, and the module built from `main`;
+     and, in the safe boot itself before the run, `pkexec sleep-drain-safe status` (as root: the
+     kernel's own blacklist reads only so) saying the driver is kept out and isn't loaded. `run-floor` refuses both options with `apple_sep` loaded or without it on
+     the kernel's own module blacklist; the module refuses to load with a driver bound to
+     the SEP's device and looks again at the suspend's prepare. Why: on this
      Mac `apple_sep` runs with `xart_guard=0` and xART writes enabled, and the safe boot's read-only
      root doesn't cover that store.
    - `--m1-sep-pg` (the bit alone) is built with it and not planned as a run of its own.
@@ -104,7 +110,7 @@ this section where they differ.
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
 
 **As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
-`--m1-ll-retn` the latest launcher option; the PMU's record bytes all zero; scratch that must outlast
+`--m1-disp-hs` the latest launcher option (`--m1-ll-retn` and `--m1-sep-pg` before it, neither run); the PMU's record bytes all zero; scratch that must outlast
 a restart in `~/.local/share/sleep-drain/`.
 
 ## Where things stand

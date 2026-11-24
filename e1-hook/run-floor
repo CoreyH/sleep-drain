@@ -1,7 +1,7 @@
 #!/bin/bash
 # e1-hook/run-floor: the floor (PLAN.md, A5), in a safe boot only, as root:
 #
-#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn]
+#   pkexec /home/corey/src/sleep-drain/e1-hook/run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn | --m1-sep-pg | --m1-disp-hs]
 #
 # --quick, ahead of the recipe, makes the reading 1 minute instead of 10, with no need to wait
 # 20 minutes off the charger: for a run whose question is how it ends. If one ever goes dark for
@@ -266,6 +266,59 @@
 # (0x94, then 0x9c or 0x98), by which m1-crumbs knows the form; its label is floor-m1-ll-retn. Run it with --no-reading,
 # the nights off around it (pkexec /usr/local/bin/sleep-drain-nights off), nothing in the USB-C ports, and film the
 # keyboard.
+# --m1-sep-pg (e1-hook/last_look.h has the byte, where the bit comes from and why) is --m1-a2-pre-blink's run with one
+# write added in step 7 (sep_pg=1): bit 2 of the PMGR control word 0x28e0cc200 is cleared, 0x00000004 to 0x00000000 as
+# the word reads awake. The bit is from Ante042's driver (drivers/soc/apple/s2r.c in Ante042/linux, branch
+# t600x-s2r-reference: their T6000_PMGR_SEP_PG and PMGR_WAIT_SEP_PG, credited): set at boot, it makes the S2R sequencer
+# wait for the SEP to power-gate, which never comes if nothing puts the SEP to sleep, and their J314s completes the
+# entry with it cleared. Every run here has ended with the engine stuck before its power-downs. It is a PMGR register,
+# not a write to the SEP, and the restart undoes it. In step 7 CPU0 reads the word, writes it back less that bit if
+# the bit is set, reads it again, and reads the SEP's power word (0x28e580c00) and 0x2922c0044; after step 8's record
+# it sends one byte to the PMU's 0x6009 (K1 leaves 0x02 there until it lands). The control word and the SEP's power
+# word have only been read awake: if a read faults, the kernel panics there and the Mac restarts about 10 s after the
+# screen goes dark, not 90: m1-crumbs then shows stage 0xb9 with 0x02 at 0x6009. The keyboard light is the witness, as
+# in --m1-a2-pre-blink, and the run ends one of three ways:
+#   - the light blinks until the restart, 90 s after the dark screen, as before: B2 didn't reach its tenth SIO word;
+#   - the light stops and the restart comes later than 90 s: B2 moved. It zeroes WD1's count at its op 223, so WD1's
+#     bite comes up to about 150 s after that; WD2's bite is 120 s after the commit;
+#   - the light stops and no restart comes: the entry may have completed. Nothing this recipe leaves armed is known to
+#     wake the Mac (nub-spmi0's enables are zeroed and every AP wake source but the PMU's is masked): hold the power
+#     button (the dark ending's steps, below).
+# Its stages are --m1-a2-pre's; its label is floor-m1-sep-pg. It is only made in a safe boot started without the SEP's
+# driver (pkexec sleep-drain-safe boot --no-sep): apple_sep writes the enclave's key store, which the safe boot's
+# read-only root doesn't cover, so this refuses while apple_sep is loaded, or in a boot whose kernel doesn't keep
+# it out (its module_blacklist parameter, read from the kernel itself, lists apple_sep), and the module refuses while a driver is bound to the SEP's
+# device, at its load and again at the suspend's prepare. The bit is cleared only if the SEP's power word reads off in
+# step 7: with the enclave reading powered the wait is left, and the byte at 0x6009 says so. Run it with --no-reading, the nights off around it (pkexec /usr/local/bin/sleep-drain-nights off),
+# nothing in the USB-C ports, and film the keyboard.
+# --m1-disp-hs (e1-hook/last_look.h has the four bytes and where the steps come from) is --m1-sep-pg's run with the
+# display step, K3b, done as Ante042's driver does it (disp_hs=1; drivers/soc/apple/s2r.c in Ante042/linux, branch
+# t600x-s2r-reference, credited): for each DCP that stopped, the reference's set-up table written to the display's
+# fabric block (65 writes: 0x38c000000 for the internal display, 0x28a000000 for the external), its CPU0 power word
+# down as before, the handshake on the block (+0x8014 := 1, +0x82bc := 1, 2, 4), its FE power word down as before. The
+# reference says that the external display's handshake sets bit 2 of 0x2922c0044, which the PMGR's S2R engine waits
+# for first: the poll every run here has ended behind. So this run has the reference's two steps for the engine's
+# opening, each with its own read-back in the record: the PMGR's wait for the SEP cleared (0x6009), and the displays'
+# tables and handshakes with 0x2922c0044 read before them, after each table and after each display (0x600a-0x600d; K1
+# leaves 0x01 at 0x600a until they land): each table has the handshake's own four writes in it, so the record says
+# which was written and where bit 2 first read set; and the keyboard light says whether the whole moved B2. The two
+# displays' requests at the PMP are withdrawn by then, as in every run since --m1-sio-pmp (sleep-drain-pmp release 0xc
+# 0xd, at the suspend's noirq), with the PMP still running. Neither fabric block has been written here before, and
+# neither is ever read. Each FE read and the writes it guards are made with interrupts off. A write to a block that has lost its power faults, and the kernel panics: each block is
+# written only right after its FE power word read powered, the reference's guard, and a panic there would restart the
+# Mac about 10 s later, if the panic's restart works, with stage 0x02 and 0x01 at 0x600a. It ends as --m1-sep-pg
+# does, one of three ways: the light to the restart at 90 s; the light stops and the restart comes later (B2 moved);
+# or the light stops and no restart comes (the entry may have completed: hold the power button). Its stages are
+# --m1-a2-pre's; its label is floor-m1-disp-hs. Like --m1-sep-pg it is only made in a safe boot started without the
+# SEP's driver (pkexec sleep-drain-safe boot --no-sep), and refuses while apple_sep is loaded or the boot could still
+# load it. A fourth ending is this run's own: no watchdog is armed at K3b and the keyboard light isn't on yet, so a
+# block write that faults where the panic's restart fails, or one that stalls, leaves the Mac dark with NO LIGHT EVER
+# HAVING BLINKED and no restart. Hold the power button; m1-crumbs then shows stage 0x02 with K1's marks (0x02 at 0x6009,
+# 0x01 at 0x600a). A dark, unlit Mac fits that ending and doesn't prove it: the light is skipped if its PWM's power word
+# doesn't come up in 10 ms, and the replay commits all the same. The stage and the marks are the last record that
+# landed, not proof of where the run stopped: K3b's own commands can fail and the run go on. Run it with
+# --no-reading, the nights off around it (pkexec /usr/local/bin/sleep-drain-nights off), nothing in the USB-C ports,
+# and film the keyboard.
 # What's said of --m1, --m1-alarm and --m1-hold
 # below holds for all of them. It ends one of three ways:
 #   - A reset: about 30 s after the screen goes dark, the Mac restarts by
@@ -350,6 +403,7 @@ set -euo pipefail
 SAFE_FLAG=${FLOOR_SAFE_FLAG:-/run/sleep-drain-safe/active}
 AC=${FLOOR_AC:-/sys/class/power_supply/macsmc-ac}
 MODDIR=${FLOOR_MODDIR:-/sys/module/e1_hook}
+BLACKLIST=${FLOOR_BLACKLIST:-/sys/module/kernel/parameters/module_blacklist}
 READING=${FLOOR_READING:-/usr/local/bin/sleep-drain-reading}
 SAVE=${FLOOR_SAVE:-/usr/local/bin/sleep-drain-safe}
 PM_TEST=${FLOOR_PM_TEST:-/sys/power/pm_test}
@@ -400,6 +454,8 @@ atcdown=0
 blink=0
 wakeall=0
 llretn=0
+seppg=0
+disphs=0
 obsgate=0
 quick=()
 label=floor
@@ -694,7 +750,7 @@ elif (($# == 1)) && [[ $1 == --m1-sio-steps ]]; then
   gates=1
   siosteps=1
   label=floor-m1-sio-steps
-elif (($# == 1)) && [[ $1 == --m1-a2-pre || $1 == --m1-a2-pre-blink || $1 == --m1-wake-all ]]; then
+elif (($# == 1)) && [[ $1 == --m1-a2-pre || $1 == --m1-a2-pre-blink || $1 == --m1-wake-all || $1 == --m1-sep-pg || $1 == --m1-disp-hs ]]; then
   quiet=1
   m1=1
   late=1
@@ -714,7 +770,7 @@ elif (($# == 1)) && [[ $1 == --m1-a2-pre || $1 == --m1-a2-pre-blink || $1 == --m
   gates=1
   a2pre=1
   label=floor-m1-a2-pre
-  if [[ $1 == --m1-a2-pre-blink || $1 == --m1-wake-all ]]; then
+  if [[ $1 == --m1-a2-pre-blink || $1 == --m1-wake-all || $1 == --m1-sep-pg || $1 == --m1-disp-hs ]]; then
     atcdown=1
     blink=1
     label=floor-m1-a2-pre-blink
@@ -722,6 +778,14 @@ elif (($# == 1)) && [[ $1 == --m1-a2-pre || $1 == --m1-a2-pre-blink || $1 == --m
   if [[ $1 == --m1-wake-all ]]; then
     wakeall=1
     label=floor-m1-wake-all
+  fi
+  if [[ $1 == --m1-sep-pg || $1 == --m1-disp-hs ]]; then
+    seppg=1
+    label=floor-m1-sep-pg
+  fi
+  if [[ $1 == --m1-disp-hs ]]; then
+    disphs=1
+    label=floor-m1-disp-hs
   fi
 elif (($# == 1)) && [[ $1 == --m1-acc-last ]]; then
   quiet=1
@@ -783,7 +847,7 @@ elif (($# == 1)) && [[ $1 == --m1-last-look || $1 == --m1-last-look-wake || $1 =
     label=floor-m1-ll-retn
   fi
 elif (($# != 0)); then
-  die "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn]"
+  die "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn | --m1-sep-pg | --m1-disp-hs]"
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -839,11 +903,31 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!blink)) || [[ $parms == *$'\n'blink:* ]] || die "$ko is an older build, without blink: make -C $here"
 ((!wakeall)) || [[ $parms == *$'\n'wake_all:* ]] || die "$ko is an older build, without wake_all: make -C $here"
 ((!llretn)) || [[ $parms == *$'\n'll_retn:* ]] || die "$ko is an older build, without ll_retn: make -C $here"
+((!seppg)) || [[ $parms == *$'\n'sep_pg:* ]] || die "$ko is an older build, without sep_pg: make -C $here"
+((!disphs)) || [[ $parms == *$'\n'disp_hs:* ]] || die "$ko is an older build, without disp_hs: make -C $here"
 # sleep-drain-pmp's module is built by install.sh for one kernel. After a kernel update it's the old kernel's until
 # install.sh runs again, which a safe boot can't do: better to say so now than after the load.
 ((!sio)) || [[ $(modinfo -F vermagic "$PMP_KO" 2> /dev/null | cut -d' ' -f1) == "$(uname -r)" ]] ||
   die "$PMP_KO isn't built for $(uname -r): restart into the regular boot and run pkexec bash install.sh there"
 [[ ! -d $MODDIR ]] || die "e1_hook is loaded already; restart for a clean safe boot"
+# --m1-sep-pg and --m1-disp-hs, which has its write too: never with the SEP's driver loaded. apple_sep writes the
+# enclave's key store (xART, which macOS shares, and which a safe boot's read-only root doesn't cover), and this run
+# lets the SoC go down around the enclave. Its module is looked for beside e1_hook's own; e1_hook itself refuses
+# sep_pg=1 and disp_hs=1 while a driver is bound to the SEP's device, at its load and again at the suspend's prepare.
+((!seppg)) || [[ ! -d ${MODDIR%/*}/apple_sep ]] ||
+  die "apple_sep is loaded: this run clears the PMGR's wait for the SEP's power gate, and is only made in a safe boot without the enclave's driver: pkexec sleep-drain-safe boot --no-sep"
+# And never in a boot that could still load it: a module that is absent now can be loaded a moment later. The boot's own
+# policy has to keep it out, and the kernel is asked what that policy is: its module_blacklist parameter, as the kernel
+# itself holds it (readable by root alone), has to list apple_sep, a whole name between commas, which is how the kernel
+# compares. Not the command line's text: an argument after "--" goes to init and one over 1024 bytes is dropped, and
+# neither sets the parameter, though /proc/cmdline shows both. A value that can't be read keeps nothing out.
+sep_kept_out() {
+  local v
+  v=$(cat "$BLACKLIST" 2> /dev/null) || return 1
+  [[ ,$v, == *,apple_sep,* ]]
+}
+((!seppg)) || sep_kept_out ||
+  die "this boot can still load apple_sep, the enclave's driver: the kernel's module blacklist ($BLACKLIST) doesn't list it. This run is only made in a safe boot started with: pkexec sleep-drain-safe boot --no-sep"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 # --m1-recfg-bite: what the reading would refuse for (sleep-drain-reading's attached(): a USB device that isn't a root
 # hub, a USB-C partner), refused here, before the SRAM write and not after it. --m1-wd2-bite: the same, before its write.
@@ -896,6 +980,8 @@ wd2opt=--m1-wd2-bite
 ((!blink)) || wd2opt=--m1-a2-pre-blink
 ((!wakeall)) || wd2opt=--m1-wake-all
 ((!llretn)) || wd2opt=--m1-ll-retn
+((!seppg)) || wd2opt=--m1-sep-pg
+((!disphs)) || wd2opt=--m1-disp-hs
 reader=
 disarm() {
   local again
@@ -1052,6 +1138,8 @@ params=(replay=15 oneway=1)
 ((!blink)) || params+=(blink=1)
 ((!wakeall)) || params+=(wake_all=1)
 ((!llretn)) || params+=(ll_retn=1)
+((!seppg)) || params+=(sep_pg=1)
+((!disphs)) || params+=(disp_hs=1)
 armed=1
 if ! insmod "$ko" "${params[@]}"; then
   # The module says why in the kernel log, which a safe boot loses at the restart: show it now, and keep it.
@@ -1097,6 +1185,8 @@ fi
   { ((!atcdown)) || [[ $(cat "$MODDIR/parameters/atc_down") == Y ]]; } &&
   { ((!blink)) || [[ $(cat "$MODDIR/parameters/blink") == Y ]]; } &&
   { ((!llretn)) || [[ $(cat "$MODDIR/parameters/ll_retn") == Y ]]; } &&
+  { ((!seppg)) || [[ $(cat "$MODDIR/parameters/sep_pg") == Y ]]; } &&
+  { ((!disphs)) || [[ $(cat "$MODDIR/parameters/disp_hs") == Y ]]; } &&
   { ((!wakeall)) || [[ $(cat "$MODDIR/parameters/wake_all") == Y ]]; } ||
   die "e1_hook didn't take ${params[*]}: make -C $here"
 # --m1-sio-pmp: the PMP's display report requests withdrawn at this suspend's noirq (Corey's pick of 2026-11-09), as

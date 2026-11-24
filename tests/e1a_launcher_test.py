@@ -104,6 +104,10 @@ LAUNCHERS = (
      "floor-m1-wake-all", ("--m1-wake-all",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 last_look=1 ll_wake=1 atc_down=1 ll_retn=1",
      "floor-m1-ll-retn", ("--m1-ll-retn",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 gates_mark=1 a2_pre=1 atc_down=1 blink=1 sep_pg=1",
+     "floor-m1-sep-pg", ("--m1-sep-pg",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 gates_mark=1 a2_pre=1 atc_down=1 blink=1 sep_pg=1 disp_hs=1",
+     "floor-m1-disp-hs", ("--m1-disp-hs",)),
 )
 
 failed = 0
@@ -117,7 +121,7 @@ def is_m1(launcher):
     """--m1, --m1-observe, --m1-late, --m1-alarm, the two --m1-hold, the two --m1-pmp and --m1-position: all load m1=1."""
     return any(a in ("--m1", "--m1-observe", "--m1-late", "--m1-alarm", "--m1-hold", "--m1-hold-nowatch", "--m1-pmp",
                      "--m1-pmp-idle", "--m1-position", "--m1-sio-pmp", "--m1-disp-off", "--m1-macos-end", "--m1-sio-stop",
-                     "--m1-power-words", "--m1-recfg-bite", "--m1-wd2-bite", "--m1-cluster-ack", "--m1-fabric-up", "--m1-mark", "--m1-gates", "--m1-sio-down", "--m1-pcie-down", "--m1-sio-steps", "--m1-a2-pre", "--m1-acc-last", "--m1-last-look", "--m1-last-look-wake", "--m1-gate-look", "--m1-obs-gate", "--m1-atc-down", "--m1-a2-pre-blink", "--m1-wake-all", "--m1-ll-retn") for a in launcher[4])
+                     "--m1-power-words", "--m1-recfg-bite", "--m1-wd2-bite", "--m1-cluster-ack", "--m1-fabric-up", "--m1-mark", "--m1-gates", "--m1-sio-down", "--m1-pcie-down", "--m1-sio-steps", "--m1-a2-pre", "--m1-acc-last", "--m1-last-look", "--m1-last-look-wake", "--m1-gate-look", "--m1-obs-gate", "--m1-atc-down", "--m1-a2-pre-blink", "--m1-wake-all", "--m1-ll-retn", "--m1-sep-pg", "--m1-disp-hs") for a in launcher[4])
 
 
 def is_siodown(launcher):
@@ -131,18 +135,28 @@ def is_siosteps(launcher):
 
 
 def is_a2pre(launcher):
-    """--m1-a2-pre, --m1-a2-pre-blink and --m1-wake-all: --m1-gates' run with a2_pre=1."""
+    """--m1-a2-pre, --m1-a2-pre-blink, --m1-wake-all and --m1-sep-pg: --m1-gates' run with a2_pre=1."""
     return "--m1-a2-pre" in launcher[4] or is_blink(launcher)
 
 
 def is_blink(launcher):
-    """--m1-a2-pre-blink, --m1-a2-pre's run with atc_down=1 and blink=1, and --m1-wake-all, which is that run too."""
-    return "--m1-a2-pre-blink" in launcher[4] or is_wakeall(launcher)
+    """--m1-a2-pre-blink, --m1-a2-pre's run with atc_down=1 and blink=1, and --m1-wake-all and --m1-sep-pg, which are that run too."""
+    return "--m1-a2-pre-blink" in launcher[4] or is_wakeall(launcher) or is_seppg(launcher)
 
 
 def is_wakeall(launcher):
     """--m1-wake-all: --m1-a2-pre-blink's run with wake_all=1."""
     return "--m1-wake-all" in launcher[4]
+
+
+def is_seppg(launcher):
+    """--m1-sep-pg: --m1-a2-pre-blink's run with sep_pg=1 (and without wake_all=1), and --m1-disp-hs, which is that run too."""
+    return "--m1-sep-pg" in launcher[4] or is_disphs(launcher)
+
+
+def is_disphs(launcher):
+    """--m1-disp-hs: --m1-sep-pg's run with disp_hs=1."""
+    return "--m1-disp-hs" in launcher[4]
 
 
 def is_acclast(launcher):
@@ -166,7 +180,7 @@ def is_llretn(launcher):
 
 
 def is_atcdown(launcher):
-    """--m1-atc-down, --m1-last-look-wake's run with atc_down=1, and --m1-ll-retn, --m1-a2-pre-blink and --m1-wake-all, which have it too."""
+    """--m1-atc-down, --m1-last-look-wake's run with atc_down=1, and --m1-ll-retn, --m1-a2-pre-blink, --m1-wake-all and --m1-sep-pg, which have it too."""
     return "--m1-atc-down" in launcher[4] or is_llretn(launcher) or is_blink(launcher)
 
 
@@ -237,7 +251,7 @@ PARMS = {
              "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
              "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
              "alarm:With m1=1 and pmgr_late=1 (bool)\nhold:With alarm=1 (bool)\nhold_nowatch:With hold=1 only (bool)\n"
-             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\none_commit:With disp_off=1 (bool)\nsmc_idle:With disp_off=1 (bool)\nsio_stop:With disp_off=1 (bool)\nps_words:With sio_stop=1 (bool)\nrecfg_bite:With ps_words=1 (bool)\nwd2_bite:With ps_words=1 (bool)\ncluster_ack:With wd2_bite=1 (bool)\nfabric_up:With cluster_ack=1 (bool)\nwd1_mark:With fabric_up=1 (bool)\ngates_mark:With wd1_mark=1 (bool)\nsio_down:With gates_mark=1 (bool)\npcie_down:With gates_mark=1 (bool)\nsio_steps:With gates_mark=1 (bool)\na2_pre:With gates_mark=1 (bool)\nacc_last:With gates_mark=1 (bool)\nlast_look:With wd1_mark=1 (bool)\nll_wake:With last_look=1 (bool)\ngate_look:With last_look=1 (bool)\natc_down:With ps_words=1 (bool)\nblink:With gates_mark=1 (bool)\nwake_all:With gates_mark=1 (bool)\nll_retn:With ll_wake=1 (bool)\nobs_gate:With observe=1 (bool)\nreplay:LAB ONLY (uint)\n",
+             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\none_commit:With disp_off=1 (bool)\nsmc_idle:With disp_off=1 (bool)\nsio_stop:With disp_off=1 (bool)\nps_words:With sio_stop=1 (bool)\nrecfg_bite:With ps_words=1 (bool)\nwd2_bite:With ps_words=1 (bool)\ncluster_ack:With wd2_bite=1 (bool)\nfabric_up:With cluster_ack=1 (bool)\nwd1_mark:With fabric_up=1 (bool)\ngates_mark:With wd1_mark=1 (bool)\nsio_down:With gates_mark=1 (bool)\npcie_down:With gates_mark=1 (bool)\nsio_steps:With gates_mark=1 (bool)\na2_pre:With gates_mark=1 (bool)\nacc_last:With gates_mark=1 (bool)\nlast_look:With wd1_mark=1 (bool)\nll_wake:With last_look=1 (bool)\ngate_look:With last_look=1 (bool)\natc_down:With ps_words=1 (bool)\nblink:With gates_mark=1 (bool)\nwake_all:With gates_mark=1 (bool)\nll_retn:With ll_wake=1 (bool)\nsep_pg:With gates_mark=1 (bool)\ndisp_hs:With disp_off=1 (bool)\nobs_gate:With observe=1 (bool)\nreplay:LAB ONLY (uint)\n",
     "floor-nosiostop": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                        "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
                        "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
@@ -319,7 +333,15 @@ PARMS["floor-noatcdown"] = PARMS["floor"].replace("atc_down:With ps_words=1 (boo
 PARMS["floor-noblink"] = PARMS["floor"].replace("blink:With gates_mark=1 (bool)" + "\n", "")
 PARMS["floor-nowakeall"] = PARMS["floor"].replace("wake_all:With gates_mark=1 (bool)" + "\n", "")
 PARMS["floor-nollretn"] = PARMS["floor"].replace("ll_retn:With ll_wake=1 (bool)" + "\n", "")
+PARMS["floor-noseppg"] = PARMS["floor"].replace("sep_pg:With gates_mark=1 (bool)" + "\n", "")
+PARMS["floor-nodisphs"] = PARMS["floor"].replace("disp_hs:With disp_off=1 (bool)" + "\n", "")
 PARMS["floor-noobsgate"] = PARMS["floor"].replace("obs_gate:With observe=1 (bool)" + "\n", "")
+
+
+# The kernel's module_blacklist parameter as /sys/module/kernel/parameters/module_blacklist reads in the safe boot
+# sleep-drain-safe boot --no-sep starts, and in a boot where nothing set it.
+BLACKLIST = "apple_sep"
+BLACKLIST_UNSET = "(null)"
 
 
 def sysctl(tmp):
@@ -328,7 +350,7 @@ def sysctl(tmp):
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
           takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
-          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, takes_gates=True, takes_siodown=True, takes_pciedown=True, takes_siosteps=True, takes_a2pre=True, takes_acclast=True, takes_lastlook=True, takes_llwake=True, takes_gatelook=True, takes_obsgate=True, takes_atcdown=True, takes_blink=True, takes_wakeall=True, takes_llretn=True, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
+          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, takes_gates=True, takes_siodown=True, takes_pciedown=True, takes_siosteps=True, takes_a2pre=True, takes_acclast=True, takes_lastlook=True, takes_llwake=True, takes_gatelook=True, takes_obsgate=True, takes_atcdown=True, takes_blink=True, takes_wakeall=True, takes_llretn=True, takes_seppg=True, takes_disphs=True, sep_loaded=False, blacklist=BLACKLIST, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -348,6 +370,9 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
         write(os.path.join(tmp, "sleep-drain-position-awake"), "")
     write(os.path.join(tmp, "ac", "online"), ac + "\n")
     write(os.path.join(tmp, "pm_test"), pm_test)
+    # The kernel's module_blacklist parameter, as its file in /sys/module/kernel/parameters has it; None: no such file.
+    if blacklist is not None:
+        write(os.path.join(tmp, "blacklist"), blacklist + "\n")
     write(os.path.join(tmp, "sysctl", "panic"), "0\n")
     write(os.path.join(tmp, "sysctl", "panic_on_oops"), "0\n")
     for k, v in (("success", "0"), ("fail", "0"), ("last_failed_errno", "0"), ("last_failed_step", "")):
@@ -366,6 +391,9 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     write(os.path.join(tmp, "kbd", "brightness"), "0\n")
     if loaded:
         os.makedirs(moddir)
+    if sep_loaded:
+        # apple_sep as a loaded module: its directory beside e1_hook's own in /sys/module.
+        os.makedirs(os.path.join(os.path.dirname(moddir), "apple_sep"))
     stubs = os.path.join(tmp, "stubs")
     # The module's directory and its parameters, as the kernel shows them; a
     # build that doesn't know replay and oneway (or quiet, m1, observe,
@@ -403,6 +431,8 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     quiet += f' blink=1) echo Y > {moddir}/parameters/blink ;;' if takes_blink else ""
     quiet += f' wake_all=1) echo Y > {moddir}/parameters/wake_all ;;' if takes_wakeall else ""
     quiet += f' ll_retn=1) echo Y > {moddir}/parameters/ll_retn ;;' if takes_llretn else ""
+    quiet += f' sep_pg=1) echo Y > {moddir}/parameters/sep_pg ;;' if takes_seppg else ""
+    quiet += f' disp_hs=1) echo Y > {moddir}/parameters/disp_hs ;;' if takes_disphs else ""
     quiet += f' obs_gate=1) echo Y > {moddir}/parameters/obs_gate ;;' if takes_obsgate else ""
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
               f' oneway=1) echo Y > {moddir}/parameters/oneway ;;{quiet} esac; done\n') if takes else ""
@@ -471,6 +501,7 @@ def env(tmp, launcher, watch_s=3):
         prefix + "_SAFE_FLAG": os.path.join(tmp, "run", "active"),
         prefix + "_AC": os.path.join(tmp, "ac"),
         prefix + "_MODDIR": os.path.join(tmp, "module"),
+        prefix + "_BLACKLIST": os.path.join(tmp, "blacklist"),
         prefix + "_READING": os.path.join(tmp, "stubs", "reading"),
         prefix + "_PM_TEST": os.path.join(tmp, "pm_test"),
         prefix + "_SYSCTL": os.path.join(tmp, "sysctl"),
@@ -708,6 +739,53 @@ def test_refusals(launcher):
             r = run(tmp, d, launcher)
             check(r.returncode == 1 and msg in r.stderr and calls(tmp) == [] and sysctl(tmp) == ("0", "0"),
                   f"{name(launcher)}: refuses {what}, and loads nothing", r.stdout + r.stderr + "\n".join(calls(tmp)))
+    # apple_sep, the SEP's driver, loaded (its directory beside e1_hook's in /sys/module): --m1-sep-pg and --m1-disp-hs refuse before anything
+    # is loaded or written, wd2-bite's write included; every other option of run-floor goes on as ever with it there.
+    if launcher[0] != "run-floor":
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, launcher, sep_loaded=True, reading="ok" if is_seppg(launcher) else "fail")
+        r = run(tmp, d, launcher)
+        if is_seppg(launcher):
+            check(r.returncode == 1 and calls(tmp) == [] and recfg_calls(tmp) == [] and wd2_calls(tmp) == [] and sysctl(tmp) == ("0", "0")
+                  and "apple_sep is loaded: this run clears the PMGR's wait for the SEP's power gate, and is only made in a safe boot without the"
+                      " enclave's driver: pkexec sleep-drain-safe boot --no-sep" in r.stderr,
+                  f"{name(launcher)}: refuses with apple_sep loaded, says why and what to do, and loads and writes nothing (no wd2-bite either)",
+                  r.stdout + r.stderr + "\n".join(calls(tmp) + wd2_calls(tmp)))
+        else:
+            check(r.returncode == 1 and "apple_sep" not in r.stderr and [x.split()[0] for x in calls(tmp)] == ["insmod", "reading", "rmmod"],
+                  f"{name(launcher)}: apple_sep loaded doesn't stop an option that leaves the SEP's wait alone: the module loads as ever",
+                  r.stdout + r.stderr + "\n".join(calls(tmp)))
+    # The boot's own policy: the kernel's module_blacklist parameter, as the kernel holds it, has to list apple_sep, for
+    # those two options alone. Each case: the parameter's file (None: no such file), and whether those options take it.
+    policy = f"this boot can still load apple_sep, the enclave's driver: the kernel's module blacklist ({os.path.join('TMP', 'blacklist')}) doesn't list it." \
+             " This run is only made in a safe boot started with: pkexec sleep-drain-safe boot --no-sep"
+    lines = (("not set, as in an ordinary safe boot, or in one whose command line has the blacklist after -- or too long for the kernel", BLACKLIST_UNSET, False),
+             ("--no-sep's, listing apple_sep", BLACKLIST, True),
+             ("other modules around apple_sep", "foo,apple_sep,bar", True),
+             ("apple_sep last of two", "foo,apple_sep", True),
+             ("another module alone", "foo", False),
+             ("other modules whose names have apple_sep in them", "apple_sep_x,xapple_sep", False),
+             ("apple-sep with a hyphen, which is no module's name to the kernel", "apple-sep", False),
+             ("apple_sep in quotes", '"apple_sep"', False),
+             ("apple_sep behind a space, which the kernel wouldn't match", "foo, apple_sep", False),
+             ("an empty value", "", False),
+             ("no file to read", None, False))
+    for what, line, taken in lines if is_seppg(launcher) else lines[:1] + lines[-1:]:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, launcher, blacklist=line, reading="fail")
+            r = run(tmp, d, launcher)
+            went_on = r.returncode == 1 and "apple_sep" not in r.stderr and [x.split()[0] for x in calls(tmp)] == ["insmod", "reading", "rmmod"]
+            if not is_seppg(launcher):
+                check(went_on, f"{name(launcher)}: {what}: an option that leaves the SEP's wait alone goes on as ever",
+                      r.stdout + r.stderr + "\n".join(calls(tmp)))
+            elif taken:
+                check(went_on, f"{name(launcher)}: the kernel's module blacklist: {what}: this boot keeps apple_sep out, and the run goes on",
+                      r.stdout + r.stderr + "\n".join(calls(tmp)))
+            else:
+                check(r.returncode == 1 and policy.replace("TMP", tmp) in r.stderr and calls(tmp) == [] and recfg_calls(tmp) == [] and wd2_calls(tmp) == [] and sysctl(tmp) == ("0", "0"),
+                      f"{name(launcher)}: the kernel's module blacklist: {what}: refused, with why and what to do, and nothing loaded or written",
+                      r.stdout + r.stderr + "\n".join(calls(tmp) + wd2_calls(tmp)))
 
 
 def test_floor_refusals(launcher):
@@ -815,11 +893,15 @@ def test_floor_refusals(launcher):
         cases.append(("a build without wake_all", dict(build="floor-nowakeall"), None, "without wake_all"))
     if is_llretn(launcher):
         cases.append(("a build without ll_retn", dict(build="floor-nollretn"), None, "without ll_retn"))
+    if is_seppg(launcher):
+        cases.append(("a build without sep_pg", dict(build="floor-noseppg"), None, "without sep_pg"))
+    if is_disphs(launcher):
+        cases.append(("a build without disp_hs", dict(build="floor-nodisphs"), None, "without disp_hs"))
     if obsgate:
         cases.append(("a build without obs_gate", dict(build="floor-noobsgate"), None, "without obs_gate"))
     if plain:
         # The floor's build before quiet still runs the floor itself.
-        usage = "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn]"
+        usage = "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn | --m1-sep-pg | --m1-disp-hs]"
         cases += [("an unknown argument", {}, ["--loud"], usage),
                   ("a second argument", {}, ["--quiet", "--quiet"], usage),
                   ("--quiet and --m1 together", {}, ["--quiet", "--m1"], usage),
@@ -867,6 +949,16 @@ def test_floor_refusals(launcher):
                   ("--m1-ll-retn twice", {}, ["--m1-ll-retn", "--m1-ll-retn"], usage),
                   ("--no-reading after --m1-ll-retn", {}, ["--m1-ll-retn", "--no-reading"], usage),
                   ("--ll-retn alone", {}, ["--ll-retn"], usage),
+                  ("--m1-a2-pre-blink and --m1-sep-pg together", {}, ["--m1-a2-pre-blink", "--m1-sep-pg"], usage),
+                  ("--m1-wake-all and --m1-sep-pg together", {}, ["--m1-wake-all", "--m1-sep-pg"], usage),
+                  ("--m1-sep-pg twice", {}, ["--m1-sep-pg", "--m1-sep-pg"], usage),
+                  ("--no-reading after --m1-sep-pg", {}, ["--m1-sep-pg", "--no-reading"], usage),
+                  ("--sep-pg alone", {}, ["--sep-pg"], usage),
+                  ("--m1-sep-pg and --m1-disp-hs together", {}, ["--m1-sep-pg", "--m1-disp-hs"], usage),
+                  ("--m1-disp-hs and --m1-wake-all together", {}, ["--m1-disp-hs", "--m1-wake-all"], usage),
+                  ("--m1-disp-hs twice", {}, ["--m1-disp-hs", "--m1-disp-hs"], usage),
+                  ("--no-reading after --m1-disp-hs", {}, ["--m1-disp-hs", "--no-reading"], usage),
+                  ("--disp-hs alone", {}, ["--disp-hs"], usage),
                   ("--m1-late and --m1-obs-gate together", {}, ["--m1-late", "--m1-obs-gate"], usage),
                   ("--m1-acc-last and --m1-last-look together", {}, ["--m1-acc-last", "--m1-last-look"], usage),
                   ("--no-reading after the recipe", {}, ["--m1-last-look", "--no-reading"], usage),
@@ -953,6 +1045,10 @@ def test_floor_refusals(launcher):
         ignored.append(("wake_all", dict(takes_wakeall=False)))
     if is_llretn(launcher):
         ignored.append(("ll_retn", dict(takes_llretn=False)))
+    if is_seppg(launcher):
+        ignored.append(("sep_pg", dict(takes_seppg=False)))
+    if is_disphs(launcher):
+        ignored.append(("disp_hs", dict(takes_disphs=False)))
     if is_obsgate(launcher):
         ignored.append(("obs_gate", dict(takes_obsgate=False)))
     for what, kw in ignored:

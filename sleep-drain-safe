@@ -39,6 +39,9 @@ IMAGE=$IMAGE_DIR/initramfs.img
 ENTRY=sleep-drain-safe
 ENTRY_NOSEP=sleep-drain-safe-nosep
 RUN=/run/sleep-drain-safe
+# The kernel's own module blacklist (readable by root alone), and its command line.
+KPARAM=/sys/module/kernel/parameters/module_blacklist
+PROC_CMDLINE=/proc/cmdline
 
 die() { echo "sleep-drain-safe: $*" >&2; exit 1; }
 need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }
@@ -103,9 +106,11 @@ regen_grub() {
 # The list of the last module blacklist argument of a kernel command line. The
 # kernel keeps the last one it is given, not the sum of them, and takes
 # module-blacklist= for the same parameter (it reads - and _ alike in names).
+# What follows a "--" isn't the kernel's: it goes to init, and sets nothing.
 last_blacklist() {
   local a last=
   for a in $1; do
+    [[ $a != -- ]] || break
     [[ $a != module_blacklist=* && $a != module-blacklist=* ]] || last=${a#*=}
   done
   echo "$last"
@@ -120,7 +125,7 @@ sep_blacklisted() {
 # module_blacklist= at the end that repeats the last one's list, since a second
 # argument replaces the first and would let that one's modules load again.
 # A line whose last list has apple_sep already is left as it is, not made
-# longer. Only for a line blacklist_unsure() passes: see there.
+# longer. Only for a line followable() passes: see there.
 no_sep_cmdline() {
   local last
   if sep_blacklisted "$1"; then
@@ -131,30 +136,50 @@ no_sep_cmdline() {
   echo "$1 module_blacklist=${last:+$last,}apple_sep"
 }
 
-# A command line whose blacklist this script can't work out by splitting at
-# spaces: a blacklist argument somewhere, and quoting or a backslash anywhere.
-# GRUB takes quotes off before the kernel sees the line, so a later quoted
-# blacklist would win unseen. "boot" refuses such a line, in both modes, before
-# it writes anything: an entry is never published on a guess.
-blacklist_unsure() {
-  [[ $1 =~ module[-_]blacklist && $1 == *[\"\'\\]* ]]
+# Whether a command line is made only of characters this script can follow
+# from grub.cfg to the kernel: letters, digits, space and _ = . , : / @ % + -.
+# Anything else GRUB may read another way than this script does. It takes
+# quotes and backslashes off, so "--" is a bare -- to the kernel and a quoted
+# blacklist wins unseen; a backslash at the line's end, or a quote left open,
+# carries the command on to the next line, of which this script copied only
+# the first, and what it adds at the end (the read-only flag, the blacklist)
+# then reaches the kernel in another form or not at all. GRUB drops a carriage
+# return, starts a comment at a #, ends the command at a ;, and gives
+# | & < > { } meanings of their own. Counted in bytes: nothing outside ASCII
+# either. A list of what is known to be plain, not of what is feared: "boot"
+# refuses any other line, in both modes, before it writes anything.
+followable() {
+  local LC_ALL=C
+  [[ $1 != *[!A-Za-z0-9\ _=.,:/@%+-]* ]]
+}
+
+# Whether a command line has a "--" word, after which nothing is the kernel's.
+# Only asked of a line followable() passes, so a word here is a word there.
+has_separator() {
+  local a
+  local -a w
+  read -ra w <<< "$1"
+  for a in "${w[@]}"; do
+    [[ $a != -- ]] || return 0
+  done
+  return 1
 }
 
 # Whether an entry's linux line fits the kernel's command line: arm64's buffer
 # is 2048 bytes with its NUL, GRUB puts BOOT_IMAGE= and the kernel's path
 # first, and what doesn't fit is cut off at the end, which is where the hook's
-# flag is: a boot without it isn't read-only. Counted in bytes. A line with
-# quoting or a backslash reaches the kernel in another form than it has here
-# (GRUB takes quotes off and puts its own on, with escapes), so such a line is
-# taken only at under half the limit, which that can't double past.
+# flag is: a boot without it isn't read-only. Counted in bytes, of a line
+# followable() passes: GRUB hands such a line on as it is written.
 CMDLINE_MAX=2048
+# param_set_charp()'s limit for a string parameter such as module_blacklist.
+BLACKLIST_MAX=1024
+bytes() {
+  local LC_ALL=C
+  echo ${#1}
+}
 fits() {
   local LC_ALL=C full="BOOT_IMAGE=/vmlinuz-linux-aurora ${1#linux /vmlinuz-linux-aurora }"
-  if [[ $full == *[\"\'\\]* ]]; then
-    ((2 * ${#full} < CMDLINE_MAX))
-  else
-    ((${#full} < CMDLINE_MAX))
-  fi
+  ((${#full} < CMDLINE_MAX))
 }
 
 # have_entry CFG ID LINE: CFG's menu entry ID has exactly LINE as its linux line.
@@ -197,11 +222,19 @@ cmd_boot() {
   # earlier "boot" queued stays what it was, image included.
   [[ $cmdline != *'$'* ]] ||
     die "the regular command line has a GRUB variable in it, so what the kernel gets is only known at boot; nothing written, nothing selected: $cmdline"
-  ! blacklist_unsure "$cmdline" ||
-    die "the regular command line has a module blacklist and quoting, so what the kernel would end up blocking can't be worked out here; nothing written, nothing selected: $cmdline"
+  followable "$cmdline" ||
+    die "the regular command line has a character in it that GRUB may read another way than this script does (a quote or a backslash, a carriage return or another control character, one of # ; | & < > { }, or one outside ASCII), so what the kernel gets can't be worked out here; nothing written, nothing selected: $(printf '%q' "$cmdline")"
+  # The flag and the blacklist are added at the line's end, and what follows a "--" goes to init, not the kernel.
+  ! has_separator "$cmdline" ||
+    die "the regular command line has a -- in it: what is added after it goes to init and the kernel never sees it, the module blacklist included; nothing written, nothing selected: $cmdline"
   plain_line="linux /vmlinuz-linux-aurora $cmdline sleepdrain.safe"
   nosep_line="linux /vmlinuz-linux-aurora $(no_sep_cmdline "$cmdline") sleepdrain.safe"
   sep_blacklisted "${nosep_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep on the module blacklist of: $cmdline"
+  # The kernel drops a string parameter over 1024 bytes, and with it the whole list.
+  local list
+  list=$(last_blacklist "${nosep_line#linux /vmlinuz-linux-aurora }")
+  (($(bytes "$list") <= BLACKLIST_MAX)) ||
+    die "the module blacklist with apple_sep on it would be $(bytes "$list") bytes, and the kernel drops one over $BLACKLIST_MAX; nothing written, nothing selected"
   fits "$plain_line" && fits "$nosep_line" ||
     die "a safe entry's command line could pass the kernel's $CMDLINE_MAX bytes and lose its end, where the read-only flag is; nothing written, nothing selected"
 
@@ -285,10 +318,17 @@ cmd_status() {
     echo "this boot is a safe boot: $dev read-only $([[ $ro == 1 ]] && echo yes || echo "NO ($ro)")," \
       "/ on $(findmnt -no FSTYPE /)"
     df -h --output=used,size "$RUN/rw" | tail -1 | awk '{ print "RAM used by changes: " $1 " of " $2 }'
-    if sep_blacklisted "$(< /proc/cmdline)"; then
-      echo "the Secure Enclave's driver is kept out of this boot (apple_sep on the module blacklist): apple_sep $([[ -d /sys/module/apple_sep ]] && echo "IS LOADED all the same" || echo "isn't loaded")"
+    # "Kept out" only on the kernel's own list, which reads as root alone. Without it the command line's text is what
+    # was asked for, not what the kernel took (it drops a list over 1024 bytes, and anything after a "--").
+    local bl
+    if bl=$(cat "$KPARAM" 2> /dev/null); then
+      if [[ ,$bl, == *,apple_sep,* ]]; then
+        echo "the Secure Enclave's driver is kept out of this boot (the kernel's module blacklist lists apple_sep): apple_sep $([[ -d /sys/module/apple_sep ]] && echo "IS LOADED all the same" || echo "isn't loaded")"
+      else
+        echo "the Secure Enclave's driver may load in this boot: apple_sep $([[ -d /sys/module/apple_sep ]] && echo "is loaded" || echo "isn't loaded")"
+      fi
     else
-      echo "the Secure Enclave's driver may load in this boot: apple_sep $([[ -d /sys/module/apple_sep ]] && echo "is loaded" || echo "isn't loaded")"
+      echo "NOT VERIFIED whether the Secure Enclave's driver is kept out of this boot: the kernel's own module blacklist reads only as root (pkexec sleep-drain-safe status). The command line $(sep_blacklisted "$(< "$PROC_CMDLINE")" && echo "asks for it" || echo "doesn't ask for it"); apple_sep $([[ -d /sys/module/apple_sep ]] && echo "is loaded" || echo "isn't loaded")"
     fi
   else
     echo "this boot is a regular boot"
