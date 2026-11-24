@@ -2,7 +2,7 @@
 # sleep-drain's safe boot (PLAN.md, A5): one boot in which nothing can write
 # the disk, for experiments that may hang or crash the Mac.
 #
-#   sleep-drain-safe boot [--no-sep]  the next restart only is a safe boot (root)
+#   sleep-drain-safe boot [--no-sep | --sep-ro]  the next restart only is a safe boot (root)
 #   sleep-drain-safe status         is this boot safe, and is the next one?
 #   sleep-drain-safe save [PATH..]  in a safe boot: keep results (root)
 #   sleep-drain-safe collect        in the next regular boot: put them in place (root)
@@ -28,8 +28,21 @@
 # service a write to its store (xART: an APFS extent the driver writes
 # directly, which the read-only root doesn't cover). For a run that lets the
 # SoC go down around the enclave (e1-hook's sep_pg=1). Touch ID doesn't work
-# in that boot; the password does. Both entries are always in grub.cfg, each
-# with its own id, so choosing one never changes what an earlier "boot" queued.
+# in that boot; the password does.
+#
+# "boot --sep-ro" selects a third entry, the regular line with
+# apple_sep.xart_writes=0 apple_sep.provision_keybag=0 added: the enclave's
+# driver loads as usual and is asked to open that store read-only (omacom's
+# sep.rs: "set to 0 for read-only operation"; it refuses to probe with
+# provision_keybag left on, so both are set). For a run that needs the enclave
+# power-gated, which it only is with its driver (e1-hook's sep_ro=1). The two
+# words are a request: what the driver took is its own to say, in the sysfs
+# attribute diag/xart of the device it is bound to ("enabled" or "disabled",
+# from the mode it opened the store in), and "status" says read-only on that
+# alone. Touch ID may fail in that boot; the password works.
+#
+# All three entries are always in grub.cfg, each with its own id, so choosing
+# one never changes what an earlier "boot" queued.
 set -euo pipefail
 
 GRUB_CFG=/boot/grub/grub.cfg
@@ -38,10 +51,18 @@ IMAGE_DIR=/boot/sleep-drain-safe
 IMAGE=$IMAGE_DIR/initramfs.img
 ENTRY=sleep-drain-safe
 ENTRY_NOSEP=sleep-drain-safe-nosep
+ENTRY_SEPRO=sleep-drain-safe-sepro
+# What boot --sep-ro's entry adds to the regular line, and the driver's two parameters it sets.
+SEPRO_WORDS="apple_sep.xart_writes=0 apple_sep.provision_keybag=0"
+SEPRO_PARAMS="xart_writes provision_keybag"
 RUN=/run/sleep-drain-safe
 # The kernel's own module blacklist (readable by root alone), and its command line.
 KPARAM=/sys/module/kernel/parameters/module_blacklist
 PROC_CMDLINE=/proc/cmdline
+# The SEP driver's directory in sysfs, with a link for each device bound to it, and under each device the attribute that
+# says how the enclave's store is open (omacom's drivers/soc/apple/diag_shim.c: "enabled" or "disabled"), for status.
+SEP_DRIVER=/sys/bus/platform/drivers/apple_sep
+XART_ATTR=diag/xart
 
 die() { echo "sleep-drain-safe: $*" >&2; exit 1; }
 need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }
@@ -136,6 +157,45 @@ no_sep_cmdline() {
   echo "$1 module_blacklist=${last:+$last,}apple_sep"
 }
 
+# sep_param LINE NAME: the value of the last word of LINE that sets apple_sep's
+# parameter NAME, and success if there is one. modprobe takes such a word from
+# the kernel's command line for a module; it and the kernel read - and _ alike
+# in the module's name and in the parameter's, so every spelling is one
+# parameter here too. A word with no "=" counts, with an empty value. What
+# follows a "--" isn't looked at.
+sep_param() {
+  local a key found=1 val=
+  local -a w
+  read -ra w <<< "$1"
+  for a in "${w[@]}"; do
+    [[ $a != -- ]] || break
+    key=${a%%=*}
+    [[ ${key//-/_} == "apple_sep.$2" ]] || continue
+    found=0
+    val=
+    [[ $a != *=* ]] || val=${a#*=}
+  done
+  echo "$val"
+  return $found
+}
+
+# Whether a command line sets either of the parameters boot --sep-ro adds.
+sets_sepro_param() {
+  local n
+  for n in $SEPRO_PARAMS; do
+    ! sep_param "$1" "$n" > /dev/null || return 0
+  done
+  return 1
+}
+
+# Whether a command line asks for the read-only store: each of the two, as last given, is 0.
+asks_sepro() {
+  local n
+  for n in $SEPRO_PARAMS; do
+    [[ $(sep_param "$1" "$n") == 0 ]] || return 1
+  done
+}
+
 # Whether a command line is made only of characters this script can follow
 # from grub.cfg to the kernel: letters, digits, space and _ = . , : / @ % + -.
 # Anything else GRUB may read another way than this script does. It takes
@@ -194,15 +254,22 @@ have_entry() {
 }
 
 cmd_boot() {
-  local nosep=0
-  if [[ ${1:-} == --no-sep ]]; then
+  local nosep=0 sepro=0
+  # One of the two at most: --no-sep and --sep-ro together fall through to the usage.
+  case ${1:-} in
+  --no-sep)
     nosep=1
     shift
-  fi
-  (($# == 0)) || die "usage: sleep-drain-safe boot [--no-sep]"
+    ;;
+  --sep-ro)
+    sepro=1
+    shift
+    ;;
+  esac
+  (($# == 0)) || die "usage: sleep-drain-safe boot [--no-sep | --sep-ro]"
   need_root
   ! is_safe || die "this is a safe boot already; restart first"
-  local release cmdline boot_uuid want plain_line nosep_line id line old
+  local release cmdline boot_uuid want plain_line nosep_line sepro_line id line old
   release=$(regular_release)
   [[ -f /etc/initcpio/hooks/sleepdrain-safe && -f /etc/initcpio/install/sleepdrain-safe ]] ||
     die "the sleepdrain-safe hook isn't installed: run install.sh"
@@ -227,7 +294,17 @@ cmd_boot() {
   # The flag and the blacklist are added at the line's end, and what follows a "--" goes to init, not the kernel.
   ! has_separator "$cmdline" ||
     die "the regular command line has a -- in it: what is added after it goes to init and the kernel never sees it, the module blacklist included; nothing written, nothing selected: $cmdline"
+  # The third entry sets two of apple_sep's parameters. A regular line that sets either already is refused, in every
+  # mode, since all three entries are written every time: which of two words the driver would take isn't this
+  # script's to guess.
+  ! sets_sepro_param "$cmdline" ||
+    die "the regular command line already sets apple_sep's xart_writes or provision_keybag, which the --sep-ro entry sets too: which word the driver would take isn't this script's to guess; nothing written, nothing selected: $cmdline"
+  # --sep-ro alone: with apple_sep on the regular line's own blacklist the driver never loads, and that boot isn't the one asked for.
+  ((!sepro)) || ! sep_blacklisted "$cmdline" ||
+    die "the regular command line keeps apple_sep out (its module blacklist lists it), so the driver wouldn't load in a --sep-ro boot at all; nothing written, nothing selected: $cmdline"
   plain_line="linux /vmlinuz-linux-aurora $cmdline sleepdrain.safe"
+  sepro_line="linux /vmlinuz-linux-aurora $cmdline $SEPRO_WORDS sleepdrain.safe"
+  asks_sepro "${sepro_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep's read-only parameters on: $cmdline"
   nosep_line="linux /vmlinuz-linux-aurora $(no_sep_cmdline "$cmdline") sleepdrain.safe"
   sep_blacklisted "${nosep_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep on the module blacklist of: $cmdline"
   # The kernel drops a string parameter over 1024 bytes, and with it the whole list.
@@ -235,7 +312,7 @@ cmd_boot() {
   list=$(last_blacklist "${nosep_line#linux /vmlinuz-linux-aurora }")
   (($(bytes "$list") <= BLACKLIST_MAX)) ||
     die "the module blacklist with apple_sep on it would be $(bytes "$list") bytes, and the kernel drops one over $BLACKLIST_MAX; nothing written, nothing selected"
-  fits "$plain_line" && fits "$nosep_line" ||
+  fits "$plain_line" && fits "$nosep_line" && fits "$sepro_line" ||
     die "a safe entry's command line could pass the kernel's $CMDLINE_MAX bytes and lose its end, where the read-only flag is; nothing written, nothing selected"
 
   # Built fresh every time, so it always matches the installed kernel.
@@ -249,7 +326,7 @@ cmd_boot() {
     { rm -f "$IMAGE.new"; die "the regular entry's command line changed while the image was built; the old image and entries stay, nothing selected: run it again"; }
   mv -f "$IMAGE.new" "$IMAGE"
 
-  # Two entries with ids of their own, both always there, so that selecting
+  # Three entries with ids of their own, all always there, so that selecting
   # one never rewrites the entry an earlier "boot" has queued.
   want=$(cat <<EOF
 #!/bin/sh
@@ -273,10 +350,22 @@ menuentry 'Safe boot for sleep experiments (disk read-only, no Secure Enclave dr
     $nosep_line
     initrd /sleep-drain-safe/initramfs.img
 }
+menuentry 'Safe boot for sleep experiments (disk read-only, Secure Enclave driver asked for a read-only store)' --class omarchy --class gnu-linux --id $ENTRY_SEPRO {
+    load_video
+    set gfxpayload=keep
+    insmod part_gpt
+    insmod fat
+    search --no-floppy --fs-uuid --set=root $boot_uuid
+    $sepro_line
+    initrd /sleep-drain-safe/initramfs.img
+}
 MENU
 EOF
 )
-  entries_ok() { have_entry "$1" "$ENTRY" "$plain_line" && have_entry "$1" "$ENTRY_NOSEP" "$nosep_line"; }
+  entries_ok() {
+    have_entry "$1" "$ENTRY" "$plain_line" && have_entry "$1" "$ENTRY_NOSEP" "$nosep_line" &&
+      have_entry "$1" "$ENTRY_SEPRO" "$sepro_line"
+  }
   # By what grub.cfg has now, not by whether the script was written before: a
   # regeneration that failed last time is made again.
   if [[ ! -f $SCRIPT || $(< "$SCRIPT") != "$want" ]] || ! entries_ok "$GRUB_CFG"; then
@@ -290,7 +379,13 @@ EOF
       die "the safe entries aren't in grub.cfg as written (see above); nothing selected"
     fi
   fi
-  if ((nosep)); then id=$ENTRY_NOSEP line=$nosep_line; else id=$ENTRY line=$plain_line; fi
+  if ((nosep)); then
+    id=$ENTRY_NOSEP line=$nosep_line
+  elif ((sepro)); then
+    id=$ENTRY_SEPRO line=$sepro_line
+  else
+    id=$ENTRY line=$plain_line
+  fi
   have_entry "$GRUB_CFG" "$id" "$line" || die "no $id entry with its command line in $GRUB_CFG; nothing selected"
   grub-reboot "$id" || die "grub-reboot failed; nothing new selected"
   # grub-reboot can return 0 without having written the selection: read it back, once.
@@ -301,6 +396,8 @@ EOF
     die "grub-reboot returned 0, but the next entry isn't $id: $(grep '^next_entry=' <<< "$env" || echo 'none is set'). Not selected"
   if ((nosep)); then
     echo "the next restart is a safe boot ($release, disk read-only) without the Secure Enclave's driver (apple_sep on the module blacklist); every restart after that is the regular one"
+  elif ((sepro)); then
+    echo "the next restart is a safe boot ($release, disk read-only) with the Secure Enclave's driver asked to open its store read-only ($SEPRO_WORDS); whether it did is the driver's to say, in that boot: sleep-drain-safe status; every restart after that is the regular one"
   elif sep_blacklisted "$cmdline"; then
     echo "the next restart is a safe boot ($release, disk read-only); the regular command line already keeps apple_sep out; every restart after that is the regular one"
   else
@@ -330,6 +427,37 @@ cmd_status() {
     else
       echo "NOT VERIFIED whether the Secure Enclave's driver is kept out of this boot: the kernel's own module blacklist reads only as root (pkexec sleep-drain-safe status). The command line $(sep_blacklisted "$(< "$PROC_CMDLINE")" && echo "asks for it" || echo "doesn't ask for it"); apple_sep $([[ -d /sys/module/apple_sep ]] && echo "is loaded" || echo "isn't loaded")"
     fi
+    # The enclave's store (xART): "read-only" only on the bound driver's own word, the attribute diag/xart of every device
+    # bound to apple_sep: at least one device, each reading exactly "disabled" and a newline. The driver has it from the
+    # mode it opened the store in, from probe to unbind, and anyone can read it. A device that reads "enabled" is said as
+    # that. No bound device, an attribute that isn't there or can't be read, and any other value are not verified. The
+    # command line's words are what was asked for, not what the driver took.
+    local asks="doesn't ask for a read-only store" d v n=0 ro=0 open=0 odd=
+    ! asks_sepro "$(< "$PROC_CMDLINE")" || asks="asks for a read-only store ($SEPRO_WORDS)"
+    for d in "$SEP_DRIVER"/*; do
+      # The driver's directory has a link for each device bound to it, and one to its module.
+      [[ -d $d && ${d##*/} != module ]] || continue
+      n=$((n + 1))
+      # With a dot after it, so that the value's own newline, or the lack of one, is still there to compare.
+      if ! v=$(cat "$d/$XART_ATTR" 2> /dev/null && echo .); then
+        odd="${d##*/}'s $XART_ATTR isn't there or can't be read"
+      elif [[ $v == $'disabled\n.' ]]; then
+        ro=$((ro + 1))
+      elif [[ $v == $'enabled\n.' ]]; then
+        open=$((open + 1))
+      else
+        odd="${d##*/}'s $XART_ATTR reads $(printf '%q' "${v%.}"), which is neither \"enabled\" nor \"disabled\" and a newline"
+      fi
+    done
+    if ((open)); then
+      echo "the Secure Enclave's store (xART) is OPEN TO WRITES in this boot: the bound driver's $XART_ATTR reads \"enabled\". The command line $asks"
+    elif ((n && ro == n)); then
+      echo "the Secure Enclave's store (xART) is read-only in this boot: the bound driver's $XART_ATTR reads \"disabled\"$( ((n == 1)) || echo ", for each of its $n devices"). The command line $asks"
+    elif ((!n)); then
+      echo "NOT VERIFIED whether the Secure Enclave's store (xART) is read-only in this boot: no device is bound to apple_sep, so nothing says how the store is open. The command line $asks"
+    else
+      echo "NOT VERIFIED whether the Secure Enclave's store (xART) is read-only in this boot: $odd. The command line $asks"
+    fi
   else
     echo "this boot is a regular boot"
   fi
@@ -341,6 +469,8 @@ cmd_status() {
     echo "the next restart is a safe boot"
   elif [[ $next == "$ENTRY_NOSEP" ]]; then
     echo "the next restart is a safe boot without the Secure Enclave's driver"
+  elif [[ $next == "$ENTRY_SEPRO" ]]; then
+    echo "the next restart is a safe boot with the Secure Enclave's driver asked to open its store read-only"
   else
     echo "the next restart is a regular boot"
   fi
@@ -500,7 +630,7 @@ cmd_remove() {
   ! compgen -G "$IMAGE_DIR/saved/*.tar" > /dev/null || die "uncollected results in $IMAGE_DIR/saved: collect first"
   rm -f "$SCRIPT"
   regen_grub || die "grub.cfg not regenerated; the image is still in place"
-  if grub-editenv - list | grep -x -e "next_entry=$ENTRY" -e "next_entry=$ENTRY_NOSEP" > /dev/null; then
+  if grub-editenv - list | grep -x -e "next_entry=$ENTRY" -e "next_entry=$ENTRY_NOSEP" -e "next_entry=$ENTRY_SEPRO" > /dev/null; then
     grub-editenv - unset next_entry
   fi
   rm -rf -- "${IMAGE_DIR:?}"
@@ -513,5 +643,5 @@ case "${1:-}" in
   save) shift; cmd_save "$@" ;;
   collect) cmd_collect ;;
   remove) cmd_remove ;;
-  *) echo "usage: sleep-drain-safe boot [--no-sep] | status | save [PATH...] | collect | remove" >&2; exit 2 ;;
+  *) echo "usage: sleep-drain-safe boot [--no-sep | --sep-ro] | status | save [PATH...] | collect | remove" >&2; exit 2 ;;
 esac

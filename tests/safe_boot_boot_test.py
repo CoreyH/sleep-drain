@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""sleep-drain-safe boot [--no-sep], without root, GRUB or a boot partition.
+"""sleep-drain-safe boot [--no-sep | --sep-ro], without root, GRUB or a boot partition.
 
-The script is copied with its five fixed paths pointed into a scratch directory, need_root and regular_release replaced, and
+The script is copied with its fixed paths pointed into a scratch directory (the SEP driver's directory in sysfs among them, a
+directory the test fills), need_root and regular_release replaced, and
 mkinitcpio, lsinitcpio, grub-probe, grub-mkconfig, grub-reboot and sync replaced by stubs on PATH. grub-mkconfig's stub writes the
 regular entry's section and then each executable script of the scratch grub.d between its BEGIN and END lines, which is the shape
 the script's own regen_grub() checks. What this shows is the entry the script writes and what it says; no boot is made.
@@ -18,6 +19,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "..", "sleep-drain-safe")
 NO_SEP = "module_blacklist=apple_sep"
+SEP_RO = "apple_sep.xart_writes=0 apple_sep.provision_keybag=0"
 fails = 0
 
 
@@ -49,6 +51,7 @@ def setup(t, regular="root=UUID=aaaa rw quiet splash"):
             ("RUN=/run/sleep-drain-safe", f"RUN={t}/run/sleep-drain-safe"),
             ("KPARAM=/sys/module/kernel/parameters/module_blacklist", f"KPARAM={t}/kparam"),
             ("PROC_CMDLINE=/proc/cmdline", f"PROC_CMDLINE={t}/proc-cmdline"),
+            ("SEP_DRIVER=/sys/bus/platform/drivers/apple_sep", f"SEP_DRIVER={t}/sepdrv"),
             ("[[ -f /etc/initcpio/hooks/sleepdrain-safe && -f /etc/initcpio/install/sleepdrain-safe ]]",
              f"[[ -f {t}/etc/initcpio/hooks/sleepdrain-safe && -f {t}/etc/initcpio/install/sleepdrain-safe ]]"),
             ('need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }', "need_root() { :; }")]
@@ -123,7 +126,8 @@ def nxt(t):
     return open(p).read().strip() if os.path.exists(p) else None
 
 
-PLAIN, NOSEP = "sleep-drain-safe", "sleep-drain-safe-nosep"
+PLAIN, NOSEP, SEPRO = "sleep-drain-safe", "sleep-drain-safe-nosep", "sleep-drain-safe-sepro"
+MODES = (["boot"], ["boot", "--no-sep"], ["boot", "--sep-ro"])
 REG = "root=UUID=aaaa rw quiet splash"
 
 
@@ -134,10 +138,35 @@ def main():
         cfg = cfg_of(t)
         check(p.returncode == 0 and entry_line(cfg, PLAIN) == f"linux /vmlinuz-linux-aurora {REG} sleepdrain.safe"
               and entry_line(cfg, NOSEP) == f"linux /vmlinuz-linux-aurora {REG} {NO_SEP} sleepdrain.safe" and cfg.count(NO_SEP) == 1
-              and nxt(t) == PLAIN and "without the Secure Enclave" not in p.stdout and "the next restart is a safe boot" in p.stdout
+              and entry_line(cfg, SEPRO) == f"linux /vmlinuz-linux-aurora {REG} {SEP_RO} sleepdrain.safe" and cfg.count("apple_sep.") == 2
+              and nxt(t) == PLAIN and "without the Secure Enclave" not in p.stdout and "read-only (apple_sep" not in p.stdout
+              and "the next restart is a safe boot" in p.stdout
               and f"linux /vmlinuz-linux-aurora {REG}\n" in cfg,
-              "boot: both entries are written, each with its own id, the blacklist in the second alone; the plain one is selected; the regular entry is as it was",
+              "boot: the three entries are written, each with its own id, the blacklist in the second alone and the driver's two parameters, both with the module's prefix, in the third alone; the plain one is selected; the regular entry is as it was",
               p.stdout + p.stderr + cfg)
+        p = run(t, tool, "boot", "--sep-ro")
+        check(p.returncode == 0 and cfg_of(t) == cfg and nxt(t) == SEPRO
+              and f"with the Secure Enclave's driver asked to open its store read-only ({SEP_RO})" in p.stdout
+              and "sleep-drain-safe status" in p.stdout and "without the Secure Enclave" not in p.stdout,
+              "boot --sep-ro: grub.cfg isn't rewritten, the third entry is selected, and the message says what was asked of the driver and where to check it",
+              p.stdout + p.stderr)
+        p = run(t, tool, "status")
+        check("the next restart is a safe boot with the Secure Enclave's driver asked to open its store read-only" in p.stdout,
+              "status after it: the next restart is the third entry's", p.stdout + p.stderr)
+        # That selection must outlast a later command that fails, and one whose grub-reboot writes nothing.
+        stub(os.path.join(t, "bin"), "grub-reboot", "exit 1\n")
+        p = run(t, tool, "boot", "--no-sep")
+        check(p.returncode != 0 and "grub-reboot failed; nothing new selected" in p.stderr and nxt(t) == SEPRO
+              and entry_line(cfg_of(t), SEPRO) == f"linux /vmlinuz-linux-aurora {REG} {SEP_RO} sleepdrain.safe",
+              "boot --no-sep whose grub-reboot fails after boot --sep-ro: the queued entry still has its two parameters and is still the one selected",
+              p.stdout + p.stderr)
+        os.remove(os.path.join(t, "next"))
+        stub(os.path.join(t, "bin"), "grub-reboot", "exit 0\n")
+        p = run(t, tool, "boot", "--sep-ro")
+        check(p.returncode != 0 and f"the next entry isn't {SEPRO}: none is set" in p.stderr and "the next restart is" not in p.stdout,
+              "boot --sep-ro with a grub-reboot that returns 0 without writing the selection: refused, no boot announced", p.stdout + p.stderr)
+        stub(os.path.join(t, "bin"), "grub-reboot", f'echo "$1" > {t}/next\n')
+        run(t, tool, "boot")
         p = run(t, tool, "boot", "--no-sep")
         check(p.returncode == 0 and cfg_of(t) == cfg and nxt(t) == NOSEP
               and "without the Secure Enclave's driver (apple_sep on the module blacklist)" in p.stdout,
@@ -167,12 +196,13 @@ def main():
         stub(os.path.join(t, "bin"), "grub-reboot", f'echo "$1" > {t}/next\n')
         run(t, tool, "boot")
         os.remove(os.path.join(t, "next"))
-        for args in (["boot", "--nosep"], ["boot", "--no-sep", "extra"], ["boot", "extra"]):
+        for args in (["boot", "--nosep"], ["boot", "--no-sep", "extra"], ["boot", "extra"], ["boot", "--sepro"], ["boot", "--sep-ro", "extra"],
+                     ["boot", "--no-sep", "--sep-ro"], ["boot", "--sep-ro", "--no-sep"], ["boot", "--sep-ro", "--sep-ro"]):
             p = run(t, tool, *args)
-            check(p.returncode != 0 and "usage: sleep-drain-safe boot [--no-sep]" in p.stderr and cfg_of(t) == cfg and nxt(t) is None,
+            check(p.returncode != 0 and "usage: sleep-drain-safe boot [--no-sep | --sep-ro]" in p.stderr and cfg_of(t) == cfg and nxt(t) is None,
                   f"{' '.join(args)}: refused with the usage, grub.cfg untouched, nothing selected", p.stdout + p.stderr)
         p = run(t, tool)
-        check(p.returncode == 2 and "boot [--no-sep] | status" in p.stderr, "no command: the usage names boot [--no-sep]", p.stderr)
+        check(p.returncode == 2 and "boot [--no-sep | --sep-ro] | status" in p.stderr, "no command: the usage names boot [--no-sep | --sep-ro]", p.stderr)
     # An older, single-entry script and grub.cfg, and a grub-mkconfig that fails once: the retry must regenerate.
     with tempfile.TemporaryDirectory() as t:
         tool = setup(t)
@@ -196,6 +226,100 @@ def main():
         p = run(t, tool, "boot", "--no-sep")
         check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {REG} {NO_SEP} sleepdrain.safe",
               "the same command once grub-mkconfig works: it regenerates and selects the second entry", p.stdout + p.stderr + cfg_of(t))
+    # A two-entry script and grub.cfg, as the version before --sep-ro wrote them: the third entry isn't there, so boot --sep-ro
+    # regenerates, and a regeneration that fails leaves everything and selects nothing.
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t)
+        p = run(t, tool, "boot", "--no-sep")
+        sp = os.path.join(t, "etc/grub.d/44_sleep_drain_safe")
+        full = open(sp).read()
+        at = full.index("menuentry 'Safe boot for sleep experiments (disk read-only, Secure Enclave driver asked")
+        two = full[:at] + "MENU\n"
+        assert full[at:].count("menuentry") == 1 and full[at:].rstrip().endswith("MENU")
+        with open(sp, "w") as f:
+            f.write(two)
+        subprocess.run([os.path.join(t, "bin/grub-mkconfig"), "-o", os.path.join(t, "boot/grub/grub.cfg")], check=True)
+        before = cfg_of(t)
+        mk = os.path.join(t, "bin", "grub-mkconfig")
+        good = open(mk).read()
+        stub(os.path.join(t, "bin"), "grub-mkconfig", "exit 1\n")
+        p = run(t, tool, "boot", "--sep-ro")
+        check(p.returncode != 0 and "nothing selected" in p.stderr and cfg_of(t) == before and nxt(t) == NOSEP and open(sp).read() == two
+              and entry_line(before, SEPRO) is None,
+              "boot --sep-ro over a two-entry grub.cfg with grub-mkconfig failing: refused; grub.cfg and the script as they were, the queued no-SEP selection stays",
+              p.stdout + p.stderr)
+        with open(mk, "w") as f:
+            f.write(good)
+        p = run(t, tool, "boot", "--sep-ro")
+        check(p.returncode == 0 and nxt(t) == SEPRO and entry_line(cfg_of(t), SEPRO) == f"linux /vmlinuz-linux-aurora {REG} {SEP_RO} sleepdrain.safe"
+              and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {REG} {NO_SEP} sleepdrain.safe",
+              "the same command once grub-mkconfig works: it regenerates with all three entries and selects the third", p.stdout + p.stderr + cfg_of(t))
+    # A grub-mkconfig that drops one of the driver's two parameters: the candidate is refused before it replaces grub.cfg.
+    for drop in ("apple_sep.xart_writes=0", "apple_sep.provision_keybag=0"):
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t)
+            p = run(t, tool, "boot", "--sep-ro")
+            cfg = cfg_of(t)
+            ok0 = p.returncode == 0 and nxt(t) == SEPRO
+            with open(os.path.join(t, "regular")) as f:
+                reg = f.read()
+            with open(os.path.join(t, "regular"), "w") as f:
+                f.write(reg.replace("quiet splash", "quiet splash loglevel=3"))
+            with open(os.path.join(t, "boot/grub/grub.cfg"), "w") as f:
+                f.write(cfg.replace(f"{REG}\n", f"{REG} loglevel=3\n"))
+            cfg = cfg_of(t)
+            mk = os.path.join(t, "bin", "grub-mkconfig")
+            body = open(mk).read().replace('    "$s"\n', f'    "$s" | sed "s/ {drop}//"\n')
+            assert body != open(mk).read()
+            with open(mk, "w") as f:
+                f.write(body)
+            for args in MODES:
+                p = run(t, tool, *args)
+                check(ok0 and p.returncode != 0 and "doesn't have the safe entries as written" in p.stderr and cfg_of(t) == cfg and nxt(t) == SEPRO
+                      and entry_line(cfg_of(t), SEPRO) == f"linux /vmlinuz-linux-aurora {REG} {SEP_RO} sleepdrain.safe",
+                      f"{' '.join(args)} with a regeneration whose third entry would lack {drop}: refused before it replaces grub.cfg; the queued entry keeps both parameters",
+                      p.stdout + p.stderr + cfg_of(t))
+    # A regular line that sets either of the driver's two parameters already, in any spelling modprobe and the kernel take for
+    # the module's name and the parameter's, with a value or bare: which word would win isn't guessed. Refused in all three
+    # modes, before the image is built. Words that only look like them are taken.
+    for word in ("apple_sep.xart_writes=1", "apple_sep.xart_writes=0", "apple-sep.xart_writes=1", "apple_sep.xart-writes=1", "apple-sep.xart-writes=0",
+                 "apple_sep.provision_keybag=1", "apple-sep.provision_keybag=0", "apple_sep.provision-keybag=1", "apple_sep.xart_writes",
+                 "apple_sep.xart_writes="):
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t, regular=f"root=UUID=aaaa rw {word} quiet")
+            before = cfg_of(t)
+            for args in MODES:
+                p = run(t, tool, *args)
+                check(p.returncode != 0 and "already sets apple_sep's xart_writes or provision_keybag" in p.stderr and "nothing written, nothing selected" in p.stderr
+                      and nxt(t) is None and cfg_of(t) == before and not os.path.exists(os.path.join(t, "etc/grub.d/44_sleep_drain_safe")) and image(t) == (None, 0),
+                      f"{' '.join(args)} with a regular line that has {word}: refused; no script, no grub.cfg change, no image built, nothing selected",
+                      p.stdout + p.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        reg = "root=UUID=aaaa rw apple_sep.xart_guard=1 xapple_sep.xart_writes=1 apple_sep.xart_writes_x=1 foo=apple_sep.xart_writes=1 apple_sepxart_writes=1 quiet"
+        tool = setup(t, regular=reg)
+        p = run(t, tool, "boot", "--sep-ro")
+        check(p.returncode == 0 and nxt(t) == SEPRO and entry_line(cfg_of(t), SEPRO) == f"linux /vmlinuz-linux-aurora {reg} {SEP_RO} sleepdrain.safe",
+              "a regular line with other parameters of the driver, other modules' and words that only contain the two names: taken, the third entry is that line and the two words",
+              p.stdout + p.stderr + cfg_of(t))
+    # --sep-ro alone on a regular line whose own blacklist keeps apple_sep out: the driver wouldn't load, so that boot isn't the
+    # one asked for. The other two modes go on as before, and write the third entry with the others.
+    for reg in ("root=UUID=aaaa rw module_blacklist=apple_sep quiet", "root=UUID=aaaa rw module_blacklist=foo module-blacklist=bar,apple_sep quiet"):
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t, regular=reg)
+            before = cfg_of(t)
+            p = run(t, tool, "boot", "--sep-ro")
+            check(p.returncode != 0 and "the driver wouldn't load in a --sep-ro boot" in p.stderr and "nothing written, nothing selected" in p.stderr
+                  and nxt(t) is None and cfg_of(t) == before and image(t) == (None, 0),
+                  f"boot --sep-ro with the regular line {reg[18:]!r}: refused, nothing written, no image built", p.stdout + p.stderr)
+            for args, want in ((["boot"], PLAIN), (["boot", "--no-sep"], NOSEP)):
+                p = run(t, tool, *args)
+                check(p.returncode == 0 and nxt(t) == want and entry_line(cfg_of(t), SEPRO) == f"linux /vmlinuz-linux-aurora {reg} {SEP_RO} sleepdrain.safe",
+                      f"{' '.join(args)} with that line: taken as before, the third entry written with the others", p.stdout + p.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        reg = "root=UUID=aaaa rw module_blacklist=apple_sep module_blacklist=foo quiet"
+        tool = setup(t, regular=reg)
+        p = run(t, tool, "boot", "--sep-ro")
+        check(p.returncode == 0 and nxt(t) == SEPRO, "boot --sep-ro with apple_sep only in an earlier blacklist, which the kernel drops: taken", p.stdout + p.stderr)
     # A grub-mkconfig that drops the blacklist: the candidate is refused before it replaces grub.cfg, and a queued selection stays.
     with tempfile.TemporaryDirectory() as t:
         tool = setup(t)
@@ -272,7 +396,7 @@ def main():
         with tempfile.TemporaryDirectory() as t:
             tool = setup(t, regular=reg)
             before = cfg_of(t)
-            for args in (["boot", "--no-sep"], ["boot"]):
+            for args in MODES:
                 p = run(t, tool, *args)
                 check(p.returncode != 0 and "nothing written, nothing selected" in p.stderr and nxt(t) is None and cfg_of(t) == before
                       and not os.path.exists(os.path.join(t, "etc/grub.d/44_sleep_drain_safe")) and image(t) == (None, 0),
@@ -294,7 +418,7 @@ def main():
         cfg = cfg_of(t)
         stub(os.path.join(t, "bin"), "grub-reboot", "exit 1\n")
         img = image(t)
-        for args in (["boot"], ["boot", "--no-sep"]):
+        for args in MODES:
             p = run(t, tool, *args)
             check(p.returncode != 0 and nxt(t) == NOSEP and cfg_of(t) == cfg and image(t) == img and img == ("image\n", 1)
                   and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {REG} {NO_SEP} sleepdrain.safe",
@@ -309,27 +433,39 @@ def main():
     with tempfile.TemporaryDirectory() as t:
         tool = setup(t, regular=near(2047))
         before = cfg_of(t)
-        for args in (["boot"], ["boot", "--no-sep"]):
+        for args in MODES:
             p = run(t, tool, *args)
             check(p.returncode != 0 and "lose its end, where the read-only flag is" in p.stderr and nxt(t) is None and cfg_of(t) == before
                   and image(t) == (None, 0),
-                  f"{' '.join(args)} with a regular line whose plain entry just fits and whose no-SEP entry wouldn't: refused, nothing written, no image built", p.stdout + p.stderr)
+                  f"{' '.join(args)} with a regular line whose plain entry just fits and whose other two wouldn't: refused, nothing written, no image built", p.stdout + p.stderr)
     with tempfile.TemporaryDirectory() as t:
         tool = setup(t, regular=near(2048))
         p = run(t, tool, "boot")
         check(p.returncode != 0 and "lose its end" in p.stderr and nxt(t) is None, "a plain entry one byte over: refused", p.stdout + p.stderr)
+    # The third entry is the longest of the three (its two words are 26 bytes more than the blacklist), and all three are
+    # written every time: so it is the one that has to fit, in every mode.
     with tempfile.TemporaryDirectory() as t:
-        reg = near(2047, tail="module_blacklist=apple_sep ")
+        reg = near(2047 - len(f" {SEP_RO}"), tail="module_blacklist=apple_sep ")
         tool = setup(t, regular=reg)
         p = run(t, tool, "boot", "--no-sep")
         check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} sleepdrain.safe",
-              "a line at the limit that already keeps apple_sep out: the no-SEP entry is that line, not a longer one, and is selected", p.stdout + p.stderr)
+              "a line that already keeps apple_sep out, whose third entry lands on the last byte that fits: the no-SEP entry is that line, not a longer one, and is selected", p.stdout + p.stderr)
     with tempfile.TemporaryDirectory() as t:
-        reg = near(2047 - len(f" {NO_SEP}"))
+        reg = near(2047 - len(f" {SEP_RO}"))
         tool = setup(t, regular=reg)
-        p = run(t, tool, "boot", "--no-sep")
-        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP).endswith(f" {NO_SEP} sleepdrain.safe"),
-              "a line whose no-SEP entry lands exactly on the last byte that fits: taken", p.stdout + p.stderr)
+        for args, want in ((["boot", "--sep-ro"], SEPRO), (["boot", "--no-sep"], NOSEP), (["boot"], PLAIN)):
+            p = run(t, tool, *args)
+            check(p.returncode == 0 and nxt(t) == want and entry_line(cfg_of(t), SEPRO).endswith(f" {SEP_RO} sleepdrain.safe")
+                  and len("BOOT_IMAGE=/vmlinuz-linux-aurora " + entry_line(cfg_of(t), SEPRO)[len("linux /vmlinuz-linux-aurora "):]) == 2047,
+                  f"{' '.join(args)} with a line whose third entry lands exactly on the last byte that fits (2047 with the kernel's own prefix): taken", p.stdout + p.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t, regular=near(2048 - len(f" {SEP_RO}")))
+        before = cfg_of(t)
+        for args in MODES:
+            p = run(t, tool, *args)
+            check(p.returncode != 0 and "lose its end, where the read-only flag is" in p.stderr and nxt(t) is None and cfg_of(t) == before
+                  and image(t) == (None, 0),
+                  f"{' '.join(args)} with a line whose third entry is one byte over, though the other two fit: refused, nothing written, no image built", p.stdout + p.stderr)
     # The regular line changes while the image is being built: the entries would be made from a line that is no longer the regular
     # one. Refused, with the image that was there, if any, left in place.
     with tempfile.TemporaryDirectory() as t:
@@ -424,7 +560,7 @@ def main():
         with tempfile.TemporaryDirectory() as t:
             tool = setup(t, regular=reg)
             before = cfg_of(t)
-            for args in (["boot"], ["boot", "--no-sep"]):
+            for args in MODES:
                 p = run(t, tool, *args)
                 why = "GRUB may read another way" if any(c in reg for c in "\"'\\") else "has a -- in it"
                 check(p.returncode != 0 and why in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
@@ -450,7 +586,7 @@ def main():
                 with open(os.path.join(t, f), "w", newline="") as fh:
                     fh.write(body.replace(f"linux /vmlinuz-linux-aurora {REG}\n", f"linux /vmlinuz-linux-aurora {reg}\n"))
             cfg = cfg_of(t)
-            for args in (["boot"], ["boot", "--no-sep"]):
+            for args in MODES:
                 p = run(t, tool, *args)
                 check(ok0 and p.returncode != 0 and "GRUB may read another way" in p.stderr and "nothing selected" in p.stderr and nxt(t) == NOSEP
                       and cfg_of(t) == cfg and image(t) == img,
@@ -501,10 +637,94 @@ def main():
                 with open(os.path.join(t, "kparam"), "w") as f:
                     f.write(kparam + "\n")
             p = run(t, tool, "status")
-            sep = [l for l in p.stdout.splitlines() if "Secure Enclave" in l]
+            sep = [l for l in p.stdout.splitlines() if "Secure Enclave's driver" in l]
             unv = want.startswith(UNV)
             check(len(sep) == 1 and sep[0].startswith(want + (" apple_sep " if unv else ": apple_sep ")) and (not unv or "is kept out of this boot (" not in sep[0]),
                   f"status in a safe boot, {what}: {'not verified, never kept out' if unv else 'may load' if want == MAY else 'kept out'}", p.stdout + p.stderr)
+    # status in a safe boot, the enclave's store: "read-only" only on the bound driver's own word, diag/xart of every device
+    # bound to apple_sep, at least one, each exactly "disabled" and a newline; "enabled" said as that; anything else not
+    # verified. What the command line asks for is said beside it and proves nothing: both parameters 0 as last given,
+    # nothing after a "--" counted.
+    RO = "the Secure Enclave's store (xART) is read-only in this boot: the bound driver's diag/xart reads \"disabled\"."
+    RO2 = "the Secure Enclave's store (xART) is read-only in this boot: the bound driver's diag/xart reads \"disabled\", for each of its 2 devices."
+    OPEN = "the Secure Enclave's store (xART) is OPEN TO WRITES in this boot: the bound driver's diag/xart reads \"enabled\"."
+    UNV = "NOT VERIFIED whether the Secure Enclave's store (xART) is read-only in this boot: "
+    NODEV = UNV + "no device is bound to apple_sep, so nothing says how the store is open."
+    NOREAD = UNV + "396400000.sep's diag/xart isn't there or can't be read."
+    ASKS, NOASK = f" The command line asks for a read-only store ({SEP_RO})", " The command line doesn't ask for a read-only store"
+    WITH = f"root=x rw {SEP_RO} sleepdrain.safe"
+    DEV, DEV2 = "396400000.sep", "396500000.sep"
+
+    def odd(v):
+        return UNV + f"396400000.sep's diag/xart reads {v}, which is neither \"enabled\" nor \"disabled\" and a newline."
+
+    # devices: None for no driver directory at all, or {name: the attribute's bytes, None for no attribute, a tuple for a directory in its place}
+    store = (("one bound device says disabled, and the command line has the two words", {DEV: b"disabled\n"}, WITH, RO + ASKS),
+             ("the same in a boot whose command line doesn't ask", {DEV: b"disabled\n"}, "root=x rw sleepdrain.safe", RO + NOASK),
+             ("the device says enabled though the command line has the two words", {DEV: b"enabled\n"}, WITH, OPEN + ASKS),
+             ("the driver isn't there at all", None, WITH, NODEV + ASKS),
+             ("the driver is there with no device bound", {}, WITH, NODEV + ASKS),
+             ("the only thing with the attribute is the driver's link to its module", {"module": b"disabled\n"}, WITH, NODEV + ASKS),
+             ("the bound device has no such attribute", {DEV: None}, WITH, NOREAD + ASKS),
+             ("the attribute can't be read", {DEV: ()}, WITH, NOREAD + ASKS),
+             ("the attribute can't be read and the command line doesn't ask", {DEV: ()}, "root=x rw sleepdrain.safe", NOREAD + NOASK),
+             ("the attribute is empty", {DEV: b""}, WITH, odd("''") + ASKS),
+             ("the attribute says disabled with no newline", {DEV: b"disabled"}, WITH, odd("disabled") + ASKS),
+             ("the attribute says disabled and something after it", {DEV: b"disabled\nenabled\n"}, WITH, odd("$'disabled\\nenabled\\n'") + ASKS),
+             ("the attribute says disabled and a second newline", {DEV: b"disabled\n\n"}, WITH, odd("$'disabled\\n\\n'") + ASKS),
+             ("the attribute says disabled with a space", {DEV: b"disabled \n"}, WITH, odd("$'disabled \\n'") + ASKS),
+             ("the attribute says DISABLED", {DEV: b"DISABLED\n"}, WITH, odd("$'DISABLED\\n'") + ASKS),
+             ("the attribute says 0", {DEV: b"0\n"}, WITH, odd("$'0\\n'") + ASKS),
+             ("two bound devices both say disabled", {DEV: b"disabled\n", DEV2: b"disabled\n"}, WITH, RO2 + ASKS),
+             ("one of two says enabled", {DEV: b"disabled\n", DEV2: b"enabled\n"}, WITH, OPEN + ASKS),
+             ("the first of two says enabled", {DEV: b"enabled\n", DEV2: b"disabled\n"}, WITH, OPEN + ASKS),
+             ("one of two has no attribute", {DEV: None, DEV2: b"disabled\n"}, WITH, NOREAD + ASKS),
+             ("the command line has the two words only after --", {DEV: b"disabled\n"}, f"root=x rw -- {SEP_RO}", RO + NOASK),
+             ("the command line has xart_writes=0 alone", {DEV: b"disabled\n"}, "root=x rw apple_sep.xart_writes=0", RO + NOASK),
+             ("the command line has a later apple_sep.xart_writes=1", {DEV: b"disabled\n"}, f"root=x {SEP_RO} apple_sep.xart_writes=1", RO + NOASK),
+             ("the command line has a later apple-sep.xart-writes=1, the other spelling", {DEV: b"disabled\n"}, f"root=x {SEP_RO} apple-sep.xart-writes=1", RO + NOASK),
+             ("the command line has the two words in the hyphen spellings", {DEV: b"disabled\n"}, "root=x apple-sep.xart-writes=0 apple_sep.provision-keybag=0", RO + ASKS),
+             ("the command line has the two words without the module's prefix", {DEV: b"disabled\n"}, "root=x xart_writes=0 provision_keybag=0", RO + NOASK),
+             ("the command line asks and the device says enabled all the same", {DEV: b"enabled\n"}, f"root=x {SEP_RO}", OPEN + ASKS))
+
+    def fill(t, devices):
+        if devices is None:
+            return
+        drv = os.path.join(t, "sepdrv")
+        os.makedirs(drv)
+        for f in ("bind", "unbind", "uevent"):
+            open(os.path.join(drv, f), "w").close()
+        if "module" not in devices:
+            os.makedirs(os.path.join(drv, "module", "parameters"))
+        for name, val in devices.items():
+            os.makedirs(os.path.join(drv, name, "diag"))
+            if isinstance(val, tuple):
+                os.makedirs(os.path.join(drv, name, "diag", "xart"))
+            elif val is not None:
+                with open(os.path.join(drv, name, "diag", "xart"), "wb") as f:
+                    f.write(val)
+
+    for what, devices, cmdline, want in store:
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t)
+            os.makedirs(os.path.join(t, "run/sleep-drain-safe/rw"))
+            with open(os.path.join(t, "run/sleep-drain-safe/active"), "w") as f:
+                f.write("/dev/null\n")
+            with open(os.path.join(t, "proc-cmdline"), "w") as f:
+                f.write(cmdline + "\n")
+            fill(t, devices)
+            p = run(t, tool, "status")
+            got = [l for l in p.stdout.splitlines() if "Secure Enclave's store" in l]
+            said_ro = any(l.startswith("the Secure Enclave's store (xART) is read-only") for l in p.stdout.splitlines())
+            check(got == [want] and said_ro == want.startswith("the Secure Enclave's store (xART) is read-only"),
+                  f"status in a safe boot, the store, {what}: {'read-only' if said_ro else 'OPEN TO WRITES' if want.startswith(OPEN) else 'not verified'},"
+                  f" and the command line {'asks' if want.endswith(ASKS) else 'does not ask'}", p.stdout + p.stderr)
+    # In a regular boot status says nothing of the store.
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t)
+        fill(t, {DEV: b"disabled\n"})
+        p = run(t, tool, "status")
+        check("this boot is a regular boot" in p.stdout and "Secure Enclave" not in p.stdout, "status in a regular boot: no line about the driver or the store", p.stdout + p.stderr)
     print("all ok" if not fails else f"{fails} failed")
     return 1 if fails else 0
 
