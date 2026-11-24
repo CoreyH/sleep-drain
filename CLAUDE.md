@@ -199,7 +199,14 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   (Ante042/m1n1 too), stay off limits, since that rule rests on Asahi's policy
   and Corey didn't name it. The same day Corey OK'd the next run's clearing of
   the PMGR's "wait for the SEP's power gate" bit (0x28e0cc200, bit 2): a PMGR
-  register, not the enclave; writes to the SEP itself still need asking.
+  register, not the enclave; writes to the SEP itself still need asking. On
+  2026-11-24, after the ninth run found the enclave powered in the no-driver
+  boot, Corey chose the tenth run's state from two ("Driver read-only"): a safe
+  boot with `apple_sep` loaded and its store writes off (`xart_writes=0`), the
+  bit cleared only while the SEP's power word reads off. Clearing it under a
+  powered enclave was the other choice and isn't OK'd. The same day Corey had
+  a second model (Gemini, through `agy`) argue the result over: read-only,
+  "you are in charge, it should only advise you".
 
 ## Experiments
 
