@@ -409,6 +409,84 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   refuses `disp_hs=1` by itself too while a driver is bound there, and looks again at prepare. The run is
   `--m1-sep-pg`'s otherwise, with its endings and the one above, and is only made in a safe boot started
   with `pkexec sleep-drain-safe boot --no-sep`.
+- `sep_ro=1` (`run-floor --m1-sep-ro`, on `sep_pg=1`, never with `wake_all=1`; `e1-hook/last_look.h` has why,
+  the evidence and the byte) is the tenth run's: **the one run made WITH the enclave's driver in the boot,
+  its store read-only.** Run 9, in the boot without the driver, read the SEP's power word (0x28e580c00)
+  0x1f0000ff in step 7, powered, so the wait bit was left: nothing gates an enclave that has no driver. With
+  omacom's `apple_sep` loaded the word reads 0x1000030f awake, actual state 0. The reference refuses to sleep
+  unless that word reads 0 and polls it for up to 5 s (`S2R_SEP_WAIT_MS`). Corey OK'd on 2026-11-24 the run
+  with `apple_sep` loaded and `xart_writes=0`, the wait bit cleared only while the SEP's power word reads
+  actual 0; clearing under a powered enclave is not OK'd, and `sp_writes()` stays as it is.
+  What the parameter changes, and nothing else:
+  - The module no longer refuses a driver bound to the SEP's device, at the load or at the first suspend's
+    prepare, **if the binding itself says its store is read-only.** The parameter opts in and proves
+    nothing (an insmod by hand passes the launcher by; the SEP's power word says nothing of the write
+    policy; the driver's line in the kernel log and the words on the command line don't identify the
+    binding that is there now). The proof is the SEP device's sysfs attribute `diag/xart` (omacom's
+    `drivers/soc/apple/diag_shim.c`, as the brief for this build quotes it: `"enabled"` or `"disabled"`,
+    registered at probe from the mode the store was opened in, removed at unbind; on this Mac
+    `/sys/bus/platform/devices/396400000.sep/diag/xart`, which read `enabled` in the regular boot of
+    2026-11-24). `m1_sro_proof()` reads it in the kernel, through the VFS as user space would
+    (`filp_open()` of `"/sys"` + the device's kobject path + `"/diag/xart"`, read-only; `kernel_read()` of 16
+    bytes and then of one more; `filp_close()`), for every device under an `apple,sep` node that has a
+    driver. There has to be at least one, and each has to read exactly `disabled` and a newline with the
+    file's end after it (`sro_xart_ro()`). No such file, a read that fails, `enabled` or anything else: the
+    load is refused (-EBUSY), and at the prepare the replay is called off as it is for a bound driver
+    without `sep_ro=1` (`replay_done` 2, nothing stopped or written, prepare_late fails the suspend and
+    the Mac wakes).
+  - Both places then poll the SEP's power word for actual state 0, up to 5 s in sleeping steps of 10 ms
+    (`m1_sro_wait()`): `m1_sp_init()` refuses the load if it never reads 0 ("the enclave isn't power-gated
+    in this boot ... the run would learn nothing"), and the prepare calls the replay off the same way,
+    before the DCPs' shutdown.
+  - Step 7 waits for nothing. It runs with interrupts off after WD1's marker is armed, and step 8 takes the
+    marker to stand only if its count has run on by no more than 5 s. `m1_sp_clear()` reads the SEP's word
+    once, as in every `sep_pg=1` run, and writes only if `sp_writes()` says so. With `sep_ro=1` it also
+    reads 0x2922c0044 right before that decision (the word is read right after the control word's
+    read-back in every `sep_pg=1` run), so that the clear lies between two samples of one interrupts-off
+    stretch. That first sample goes to the PMU's 0x6008 as `0x80 | nibble` (`sro_byte()`), in step 8, after
+    that step's record and before 0x6009's byte; K1 leaves 0x10 there until it lands (`SRO_ARMED`), and
+    `m1_pmu_ok()` lets a `sep_ro=1` run write only those there (`sro_ok()`). It is in `wake_all=1`'s place,
+    which is why the two never load together.
+  `e1-hook/m1-crumbs` reads 0x6008 under the stages it reads 0x6009 under, sets the two samples side by
+  side when both landed, and says "bit 2 clear before the write and set after it" only if the write was
+  made, the clear read back, the first sample had bit 2 clear and the second had it set. A clear that was
+  skipped (the enclave read powered) or that didn't read back is said to be no test of the wait bit, and
+  nothing is concluded from the samples. The sysfs read at the prepare is made by the task that asked for
+  the suspend, with user space frozen and the devices suspended: it sleeps and allocates, which that
+  callback may (K3b's and K5's steps do); the attribute's show is taken to read a flag and touch no
+  hardware (inferred from the one line quoted, not read in the source); it needs sysfs at `/sys` for that
+  task, and if the open or the read fails the replay is called off. No MMIO write is new.
+- `pw_noread=1` (`run-floor --m1-sep-ro`, on `ps_words=1` and `atc_down=1`) leaves out every read of the four
+  fabric-group power words once they are written: PCIE0_REF (0x28e080138), APCIE_GP_SYS (0x28e080320),
+  AFNC1_LW2 (0x28e080220) and AFNC2_LW1 (0x28e580160). The reference says: "reading the three apcie PS words
+  this late on the way down left the SoC stuck before sleep in 4 runs out of 4" (its three are 0x28e080138,
+  0x28e080150 and 0x28e080320; this recipe writes two of them and never touched 0x28e080150 in this line).
+  `m1_pw_write()` makes the same twenty writes, each with its `dsb`, in the same order, and reads back only
+  the other sixteen. And step 8's own reads: without `a2_pre=1` that step makes `gates_mark=1`'s, the six
+  gate-status words (0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310, 0x28e09c338, 0x28e09c34c: not
+  power words) and then AFNC2_LW1, the fourth of the group; with `pw_noread=1` the six are read and
+  AFNC2_LW1 is not. The loads still read all four awake. The record says so: 0x6013's top two bits are
+  0x80 (`M1_PWN_MARK`) in `atc_down=1`'s 0x40's place, with bit 5, the fabric group's, always clear, so the
+  byte is 0x80 to 0x9f and never 0xa5; and 0x6016's bit 6 stays clear. `m1-crumbs` then says "not read
+  (pw_noread=1)" for the group and for the lane, never "read back as written" or "did NOT read". That mark
+  has one pattern left to use, which is why the option needs `atc_down=1`: the mark can't also say whether
+  the six were written.
+- `run-floor --m1-sep-ro` is `--m1-disp-hs`'s line **without `a2_pre=1`** and with `sep_ro=1 pw_noread=1`:
+  `... gates_mark=1 atc_down=1 blink=1 sep_pg=1 disp_hs=1 sep_ro=1 pw_noread=1`. Without `a2_pre=1` step 8
+  makes none of A2's three moves; its place is `gates_mark=1`'s reads, above, and the stages from step 8 on
+  are `--m1-gates'` (0xcb, then 0xd5 or 0xd4), with the gate byte at 0x6016. `blink=1` needs only
+  `gates_mark=1` (and neither `sio_down=1` nor `sio_steps=1`), so the light is as before. The option's three
+  conditions replace `--m1-sep-pg`'s two, before anything is loaded or written, `wd2-bite`'s store included:
+  `apple_sep` is loaded; at least one device is bound to it
+  (`/sys/bus/platform/drivers/apple_sep/<device>`); and every such device's `diag/xart` reads exactly
+  `disabled` and a newline. A driver's directory that isn't there, no bound device, no attribute, one that
+  can't be read, `enabled` or anything else refuses, with what was read. The kernel's module blacklist
+  isn't asked. **The run is only made in a safe boot started with `pkexec sleep-drain-safe boot --sep-ro`**
+  (the regular line with `apple_sep.xart_writes=0 apple_sep.provision_keybag=0`; `sleep-drain-safe status`
+  there says whether the driver took it). It ends as `--m1-disp-hs` does, the dark never-blinked ending
+  included (K1's marks are then 0x10 at 0x6008, 0x02 at 0x6009 and 0x01 at 0x600a). In that boot the
+  enclave's driver is there with its store read-only: Touch ID may fail, and the password works. Its label
+  is `floor-m1-sep-ro`.
 - `ll_retn=1` (`run-floor --m1-ll-retn`, on `ll_wake=1`, never with `gate_look=1`; the launcher's line is
   `--m1-atc-down`'s with it; `e1-hook/last_look.h` has why, the record's form and the stages) changes how CPU0
   takes its very last WFI, and nothing before it. CYC_OVRD's bit 0 is XNU's `disWfiRetn`, "disable WFI

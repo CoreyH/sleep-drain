@@ -388,6 +388,55 @@
  * if FPWM0's power word doesn't come up, and the replay commits all the
  * same), and the stage and the marks are the last record that landed: K3b's
  * commands can fail and the run go on.
+ *
+ * sep_ro=1 is one byte more, 0x6008, in a sep_pg=1 run without wake_all=1 (the
+ * two never load together: the byte is in wake_all=1's place). Run 9, in a
+ * boot without the enclave's driver, read the SEP's power word 0x1f0000ff in
+ * step 7, powered, and left the wait bit, as sp_writes() has it; with omacom's
+ * apple_sep loaded the word reads 0x1000030f awake, actual state 0. The
+ * reference refuses to sleep unless that word reads 0, and polls it for up to
+ * 5 s before it gives up (S2R_SEP_WAIT_MS 5000: "macOS polls the actual level
+ * and never writes the SEP PS"). So the tenth run is made with the driver
+ * loaded and its store read-only (Corey's OK of 2026-11-24; run-floor
+ * --m1-sep-ro refuses unless the driver shows that), and with sep_ro=1 the
+ * module doesn't refuse a driver bound to the SEP's device.
+ * The parameter opts in and proves nothing (Pullfrog on #133: an insmod by
+ * hand passes the launcher by; the SEP's power word is no evidence of the
+ * driver's write policy, since this Mac has read the enclave gated in a boot
+ * with writes enabled; and the driver's line in the kernel log and the words
+ * on the command line don't identify the binding that is there now). So the
+ * module needs a positive read-only status from the current binding itself,
+ * at the load and again at the first suspend's prepare, and without it
+ * refuses, or calls the replay off, as it does for a bound driver without
+ * sep_ro=1. That status is the SEP device's sysfs attribute diag/xart, from
+ * omacom's drivers/soc/apple/diag_shim.c as the brief for this build
+ * quotes it (the file wasn't read here): sysfs_emit(buf, "%s\n", sep_diag.xart ?
+ * "enabled" : "disabled"), registered at probe from the store's opened mode
+ * and removed on unbind. On this Mac it is
+ * /sys/bus/platform/devices/396400000.sep/diag/xart, and read "enabled" in
+ * the regular boot of 2026-11-24. The module reads it for every device under
+ * an "apple,sep" node that has a driver, needs at least one, and needs
+ * exactly "disabled\n" from each: nine bytes and then the file's end
+ * (sro_xart_ro()). A file that isn't there, a read that fails, "enabled", or
+ * anything else is no proof.
+ * It polls the SEP's power word for actual state 0 too, up to SRO_WAIT_MS
+ * in sleeping steps, twice: at the load, which it refuses if the word never
+ * reads 0, and at the first suspend's prepare, before the DCPs' shutdown,
+ * where a word that never reads 0 calls the replay off. Step 7 has no such
+ * wait: it runs with interrupts off after WD1's marker is armed, and step 8's
+ * look at the marker allows its count 5 s (wd1_mark.h's WD1_MARK_SLACK).
+ * There m1_sp_clear() reads the word once, as in every sep_pg=1 run, and
+ * sp_writes() decides as before: the wait is never cleared while the enclave
+ * reads powered. With sep_ro=1 that step also reads 0x2922c0044 right before
+ * the decision, so that the clear lies between two samples of one
+ * interrupts-off stretch: this one, and the one in 0x6009's low nibble, read
+ * right after the control word's read-back. The byte:
+ *   0x6008  bit 7 set (SRO_MARK); bits 6:4 0; bits 3:0 0x2922c0044's low
+ *           nibble right before the write decision
+ * K1 leaves 0x6008 as SRO_ARMED until it lands; step 8 sends it after its own
+ * record and before 0x6009's. sro_ok() is all that m1_pmu_ok() lets such a run
+ * write there, beside the zeros. A clear that was skipped, or one that didn't
+ * read back, is no test of the wait bit, whatever the two samples read.
  */
 #ifndef LAST_LOOK_H
 #define LAST_LOOK_H
@@ -395,6 +444,7 @@
 #ifndef __KERNEL__
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
@@ -479,6 +529,12 @@ typedef uint64_t u64;
 #define SP_CLEAR		(1U << 5)	/* under SP_MARK: read again, it had bit 2 clear and every other bit as found */
 #define SP_SEP_OFF		(1U << 4)	/* under SP_MARK: the SEP's power word read actual state 0 then */
 
+/* sep_ro=1: the wait is the reference's (S2R_SEP_WAIT_MS in drivers/soc/apple/s2r.c, Ante042/linux t600x-s2r-reference). */
+#define SRO_WAIT_MS		5000		/* at the load and at the first suspend's prepare: up to this long for the SEP's power word to read actual state 0 */
+#define SRO_POLL_MS		10		/* between two reads of it there */
+#define SRO_ARMED		(1U << 4)	/* 0x6008 (LL_AT) as K1 leaves it with sep_ro=1, until the byte's command in step 8 */
+#define SRO_MARK		(1U << 7)	/* 0x6008, sep_ro=1's byte: bit 7 with bits 6:4 clear */
+
 /* disp_hs=1: the handshake's two words are Ante042's (apple_s2r_disp_down() in drivers/soc/apple/s2r.c, Ante042/linux t600x-s2r-reference). */
 #define DH_HS_A			0x8014		/* in a display's fabric block: written 1 */
 #define DH_HS_B			0x82bc		/* then this one: written 1, 2, 4 */
@@ -526,6 +582,34 @@ static inline bool sp_writes(u32 found, u32 sep_ps)
 static inline bool sp_ok(u8 v)
 {
 	return v == SP_ARMED || (v & SP_MARK);
+}
+
+/* sep_ro=1's evidence: the SEP device's own word on its store, the sysfs attribute diag/xart (the comment at the top). */
+#define SRO_XART_ATTR		"diag/xart"	/* under the device's directory in sysfs */
+#define SRO_XART_RO		"disabled\n"	/* all it may read, to the byte */
+#define SRO_XART_BUF		16		/* how much is asked of it in one read: more than it may hold, so that a longer value shows */
+
+/*
+ * Whether what diag/xart read says the store is read-only. b, n: the buffer and the result of one read of SRO_XART_BUF bytes
+ * from the file's start (negative: the read failed); more: the result of a read of one more byte after it, 0 at the file's
+ * end. Only "disabled" and its newline, nine bytes, and then the end: not "enabled", not an empty file, not the word without
+ * its newline, not the word with anything after it, not a read that failed.
+ */
+static inline bool sro_xart_ro(const char *b, long n, long more)
+{
+	return n == (long)(sizeof(SRO_XART_RO) - 1) && !memcmp(b, SRO_XART_RO, sizeof(SRO_XART_RO) - 1) && !more;
+}
+
+/* sep_ro=1's byte at 0x6008. gate44: 0x2922c0044 as step 7 read it right before sp_writes()'s decision. Bits 6:4 stay 0. */
+static inline u8 sro_byte(u32 gate44)
+{
+	return (u8)(SRO_MARK | (gate44 & 0xf));
+}
+
+/* What a sep_ro=1 run may write to 0x6008 by itself: K1's mark, or a byte sro_byte() makes (bit 7 set, bits 6:4 clear). */
+static inline bool sro_ok(u8 v)
+{
+	return v == SRO_ARMED || (v & 0xf0) == SRO_MARK;
 }
 
 /* disp_hs=1's first byte, 0x600a. ext, intl: dispext0's and disp0's handshake was made; g0: 0x2922c0044 before K3b touched anything. Bit 4 stays 0. */
