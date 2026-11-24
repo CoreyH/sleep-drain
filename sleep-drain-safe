@@ -125,7 +125,7 @@ sep_blacklisted() {
 # module_blacklist= at the end that repeats the last one's list, since a second
 # argument replaces the first and would let that one's modules load again.
 # A line whose last list has apple_sep already is left as it is, not made
-# longer. Only for a line blacklist_unsure() passes: see there.
+# longer. Only for a line followable() passes: see there.
 no_sep_cmdline() {
   local last
   if sep_blacklisted "$1"; then
@@ -137,50 +137,39 @@ no_sep_cmdline() {
 }
 
 # Whether a command line is made only of characters this script can follow
-# from grub.cfg to the kernel: letters, digits, space and _ = . , : / @ % + -,
-# and quotes and backslashes, which have rules of their own below. Anything
-# else GRUB may read another way than this script does: it drops a carriage
-# return, starts a comment at a #, ends the command at a ; or a newline, and
-# gives | & < > { } meanings of their own, so that what is added at the line's
-# end (the read-only flag, the blacklist) might never reach the kernel, or
-# reach it behind a "--" that wasn't one here. Counted in bytes: nothing
-# outside ASCII either. A list of what is known, not of what is feared.
+# from grub.cfg to the kernel: letters, digits, space and _ = . , : / @ % + -.
+# Anything else GRUB may read another way than this script does. It takes
+# quotes and backslashes off, so "--" is a bare -- to the kernel and a quoted
+# blacklist wins unseen; a backslash at the line's end, or a quote left open,
+# carries the command on to the next line, of which this script copied only
+# the first, and what it adds at the end (the read-only flag, the blacklist)
+# then reaches the kernel in another form or not at all. GRUB drops a carriage
+# return, starts a comment at a #, ends the command at a ;, and gives
+# | & < > { } meanings of their own. Counted in bytes: nothing outside ASCII
+# either. A list of what is known to be plain, not of what is feared: "boot"
+# refuses any other line, in both modes, before it writes anything.
 followable() {
   local LC_ALL=C
-  [[ $1 != *[!A-Za-z0-9\ _=.,:/@%+\"\'\\-]* ]]
+  [[ $1 != *[!A-Za-z0-9\ _=.,:/@%+-]* ]]
 }
 
-# Whether a command line has a "--" word, after which nothing is the kernel's,
-# or could have one once GRUB has read it: GRUB takes quotes and backslashes
-# off, so "--", '--', -"-" and \-\- all reach the kernel as a bare --. Judged
-# with those characters taken out: a -- inside a quoted argument with spaces
-# is taken for one too, which refuses a line that would have been fine.
+# Whether a command line has a "--" word, after which nothing is the kernel's.
+# Only asked of a line followable() passes, so a word here is a word there.
 has_separator() {
-  local a t=${1//[\"\'\\]/}
+  local a
   local -a w
-  read -ra w <<< "$t"
+  read -ra w <<< "$1"
   for a in "${w[@]}"; do
     [[ $a != -- ]] || return 0
   done
   return 1
 }
 
-# A command line whose blacklist this script can't work out by splitting at
-# spaces: a blacklist argument somewhere, and quoting or a backslash anywhere.
-# GRUB takes quotes off before the kernel sees the line, so a later quoted
-# blacklist would win unseen. "boot" refuses such a line, in both modes, before
-# it writes anything: an entry is never published on a guess.
-blacklist_unsure() {
-  [[ $1 =~ module[-_]blacklist && $1 == *[\"\'\\]* ]]
-}
-
 # Whether an entry's linux line fits the kernel's command line: arm64's buffer
 # is 2048 bytes with its NUL, GRUB puts BOOT_IMAGE= and the kernel's path
 # first, and what doesn't fit is cut off at the end, which is where the hook's
-# flag is: a boot without it isn't read-only. Counted in bytes. A line with
-# quoting or a backslash reaches the kernel in another form than it has here
-# (GRUB takes quotes off and puts its own on, with escapes), so such a line is
-# taken only at under half the limit, which that can't double past.
+# flag is: a boot without it isn't read-only. Counted in bytes, of a line
+# followable() passes: GRUB hands such a line on as it is written.
 CMDLINE_MAX=2048
 # param_set_charp()'s limit for a string parameter such as module_blacklist.
 BLACKLIST_MAX=1024
@@ -190,11 +179,7 @@ bytes() {
 }
 fits() {
   local LC_ALL=C full="BOOT_IMAGE=/vmlinuz-linux-aurora ${1#linux /vmlinuz-linux-aurora }"
-  if [[ $full == *[\"\'\\]* ]]; then
-    ((2 * ${#full} < CMDLINE_MAX))
-  else
-    ((${#full} < CMDLINE_MAX))
-  fi
+  ((${#full} < CMDLINE_MAX))
 }
 
 # have_entry CFG ID LINE: CFG's menu entry ID has exactly LINE as its linux line.
@@ -238,12 +223,10 @@ cmd_boot() {
   [[ $cmdline != *'$'* ]] ||
     die "the regular command line has a GRUB variable in it, so what the kernel gets is only known at boot; nothing written, nothing selected: $cmdline"
   followable "$cmdline" ||
-    die "the regular command line has a character in it that GRUB may read another way than this script does (a carriage return or another control character, one of # ; | & < > { }, or one outside ASCII), so what the kernel gets can't be worked out here; nothing written, nothing selected: $(printf '%q' "$cmdline")"
-  ! blacklist_unsure "$cmdline" ||
-    die "the regular command line has a module blacklist and quoting, so what the kernel would end up blocking can't be worked out here; nothing written, nothing selected: $cmdline"
+    die "the regular command line has a character in it that GRUB may read another way than this script does (a quote or a backslash, a carriage return or another control character, one of # ; | & < > { }, or one outside ASCII), so what the kernel gets can't be worked out here; nothing written, nothing selected: $(printf '%q' "$cmdline")"
   # The flag and the blacklist are added at the line's end, and what follows a "--" goes to init, not the kernel.
   ! has_separator "$cmdline" ||
-    die "the regular command line has a -- in it, or what GRUB could make one of: what is added after it goes to init and the kernel never sees it, the module blacklist included; nothing written, nothing selected: $cmdline"
+    die "the regular command line has a -- in it: what is added after it goes to init and the kernel never sees it, the module blacklist included; nothing written, nothing selected: $cmdline"
   plain_line="linux /vmlinuz-linux-aurora $cmdline sleepdrain.safe"
   nosep_line="linux /vmlinuz-linux-aurora $(no_sep_cmdline "$cmdline") sleepdrain.safe"
   sep_blacklisted "${nosep_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep on the module blacklist of: $cmdline"

@@ -259,16 +259,12 @@ def main():
         check(p.returncode == 0 and entry_line(cfg_of(t), PLAIN) == same and entry_line(cfg_of(t), NOSEP) == same
               and "already keeps apple_sep out" in p.stdout,
               "the hyphen spelling with apple_sep in its list is seen as keeping the driver out", p.stdout + p.stderr + cfg_of(t))
-    # A backslash in the regular line must compare as it is.
-    with tempfile.TemporaryDirectory() as t:
-        reg = r"root=UUID=aaaa rw systemd.mask=var-lib-sleep\x2ddrain.mount quiet"
-        tool = setup(t, regular=reg)
-        p = run(t, tool, "boot", "--no-sep")
-        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
-              "a regular line with a backslash escape in it: the entries are written and found as written", p.stdout + p.stderr + cfg_of(t))
-    # Quoting: GRUB takes the quotes off, so a later quoted blacklist would win unseen. A GRUB variable: only known at boot.
-    # Refused in both modes, and before the image is built: nothing at all is written.
+    # Quoting and backslashes: GRUB takes them off, so a later quoted blacklist would win unseen. A GRUB variable: only known
+    # at boot. Refused in both modes, with or without a blacklist, and before the image is built: nothing at all is written.
     for reg in ('root=UUID=aaaa rw module-blacklist=apple_sep "module_blacklist=apple_pmp" quiet',
+                r"root=UUID=aaaa rw systemd.mask=var-lib-sleep\x2ddrain.mount quiet",
+                'root=UUID=aaaa rw "foo=a b" quiet',
+                'root=UUID=aaaa rw "foo=a b" pad=' + "x" * 1100,
                 "root=UUID=aaaa rw module_blacklist=apple_sep 'foo=a b' quiet",
                 'root=UUID=aaaa rw module_blacklist=apple_sep foo=a\\ b quiet',
                 'root=UUID=aaaa rw module_blacklist=apple_sep $extra_args quiet',
@@ -412,19 +408,6 @@ def main():
         check(p.returncode != 0 and "GRUB may read another way" in p.stderr and nxt(t) is None and image(t) == (None, 0),
               "a regular line that fits counted in characters and not in bytes: refused (for its characters outside ASCII, before its length is asked)",
               p.stdout + p.stderr)
-    # Quoting changes the line's length on its way to the kernel: taken only at under half the limit.
-    with tempfile.TemporaryDirectory() as t:
-        reg = 'root=UUID=aaaa rw "foo=a b" pad=' + "x" * 1100
-        tool = setup(t, regular=reg)
-        p = run(t, tool, "boot")
-        check(p.returncode != 0 and "lose its end" in p.stderr and nxt(t) is None,
-              "a quoted line of 1.1 kB, which would fit as written: refused, since GRUB's own quoting could take it past the limit", p.stdout + p.stderr)
-    with tempfile.TemporaryDirectory() as t:
-        reg = 'root=UUID=aaaa rw "foo=a b" quiet'
-        tool = setup(t, regular=reg)
-        p = run(t, tool, "boot", "--no-sep")
-        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
-              "a short quoted line with no blacklist of its own: taken, apple_sep added at the end", p.stdout + p.stderr)
     # The read-back itself failing: the selection is unknown, and the message says that, not "not selected".
     with tempfile.TemporaryDirectory() as t:
         tool = setup(t)
@@ -434,16 +417,17 @@ def main():
               and "the next restart is" not in p.stdout,
               "a grub-editenv that can't read the block after grub-reboot: the command fails saying the selection isn't known", p.stdout + p.stderr)
     # What follows "--" goes to init: a blacklist added at the end would set nothing in the kernel. Refused, in both modes.
-    # And what GRUB would make a bare -- of: it takes quotes and backslashes off before the kernel sees the line.
-    for reg in ("root=UUID=aaaa rw quiet -- single", "root=UUID=aaaa rw quiet --", "-- root=UUID=aaaa", 'root=UUID=aaaa quiet "--" single',
-                "root=UUID=aaaa quiet '--' single", 'root=UUID=aaaa quiet -"-" single', "root=UUID=aaaa quiet \\-\\- single",
-                "root=UUID=aaaa quiet\t--\tsingle", 'root=UUID=aaaa "foo=a -- b" quiet'):
+    # And what GRUB would make a bare -- of, with the quotes and backslashes it takes off: refused for those characters.
+    for reg in ("root=UUID=aaaa rw quiet -- single", "root=UUID=aaaa rw quiet --", "-- root=UUID=aaaa", "root=UUID=aaaa quiet\t--\tsingle",
+                'root=UUID=aaaa quiet "--" single', "root=UUID=aaaa quiet '--' single", 'root=UUID=aaaa quiet -"-" single',
+                "root=UUID=aaaa quiet \\-\\- single", 'root=UUID=aaaa "foo=a -- b" quiet'):
         with tempfile.TemporaryDirectory() as t:
             tool = setup(t, regular=reg)
             before = cfg_of(t)
             for args in (["boot"], ["boot", "--no-sep"]):
                 p = run(t, tool, *args)
-                check(p.returncode != 0 and "has a -- in it, or what GRUB could make one of" in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
+                why = "GRUB may read another way" if any(c in reg for c in "\"'\\") else "has a -- in it"
+                check(p.returncode != 0 and why in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
                       and cfg_of(t) == before and image(t) == (None, 0),
                       f"{' '.join(args)} with the regular line {reg!r}: refused, nothing written, no image built", p.stdout + p.stderr)
     # What GRUB reads another way than this script: it drops a carriage return (so a quoted -- before one is a bare -- to
@@ -451,7 +435,9 @@ def main():
     # the line has, with a selection queued earlier and its image left as they were.
     for reg in ('root=UUID=aaaa quiet "--"\r', "root=UUID=aaaa quiet --\r", "root=UUID=aaaa quiet\r", "root=UUID=aaaa quiet #", "root=UUID=aaaa quiet # --",
                 "root=UUID=aaaa quiet; true", "root=UUID=aaaa quiet | x", "root=UUID=aaaa quiet {", "root=UUID=aaaa quiet\x01", "root=UUID=aaaa quiet\x7f",
-                "root=UUID=aaaa quiet caf\u00e9", "root=UUID=aaaa quiet a*b", "root=UUID=aaaa quiet ~"):
+                "root=UUID=aaaa quiet caf\u00e9", "root=UUID=aaaa quiet a*b", "root=UUID=aaaa quiet ~",
+                # A command GRUB carries on to the next line, of which only the first is copied: a backslash at the end, a quote left open.
+                "root=UUID=aaaa rw \\\n    quiet splash", "root=UUID=aaaa rw \\", 'root=UUID=aaaa rw "quiet\n    splash"', "root=UUID=aaaa rw 'quiet"):
         with tempfile.TemporaryDirectory() as t:
             tool = setup(t)
             p = run(t, tool, "boot", "--no-sep")
@@ -470,7 +456,7 @@ def main():
                       and cfg_of(t) == cfg and image(t) == img,
                       f"{' '.join(args)} with the regular line {reg!r}: refused, the queued selection, grub.cfg and the image as they were", p.stdout + p.stderr)
     with tempfile.TemporaryDirectory() as t:
-        reg = 'root=UUID=aaaa rw quiet foo=--bar --baz "x=a --b" a_b=c.d,e:f/g@h%i+j'
+        reg = "root=UUID=aaaa rw quiet foo=--bar --baz x=a--b a_b=c.d,e:f/g@h%i+j"
         tool = setup(t, regular=reg)
         p = run(t, tool, "boot", "--no-sep")
         check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
