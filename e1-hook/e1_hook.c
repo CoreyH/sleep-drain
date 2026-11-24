@@ -1864,7 +1864,9 @@ static void e1_after_slpa(void)
  * light is step 8's: a block write that faults where the panic's restart
  * fails, or one that stalls, leaves the Mac dark with no light ever having
  * blinked and no restart. The record then is stage 0x02 with K1's marks. No
- * light at all is what tells that from an entry that completed.
+ * light fits that ending and doesn't prove it: m1_ll_blink() skips the light
+ * if FPWM0's power word doesn't come up, and the replay commits all the same.
+ * The stage and the marks say how far the run got.
  *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
@@ -6546,7 +6548,7 @@ static_assert(SP_CTL == 0x28e0cc200ULL && SP_WAIT == BIT(2) && (SP_CTL & ~PAGE_M
  * Mac apple_sep runs with xART writes enabled: it writes the enclave's key store, which macOS shares and a safe boot's
  * read-only root doesn't cover. A run that lets the SoC go down around a live enclave isn't made with that driver present:
  * it is made in a safe boot started with sleep-drain-safe boot --no-sep, and run-floor refuses apple_sep as a loaded
- * module, and a boot whose command line doesn't keep it out, too. Asked twice: at the load (locked: under each device's
+ * module, and a boot whose kernel doesn't hold it on its module blacklist, too. Asked twice: at the load (locked: under each device's
  * lock), and at the first suspend's prepare (not locked: user space is frozen and the driver core defers every probe
  * from the suspend's own prepare on, so the pointer can't change under the read, and a lock something held would hang
  * the suspend). Reads only.

@@ -1446,7 +1446,8 @@ def sp_lines(s, r, beside):
         did = "was set as found, and the SEP's power word read powered: the write was not made"
         back = ("read again, with no write made, the control word had bit 2 clear and every other bit as found: it changed with no write of"
                 " this run's between the two reads" if clear else
-                "read again, with no write made, the control word had every bit as found, bit 2 still set")
+                "read again, with no write made, the control word had a value other than the word as found less bit 2: unchanged, "
+                "as it should be with no write, or changed some other way (the byte can't tell which)")
     else:
         did = "was already clear as found: step 7 wrote nothing"
         back = ("read again, the control word had every bit as found, bit 2 clear" if clear else

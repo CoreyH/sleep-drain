@@ -21,7 +21,9 @@ used to sit in CLAUDE.md, entry for entry):
   with its own id (the regular command line; the same with `apple_sep` added to the last `module_blacklist=`'s
   list), which one each command selects, that a selection queued earlier outlasts a later command that fails,
   that a regeneration is made again after one that failed, that a candidate `grub.cfg` without the blacklist is
-  refused before it replaces the live one, and the refusals. No boot is made.
+  refused before it replaces the live one, and the refusals (a regular line with `--`, after which nothing is the
+  kernel's; a blacklist over the kernel's 1024 bytes); and `status` in a fake safe boot, by the kernel's own list
+  when it reads and by the command line's text when it doesn't. No boot is made.
 - `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe boot and `collect` in a fake next
   boot.
 - `tests/m1_crumbs_test.py` runs `e1-hook/m1-crumbs` on a fake PMU nvmem file, position=1's samples made by
@@ -280,10 +282,9 @@ used to sit in CLAUDE.md, entry for entry):
   `--m1-sep-pg`'s line and `disp_hs=1`), the hand-off
   and the watch after it, every refusal (an older build without the option's parameter, a build that
   ignored it, two options together; `--m1-sep-pg` and `--m1-disp-hs` with `apple_sep` loaded, a directory beside
-  the fake `e1_hook`'s, which every other option runs past; and those two against a kernel command line, a file the
-  test points the launcher at: taken only if the last `module_blacklist=` or `module-blacklist=` lists `apple_sep`,
-  fourteen lines in all, an ordinary safe boot's, an earlier list overridden by a later one, the hyphen spelling,
-  other modules' names, quoting and no file among them, which every other option runs past too), and every way out. A launcher that ends before the hand-off, where a check needs
+  the fake `e1_hook`'s, which every other option runs past; and those two against the kernel's `module_blacklist` parameter, a file the
+  test points the launcher at: taken only if it lists `apple_sep` as a whole name,
+  eleven values in all, unset, other modules' names, quoting, an empty value and no file among them, which every other option runs past too), and every way out. A launcher that ends before the hand-off, where a check needs
   it running, fails a check that shows what it printed, and that function's other checks are skipped: it doesn't stop
   the test. It takes about half a minute a launcher; options as
   arguments run only those launchers (`run-floor` by itself is the plain floor, which has the usage cases).

@@ -384,7 +384,9 @@
  * armed at K3b and the keyboard's light isn't on yet: a write that faults
  * where the panic's restart fails, or one that stalls, leaves the Mac dark
  * with no light ever having blinked and no restart, and stage 0x02 with K1's
- * marks in the PMU.
+ * marks in the PMU. No light doesn't prove that ending (the light is skipped
+ * if FPWM0's power word doesn't come up, and the replay commits all the
+ * same): the stage and the marks say how far the run got.
  */
 #ifndef LAST_LOOK_H
 #define LAST_LOOK_H

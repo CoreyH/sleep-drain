@@ -310,9 +310,11 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   --no-sep`:** `apple_sep` writes the enclave's key store (xART, which macOS shares), which the safe boot's
   read-only root doesn't cover, and this run lets the SoC go down around the enclave. Four things hold
   that, for this option and for `disp_hs=1` alike. `run-floor` refuses, before anything is loaded or
-  written, while `apple_sep` is loaded; and it refuses a boot that could still load it: the last
-  `module_blacklist=` (or `module-blacklist=`: one parameter to the kernel, which keeps only the last it is
-  given) on the kernel's command line has to list `apple_sep`, as the entry `--no-sep` selects has it. The
+  written, while `apple_sep` is loaded; and it refuses a boot that could still load it: the kernel's
+  own `module_blacklist` parameter (`/sys/module/kernel/parameters/module_blacklist`, readable by root) has
+  to list `apple_sep`, as it does in the boot the entry `--no-sep` selects. The command line's text isn't
+  asked: an argument after `--` goes to init and a list over 1024 bytes is dropped, and `/proc/cmdline`
+  shows both as if they counted. The
   module refuses to load while a driver is bound to the SEP's device (any node the live tree marks
   `apple,sep`; `m1_sep_bound()`). And at the first suspend's prepare, before the DCPs' shutdown or anything
   else that is one-way, it looks again (`m1_sep_recheck()`): a driver bound by then calls the replay off
@@ -356,8 +358,9 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   **No watchdog is armed at K3b, and the keyboard's light isn't on yet** (WD1's marker is step 4's, the
   light step 8's): a block write that faults where the panic's restart fails, or one that stalls, leaves
   the Mac dark with no light ever having blinked and no restart. The record then is stage 0x02 with K1's
-  marks (0x02 at 0x6009, 0x01 at 0x600a). No light at all is what tells that ending from an entry that
-  completed, where the light blinks first.
+  marks (0x02 at 0x6009, 0x01 at 0x600a). A dark Mac that never blinked fits that ending and doesn't prove
+  it: `m1_ll_blink()` skips the light if FPWM0's power word doesn't come up in 10 ms, and the replay
+  commits all the same. The stage and the marks kept in the PMU say how far the run got.
   **The record:** K3b reads 0x2922c0044 before the first DCP, right after each table it wrote, and after
   each DCP's place in the loop, stopped or not, and sends four bytes to the PMU's 0x600a-0x600d in one
   command through the kernel's path, before its own stage (inside the range OK'd on 2026-11-16; K1 leaves

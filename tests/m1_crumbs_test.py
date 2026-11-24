@@ -9073,7 +9073,7 @@ def sp_fields(v):
         l0 = "was set as found, and the SEP's power word read powered: the write was not made"
         l1 = "read again, with no write made, the control word had " + (
             "bit 2 clear and every other bit as found: it changed with no write of this run's between the two reads" if clear else
-            "every bit as found, bit 2 still set")
+            "a value other than the word as found less bit 2: unchanged, as it should be with no write, or changed some other way (the byte can't tell which)")
     else:
         l0 = "was already clear as found: step 7 wrote nothing"
         l1 = "read again, the control word had " + ("every bit as found, bit 2 clear" if clear else
@@ -9543,8 +9543,8 @@ def sep_pg_tests(g, src):
                   " bits 7:4)\n  bits 3:0: 0x2922c0044's low nibble read 0x8 in step 7, with CPU0 up: the last sample of that word before the commit. Bit 2"
                   " (the engine's first poll) clear; bit 3 set, as it reads awake\n" in out
               and sp_fields(0xc8).startswith("  0x6009 = 0xc8, bit 6: the control word's bit 2 was set as found, and the SEP's power word read powered: the"
-                                             " write was not made\n  bit 5: read again, with no write made, the control word had every bit as found, bit 2"
-                                             " still set\n")
+                                             " write was not made\n  bit 5: read again, with no write made, the control word had a value other than the word as found les"
+                                             "s bit 2: unchanged, as it should be with no write, or changed some other way (the byte can't tell which)\n")
               and "say nothing new" not in tool
               and "last_look=1" not in out and "obs_gate" not in out and "wake_all" not in out and "NOT READ" not in out
               and "sep_pg" not in out0 and "0x6008-0x600e" not in out0 and not rest

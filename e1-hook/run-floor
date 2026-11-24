@@ -286,8 +286,8 @@
 #     button (the dark ending's steps, below).
 # Its stages are --m1-a2-pre's; its label is floor-m1-sep-pg. It is only made in a safe boot started without the SEP's
 # driver (pkexec sleep-drain-safe boot --no-sep): apple_sep writes the enclave's key store, which the safe boot's
-# read-only root doesn't cover, so this refuses while apple_sep is loaded, or in a boot whose command line doesn't keep
-# it out (the last module_blacklist= lists apple_sep), and the module refuses while a driver is bound to the SEP's
+# read-only root doesn't cover, so this refuses while apple_sep is loaded, or in a boot whose kernel doesn't keep
+# it out (its module_blacklist parameter, read from the kernel itself, lists apple_sep), and the module refuses while a driver is bound to the SEP's
 # device, at its load and again at the suspend's prepare. The bit is cleared only if the SEP's power word reads off in
 # step 7: with the enclave reading powered the wait is left, and the byte at 0x6009 says so. Run it with --no-reading, the nights off around it (pkexec /usr/local/bin/sleep-drain-nights off),
 # nothing in the USB-C ports, and film the keyboard.
@@ -314,7 +314,8 @@
 # load it. A fourth ending is this run's own: no watchdog is armed at K3b and the keyboard light isn't on yet, so a
 # block write that faults where the panic's restart fails, or one that stalls, leaves the Mac dark with NO LIGHT EVER
 # HAVING BLINKED and no restart. Hold the power button; m1-crumbs then shows stage 0x02 with K1's marks (0x02 at 0x6009,
-# 0x01 at 0x600a). No light at all is what tells it from an entry that completed, where the light blinked first. Run it with
+# 0x01 at 0x600a). A dark, unlit Mac fits that ending and doesn't prove it: the light is skipped if its PWM's power word
+# doesn't come up in 10 ms, and the replay commits all the same. The stage and the marks say how far the run got. Run it with
 # --no-reading, the nights off around it (pkexec /usr/local/bin/sleep-drain-nights off), nothing in the USB-C ports,
 # and film the keyboard.
 # What's said of --m1, --m1-alarm and --m1-hold
@@ -401,7 +402,7 @@ set -euo pipefail
 SAFE_FLAG=${FLOOR_SAFE_FLAG:-/run/sleep-drain-safe/active}
 AC=${FLOOR_AC:-/sys/class/power_supply/macsmc-ac}
 MODDIR=${FLOOR_MODDIR:-/sys/module/e1_hook}
-CMDLINE=${FLOOR_CMDLINE:-/proc/cmdline}
+BLACKLIST=${FLOOR_BLACKLIST:-/sys/module/kernel/parameters/module_blacklist}
 READING=${FLOOR_READING:-/usr/local/bin/sleep-drain-reading}
 SAVE=${FLOOR_SAVE:-/usr/local/bin/sleep-drain-safe}
 PM_TEST=${FLOOR_PM_TEST:-/sys/power/pm_test}
@@ -915,22 +916,17 @@ parms=$'\n'$(modinfo -F parm "$ko")
 ((!seppg)) || [[ ! -d ${MODDIR%/*}/apple_sep ]] ||
   die "apple_sep is loaded: this run clears the PMGR's wait for the SEP's power gate, and is only made in a safe boot without the enclave's driver: pkexec sleep-drain-safe boot --no-sep"
 # And never in a boot that could still load it: a module that is absent now can be loaded a moment later. The boot's own
-# policy has to keep it out: the last module_blacklist= on the kernel's command line (or module-blacklist=: the kernel
-# reads the two spellings as one parameter, and keeps only the last one it is given) lists apple_sep, as the entry
-# sleep-drain-safe boot --no-sep selects has it (its last_blacklist() is this rule). A line with a blacklist and a quote
-# or a backslash in it isn't judged: what the kernel made of it can't be worked out by splitting at spaces.
+# policy has to keep it out, and the kernel is asked what that policy is: its module_blacklist parameter, as the kernel
+# itself holds it (readable by root alone), has to list apple_sep, a whole name between commas, which is how the kernel
+# compares. Not the command line's text: an argument after "--" goes to init and one over 1024 bytes is dropped, and
+# neither sets the parameter, though /proc/cmdline shows both. A value that can't be read keeps nothing out.
 sep_kept_out() {
-  local line a last= args
-  line=$(cat "$CMDLINE" 2> /dev/null) || return 1
-  [[ ! ($line =~ module[-_]blacklist && $line == *[\"\'\\]*) ]] || return 1
-  read -ra args <<< "${line//$'\n'/ }"
-  for a in "${args[@]}"; do
-    [[ $a != module_blacklist=* && $a != module-blacklist=* ]] || last=${a#*=}
-  done
-  [[ ,$last, == *,apple_sep,* ]]
+  local v
+  v=$(cat "$BLACKLIST" 2> /dev/null) || return 1
+  [[ ,$v, == *,apple_sep,* ]]
 }
 ((!seppg)) || sep_kept_out ||
-  die "this boot can still load apple_sep, the enclave's driver: the kernel's command line doesn't keep it out (its last module_blacklist= has to list apple_sep). This run is only made in a safe boot started with: pkexec sleep-drain-safe boot --no-sep"
+  die "this boot can still load apple_sep, the enclave's driver: the kernel's module blacklist ($BLACKLIST) doesn't list it. This run is only made in a safe boot started with: pkexec sleep-drain-safe boot --no-sep"
 [[ $(cat "$AC/online") == 0 ]] || die "unplug the charger first"
 # --m1-recfg-bite: what the reading would refuse for (sleep-drain-reading's attached(): a USB device that isn't a root
 # hub, a USB-C partner), refused here, before the SRAM write and not after it. --m1-wd2-bite: the same, before its write.

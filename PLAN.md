@@ -78,7 +78,7 @@ this section where they differ.
      "`disp_hs=1` and `sep_pg=1` as built") with both reviews done, and the module built from `main`;
      and, in the safe boot itself before the run, `sleep-drain-safe status` saying the driver is kept
      out and isn't loaded. `run-floor` refuses both options with `apple_sep` loaded or without it on
-     the command line's last `module_blacklist=`; the module refuses to load with a driver bound to
+     the kernel's own module blacklist; the module refuses to load with a driver bound to
      the SEP's device and looks again at the suspend's prepare. Why: on this
      Mac `apple_sep` runs with `xart_guard=0` and xART writes enabled, and the safe boot's read-only
      root doesn't cover that store.

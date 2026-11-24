@@ -47,6 +47,8 @@ def setup(t, regular="root=UUID=aaaa rw quiet splash"):
             ("SCRIPT=/etc/grub.d/44_sleep_drain_safe", f"SCRIPT={t}/etc/grub.d/44_sleep_drain_safe"),
             ("IMAGE_DIR=/boot/sleep-drain-safe", f"IMAGE_DIR={t}/boot/sleep-drain-safe"),
             ("RUN=/run/sleep-drain-safe", f"RUN={t}/run/sleep-drain-safe"),
+            ("KPARAM=/sys/module/kernel/parameters/module_blacklist", f"KPARAM={t}/kparam"),
+            ("PROC_CMDLINE=/proc/cmdline", f"PROC_CMDLINE={t}/proc-cmdline"),
             ("[[ -f /etc/initcpio/hooks/sleepdrain-safe && -f /etc/initcpio/install/sleepdrain-safe ]]",
              f"[[ -f {t}/etc/initcpio/hooks/sleepdrain-safe && -f {t}/etc/initcpio/install/sleepdrain-safe ]]"),
             ('need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }', "need_root() { :; }")]
@@ -430,6 +432,62 @@ def main():
         check(p.returncode != 0 and "couldn't be read back" in p.stderr and "isn't known" in p.stderr and "Not selected" not in p.stderr
               and "the next restart is" not in p.stdout,
               "a grub-editenv that can't read the block after grub-reboot: the command fails saying the selection isn't known", p.stdout + p.stderr)
+    # What follows "--" goes to init: a blacklist added at the end would set nothing in the kernel. Refused, in both modes.
+    for reg in ("root=UUID=aaaa rw quiet -- single", "root=UUID=aaaa rw quiet --", "-- root=UUID=aaaa"):
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t, regular=reg)
+            before = cfg_of(t)
+            for args in (["boot"], ["boot", "--no-sep"]):
+                p = run(t, tool, *args)
+                check(p.returncode != 0 and "has a -- in it" in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
+                      and cfg_of(t) == before and image(t) == (None, 0),
+                      f"{' '.join(args)} with the regular line {reg!r}: refused, nothing written, no image built", p.stdout + p.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        reg = "root=UUID=aaaa rw quiet foo=--bar --baz"
+        tool = setup(t, regular=reg)
+        p = run(t, tool, "boot", "--no-sep")
+        check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
+              "a line with -- only inside arguments: taken", p.stdout + p.stderr)
+    # The kernel drops a string parameter over 1024 bytes: a blacklist that long would keep nothing out. Only a line that
+    # has apple_sep in its list already can get there: one that gets the list a second time is past the line's limit first.
+    for n, fits_ in ((1024, True), (1025, False)):
+        with tempfile.TemporaryDirectory() as t:
+            lst = "m" * (n - len(",apple_sep"))
+            tool = setup(t, regular=f"root=UUID=aaaa rw module_blacklist={lst},apple_sep")
+            before = cfg_of(t)
+            p = run(t, tool, "boot", "--no-sep")
+            if fits_:
+                check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP).endswith(f" module_blacklist={lst},apple_sep sleepdrain.safe"),
+                      f"a blacklist of {n} bytes that has apple_sep already: taken", p.stdout + p.stderr)
+            else:
+                check(p.returncode != 0 and f"would be {n} bytes" in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
+                      and cfg_of(t) == before and image(t) == (None, 0),
+                      f"a blacklist of {n} bytes that has apple_sep already: refused, nothing written, no image built", p.stdout + p.stderr)
+    # status in a safe boot: the kernel's own list when it can be read, the command line's text (said) when it can't, and
+    # nothing after a "--" counted.
+    KEPT, MAY = "the Secure Enclave's driver is kept out of this boot", "the Secure Enclave's driver may load in this boot"
+    cases = (("the kernel's list has apple_sep", "apple_sep", "root=x rw sleepdrain.safe", KEPT + " (the kernel's module blacklist lists apple_sep)"),
+             ("the kernel's list is unset though the command line names apple_sep after --", "(null)", "root=x rw -- module_blacklist=apple_sep sleepdrain.safe", MAY),
+             ("the kernel's list has another module whose name has apple_sep in it", "apple_sep_x", "root=x module_blacklist=apple_sep", MAY),
+             ("the kernel's list can't be read and the command line's last blacklist has apple_sep", None, "root=x module_blacklist=foo,apple_sep sleepdrain.safe",
+              KEPT + " (apple_sep is on the command line's module blacklist; the kernel's own list reads only as root: pkexec sleep-drain-safe status)"),
+             ("the kernel's list can't be read and the command line has the blacklist only after --", None, "root=x rw -- module_blacklist=apple_sep", MAY),
+             ("the kernel's list can't be read and the command line has no blacklist", None, "root=x rw sleepdrain.safe", MAY))
+    for what, kparam, cmdline, want in cases:
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t)
+            os.makedirs(os.path.join(t, "run/sleep-drain-safe/rw"))
+            with open(os.path.join(t, "run/sleep-drain-safe/active"), "w") as f:
+                f.write("/dev/null\n")
+            with open(os.path.join(t, "proc-cmdline"), "w") as f:
+                f.write(cmdline + "\n")
+            if kparam is not None:
+                with open(os.path.join(t, "kparam"), "w") as f:
+                    f.write(kparam + "\n")
+            p = run(t, tool, "status")
+            sep = [l for l in p.stdout.splitlines() if "Secure Enclave" in l]
+            check(len(sep) == 1 and sep[0].startswith(want + ": apple_sep ") if want != MAY else len(sep) == 1 and sep[0].startswith(MAY + ": apple_sep "),
+                  f"status in a safe boot, {what}: {'kept out' if want != MAY else 'may load'}", p.stdout + p.stderr)
     print("all ok" if not fails else f"{fails} failed")
     return 1 if fails else 0
 

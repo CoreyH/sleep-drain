@@ -1571,12 +1571,9 @@ MUTANTS = [
     ("sp launcher: the boot's policy not asked", RUN, "((!seppg)) || sep_kept_out ||\n", "true ||\n"),
     ("sp launcher: the boot's policy asked of every option", RUN, "((!seppg)) || sep_kept_out ||\n", "sep_kept_out ||\n"),
     ("dh launcher: the boot's policy not asked for --m1-disp-hs", RUN, "((!seppg)) || sep_kept_out ||\n", "((!seppg || disphs)) || sep_kept_out ||\n"),
-    ("sp launcher: the first blacklist on the command line taken, not the last", RUN, "    [[ $a != module_blacklist=* && $a != module-blacklist=* ]] || last=${a#*=}\n", "    [[ $a != module_blacklist=* && $a != module-blacklist=* || -n $last ]] || last=${a#*=}\n"),
-    ("sp launcher: the hyphen spelling of the blacklist not read", RUN, "    [[ $a != module_blacklist=* && $a != module-blacklist=* ]] || last=${a#*=}\n", "    [[ $a != module_blacklist=* ]] || last=${a#*=}\n"),
-    ("sp launcher: a module whose name has apple_sep in it taken for it", RUN, "  [[ ,$last, == *,apple_sep,* ]]\n", "  [[ $last == *apple_sep* ]]\n"),
-    ("sp launcher: any parameter ending in the blacklist's name read", RUN, "    [[ $a != module_blacklist=* && $a != module-blacklist=* ]] || last=${a#*=}\n", "    [[ $a != *module_blacklist=* && $a != *module-blacklist=* ]] || last=${a#*=}\n"),
-    ("sp launcher: a command line with a quoted blacklist judged", RUN, "  [[ ! ($line =~ module[-_]blacklist && $line == *[\\\"\\'\\\\]*) ]] || return 1\n", ""),
-    ("sp launcher: a command line that can't be read taken for one that keeps apple_sep out", RUN, "  line=$(cat \"$CMDLINE\" 2> /dev/null) || return 1\n", "  line=$(cat \"$CMDLINE\" 2> /dev/null) || return 0\n"),
+    ("sp launcher: a module whose name has apple_sep in it taken for it", RUN, "  [[ ,$v, == *,apple_sep,* ]]\n", "  [[ $v == *apple_sep* ]]\n"),
+    ("sp launcher: a blacklist that can't be read taken for one that keeps apple_sep out", RUN, "  v=$(cat \"$BLACKLIST\" 2> /dev/null) || return 1\n", "  v=$(cat \"$BLACKLIST\" 2> /dev/null) || return 0\n"),
+    ("sp launcher: any blacklist that is set taken for one that lists apple_sep", RUN, "  [[ ,$v, == *,apple_sep,* ]]\n", "  [[ -n $v && $v != \"(null)\" ]]\n"),
 ]
 
 

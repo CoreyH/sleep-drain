@@ -5466,9 +5466,9 @@ it would be, not which write set it.
 - **Neither is made with the SEP's driver in the boot**: the run is made after `pkexec sleep-drain-safe boot
   --no-sep` (the section below says why: on this Mac the enclave's store, xART, is open to its driver and
   the safe boot's read-only root doesn't cover it). Four things hold that, for both options: `run-floor`
-  refuses while `apple_sep` is loaded; it refuses unless the last `module_blacklist=` on the kernel's
-  command line lists `apple_sep` (a line with a blacklist and a quote or backslash it refuses rather than
-  guess); the module refuses to load with a driver bound to the SEP's device; and at the first suspend's
+  refuses while `apple_sep` is loaded; it refuses unless the kernel's own `module_blacklist` parameter, read from
+  `/sys/module/kernel/parameters/`, lists `apple_sep` (not the command line's text: an argument after `--`
+  or a list over 1024 bytes shows there and sets nothing); the module refuses to load with a driver bound to the SEP's device; and at the first suspend's
   prepare, before the DCPs' shutdown, it looks again, and a driver bound by then calls the replay off with
   nothing stopped or written (the suspend fails at prepare_late and the Mac wakes).
 
@@ -5524,8 +5524,10 @@ The four `disp_hs` bytes go out in one command before K3b's stage. `run-floor --
 - **no light at all, dark, no restart:** new with this run. No watchdog is armed at K3b and the light isn't
   on yet (WD1's marker is step 4's, the light step 8's): a block write that stalls, or one that faults
   where the panic's restart fails, leaves the Mac dark with the light never having blinked. Hold the power
-  button; the record is stage 0x02 with K1's marks. No light *ever* is what tells this from a completed
-  entry, where it blinks first.
+  button. A dark Mac that never blinked fits a K3b stall and doesn't prove one: the light is skipped if
+  its PWM's power word doesn't come up in 10 ms, and the replay commits all the same (it came up in every
+  run since B). The record decides: stage 0x02 with K1's marks is K3b; a later stage is a run that went on
+  without its light.
 - **a restart about 10 s after the dark screen, stage 0x02 with 0x01 at 0x600a:** a write to a display
   block faulted (inferred from `kernel.panic=10`; not seen).
 Odds that the light stops, mine: one in two.
@@ -5553,8 +5555,11 @@ identical to a copy of the function before the change, in eight scenarios); the 
 reference's file and their checksums; `m1_pmu_ok()`, K1 and the undo over every combination of the three
 options, with the real functions; the load's refusals and the recheck at prepare; the decoder over each
 field, together and alone, leftovers, the stages each record can stand under, `--clear`.
-`tests/e1a_launcher_test.py` (3,306 ok in full): the two options, their refusals with `apple_sep` loaded
-and over fourteen command lines, every other option unchanged. 95 `sp` and 96 `dh` mutants: in the run of
+`tests/e1a_launcher_test.py` (3,300 ok in full, after Pullfrog's second round, which had the launcher ask the
+kernel for its blacklist and not the command line; `sleep-drain-safe` refuses a regular line with `--` or a
+list over 1,024 bytes, `tests/safe_boot_boot_test.py`, 63 ok; the 45 launcher and `sp` decoder mutants run
+again, none missed): the two options, their refusals with `apple_sep` loaded
+and over eleven values of the kernel's blacklist, every other option unchanged. 95 `sp` and 96 `dh` mutants: in the run of
 197 (with older ones whose lines moved) one was missed and two were caught only by a build failure; the
 three were rewritten or given checks and are each caught by a failing check. The 197 weren't run again
 after those last edits, which touched only the tests; the stale check and both test files were.

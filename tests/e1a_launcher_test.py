@@ -338,9 +338,10 @@ PARMS["floor-nodisphs"] = PARMS["floor"].replace("disp_hs:With disp_off=1 (bool)
 PARMS["floor-noobsgate"] = PARMS["floor"].replace("obs_gate:With observe=1 (bool)" + "\n", "")
 
 
-# The command line of the safe boot sleep-drain-safe boot --no-sep starts, and of an ordinary safe boot.
-CMDLINE = "BOOT_IMAGE=/vmlinuz-linux-aurora root=UUID=0a1b-2c3d rw quiet module_blacklist=apple_sep sleepdrain.safe"
-CMDLINE_PLAIN = "BOOT_IMAGE=/vmlinuz-linux-aurora root=UUID=0a1b-2c3d rw quiet sleepdrain.safe"
+# The kernel's module_blacklist parameter as /sys/module/kernel/parameters/module_blacklist reads in the safe boot
+# sleep-drain-safe boot --no-sep starts, and in a boot where nothing set it.
+BLACKLIST = "apple_sep"
+BLACKLIST_UNSET = "(null)"
 
 
 def sysctl(tmp):
@@ -349,7 +350,7 @@ def sysctl(tmp):
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
           takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
-          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, takes_gates=True, takes_siodown=True, takes_pciedown=True, takes_siosteps=True, takes_a2pre=True, takes_acclast=True, takes_lastlook=True, takes_llwake=True, takes_gatelook=True, takes_obsgate=True, takes_atcdown=True, takes_blink=True, takes_wakeall=True, takes_llretn=True, takes_seppg=True, takes_disphs=True, sep_loaded=False, cmdline=CMDLINE, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
+          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, takes_gates=True, takes_siodown=True, takes_pciedown=True, takes_siosteps=True, takes_a2pre=True, takes_acclast=True, takes_lastlook=True, takes_llwake=True, takes_gatelook=True, takes_obsgate=True, takes_atcdown=True, takes_blink=True, takes_wakeall=True, takes_llretn=True, takes_seppg=True, takes_disphs=True, sep_loaded=False, blacklist=BLACKLIST, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -369,9 +370,9 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
         write(os.path.join(tmp, "sleep-drain-position-awake"), "")
     write(os.path.join(tmp, "ac", "online"), ac + "\n")
     write(os.path.join(tmp, "pm_test"), pm_test)
-    # The kernel's command line, as /proc/cmdline has it; None: no such file.
-    if cmdline is not None:
-        write(os.path.join(tmp, "cmdline"), cmdline + "\n")
+    # The kernel's module_blacklist parameter, as its file in /sys/module/kernel/parameters has it; None: no such file.
+    if blacklist is not None:
+        write(os.path.join(tmp, "blacklist"), blacklist + "\n")
     write(os.path.join(tmp, "sysctl", "panic"), "0\n")
     write(os.path.join(tmp, "sysctl", "panic_on_oops"), "0\n")
     for k, v in (("success", "0"), ("fail", "0"), ("last_failed_errno", "0"), ("last_failed_step", "")):
@@ -500,7 +501,7 @@ def env(tmp, launcher, watch_s=3):
         prefix + "_SAFE_FLAG": os.path.join(tmp, "run", "active"),
         prefix + "_AC": os.path.join(tmp, "ac"),
         prefix + "_MODDIR": os.path.join(tmp, "module"),
-        prefix + "_CMDLINE": os.path.join(tmp, "cmdline"),
+        prefix + "_BLACKLIST": os.path.join(tmp, "blacklist"),
         prefix + "_READING": os.path.join(tmp, "stubs", "reading"),
         prefix + "_PM_TEST": os.path.join(tmp, "pm_test"),
         prefix + "_SYSCTL": os.path.join(tmp, "sysctl"),
@@ -755,38 +756,35 @@ def test_refusals(launcher):
             check(r.returncode == 1 and "apple_sep" not in r.stderr and [x.split()[0] for x in calls(tmp)] == ["insmod", "reading", "rmmod"],
                   f"{name(launcher)}: apple_sep loaded doesn't stop an option that leaves the SEP's wait alone: the module loads as ever",
                   r.stdout + r.stderr + "\n".join(calls(tmp)))
-    # The boot's own policy: the last module blacklist on the kernel's command line has to list apple_sep, for those two
-    # options alone. Each case: the command line (None: no file), and whether those options take it.
-    policy = "this boot can still load apple_sep, the enclave's driver: the kernel's command line doesn't keep it out (its last module_blacklist= has to" \
-             " list apple_sep). This run is only made in a safe boot started with: pkexec sleep-drain-safe boot --no-sep"
-    lines = (("an ordinary safe boot's, with no module blacklist", CMDLINE_PLAIN, False),
-             ("--no-sep's, the blacklist listing apple_sep", CMDLINE, True),
-             ("a blacklist with other modules around apple_sep", CMDLINE_PLAIN + " module_blacklist=foo,apple_sep,bar", True),
-             ("an earlier blacklist with apple_sep and a later one without it", CMDLINE + " module_blacklist=foo", False),
-             ("an earlier blacklist without it and a later one with it", CMDLINE_PLAIN + " module_blacklist=foo module_blacklist=foo,apple_sep", True),
-             ("the hyphen spelling", CMDLINE_PLAIN + " module-blacklist=apple_sep", True),
-             ("the underscore spelling with apple_sep, then the hyphen spelling without it", CMDLINE + " module-blacklist=bar", False),
-             ("a blacklist of another module whose name has apple_sep in it", CMDLINE_PLAIN + " module_blacklist=apple_sep_x,xapple_sep", False),
-             ("a blacklist that names apple-sep with a hyphen, which is no module's name", CMDLINE_PLAIN + " module_blacklist=apple-sep", False),
-             ("another parameter that ends in the blacklist's name", CMDLINE_PLAIN + " xmodule_blacklist=apple_sep", False),
-             ("a blacklist with quoting, which isn't judged", CMDLINE_PLAIN + ' module_blacklist="apple_sep"', False),
-             ("the blacklist with apple_sep and then a quoted argument that would replace it, which isn't judged", CMDLINE + ' "module_blacklist=foo"', False),
-             ("the blacklist with apple_sep and a backslash further on, which isn't judged", CMDLINE + " module\\_blacklist=foo", False),
-             ("no command line to read", None, False))
+    # The boot's own policy: the kernel's module_blacklist parameter, as the kernel holds it, has to list apple_sep, for
+    # those two options alone. Each case: the parameter's file (None: no such file), and whether those options take it.
+    policy = f"this boot can still load apple_sep, the enclave's driver: the kernel's module blacklist ({os.path.join('TMP', 'blacklist')}) doesn't list it." \
+             " This run is only made in a safe boot started with: pkexec sleep-drain-safe boot --no-sep"
+    lines = (("not set, as in an ordinary safe boot, or in one whose command line has the blacklist after -- or too long for the kernel", BLACKLIST_UNSET, False),
+             ("--no-sep's, listing apple_sep", BLACKLIST, True),
+             ("other modules around apple_sep", "foo,apple_sep,bar", True),
+             ("apple_sep last of two", "foo,apple_sep", True),
+             ("another module alone", "foo", False),
+             ("other modules whose names have apple_sep in them", "apple_sep_x,xapple_sep", False),
+             ("apple-sep with a hyphen, which is no module's name to the kernel", "apple-sep", False),
+             ("apple_sep in quotes", '"apple_sep"', False),
+             ("apple_sep behind a space, which the kernel wouldn't match", "foo, apple_sep", False),
+             ("an empty value", "", False),
+             ("no file to read", None, False))
     for what, line, taken in lines if is_seppg(launcher) else lines[:1] + lines[-1:]:
         with tempfile.TemporaryDirectory() as tmp:
-            d = setup(tmp, launcher, cmdline=line, reading="fail")
+            d = setup(tmp, launcher, blacklist=line, reading="fail")
             r = run(tmp, d, launcher)
             went_on = r.returncode == 1 and "apple_sep" not in r.stderr and [x.split()[0] for x in calls(tmp)] == ["insmod", "reading", "rmmod"]
             if not is_seppg(launcher):
                 check(went_on, f"{name(launcher)}: {what}: an option that leaves the SEP's wait alone goes on as ever",
                       r.stdout + r.stderr + "\n".join(calls(tmp)))
             elif taken:
-                check(went_on, f"{name(launcher)}: the kernel's command line: {what}: this boot keeps apple_sep out, and the run goes on",
+                check(went_on, f"{name(launcher)}: the kernel's module blacklist: {what}: this boot keeps apple_sep out, and the run goes on",
                       r.stdout + r.stderr + "\n".join(calls(tmp)))
             else:
-                check(r.returncode == 1 and policy in r.stderr and calls(tmp) == [] and recfg_calls(tmp) == [] and wd2_calls(tmp) == [] and sysctl(tmp) == ("0", "0"),
-                      f"{name(launcher)}: the kernel's command line: {what}: refused, with why and what to do, and nothing loaded or written",
+                check(r.returncode == 1 and policy.replace("TMP", tmp) in r.stderr and calls(tmp) == [] and recfg_calls(tmp) == [] and wd2_calls(tmp) == [] and sysctl(tmp) == ("0", "0"),
+                      f"{name(launcher)}: the kernel's module blacklist: {what}: refused, with why and what to do, and nothing loaded or written",
                       r.stdout + r.stderr + "\n".join(calls(tmp) + wd2_calls(tmp)))
 
 
