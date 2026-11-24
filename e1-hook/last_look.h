@@ -386,7 +386,8 @@
  * with no light ever having blinked and no restart, and stage 0x02 with K1's
  * marks in the PMU. No light doesn't prove that ending (the light is skipped
  * if FPWM0's power word doesn't come up, and the replay commits all the
- * same): the stage and the marks say how far the run got.
+ * same), and the stage and the marks are the last record that landed: K3b's
+ * commands can fail and the run go on.
  */
 #ifndef LAST_LOOK_H
 #define LAST_LOOK_H

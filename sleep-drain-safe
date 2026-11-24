@@ -136,6 +136,21 @@ no_sep_cmdline() {
   echo "$1 module_blacklist=${last:+$last,}apple_sep"
 }
 
+# Whether a command line has a "--" word, after which nothing is the kernel's,
+# or could have one once GRUB has read it: GRUB takes quotes and backslashes
+# off, so "--", '--', -"-" and \-\- all reach the kernel as a bare --. Judged
+# with those characters taken out: a -- inside a quoted argument with spaces
+# is taken for one too, which refuses a line that would have been fine.
+has_separator() {
+  local a t=${1//[\"\'\\]/}
+  local -a w
+  read -ra w <<< "$t"
+  for a in "${w[@]}"; do
+    [[ $a != -- ]] || return 0
+  done
+  return 1
+}
+
 # A command line whose blacklist this script can't work out by splitting at
 # spaces: a blacklist argument somewhere, and quoting or a backslash anywhere.
 # GRUB takes quotes off before the kernel sees the line, so a later quoted
@@ -211,8 +226,8 @@ cmd_boot() {
   ! blacklist_unsure "$cmdline" ||
     die "the regular command line has a module blacklist and quoting, so what the kernel would end up blocking can't be worked out here; nothing written, nothing selected: $cmdline"
   # The flag and the blacklist are added at the line's end, and what follows a "--" goes to init, not the kernel.
-  [[ " $cmdline " != *' -- '* ]] ||
-    die "the regular command line has a -- in it: what is added after it goes to init and the kernel never sees it, the module blacklist included; nothing written, nothing selected: $cmdline"
+  ! has_separator "$cmdline" ||
+    die "the regular command line has a -- in it, or what GRUB could make one of: what is added after it goes to init and the kernel never sees it, the module blacklist included; nothing written, nothing selected: $cmdline"
   plain_line="linux /vmlinuz-linux-aurora $cmdline sleepdrain.safe"
   nosep_line="linux /vmlinuz-linux-aurora $(no_sep_cmdline "$cmdline") sleepdrain.safe"
   sep_blacklisted "${nosep_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep on the module blacklist of: $cmdline"
@@ -304,19 +319,17 @@ cmd_status() {
     echo "this boot is a safe boot: $dev read-only $([[ $ro == 1 ]] && echo yes || echo "NO ($ro)")," \
       "/ on $(findmnt -no FSTYPE /)"
     df -h --output=used,size "$RUN/rw" | tail -1 | awk '{ print "RAM used by changes: " $1 " of " $2 }'
-    # The kernel's own list if it can be read (root); else the command line's text, which is said.
-    local bl kept=0 by
+    # "Kept out" only on the kernel's own list, which reads as root alone. Without it the command line's text is what
+    # was asked for, not what the kernel took (it drops a list over 1024 bytes, and anything after a "--").
+    local bl
     if bl=$(cat "$KPARAM" 2> /dev/null); then
-      by="the kernel's module blacklist lists apple_sep"
-      [[ ,$bl, != *,apple_sep,* ]] || kept=1
+      if [[ ,$bl, == *,apple_sep,* ]]; then
+        echo "the Secure Enclave's driver is kept out of this boot (the kernel's module blacklist lists apple_sep): apple_sep $([[ -d /sys/module/apple_sep ]] && echo "IS LOADED all the same" || echo "isn't loaded")"
+      else
+        echo "the Secure Enclave's driver may load in this boot: apple_sep $([[ -d /sys/module/apple_sep ]] && echo "is loaded" || echo "isn't loaded")"
+      fi
     else
-      by="apple_sep is on the command line's module blacklist; the kernel's own list reads only as root: pkexec sleep-drain-safe status"
-      ! sep_blacklisted "$(< "$PROC_CMDLINE")" || kept=1
-    fi
-    if ((kept)); then
-      echo "the Secure Enclave's driver is kept out of this boot ($by): apple_sep $([[ -d /sys/module/apple_sep ]] && echo "IS LOADED all the same" || echo "isn't loaded")"
-    else
-      echo "the Secure Enclave's driver may load in this boot: apple_sep $([[ -d /sys/module/apple_sep ]] && echo "is loaded" || echo "isn't loaded")"
+      echo "NOT VERIFIED whether the Secure Enclave's driver is kept out of this boot: the kernel's own module blacklist reads only as root (pkexec sleep-drain-safe status). The command line $(sep_blacklisted "$(< "$PROC_CMDLINE")" && echo "asks for it" || echo "doesn't ask for it"); apple_sep $([[ -d /sys/module/apple_sep ]] && echo "is loaded" || echo "isn't loaded")"
     fi
   else
     echo "this boot is a regular boot"

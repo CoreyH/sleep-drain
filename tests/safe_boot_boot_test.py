@@ -433,17 +433,20 @@ def main():
               and "the next restart is" not in p.stdout,
               "a grub-editenv that can't read the block after grub-reboot: the command fails saying the selection isn't known", p.stdout + p.stderr)
     # What follows "--" goes to init: a blacklist added at the end would set nothing in the kernel. Refused, in both modes.
-    for reg in ("root=UUID=aaaa rw quiet -- single", "root=UUID=aaaa rw quiet --", "-- root=UUID=aaaa"):
+    # And what GRUB would make a bare -- of: it takes quotes and backslashes off before the kernel sees the line.
+    for reg in ("root=UUID=aaaa rw quiet -- single", "root=UUID=aaaa rw quiet --", "-- root=UUID=aaaa", 'root=UUID=aaaa quiet "--" single',
+                "root=UUID=aaaa quiet '--' single", 'root=UUID=aaaa quiet -"-" single', "root=UUID=aaaa quiet \\-\\- single",
+                "root=UUID=aaaa quiet\t--\tsingle", 'root=UUID=aaaa "foo=a -- b" quiet'):
         with tempfile.TemporaryDirectory() as t:
             tool = setup(t, regular=reg)
             before = cfg_of(t)
             for args in (["boot"], ["boot", "--no-sep"]):
                 p = run(t, tool, *args)
-                check(p.returncode != 0 and "has a -- in it" in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
+                check(p.returncode != 0 and "has a -- in it, or what GRUB could make one of" in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
                       and cfg_of(t) == before and image(t) == (None, 0),
                       f"{' '.join(args)} with the regular line {reg!r}: refused, nothing written, no image built", p.stdout + p.stderr)
     with tempfile.TemporaryDirectory() as t:
-        reg = "root=UUID=aaaa rw quiet foo=--bar --baz"
+        reg = 'root=UUID=aaaa rw quiet foo=--bar --baz "x=a --b"'
         tool = setup(t, regular=reg)
         p = run(t, tool, "boot", "--no-sep")
         check(p.returncode == 0 and nxt(t) == NOSEP and entry_line(cfg_of(t), NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe",
@@ -463,16 +466,19 @@ def main():
                 check(p.returncode != 0 and f"would be {n} bytes" in p.stderr and "nothing selected" in p.stderr and nxt(t) is None
                       and cfg_of(t) == before and image(t) == (None, 0),
                       f"a blacklist of {n} bytes that has apple_sep already: refused, nothing written, no image built", p.stdout + p.stderr)
-    # status in a safe boot: the kernel's own list when it can be read, the command line's text (said) when it can't, and
-    # nothing after a "--" counted.
+    # status in a safe boot: "kept out" only by the kernel's own list; when that can't be read, not verified, with what the
+    # command line asks for (nothing after a "--" counted) said beside it.
     KEPT, MAY = "the Secure Enclave's driver is kept out of this boot", "the Secure Enclave's driver may load in this boot"
+    UNV = "NOT VERIFIED whether the Secure Enclave's driver is kept out of this boot: the kernel's own module blacklist reads only as root (pkexec sleep-drain-safe status). The command line "
     cases = (("the kernel's list has apple_sep", "apple_sep", "root=x rw sleepdrain.safe", KEPT + " (the kernel's module blacklist lists apple_sep)"),
              ("the kernel's list is unset though the command line names apple_sep after --", "(null)", "root=x rw -- module_blacklist=apple_sep sleepdrain.safe", MAY),
              ("the kernel's list has another module whose name has apple_sep in it", "apple_sep_x", "root=x module_blacklist=apple_sep", MAY),
              ("the kernel's list can't be read and the command line's last blacklist has apple_sep", None, "root=x module_blacklist=foo,apple_sep sleepdrain.safe",
-              KEPT + " (apple_sep is on the command line's module blacklist; the kernel's own list reads only as root: pkexec sleep-drain-safe status)"),
-             ("the kernel's list can't be read and the command line has the blacklist only after --", None, "root=x rw -- module_blacklist=apple_sep", MAY),
-             ("the kernel's list can't be read and the command line has no blacklist", None, "root=x rw sleepdrain.safe", MAY))
+              UNV + "asks for it;"),
+             ("the kernel's list can't be read and the command line has a blacklist of 1,025 bytes with apple_sep, which the kernel drops", None,
+              "root=x module_blacklist=" + "m" * 1015 + ",apple_sep sleepdrain.safe", UNV + "asks for it;"),
+             ("the kernel's list can't be read and the command line has the blacklist only after --", None, "root=x rw -- module_blacklist=apple_sep", UNV + "doesn't ask for it;"),
+             ("the kernel's list can't be read and the command line has no blacklist", None, "root=x rw sleepdrain.safe", UNV + "doesn't ask for it;"))
     for what, kparam, cmdline, want in cases:
         with tempfile.TemporaryDirectory() as t:
             tool = setup(t)
@@ -486,8 +492,9 @@ def main():
                     f.write(kparam + "\n")
             p = run(t, tool, "status")
             sep = [l for l in p.stdout.splitlines() if "Secure Enclave" in l]
-            check(len(sep) == 1 and sep[0].startswith(want + ": apple_sep ") if want != MAY else len(sep) == 1 and sep[0].startswith(MAY + ": apple_sep "),
-                  f"status in a safe boot, {what}: {'kept out' if want != MAY else 'may load'}", p.stdout + p.stderr)
+            unv = want.startswith(UNV)
+            check(len(sep) == 1 and sep[0].startswith(want + (" apple_sep " if unv else ": apple_sep ")) and (not unv or "is kept out of this boot (" not in sep[0]),
+                  f"status in a safe boot, {what}: {'not verified, never kept out' if unv else 'may load' if want == MAY else 'kept out'}", p.stdout + p.stderr)
     print("all ok" if not fails else f"{fails} failed")
     return 1 if fails else 0
 

@@ -1866,7 +1866,8 @@ static void e1_after_slpa(void)
  * blinked and no restart. The record then is stage 0x02 with K1's marks. No
  * light fits that ending and doesn't prove it: m1_ll_blink() skips the light
  * if FPWM0's power word doesn't come up, and the replay commits all the same.
- * The stage and the marks say how far the run got.
+ * The stage and the marks are the last record that landed: K3b's commands
+ * go through the kernel's path, where a failure stops nothing after it.
  *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the

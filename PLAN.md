@@ -76,8 +76,8 @@ this section where they differ.
      #131 on 2026-11-23; `pkexec bash install.sh` is still to run: the installed copy would otherwise
      ignore the option and make an ordinary safe boot); `run/sep-pg` merged (built: RESEARCH.md,
      "`disp_hs=1` and `sep_pg=1` as built") with both reviews done, and the module built from `main`;
-     and, in the safe boot itself before the run, `sleep-drain-safe status` saying the driver is kept
-     out and isn't loaded. `run-floor` refuses both options with `apple_sep` loaded or without it on
+     and, in the safe boot itself before the run, `pkexec sleep-drain-safe status` (as root: the
+     kernel's own blacklist reads only so) saying the driver is kept out and isn't loaded. `run-floor` refuses both options with `apple_sep` loaded or without it on
      the kernel's own module blacklist; the module refuses to load with a driver bound to
      the SEP's device and looks again at the suspend's prepare. Why: on this
      Mac `apple_sep` runs with `xart_guard=0` and xART writes enabled, and the safe boot's read-only

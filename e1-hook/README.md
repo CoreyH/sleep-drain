@@ -360,7 +360,10 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   the Mac dark with no light ever having blinked and no restart. The record then is stage 0x02 with K1's
   marks (0x02 at 0x6009, 0x01 at 0x600a). A dark Mac that never blinked fits that ending and doesn't prove
   it: `m1_ll_blink()` skips the light if FPWM0's power word doesn't come up in 10 ms, and the replay
-  commits all the same. The stage and the marks kept in the PMU say how far the run got.
+  commits all the same. The stage and the marks kept in the PMU are the last record that landed, not
+  proof of where the run stopped: K3b sends its bytes and its stage through the kernel's path, where a
+  command that fails stops nothing after it, so a run can go on past K3b with stage 0x02 and both marks
+  still there.
   **The record:** K3b reads 0x2922c0044 before the first DCP, right after each table it wrote, and after
   each DCP's place in the loop, stopped or not, and sends four bytes to the PMU's 0x600a-0x600d in one
   command through the kernel's path, before its own stage (inside the range OK'd on 2026-11-16; K1 leaves

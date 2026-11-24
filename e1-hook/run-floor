@@ -315,7 +315,8 @@
 # block write that faults where the panic's restart fails, or one that stalls, leaves the Mac dark with NO LIGHT EVER
 # HAVING BLINKED and no restart. Hold the power button; m1-crumbs then shows stage 0x02 with K1's marks (0x02 at 0x6009,
 # 0x01 at 0x600a). A dark, unlit Mac fits that ending and doesn't prove it: the light is skipped if its PWM's power word
-# doesn't come up in 10 ms, and the replay commits all the same. The stage and the marks say how far the run got. Run it with
+# doesn't come up in 10 ms, and the replay commits all the same. The stage and the marks are the last record that
+# landed, not proof of where the run stopped: K3b's own commands can fail and the run go on. Run it with
 # --no-reading, the nights off around it (pkexec /usr/local/bin/sleep-drain-nights off), nothing in the USB-C ports,
 # and film the keyboard.
 # What's said of --m1, --m1-alarm and --m1-hold

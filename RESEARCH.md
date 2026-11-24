@@ -5526,7 +5526,9 @@ The four `disp_hs` bytes go out in one command before K3b's stage. `run-floor --
   where the panic's restart fails, leaves the Mac dark with the light never having blinked. Hold the power
   button. A dark Mac that never blinked fits a K3b stall and doesn't prove one: the light is skipped if
   its PWM's power word doesn't come up in 10 ms, and the replay commits all the same (it came up in every
-  run since B). The record decides: stage 0x02 with K1's marks is K3b; a later stage is a run that went on
+  run since B). The record narrows it and doesn't settle it: stage 0x02 with K1's marks is the last record
+  that landed, which fits a stall in K3b and also a run that went on with K3b's two commands lost (they go
+  through the kernel's path, where a failure stops nothing after it); a later stage is a run that went on
   without its light.
 - **a restart about 10 s after the dark screen, stage 0x02 with 0x01 at 0x600a:** a write to a display
   block faulted (inferred from `kernel.panic=10`; not seen).
