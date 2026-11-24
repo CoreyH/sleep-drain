@@ -70,10 +70,15 @@ this section where they differ.
    - **Its own eligibility checks, each failing closed, none weakening the no-driver mode's:**
      `run-floor` proves the store is read-only before anything is loaded or written (the driver's own
      log line, "writes disabled", and never "ENABLED"). The module takes a bound SEP driver only with
-     a parameter of its own for this mode (`sep_ro=1`), and then checks that the SEP's power word
-     reads actual 0, waiting up to 5 s as the reference does, at the load (else it refuses) and at
-     the first suspend's prepare, before any firmware is stopped (else the replay is called off and
-     the Mac wakes). No multi-second wait in step 7, which is interrupts-off with WD1 armed: there
+     a parameter of its own for this mode (`sep_ro=1`), which opts in and proves nothing: at the load
+     and again at the first suspend's prepare the module itself needs evidence that the binding it
+     sees has writes off (the two words in the boot's arguments, and the driver's "writes disabled"
+     line in the kernel's log with no "ENABLED" line there, read from inside the kernel), whatever the
+     power word says: this Mac read the enclave gated in a boot with writes enabled, so the power
+     state is no evidence of the policy. A binding it can't verify is refused as a bound driver is
+     now. Then the SEP's power word has to read actual 0, waited for up to 5 s as the reference does,
+     at the load (else it refuses) and at prepare, before any firmware is stopped (else the replay is
+     called off and the Mac wakes). No multi-second wait in step 7, which is interrupts-off with WD1 armed: there
      the check stays immediate, at the write, and a clear that was skipped or didn't read back is
      not a test of the bit.
    - **The recipe:** `--m1-disp-hs`'s, with the wait bit cleared under the guard as it stands (only
@@ -103,13 +108,14 @@ this section where they differ.
    - **After an entry that completes**, the fix is a port: Ante042's t6000 core onto upstream's
      `sleep.c` (their notes map it area by area), and a wake needs the loader's mailbox, which is
      m1n1's or aura's side and not Claude's to write.
-   - A second model can be asked to argue a result over (Corey, 2026-11-24, who allowed its
-     approval override: "you are in charge, it should only advise you"): Gemini through `agy -p`.
-     Its sandbox mounts the workspace read-write and the override approves every tool, so "read
-     only" in a prompt is a request, not a restriction. Run it in a disposable clone of the repo
-     (and of the reference's files), never in this tree; nothing it writes there is taken; check its
-     citations against the source before taking a claim. (The two rounds of 11-24 ran in this tree,
-     whose `git status` was compared before and after: unchanged.)
+   - A second model argued run 9 over on 2026-11-24 (Gemini through its command-line agent, at
+     Corey's wish and with the approval override Corey allowed: "you are in charge, it should only
+     advise you"). A record, not a procedure: its sandbox mounts the workspace read-write and the
+     override approves every tool, so "read only" was the prompt's request and nothing enforced it;
+     this tree's `git status` was compared before and after and was unchanged. Before another round,
+     its access has to be read-only by the system and not by request (its inputs mounted read-only,
+     no credentials for the checkout's remotes in its reach); that isn't set up. Its claims are
+     checked against the source before any is taken.
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
