@@ -5426,6 +5426,86 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The `disp_hs=1` run: both handshakes made, bit 2 never set, and the enclave read powered (2026-11-24)
+
+`run-floor --no-reading --m1-disp-hs` in a safe boot started with `sleep-drain-safe boot --no-sep`, on
+battery at about 98%, nothing in the USB-C ports, the nights off around it, loaded 11:36
+(`results/disp-hs-20261124/`; the module built at 59d3252). The ninth one-way run since the strategy review.
+
+- **Corey:** "I have video but it looked like 90 seconds." The light to the restart.
+- **The boot kept the driver out:** `module_blacklist=apple_sep` on the command line, the launcher's check of
+  the kernel's own list passed, nothing bound to the SEP's device at the load or at prepare.
+- **The record is whole**, and but for the new bytes it is the `a2_pre=1` run's: stage 0x9b, 0x6013 = 0x5f,
+  0x6016 = 0xff, WD2 armed with the 120 s bite, `PHASE` 4, the restart 89.7 to 91.7 s after the commit: WD1's
+  marker. 0x0201 = 0x02.
+- **`disp_hs=1`, 0x600a-0x600d = e8 88 e8 00:** both set-up tables written and both handshakes made (both FE
+  words read powered at their turn, 0xff at the load); byte B says both displays' words read off afterwards.
+  0x2922c0044's low nibble read **8 in every sample kept**: at K3b's start, after disp0's place, after
+  dispext0's table, after dispext0's place, and in step 7 right before the commit. 0x600d (after disp0's
+  table) came back 0x00, lost across the restart as bytes there have been before. **Bit 2 read set in no
+  sample.** No block write faulted or stalled.
+- **`sep_pg=1`, 0x6009 = 0xc8:** the control word's bit 2 was set as found; **the SEP's power word read
+  powered**, so by the guard the write wasn't made, and the wait was left set. At the load it read
+  0x1f0000ff (target f, actual f, auto f, auto-enable); on 11-23, in a regular boot with `apple_sep` loaded,
+  it read 0x1000030f (target f, **actual 0**, both "was gated" flags, auto 0).
+
+**What it shows.**
+- The display step as made here doesn't set B2's first poll with CPU0 up. Either the comment's cause is
+  another step of the reference's (see the differences listed in the as-built section: the GPU's port and
+  dispext1's block, macOS's power-word values, the order against `slpa`), or the bit only moves in a state
+  this run wasn't in.
+- **This run was made in a state the reference never sleeps in.** Read again with the result in hand,
+  `apple_s2r_prepare_late()` waits up to 5 s for the SEP's power word to read actual 0 and *refuses the
+  sleep* if it doesn't, whether a driver is bound or not ("Read only: macOS polls the actual level and
+  never writes the SEP PS"). Its clearing of the wait bit is for an enclave that is already down with
+  nobody to say so (still down from the last sleep), not for one that is up. So on Ante042's Mac the enclave
+  is gated at every commit; here, with the driver kept out, it was up (nothing in this boot ever let it
+  gate: the word's auto level is f), and the wait for its power gate stood. The section "The weekend's
+  answers" read the fallback as "no driver, so clear the bit", which missed that wait.
+- Runs 1 to 8 were made with `apple_sep` loaded. What the SEP's power word read at their commits was never
+  read; awake in such a boot it read gated once (11-23). This kernel's `apple_sep` sends the enclave no SLEEP.
+- So two things are now tangled in the opening: what sets bit 2, and whether the engine can pass with the
+  enclave up. Neither is shown to be the hold.
+
+**The guard did its job and cost the run its second question:** the bit wasn't cleared under a live
+enclave, which is what the review asked for, and so nothing was learnt about the bit. Nine of the review's
+ten one-way runs are used.
+
+**A second opinion, the same day.** Corey asked for the result to be argued over with another model (Google's
+Gemini, through its command-line agent, read-only on this repository and the reference's files, advice
+only; the prompts and answers are in `~/.local/share/sleep-drain/spar-20261124/`). What came of two rounds,
+each claim checked here against `s2r.c` before it was taken:
+- **A hypothesis: the SEP's wait may have stood unmet in every run.** The reference's `s2r_sep_down`
+  comment says an enclave that is down with nobody telling it to power-gate leaves "a PMGR still waiting
+  for that" which "never sleeps", so the driver stops waiting (clears the bit) for it. Here the bit reads 4
+  awake and nothing ever cleared it; runs 1 to 8 had `apple_sep` loaded, which sends no SLEEP; run 9 had
+  the enclave up. What is measured is less than that: only run 9 read the bit and the SEP's power word
+  near its commit, and the 0x1000030f with the driver loaded is one awake reading of 11-23, not a reading
+  at any earlier commit. And where in the engine that wait sits isn't known: that it is B2's opening, or
+  that 0x2922c0044's bit 2 is its status, is a guess (the reference never reads the word, and its comment
+  rests on a trace nobody here has seen). The tenth run tests it.
+- **Which state to clear the bit in.** Mine was the no-driver boot with the guard dropped. Against it: the
+  reference refuses to sleep with the enclave up, so that state is one nobody has slept in, and a run that
+  failed there would say nothing. Better: `apple_sep` loaded with `xart_writes=0` (omacom's driver has the
+  parameter: "set to 0 for read-only operation"; it is how Ante042 runs theirs), where the enclave gates
+  itself as in normal use and the AP can't write the store, and the bit cleared under the guard as it is.
+  **Corey OK'd that state for the tenth run** (asked with both, 2026-11-24: "Driver read-only").
+- **Two things in the recipe the reference marks as harmful**, both on the desk list of 11-23 and now to go:
+  `a2_pre=1`'s three moves (the reference has the fabric at 0x333 at its commit, where they leave it at 2),
+  and the read-backs of PCIE0_REF and APCIE_GP_SYS after `ps_words=1`'s writes ("reading the three apcie PS
+  words this late on the way down left the SoC stuck before sleep in 4 runs out of 4"); nothing uses what
+  those reads return but a bit of 0x6013 that has failed in every run.
+- **An ordering difference the as-built section called neutral and isn't shown to be:** here the displays'
+  PMP requests are withdrawn at noirq, before the set-up tables, and K3b comes after `slpa` and after the
+  PMP's sleep word is 1 and its DVFS words idled; the reference writes each table with the request still
+  up, drops it, then lowers the words, all before `slpa`, with the sleep word at 4. Not in the tenth run:
+  it would move the PMP's writes into the module.
+- **Not bundled, each able to hang or fault by itself:** the PMP's power word (never-write list), the GPU's
+  port (its firmware parked from here), the memory controller's drain, `ps_late[]`.
+- Offered and not taken for now: a probe that makes the reference's whole display and GPU step without a
+  commit, sampling the gate word after every write. It answers "does bit 2 move before the commit", which
+  matters less if the SEP's wait is the hold; it is the next desk item if the tenth run's light blinks on.
+
 ### `disp_hs=1` and `sep_pg=1` as built: the reference's two steps for the engine's opening (2026-11-23)
 
 **Why.** "The weekend's answers", below, and the comparison made the same day of Ante042's driver with this
@@ -5485,7 +5565,8 @@ it would be, not which write set it.
 - it requires the SEP's power word to read 0 within 5 s after `apple_sep` told the enclave to sleep (its
   tested path); here no driver ever spoke to the enclave in this boot, which is its fallback, and how
   often that ran on their Mac isn't known.
-One thing is not a difference: the two displays' requests at the PMP are withdrawn here too, and earlier
+One thing was listed as no difference and isn't shown to be one (2026-11-24, "The `disp_hs=1` run", above:
+the order matters in the reference): the two displays' requests at the PMP are withdrawn here too, and earlier
 (`sio_on=1` has `run-floor` run `sleep-drain-pmp release 0xc 0xd`, made at the suspend's noirq), so the
 tables are written with the request gone and the PMP still running (K4 stops it after K3b).
 

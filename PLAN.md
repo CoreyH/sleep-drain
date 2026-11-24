@@ -4,7 +4,7 @@ Last updated 2026-11-23. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
-## Pick up here (2026-11-23)
+## Pick up here (2026-11-24)
 
 Read this first. "Where things stand" below is the long record and its order of work is superseded by
 this section where they differ.
@@ -19,9 +19,10 @@ this section where they differ.
   are down (a fit to four readings from four runs: 000 awake; 011 with CPU0 up and both P complexes
   down; with CPU7 up and CPU0's and ECPM's power words off, 001 right after ECPM's poll on 11-18
   and 011 half a second after it on 11-19, whose own first sample was lost: no run has seen the
-  word change). So bit 2 would be all three down, and no core can read it set. **Open again since
-  2026-11-23:** the reference driver says dispext0's fabric handshake sets bit 2, with every core up; the
-  ninth run samples the word around those writes. Each complex's own down sequence runs to its end when
+  word change). So bit 2 would be all three down, and no core can read it set. **Open since
+  2026-11-23:** the reference driver says dispext0's fabric handshake sets bit 2. The ninth run made
+  that handshake on both display blocks with CPU0 up and read the nibble 8 in every sample: as made
+  here, before the commit, it doesn't. Each complex's own down sequence runs to its end when
   its cores are gone (state word 0x1a; the E complex's too, read 2026-11-19). Bit 3 was set in
   every reading that kept it.
 - So with a core up the gate is closed because the core is up, and the stall of runs A and B is in
@@ -53,50 +54,70 @@ this section where they differ.
   2026-11-16).
 
 **Next, in this order:**
-1. **The ninth run, BLOCKED until its three safeguards are in place: the reference's two steps for the
-   engine's opening, in a safe boot without the enclave's driver** (RESEARCH.md, "The weekend's
-   answers", 2026-11-23). Ante042's J314s completes the entry and wakes. Two things its driver does
-   that this recipe never did, both at B2's opening:
-   - the display blocks' fabric handshake (block + 0x8014 := 1, + 0x82bc := 1, 2, 4, after a set-up
-     table) while the displays go down: by the driver's comment dispext0's sets bit 2 of 0x2922c0044,
-     which is B2's first poll (`disp_hs=1`);
-   - bit 2 of the PMGR control word 0x28e0cc200, "wait for the SEP to power-gate", cleared when no
-     driver puts the SEP to sleep; here it reads 4 (`sep_pg=1`).
-   **The one recipe to run is `run-floor --no-reading --m1-disp-hs`**: `--m1-a2-pre-blink`'s line with
-   both, after `pkexec sleep-drain-safe boot --no-sep`. Three changes at once against
-   `--m1-a2-pre-blink`'s run of 11-19, then: the handshakes, the bit, and no `apple_sep` in the boot.
-   (The last run made, the eighth, was `--m1-wake-all`, that recipe with every named AP wake source masked;
-   this one has the recipe's own masks again, the PMU's source open: a fourth difference from run
-   eight, none from the baseline.) A light that stops is evidence about
-   that combination and says B2 reached its tenth SIO word, not that the entry finished and not which
-   change did it; the record's samples say where bit 2 of the gate word was first seen set with CPU0
-   up (K3b's start, after each block's table, after each block's place, step 7), not which write set
-   it; and whether the control word's bit was cleared (only under an enclave that reads off).
-   - **Not to be handed over before all of:** `sleep-drain-safe boot --no-sep` *installed* (merged as
-     #131 on 2026-11-23; `pkexec bash install.sh` is still to run: the installed copy would otherwise
-     ignore the option and make an ordinary safe boot); `run/sep-pg` merged (built: RESEARCH.md,
-     "`disp_hs=1` and `sep_pg=1` as built") with both reviews done, and the module built from `main`;
-     and, in the safe boot itself before the run, `pkexec sleep-drain-safe status` (as root: the
-     kernel's own blacklist reads only so) saying the driver is kept out and isn't loaded. `run-floor` refuses both options with `apple_sep` loaded or without it on
-     the kernel's own module blacklist; the module refuses to load with a driver bound to
-     the SEP's device and looks again at the suspend's prepare. Why: on this
-     Mac `apple_sep` runs with `xart_guard=0` and xART writes enabled, and the safe boot's read-only
-     root doesn't cover that store.
-   - `--m1-sep-pg` (the bit alone) is built with it and not planned as a run of its own.
-   - `ll_retn=1` (`--m1-ll-retn`) is built and merged and **not run**: held behind this.
-   - At the desk: the reference driver against the recipe, difference by difference
-     (`~/.local/share/sleep-drain/ante042-20261123/diff-vs-recipe.md`), for what stops the entry next
-     if the opening passes: the PMP powered off (its word is on this project's never-write list: a
-     fresh OK), `ps_late[]`'s fifty words, the memory controller's drain, `a2_pre=1`'s three moves,
-     which the reference never makes, and two late reads of APCIe power words it found fatal.
-   - A reply to Ante042 and RyanTheTide on #2198, with the run's result: needs Corey's OK. A question
-     for Ante042 in it: how often their no-driver fallback ran.
-   - Open asks: malik-na/linux-aurora#77 and omacom/linux-aurora#290 (11-20), unanswered. They stay
-     open: macOS's commit state would still serve for whatever stops the entry next. Only an entry
-     shown complete retires them.
+1. **The tenth run: the SEP's wait, in the state the reference sleeps in** (RESEARCH.md, "The
+   `disp_hs=1` run", 2026-11-24). The ninth run (`--m1-disp-hs` after `boot --no-sep`) made both
+   display handshakes and never read bit 2 set; the enclave read powered with no driver in the boot,
+   so the guard left the wait bit (0x28e0cc200 bit 2) set. Read again, the reference refuses to sleep
+   unless the SEP's power word reads actual 0, and says a PMGR that waits for a power gate nobody
+   announces "never sleeps". **A hypothesis, not a finding:** that wait may have stood unmet in every
+   run here (the bit reads 4 awake, nothing ever cleared it, and this kernel's `apple_sep` sends no
+   SLEEP); the SEP's power word was never read at the commits of runs 1 to 8, and whether B2's
+   opening is where that wait sits isn't known. To build:
+   - **A safe boot with `apple_sep` loaded read-only:** `apple_sep.xart_writes=0
+     apple_sep.provision_keybag=0` on the entry's command line, both with the module's prefix (the
+     driver's probe refuses `xart_writes=0` with the keybag option at its default); Corey's OK of
+     2026-11-24, asked with the alternative of forcing the bit under a powered enclave.
+   - **Its own eligibility checks, each failing closed, none weakening the no-driver mode's:**
+     The proof is the bound driver's own status, not what the boot asked for and not a line in a
+     log (the log line comes before the probe ends and can be lost; the boot's words are a request):
+     the SEP device's `diag/xart` attribute, which the driver sets from the store as it opened it,
+     "enabled" or "disabled", and takes away when it unbinds (it reads "enabled" in a regular boot
+     here, 2026-11-24). `run-floor` needs it to read "disabled" before anything is loaded or written.
+     The module takes a bound SEP driver only with a parameter of its own for this mode (`sep_ro=1`),
+     which opts in and proves nothing: at the load and again at the first suspend's prepare the module
+     itself reads that attribute of every bound SEP device and needs "disabled", whatever the power
+     word says (this Mac read the enclave gated in a boot with writes enabled: the power state is no
+     evidence of the policy). Missing, unreadable or anything else: refused as a bound driver is now,
+     and the run stays blocked. Then the SEP's power word has to read actual 0, waited for up to 5 s as the reference does,
+     at the load (else it refuses) and at prepare, before any firmware is stopped (else the replay is
+     called off and the Mac wakes). No multi-second wait in step 7, which is interrupts-off with WD1 armed: there
+     the check stays immediate, at the write, and a clear that was skipped or didn't read back is
+     not a test of the bit.
+   - **The recipe:** `--m1-disp-hs`'s, with the wait bit cleared under the guard as it stands (only
+     with the SEP's word at actual 0), without `a2_pre=1` (the fabric stays at 0x333 at the commit, as
+     the reference has it), and without the read-backs of PCIE0_REF and APCIE_GP_SYS after
+     `ps_words=1`'s writes (the reference: "stuck before sleep in 4 runs out of 4").
+   - **How it reads:** step 7 samples 0x2922c0044 right before the write and right after the
+     read-back: bit 2 clear in the first and set in the second, with the clear confirmed, puts the
+     change between two samples of one step; a single sample after the clear is only what the word
+     read then. The run changes the boot and three things in the recipe against run 9, so its ending
+     is evidence about the combination. The light stops: B2 passed its opening, and the restart's
+     time says how far. The light to 90 s with the bit cleared and the enclave gated: the SEP's wait
+     isn't the hold, or isn't the only one; then the desk's next is a probe of the reference's whole
+     display and GPU step without a commit, sampling the gate word after each write.
+   - It is the tenth of the strategy review's ten one-way runs. With a working reference to converge
+     on, the count isn't the stop it was meant as: say so to Corey when it's used.
+   - `--m1-sep-pg` and `--m1-ll-retn` are built and not planned as runs.
+   - At the desk, for what stops the entry after the opening
+     (`~/.local/share/sleep-drain/ante042-20261123/diff-vs-recipe.md`): the displays' order against
+     `slpa` and the PMP's sleep word (the reference takes them down before both, each table with its
+     PMP request still up), the GPU's port, the PMP powered off (never-write list: a fresh OK),
+     `ps_late[]`, the memory controller's drain.
+   - A reply to Ante042 and RyanTheTide on #2198 with runs 8 and 9: needs Corey's OK. Questions for
+     Ante042 in it: how the gate word's bit 2 was seen to follow dispext0's handshake (their driver
+     never reads it), and whether a sleep ever went through with the SEP's wait armed and no SLEEP.
+   - Open asks: malik-na/linux-aurora#77 and omacom/linux-aurora#290 (11-20), unanswered.
    - **After an entry that completes**, the fix is a port: Ante042's t6000 core onto upstream's
      `sleep.c` (their notes map it area by area), and a wake needs the loader's mailbox, which is
      m1n1's or aura's side and not Claude's to write.
+   - A second model argued run 9 over on 2026-11-24 (Gemini through its command-line agent, at
+     Corey's wish and with the approval override Corey allowed: "you are in charge, it should only
+     advise you"). A record, not a procedure: its sandbox mounts the workspace read-write and the
+     override approves every tool, so "read only" was the prompt's request and nothing enforced it;
+     this tree's `git status` was compared before and after and was unchanged. Before another round,
+     its access has to be read-only by the system and not by request (its inputs mounted read-only,
+     no credentials for the checkout's remotes in its reach); that isn't set up. Its claims are
+     checked against the source before any is taken.
 2. Which of 0x6008-0x600e outlast a restart: test values written awake (`run-d-20261118/write-test.py`
    shows the write path), one plain restart, a read. Tell Corey before leaving values in them.
 3. The alarm's four registers saved at boot before `sleep-drain-alarm.service` loads the driver, and
@@ -110,7 +131,7 @@ this section where they differ.
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
 
 **As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
-`--m1-disp-hs` the latest launcher option (`--m1-ll-retn` and `--m1-sep-pg` before it, neither run); the PMU's record bytes all zero; scratch that must outlast
+`--m1-disp-hs` the latest launcher option (run 2026-11-24; `--m1-ll-retn` and `--m1-sep-pg` before it, neither run); the PMU's record bytes all zero; scratch that must outlast
 a restart in `~/.local/share/sleep-drain/`.
 
 ## Where things stand
