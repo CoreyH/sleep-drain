@@ -1373,16 +1373,34 @@ def fam_clear(s, r):
 
 
 def later_landed(s, b, now=None):
-    """Under step 7's own stage: whether the record itself shows that a command after the next stage's landed. The steps'
-    outcomes go to 0x6012-0x6013 right after that stage's command and only if no command before them failed (m1_crumb(): a
-    command that fails stops every later one), and their marker at 0x6013 says they landed (fab_landed()). So with the
-    marker there the next stage's command was acked, and the stage it carried wasn't kept. What else could stand there:
-    the top byte of the RTC's second, which K1 and step 8's record put at 0x6010-0x6013, and which is no marker's value for
-    any count under 2^30 s; so, with now, the RTC's second as the record is read, the four bytes also have to be no second
-    this run can have had, one later than now. (An earlier run's marker would have had to outlast K1's zeroing of
-    0x6010-0x6016, K1's second and step 8's record, all three acked and none kept: not considered.) decode() reads the
-    two bytes as the outcomes exactly when this says so, and as a second's upper bytes otherwise."""
-    return s == WA_STEP7 and fab_landed(b) and (now is None or int.from_bytes(b[0x10:0x14], "little") > now)
+    """Under step 7's own stage: whether the record itself shows that a sio_stop=1 run's step 8 got as far as the steps'
+    outcomes, so that the command of the stage before them was acked and that stage wasn't kept. Three things, all needed:
+    - The recipe. 0x39 is the step-7 stage of every hold=1 recipe, and three of them write 0x6012-0x6013 after a later
+      stage: a sio_stop=1 run the steps' outcomes (after step 8's stage), a position=1 run its first sample (after 0x41),
+      the plain hold path its release masks (after 0x5c). A sample or a mask can have any value, a marker's among them
+      (run 7's sample was 14 dd; Pullfrog on #134), so the two bytes never say whose they are. What does: 0x6008-0x600e
+      holding a byte or K1's mark of wake_all=1, sep_ro=1, sep_pg=1 or disp_hs=1, read whole, with nothing in the seven that
+      no such run leaves (fam_clear()). It rests on e1_hook.c as it stands: those four load only with gates_mark=1
+      (e1_check_params()), which its rules chain to sio_stop=1 (gates_mark, wd1_mark, fabric_up, cluster_ack, wd2_bite,
+      ps_words, sio_stop); sio_stop=1 loads neither with position=1 nor without hold_nowatch=1, under which the hold path
+      writes nothing after the release; and the seven bytes are this run's, since K1 zeroes them in every run before it
+      writes a mark (m1_pmu_start(), since #127). A record left by a build older than that isn't covered. A gates_mark=1
+      run with none of the four options leaves the seven zero, as a position=1 or a plain hold run does: not told apart,
+      and not read (step7_ambiguous()).
+    - The outcomes' marker at 0x6013 (fab_landed()): they go out right after step 8's stage and only if no command before
+      them failed (m1_crumb(): a command that fails stops every later one).
+    - With now, the RTC's second as the record is read: 0x6010-0x6013 are no second this run can have had, one later than
+      now. K1 and step 8's record put the second there, and its top byte is no marker's value under 2^30 s.
+    (An earlier run's bytes would have had to outlast K1's zeroing of 0x6010-0x6016, K1's second and step 8's record, all
+    three acked and none kept: not considered.) decode() reads the two bytes as the outcomes exactly when this says so."""
+    return (s == WA_STEP7 and fab_landed(b) and bool(fam_clear(s, b[8:0x0f]))
+            and (now is None or int.from_bytes(b[0x10:0x14], "little") > now))
+
+
+def step7_ambiguous(s, b, now):
+    """Under step 7's own stage, with 0x6010-0x6013 no second this run can have had and the recipe not shown
+    (later_landed()): the two bytes at 0x6012 are some later command's, and are read as no recipe's."""
+    return s == WA_STEP7 and int.from_bytes(b[0x10:0x14], "little") > now and not later_landed(s, b, now)
 
 
 def step7_line(s, acked):
@@ -2810,6 +2828,14 @@ def decode(b, rtc, cnt=None, alarm=None, r0201=None):
                        " that follows this one, and only if no command before them failed. That stage's command was acked, then, and"
                        " the stage wasn't kept; 0x6010-0x6011 are the low bytes of step 8's second")
             out += k_lines(b)
+        elif step7_ambiguous(s, b, now):
+            # The same stage and the same two bytes in three recipes, and nothing here that says which ran: none is decoded.
+            out.append(f"0x6010-0x6013 = {b[0x10:0x14].hex(' ')}: not one RTC second this run can have had (it would be {secs}, later than"
+                       f" now, {now}). Step 7's stage is every hold=1 recipe's, and three of them write 0x6012-0x6013 after a later stage:"
+                       " position=1 its first sample, the plain hold path its release masks, a sio_stop=1 run the steps' outcomes"
+                       + (" (0x6013 has one of their markers' values, which a sample or a mask can have too)" if fab_landed(b) else "")
+                       + ". 0x6008-0x600e don't show which this run was (no byte or mark, read whole, of an option that loads only with"
+                       " gates_mark=1): AMBIGUOUS, and 0x6012-0x6013 are read as none of the three")
         elif base >= 0x01 and secs:
             when = "just before the commit" if base >= 0x50 else "the replay's start (K1)"
             out.append(f"RTC second at {when}: {secs}, {now - secs} s before now ({now})")

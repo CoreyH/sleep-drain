@@ -229,8 +229,13 @@ used to sit in CLAUDE.md, entry for entry):
   landed: acked and lost, but only if sep_ro=1's own reading takes 0x6008's byte: the reviewer's record, 88 02 00 05
   under stage 0x39, where it is NOT READ and proves nothing); both under step 7's own stage, each with a line that
   says 0x39 is the last stage the record kept: with the outcomes' marker at 0x6013, that the next stage's command
-  was acked and the stage not kept (0x6010-0x6013 are then read as the outcomes and not as a second,
-  `later_landed()` in fourteen cases); with a second there, that the record doesn't say why no newer stage is
+  was acked and the stage not kept (0x6010-0x6013 are then read as the outcomes and not as a second), but only
+  for a run that 0x6008-0x600e show to be one that sends outcomes (`later_landed()`: ten records of the four
+  options' bytes and marks read whole, eleven that show nothing, the rules and K1's zeroing it rests on pinned
+  in `e1_hook.c`); otherwise AMBIGUOUS and read as no recipe's (`step7_ambiguous()`): run 7's archived record,
+  a position=1 run's whose sample is `14 dd`, with only the stage changed to 0xb9 or 0x39 (no ps_words=1
+  outcomes, no sample, nothing acked), the plain hold path's masks there, a gates_mark=1 run without the four
+  options, and that archived record as it is, still decoded line for line; with a second there, that the record doesn't say why no newer stage is
   there; a mark under an earlier stage said the same way, in wake_all=1's, sep_pg=1's and disp_hs=1's tests too;
   the gate byte's line for a later recipe's record, the reviewer's among them
   (stage 0xd5, 0x6013 0x9f, 0x6016 0x81, 0x6008 0x88, 0x6009 0xfc: no word of a2_pre=1), and for `--m1-gates`'

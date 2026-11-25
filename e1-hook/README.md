@@ -473,9 +473,18 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   skipped (the enclave read powered) or that didn't read back is said to be no test of the wait bit, and
   nothing is concluded from the samples. Under step 7's own stage (0x39) a byte that landed is read with a
   line saying what that stage is, the last one the record kept, and that the record doesn't say why no
-  newer one is there (the next stage's command not reached, failed, or acked and not kept); if 0x6013 has
-  the steps' outcomes' marker, which goes out only after that command is acked, the line says so: acked,
-  and the stage not kept. A mark that is still there under an earlier stage is read the same way, with
+  newer one is there (the next stage's command not reached, failed, or acked and not kept). Only if the
+  record shows a `sio_stop=1` run's outcomes at 0x6012-0x6013, which go out only after that command is
+  acked, does the line say so: acked, and the stage not kept. That takes three things (`later_landed()`):
+  one of the outcomes' markers at 0x6013; 0x6010-0x6013 no second the run can have had; and the recipe,
+  since 0x39 is every `hold=1` recipe's stage and a `position=1` run's first sample or the plain hold
+  path's release masks land in the same two bytes with any value (run 7's sample was `14 dd`, a marker's
+  value). The recipe is shown by 0x6008-0x600e alone: a byte or K1's mark of `wake_all=1`, `sep_ro=1`,
+  `sep_pg=1` or `disp_hs=1`, read whole, which only a `gates_mark=1` run leaves (the parameter rules chain
+  it to `sio_stop=1`, which never loads with `position=1` and only with `hold_nowatch=1`; K1 zeroes the
+  seven in every run). Without it, `m1-crumbs` says the four bytes are no second, that three recipes
+  write there, and that 0x6012-0x6013 are AMBIGUOUS and read as none of them: so a `gates_mark=1` run
+  with none of the four options isn't told from the others there. A mark that is still there under an earlier stage is read the same way, with
   no guess at which of the three happened. K1's mark still at 0x6009 with 0x6008's byte landed is said to
   be a command that was acked and lost, since 0x6008's goes out after it, but only if `sep_ro=1`'s own
   reading takes 0x6008's byte: one that is NOT READ for what is beside it is evidence of nothing. And the gate byte's own line (0x6016) gives

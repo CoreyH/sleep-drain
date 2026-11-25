@@ -69,6 +69,36 @@ SECOND_39 = "RTC second at the replay's start (K1): 112659, 130 s before now (11
 A_SECOND = b"\x01\x00"  # 0x6012-0x6013 as the upper bytes of the fixtures' second, 112659: no marker
 
 
+# results/m1-run7-20261109/crumbs.txt, as archived on 2026-11-09: a position=1 run's record and what m1-crumbs said of it then.
+# Here as text because the mutants' copy of the tree has no results/; sep_ro_tests() checks it against the file where that is there.
+RUN7_ARCHIVE = [
+    '0x6000: 00 30 00 50 c5 ff 10 ff  00 00 00 00 00 00 00 00',
+    '0x6010: c0 30 14 dd b0 8e bd 00  00 00 00 00 00 00 00 00',
+    'boot stage 0x6001 = 0x30 (0x30 after a boot); boot-error stage 0x6003 = 0x50 (the stage the last unclean end found; sticky, so it says nothing about this boot by itself; this boot\'s journal says, macsmc-reboot\'s "PMU logged N boot error(s)")',
+    'stage 0x6004 = 0xc5 (pmp_out=1: bit 7, so the stage is 0x45) (pmgr_late=1): position=1: the samples recorded, CPU0 had nothing pending just before its acks and its deep WFI',
+    '  (the last breadcrumb that reached the PMU: the run got at least that far)',
+    "0x6015 = 0x8e: K4 ran: the idle pair returned 0, CPU_STATUS read non-zero by macOS's mask (low bits 10; the load log has the awake value), and RUN read 1 before its clear and reads 0 after the write: the PMP's CPU is stopped",
+    'read off after the release (0x6005 = 0xff, up to 10 ms each): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7',
+    "0x6005 bit 0: SIO_CPU's bits 27:24 read f at entry 61's wait, the reference for its class",
+    "0x6006 = 0x10: macOS's waits that timed out after 10 ms: DISPLAY's power-down (58)",
+    'wrote their stop bit and held (0x6007 = 0xff): CPU1,CPU2,CPU3,CPU4,CPU5,CPU6,CPU7',
+    '0x6007 bit 0 (sio_on=1): ps_sio, UART_P and SPI_P all read actual f within 10 ms',
+    "RTC second just before the commit, from its low two bytes and the run's alarm: 274624, 189 s before now (274813)",
+    "0x6014 = 0xb0: CPU0 had nothing pending before the commit; PCPM0 off after the release, PCPM1 off after the release; WD1 was off; K3's kernel-path write after slpa worked",
+    'position sample 1 (0x6012 = 0x14, 0x6013 = 0xdd):',
+    "  PHASE 0x4 (the entry pair's first (A2)); HS_A bit 31 up, bit 24 clear; state word 0xa03 (a sequence's start)",
+    "  SIO_CPU: another target, bits 27:24 f, actual f; WD2 RESET_EN set; WD2's count within 0.25 s of CPU0's time since the first commit write",
+    '  gate words: 0x2922c0044 bit 2 clear, bit 3 set; 0x2922c0040 bit 1 set',
+    "  one sample by design (pmp_out=1 keeps 0x6015), about 1 s after the commit: it can't tell a stop from slow progress",
+    '  (compare each word with the awake pass, recfg-peek-*-p*/; a word still at its awake value says nothing. PLAN.md has the reading guide)',
+    '0x6016 = 0xbd: every alarm command was acked (no event was set): 0x140c, 0x14c2 = 0, then 0x1401 = 0x41',
+    "the SoC restarted about 31 s after the commit (30.0 to 32.0 s: the PMU's RTC counts whole seconds); its counter (CNTVCT) is 158.0 s old. Right only in the first boot after the run",
+    'PMU alarm: 0x1401 = 0x41 (armed, fires in 3411 s), 0x140c = 278224, 0x14c0 event 0x00, 0x14c2 mask 0x00',
+    "  0x140c is the commit's second + 3600, as the run wrote it",
+    '  the armed alarm survived the reset',
+]
+
+
 def fake(path, scratch, rtc_secs=5000, alarm=(0, 0, 0, 0)):
     """alarm: 0x1401, 0x140c (the compare value), 0x14c0, 0x14c2."""
     b = bytearray(0xffff)
@@ -8687,7 +8717,7 @@ def wake_all_tests(g, src):
         # The cross-recipe case (Pullfrog on #127): a wake_all=1 run's byte or mark left uncleared, then a run of the same family
         # without wake_all=1. Its K1 zeroes the seven (above), so its later stages show nothing of the earlier run.
         crossed = [wdec(started[("plain", l)][8:0x0f], stage) for l in (f0, mark) for stage in (0xb9, 0x9b, 0x99)]
-        check(all(rc == 0 and "wake_all" not in o and "0x6008-0x600e" not in o for rc, o, _, _, _ in crossed)
+        check(all(rc == 0 and "wake_all" not in o and "0x6008-0x600e = " not in o for rc, o, _, _, _ in crossed)
               and all(started[("plain", l)][8:0x0f] == bytes(7) for l in (f0, mark)),
               "a wake_all=1 byte or mark left uncleared, then a run of the family without wake_all=1: after that run's real K1, its record"
               " under step 7's stage and under --m1-a2-pre's stages says nothing of wake_all=1", crossed[0][1] + crossed[0][2])
@@ -10036,7 +10066,7 @@ def sep_pg_tests(g, src):
         # The cross-recipe case: a sep_pg=1 run's bytes left uncleared, then a run of the family without it. Its real K1 zeroes them.
         crossed = [sdec(started[("plain", l)][8:0x0f], stage) for l in ("f0f8", "marks", "sp", "spmark") for stage in (0xb9, 0x9b, 0x99)]
         wa_next = [sdec(started[("wakeall", l)][8:0x0f], stage) for l in ("f0f8", "sp") for stage in (0xb9, 0x9b)]
-        check(all(rc == 0 and "sep_pg" not in o and "wake_all" not in o and "0x6008-0x600e" not in o for rc, o, _, _, _ in crossed)
+        check(all(rc == 0 and "sep_pg" not in o and "wake_all" not in o and "0x6008-0x600e = " not in o for rc, o, _, _, _ in crossed)
               and all(rc == 0 and "sep_pg" not in o and wa_head + wa_armed in o for rc, o, _, _, _ in wa_next),
               "a sep_pg=1 run's byte or mark left uncleared, then a run of the family without it: after that run's real K1 its record says"
               " nothing of sep_pg=1, under step 7's stage and --m1-a2-pre's; and a wake_all=1 run after it shows its own mark and nothing"
@@ -11154,7 +11184,7 @@ def disp_hs_tests(g, src):
         # The cross-recipe case: a disp_hs=1 run's bytes left uncleared, then a run of the family without it.
         crossed = [ddec(started[("plain", l)][8:0x0f], stage) for l in ("all", "marks", "dh", "dhmark") for stage in (0x84, 0xb9, 0x9b)]
         sp_next = [ddec(started[("seppg", l)][8:0x0f], stage) for l in ("all", "dh") for stage in (0xb9, 0x9b)]
-        check(all(rc == 0 and "disp_hs" not in o and "sep_pg" not in o and "wake_all" not in o and "0x6008-0x600e" not in o for rc, o, _, _, _ in crossed)
+        check(all(rc == 0 and "disp_hs" not in o and "sep_pg" not in o and "wake_all" not in o and "0x6008-0x600e = " not in o for rc, o, _, _, _ in crossed)
               and all(rc == 0 and "disp_hs" not in o and "sep_pg=1 was set" in o for rc, o, _, _, _ in sp_next),
               "a disp_hs=1 run's record or mark left uncleared, then a run of the family without it: after that run's real K1 its record"
               " says nothing of disp_hs=1, under K3b's stage, step 7's and --m1-a2-pre's; and a sep_pg=1 run after it shows its own mark and"
@@ -12110,7 +12140,8 @@ def sep_ro_tests(g, src):
         direct = {r_: "\n".join(fam_lines(0x39, r_)) for r_ in (bad_r + bytes(3), bytes((0x88, 0x02)) + bytes(5), bytes((0x88, 0x02, 0, 0, 0, 0, 0x80)),
                                                                  bytes((0x10, 0x02, 0, 5, 0, 0, 0)))}
         check(all(o[0] == 0 and SRO_HEAD + notread in o[1] and evid not in o[1] and "low nibble read" not in o[1] for o in (o39, o39s, od5))
-              and sp_head + armed_sp + EARLY_ACKED.format(0x39) + beside in o39[1]
+              and sp_head + armed_sp + early.format(0x39) + fault_sp + beside in o39[1] and "AMBIGUOUS, and 0x6012-0x6013 are read as none of the three" in o39[1]
+              and "ps_words=1 wrote" not in o39[1] and "the steps before the commit" not in o39[1] and "landed (0x6013 has their marker)" not in o39[1]
               and sp_head + armed_sp + early.format(0x39) + fault_sp + beside in o39s[1]
               and sp_head + armed_sp + later.format(0x55) + beside in od5[1]
               and oe[0] == 0 and evid not in oe[1] and "0x600e = 0x80" in oe[1] and "NOT READ" in oe[1]
@@ -12121,26 +12152,119 @@ def sep_ro_tests(g, src):
               and "    step7 = r[1] & 0xf if sp and r[1] & SP_MARK and not other else None\n    pre7 = r[0] & 0xf if sro and r[0] != SRO_ARMED and not other else None\n" in tool,
               "0x6008 as evidence for 0x6009's reading only when sep_ro=1's own reading takes it. The reviewer's record, 88 02 00 05 00 00 00"
               " under stage 0x39: 0x6008's sample is NOT READ for the bytes at 0x600a, and sep_pg=1's mark is no longer said to have been"
-              " acked because 0x6008's byte landed: it is said with what 0x6013's marker shows (the fixture's), with what the stage"
-              " allows when a second is there, and with the later stage under 0xd5; the same with 0x600e not 0. With nothing beside"
+              " acked because 0x6008's byte landed, nor because 0x6013 has a marker's value (the seven bytes, not read whole, don't"
+              " show the recipe, and 0x6012-0x6013 are AMBIGUOUS): it is said with what the stage allows, there and when a second is"
+              " there, and with the later stage under 0xd5; the same with 0x600e not 0. With nothing beside"
               " the two the byte at 0x6008 is read and is evidence, as before. disp_hs=1's reading takes the two step-7 samples the same"
               " way, only with nothing beside them that isn't read", o39[1] + o39[2] + o39s[1] + od5[1] + good[1] + str(direct))
-        ll_ = g["later_landed"]
-        at = lambda four: bytes(0x10) + four + bytes(12)
-        check(ll_(0x39, at(b"\x13\xb8\xff\x9f"), 112789) and ll_(0x39, at(b"\x13\xb8\xff\x9f")) and ll_(0x39, at(b"\x13\xb8\xff\x9f"), 0x9fffb812)
-              and not ll_(0x39, at(b"\x13\xb8\xff\x9f"), 0x9fffb813) and not ll_(0x39, at(b"\x13\xb8\xff\x9f"), 0xa0000000)
+        ll_, amb = g["later_landed"], g["step7_ambiguous"]
+        mk = b"\x13\xb8\xff\x9f"
+
+        def at(four, r=b"\x88\xfc"):
+            """A record with these four bytes at 0x6010 and r at 0x6008: sep_ro=1's and sep_pg=1's bytes unless told otherwise."""
+            return bytes(8) + r + bytes(8 - len(r)) + four + bytes(12)
+
+        fam = (b"\x88\xfc", b"\x10\x02", b"\x00\x02", b"\x00\xf8", b"\xf0", b"\x20", b"\x00\x00\x01", b"\x10\x02\x01", b"\x00\x00" + REC,
+               b"\x88\xfc" + REC)
+        notfam = (b"", b"\x88\xfc\x00\x05", b"\x88\x02\x00\x05", bytes(6) + b"\x80", b"\x88\xfc\x00\x00\x00\x00\x80", b"\xf8", b"\x40", b"\x04",
+                  b"\x00\x7f", b"\x05", b"\x00\x00\xe8\xc8\xe8\x98")
+        check(ll_(0x39, at(mk), 112789) and ll_(0x39, at(mk)) and ll_(0x39, at(mk), 0x9fffb812)
+              and not ll_(0x39, at(mk), 0x9fffb813) and not ll_(0x39, at(mk), 0xa0000000)
               and not ll_(0x39, at(b"\x13\xb8\x01\x00"), 112789) and not ll_(0x39, at(b"\x13\xb8\xff\x00"), 112789)
               and not ll_(0x39, at(b"\x13\xb8\xff\xa0"), 112789) and not ll_(0x39, at(b"\x13\xb8\xff\x3f"), 112789)
               and all(ll_(0x39, at(bytes((0x13, 0xb8, 0xff, m_))), 112789) for m_ in (0xa5, 0xc0, 0xff, 0x40, 0x7f, 0x80, 0x9f))
-              and not any(ll_(st, at(b"\x13\xb8\xff\x9f"), 112789) for st in (0x38, 0x37, 0x28, 0x02, 0x01, 0x00, 0x4b, 0x55, 0x54))
-              and "    return s == WA_STEP7 and fab_landed(b) and (now is None or int.from_bytes(b[0x10:0x14], \"little\") > now)\n" in tool
-              and "        if later_landed(s, b, now):\n" in tool and "            out += k_lines(b)\n        elif base >= 0x01 and secs:\n" in tool
-              and "        out += ll_lines(s, b, now)\n" in tool and tool.count("later_landed(s, b") == 3,
-              "later_landed(): the record shows a later command landed only under step 7's own stage, with one of the outcomes' markers"
-              " at 0x6013 (0xa5, 0x40 to 0x7f, 0x80 to 0x9f, 0xc0 and up) and with 0x6010-0x6013 no second the run can have had, one"
-              " later than the RTC's now: not with a second there, not with 0x6013 0, 0x3f or 0xa0, not when the four bytes could be a"
-              " second (now at or past them), and under no other stage. decode() reads the two bytes as the outcomes exactly then, and"
-              " hands the same answer to the lines for 0x6008-0x600e")
+              and not any(ll_(st, at(mk), 112789) for st in (0x38, 0x37, 0x28, 0x02, 0x01, 0x00, 0x4b, 0x55, 0x54))
+              and all(ll_(0x39, at(mk, r_), 112789) is True for r_ in fam)
+              and not any(ll_(0x39, at(mk, r_), 112789) or ll_(0x39, at(mk, r_)) for r_ in notfam)
+              and not ll_(0x39, at(b"\xc0\x30\x14\xdd", b""), 274813) and not ll_(0x39, at(b"\xc0\x30\x14\xdd", b""))
+              and "    return (s == WA_STEP7 and fab_landed(b) and bool(fam_clear(s, b[8:0x0f]))\n"
+                  "            and (now is None or int.from_bytes(b[0x10:0x14], \"little\") > now))\n" in tool
+              and "        if later_landed(s, b, now):\n" in tool and "            out += k_lines(b)\n        elif step7_ambiguous(s, b, now):\n" in tool
+              and tool.count("out += k_lines(b)\n") == 2
+              and "        out += ll_lines(s, b, now)\n" in tool and tool.count("later_landed(s, b") == 4
+              and "\tif (sio_stop && (!hold_nowatch || !disp_off || !one_commit || !smc_idle || position)) {\n" in src
+              and all(rule in src for rule in ("\tif (ps_words && !sio_stop) {\n", "\tif (wd2_bite && (!ps_words || recfg_bite)) {\n",
+                                               "\tif (cluster_ack && (!wd2_bite || !pmp_stop)) {\n", "\tif (fabric_up && !cluster_ack) {\n",
+                                               "\tif (wd1_mark && !fabric_up) {\n", "\tif (gates_mark && (!wd1_mark || probe)) {\n",
+                                               "\tif (wake_all && (!gates_mark || observe)) {\n", "\tif (sep_pg && (!gates_mark || observe)) {\n",
+                                               "\tif (sep_ro && (!sep_pg || wake_all)) {\n", "\tif (disp_hs && (!disp_off || !gates_mark || observe)) {\n",
+                                               "\tif (position && (!hold || hold_nowatch || (pmp_out && !sio_on))) {\n",
+                                               "\tsmp_store_release(&m1_release, 1);\n\tm1_clean(&m1_release);\t/* store + clean + dsb: the form CPU7's go took after the commit in runs 2 and 3 */\n\tif (hold_nowatch)\n\t\treturn;\n",
+                                               "\tif (!ret && !wake_all && !last_look && !observe)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n",
+                                               "\tif (!ret && wake_all) {\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n",
+                                               "\tif (!ret && last_look)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n",
+                                               "\tif (!ret && observe)\n\t\tret = m1_kwrite(LL_AT, zero, LL_N);\n")),
+              "later_landed(): the record shows a sio_stop=1 run's outcomes after a stage that wasn't kept only under step 7's own stage,"
+              " with one of the outcomes' markers at 0x6013 (0xa5, 0x40 to 0x7f, 0x80 to 0x9f, 0xc0 and up), with 0x6010-0x6013 no"
+              " second the run can have had (later than the RTC's now), AND with 0x6008-0x600e showing the recipe: a byte or K1's"
+              " mark of wake_all=1, sep_ro=1, sep_pg=1 or disp_hs=1, read whole (ten such records), and not with the seven zero, with"
+              " a field no such run leaves beside the byte, with a byte e1_hook never writes, or with another recipe's mark (eleven):"
+              " a marker's value alone, as run 7's position sample 14 dd has, is never enough. What the rule rests on is pinned in"
+              " e1_hook.c: the chain of parameter rules from each of the four options to sio_stop=1, sio_stop=1 never with position=1"
+              " and only with hold_nowatch=1, under which the hold path returns before it writes, and K1 zeroing the seven bytes in"
+              " every run. decode() reads the two bytes as the outcomes exactly then")
+        check(all(amb(0x39, at(mk, r_), 112789) for r_ in notfam) and amb(0x39, at(b"\xc0\x30\x14\xdd", b""), 274813)
+              and amb(0x39, at(b"\x13\xb8\xfe\x00", b""), 112789) and amb(0x39, at(b"\x13\xb8\xff\x00"), 112789)
+              and not any(amb(0x39, at(mk, r_), 112789) for r_ in fam) and not amb(0x39, at(b"\x13\xb8\x01\x00", b""), 112789)
+              and not amb(0x39, at(mk, b""), 0x9fffb813) and not amb(0x39, at(b"\x00\x00\x00\x00", b""), 112789)
+              and not any(amb(st, at(mk, b""), 112789) for st in (0x38, 0x37, 0x45, 0x5c, 0x4b, 0x55, 0x02, 0x00))
+              and "    return s == WA_STEP7 and int.from_bytes(b[0x10:0x14], \"little\") > now and not later_landed(s, b, now)\n" in tool,
+              "step7_ambiguous(): under step 7's own stage, with 0x6010-0x6013 no second the run can have had and the outcomes not"
+              " shown (the recipe not shown, or no marker): the two bytes are some later command's and nobody's in particular. Not"
+              " when the outcomes are shown, not with a second or zeros there, and under no other stage")
+        # Pullfrog on #134: run 7's archived record, a position=1 run's, whose first sample at 0x6012-0x6013 is 14 dd, a marker's value.
+        arch = RUN7_ARCHIVE
+        arch_file = os.path.join(os.path.dirname(HOOK), "..", "results", "m1-run7-20261109", "crumbs.txt")
+        arch_same = not os.path.exists(arch_file) or open(arch_file).read().splitlines() == arch
+        run7 = bytes.fromhex(arch[0][8:].replace(" ", "")) + bytes.fromhex(arch[1][8:].replace(" ", ""))
+
+        def adec(stage=None, up=None, r=b""):
+            sc = bytearray(run7)
+            sc[4] = sc[4] if stage is None else stage
+            sc[0x12:0x14] = sc[0x12:0x14] if up is None else up
+            sc[8:8 + len(r)] = r
+            fake(path, bytes(sc), rtc_secs=274813, alarm=(0x41, 278224, 0, 0))
+            p_ = run(path, cnt="3792000000 24000000")
+            return p_.returncode, p_.stdout + p_.stderr
+
+        AMB = ("0x6010-0x6013 = {}: not one RTC second this run can have had (it would be {}, later than now, 274813). Step 7's stage is every"
+               " hold=1 recipe's, and three of them write 0x6012-0x6013 after a later stage: position=1 its first sample, the plain hold path"
+               " its release masks, a sio_stop=1 run the steps' outcomes{}. 0x6008-0x600e don't show which this run was (no byte or mark, read"
+               " whole, of an option that loads only with gates_mark=1): AMBIGUOUS, and 0x6012-0x6013 are read as none of the three\n")
+        MARKER = " (0x6013 has one of their markers' values, which a sample or a mask can have too)"
+        decoded = ("ps_words=1 wrote", "the steps before the commit", "position sample", "the cores that took the release", "RTC second at", "RTC second just",
+                   "was acked", "landed (0x6013")
+        whole = adec()
+        moved = {st: adec(st) for st in (0xb9, 0x39)}
+        masks = {(st, up): adec(st, up) for st in (0xb9, 0x39) for up in (b"\xfe\x00", b"\xfe\x40", b"\x00\xfe")}
+        second = adec(0xb9, b"\x04\x00")
+        gone = [l for l in arch if l + "\n" not in whole[1]]
+        check(arch_same and len(arch) == 24 and whole[0] == 0 and gone == ["  (compare each word with the awake pass, recfg-peek-*-p*/; a word still at its awake value says nothing. PLAN.md has the"
+                                         " reading guide)"]
+              and "position sample 1 (0x6012 = 0x14, 0x6013 = 0xdd):\n" in whole[1] and "AMBIGUOUS" not in whole[1] and "ps_words=1 wrote" not in whole[1]
+              and "RTC second just before the commit, from its low two bytes and the run's alarm: 274624, 189 s before now (274813)\n" in whole[1]
+              and all(rc_ == 0 and AMB.format("c0 30 14 dd", 0xdd1430c0, MARKER) in o and not any(t_ in o for t_ in decoded) for rc_, o in moved.values())
+              and all(rc_ == 0 and AMB.format("c0 30 " + up.hex(" "), int.from_bytes(b"\xc0\x30" + up, "little"), MARKER if up[1] else "") in o
+                      and not any(t_ in o for t_ in decoded) for (st, up), (rc_, o) in masks.items())
+              and second[0] == 0 and "RTC second at the replay's start (K1): 274624, 189 s before now (274813)\n" in second[1] and "AMBIGUOUS" not in second[1],
+              "the three recipes that write 0x6012-0x6013 after step 7's stage. Run 7's archived record, a position=1 run's with the"
+              " sample 14 dd, as it is (the archive's text is in this file, and is the file's where results/ is there): every line of"
+              " the archive but one hint reworded since is still printed, the sample read as"
+              " the sample. The same record with only the stage changed to 0xb9, and to 0x39: AMBIGUOUS, with the note that 0x6013"
+              " has a marker's value which a sample can have too; no ps_words=1 outcomes, no steps before the commit, no sample, no"
+              " mask, no second, nothing said to have been acked. The plain hold path's release masks there (fe 00, fe 40, 00 fe)"
+              " under both: AMBIGUOUS the same way. And a second there: read as the second it is",
+              whole[1] + moved[0xb9][1] + masks[(0x39, b"\xfe\x40")][1] + str(gone))
+        plain = rdec(bytes(7), 0xb9)
+        shown = rdec(b"\x88\xfc", 0xb9)
+        check(plain[0] == 0 and "AMBIGUOUS, and 0x6012-0x6013 are read as none of the three" in plain[1] and MARKER in plain[1]
+              and not any(t_ in plain[1] for t_ in decoded) and "0x6008-0x600e = " not in plain[1]
+              and shown[0] == 0 and "AMBIGUOUS" not in shown[1] and OUTCOMES_39.format("13 b8 ff 9f", 0x9fffb813) in shown[1]
+              and "0x6013 = 0x9f: ps_words=1 wrote the 20 power words" in shown[1] and shown[1].count(STEP7_ACKED) == 2,
+              "a gates_mark=1 run with none of the four options under step 7's stage, 0x6008-0x600e zero and the outcomes' marker at"
+              " 0x6013: not told from a position=1 or a plain hold run, AMBIGUOUS, the outcomes not read. With sep_ro=1's and"
+              " sep_pg=1's bytes there: the run is one that sends outcomes, and they are read, as before",
+              plain[1] + shown[1])
         rc, out, err, _, _ = rdec(b"\x10\x02" + REC)
         rc2, out2, err2, _, _ = rdec(b"\x10\xfc" + REC)
         check(rc == 0 and "disp_hs=1's record" in out and "    after dispext0's place, the second (0x600b bits 7:4): 0xc, bit 2 set\n  the first of these samples" in out
