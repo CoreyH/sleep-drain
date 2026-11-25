@@ -5533,16 +5533,23 @@ New in the boot: `apple_sep` bound, its store opened read-only.
 **Checked.** Built by a subagent from a written brief and three amendments (Pullfrog's passes on the plan,
 #133), then read here. Reviewed twice on #134: Pullfrog (the proof bound to the device, `pw_noread=1`'s
 refusals, the inherited parameters, and in two passes what the decoder may say under stage 0x39: only that
-it is the last stage the record kept, and that a later command was acked where 0x6012-0x6013 carry the
-outcomes' marker, which `decode()` now reads as outcomes there and not as K1's second; and 0x6008 counts
-as evidence about 0x6009's command only where the decoder itself reads it) and one adversarial pass by a
+it is the last stage the record kept, and that a later command was acked only where 0x6012-0x6013 carry
+the outcomes' marker, 0x6010-0x6013 are no second the run can have had, and 0x6008-0x600e show a
+`gates_mark=1`-family run (a byte or K1's mark of `wake_all=1`, `sep_ro=1`, `sep_pg=1` or `disp_hs=1`, read
+whole: those load only down the chain to `sio_stop=1`, never with `position=1`, and K1 zeroes the seven in
+every run since #127). Without that the four bytes are AMBIGUOUS and read as no recipe's: 0x39 is every
+`hold=1` recipe's stage, and `position=1`'s sample and the plain hold path's masks go to the same two bytes
+(the third pass, on the second's fix). And 0x6008 counts as evidence about 0x6009's command only where the
+decoder itself reads it. Left as it was, older than this branch: under 0x39 a `last_look=1` run's byte at
+0x6008 (bit 7) would be labelled as one of the newer options') and one adversarial pass by a
 subagent, which couldn't get a run armed with a writable store and found the decoder saying "`a2_pre=1` is
 next" for this run's record (fixed) and the byte order (changed). After those fixes (2026-11-25):
-`tests/m1_crumbs_test.py` 1,677 ok; `tests/safe_boot_boot_test.py` 273 ok; `tests/e1a_launcher_test.py` 506
+`tests/m1_crumbs_test.py` 1,680 ok; `tests/safe_boot_boot_test.py` 273 ok; `tests/e1a_launcher_test.py` 506
 ok for `--m1-sep-ro`, `--m1-sep-pg` and `--m1-disp-hs` (the launcher wasn't changed by the fixes; its full
-test, 3,444 ok, was the day before); the other test files pass. Mutants: none stale of 1,708; the 234 that
-bear on the first round's changes and the 40 on the second's all caught, none by a build failure only; the
-rest not run again. The
+test, 3,444 ok, was the day before); the other test files pass. Mutants: none stale of 1,719; the 234 that
+bear on the first round's changes, the 40 on the second's and the 32 on the third's all caught, none by a
+build failure only; the rest not run again. The 68 archived records under `results/` decode as they did
+before the third round's change. The
 launcher's line was also walked through `e1_check_params()` by hand: it differs from `--m1-disp-hs`'s, which
 loaded on 11-24, by `a2_pre` off (no rule needs it on) and the two new options, whose rules it meets.
 Not checked by anything here: the attribute's value with writes off; that kmod hands the command line's
