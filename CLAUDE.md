@@ -66,7 +66,11 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   collect` puts it in place after the next regular boot. `boot --no-sep` selects
   a second entry, the same with `apple_sep` on the kernel's module blacklist,
   so that Linux never starts the Secure Enclave in that boot: for a run that lets the SoC go down around the
-  enclave, whose store (xART) the read-only root doesn't cover. The regular
+  enclave, whose store (xART) the read-only root doesn't cover. `boot --sep-ro`
+  selects a third, with `apple_sep.xart_writes=0 apple_sep.provision_keybag=0`:
+  the driver loads and opens the store read-only (its `diag/xart` then reads
+  "disabled", the only proof taken), for a run that needs the enclave gated;
+  the fingerprint sensor is left alone in that boot. The regular
   initramfs never gets the hook. The sleep log's `pre` line says `safe=yes`
   for a sleep in a safe boot.
 - `sleep-drain-reading`: idle battery readings that can span a reset (E1's
@@ -116,7 +120,7 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   out-of-tree module (`make -C e1-hook`) that runs at the end of a suspend's noirq pass and, with
   `replay=15`, replays macOS's sleep entry for good: the Mac resets or stays dark, and never wakes.
   `run-floor` is its launcher, one option per rung, each rung adding to the one before
-  (`--m1-disp-hs` is the latest); `m1-crumbs` reads the record a run leaves in the PMU after the
+  (`--m1-sep-ro` is the latest); `m1-crumbs` reads the record a run leaves in the PMU after the
   restart, and `--clear` zeroes it. `probe` is the one launcher that isn't one-way: it loads the module
   with `probe=1`, which reads three coprocessor words in the recipe's state and fails the suspend, so
   the Mac is meant to come back (it didn't: with two firmwares stopped the kernel doesn't resume);
@@ -169,7 +173,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   since 2026-11-06. Pass the full head SHA to `--match-head-commit`. Anything
   posted outside this repo still needs Corey's OK each time.
 - Nothing is live until it's installed: after merging, run
-  `pkexec bash install.sh` (root only through pkexec; from an agent session,
+  `pkexec bash /home/corey/src/sleep-drain/install.sh` (by its full path:
+  pkexec doesn't start in the repo; root only through pkexec; from an agent session,
   only while the Omarchy shell is healthy, or the polkit prompt never shows).
 - Experiment flags are machine state, not code. Say in the PR or in
   RESEARCH.md which flags a night ran with.

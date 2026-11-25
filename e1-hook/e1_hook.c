@@ -107,6 +107,7 @@
  *   pkexec e1-hook/run-floor --m1-ll-retn         (--m1-atc-down's and ll_retn=1: RESEARCH.md, "The desk step of 2026-11-20")
  *   pkexec e1-hook/run-floor --m1-sep-pg          (--m1-a2-pre-blink's and sep_pg=1: the same, or dark for good if the entry completes)
  *   pkexec e1-hook/run-floor --m1-disp-hs         (--m1-sep-pg's and disp_hs=1: the same)
+ *   pkexec e1-hook/run-floor --m1-sep-ro          (--m1-disp-hs' without a2_pre=1, with sep_ro=1 and pw_noread=1: the same)
  *   pkexec e1-hook/probe                          (--m1-mark's parameters and probe=1: no replay; meant to come back, and didn't)
  *   pkexec e1-hook/probe --look                   (the same and look=1: nothing stopped, nothing written, only read)
  *   pkexec e1-hook/probe --gate                   (--look's and gate=1: six power words changed and put back, the SIO gate watched)
@@ -120,8 +121,11 @@
 #include <linux/cpumask.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/gfp.h>
 #include <linux/io.h>
 #include <linux/kallsyms.h>
+#include <linux/kernfs.h>
+#include <linux/kobject.h>
 #include <linux/kprobes.h>
 #include <linux/mfd/macsmc.h>
 #include <linux/minmax.h>
@@ -137,6 +141,7 @@
 #include <linux/soc/apple/rtkit.h>
 #include <linux/string.h>
 #include <linux/suspend.h>
+#include <linux/sysfs.h>
 #include <linux/time64.h>
 #include <linux/trace_clock.h>
 #include <clocksource/arm_arch_timer.h>
@@ -416,6 +421,12 @@ MODULE_PARM_DESC(wake_all, "With gates_mark=1, never with observe=1: in step 7 a
 static bool sep_pg;
 module_param(sep_pg, bool, 0444);
 MODULE_PARM_DESC(sep_pg, "With gates_mark=1, never with observe=1: in step 7, after the AP wake-mask words, CPU0 clears bit 2 of the PMGR control word 0x28e0cc200, the bit that makes the S2R sequencer wait for the SEP to power-gate (Ante042's T6000_PMGR_SEP_PG and PMGR_WAIT_SEP_PG; set at boot): one write, made only if the bit reads set and the SEP's power word (0x28e580c00) reads actual state 0, of the word as found less that bit. CPU0 then reads the word again and 0x2922c0044, and after step 8's record sends one byte to the PMU's 0x6009 (last_look.h). A PMGR register, not a write to the SEP; a restart undoes it. A Mac whose entry completed isn't known to wake by itself, and comes back by holding the power button");
+static bool sep_ro;
+module_param(sep_ro, bool, 0444);
+MODULE_PARM_DESC(sep_ro, "With sep_pg=1, never with wake_all=1: a run made with the SEP's driver in the boot, its store read-only (run-floor --m1-sep-ro). The load and the first suspend's prepare then don't refuse a driver bound to the SEP's device, if the binding itself says its store is read-only: the attribute diag/xart of every apple,sep device with a driver, at least one, asked of the device itself under its lock (a driver named apple_sep, the attribute found through the device's own sysfs node, its show called), has to say exactly \"disabled\". Without that the load refuses and the prepare calls the replay off. Each also polls the SEP's power word 0x28e580c00 for actual state 0, up to 5 s: the load refuses and the prepare calls the replay off if it never reads 0. Step 7 has no wait: it checks the word once, as sep_pg=1 does, clears the wait bit only if it reads off, and also reads 0x2922c0044 right before that decision; its nibble goes to 0x6008 after step 8's record (last_look.h)");
+static bool pw_noread;
+module_param(pw_noread, bool, 0444);
+MODULE_PARM_DESC(pw_noread, "With ps_words=1 and atc_down=1, never with sio_down=1, pcie_down=1, last_look=1 or probe=1, which read them: the four fabric-group power words (PCIE0_REF 0x28e080138, APCIE_GP_SYS 0x28e080320, AFNC1_LW2 0x28e080220, AFNC2_LW1 0x28e580160) are written as before and not read back, in step 5 or after it: m1_pw_write() leaves their read-back out, and gates_mark=1's reads in step 8 leave out AFNC2_LW1. 0x6013's top bits are then 0x80 with the fabric group's bit clear, and 0x6016's bit 6 is clear: not read");
 static bool disp_hs;
 module_param(disp_hs, bool, 0444);
 MODULE_PARM_DESC(disp_hs, "With disp_off=1 and gates_mark=1, never with observe=1: in K3b, for each DCP that stopped, the set-up table and the fabric handshake Ante042's driver makes on the display's fabric block (0x38c000000 for disp0, 0x28a000000 for dispext0) around the power-down of its CPU0 word: the table's 65 writes if the FE power word reads powered, then, after the CPU0 word, block + 0x8014 := 1 and block + 0x82bc := 1, 2, 4 if it still does. 0x2922c0044 is read before K3b, after each table and after each DCP, and four bytes go to the PMU's 0x600a-0x600d (last_look.h). Like sep_pg=1 it refuses to load, and calls its replay off at the suspend's prepare, while a driver is bound to the SEP's device. A write to a block that has lost its power faults and panics: the FE reads are the guard");
@@ -765,6 +776,8 @@ static void m1_dcp_shutdown(void);
 static void m1_sio_fw_stop(void);
 static void m1_probe_prepare(void);
 static bool m1_sep_bound(bool locked);
+static bool m1_sro_wait(u32 *last);
+static bool m1_sro_proof(const char **why, bool wait);
 
 /*
  * sep_pg=1 and disp_hs=1, at the first suspend's prepare, before the DCPs' shutdown or anything else that is one-way:
@@ -773,10 +786,34 @@ static bool m1_sep_bound(bool locked);
  * becomes 2, so that this prepare stops no firmware, and prepare_late fails the suspend with -EIO and the Mac wakes with
  * this log. Nothing has been written to any register or to the PMU by then: K1 is prepare_late's. Returns whether it
  * called the replay off.
+ * sep_ro=1: the driver is meant to be bound, and what is asked is whether the binding there now says its store is read-only,
+ * as at the load (m1_sro_proof(): a driver rebound with writes on since then says "enabled"), with each device's lock
+ * tried and not waited for here: a lock that is held is no proof. Without that proof the replay is called off the same way. Then the SEP's power word, as at the load: up to 5 s for it to read actual state 0
+ * (m1_sro_wait(); this is process context, and may sleep). An enclave that still reads powered then calls the replay off
+ * too: step 7 would only leave the wait bit.
  */
 static bool m1_sep_recheck(unsigned int n)
 {
-	if (!(sep_pg || disp_hs) || n != 1 || READ_ONCE(replay_done) || !m1_sep_bound(false))
+	const char *why;
+	u32 v;
+
+	if (!(sep_pg || disp_hs) || n != 1 || READ_ONCE(replay_done))
+		return false;
+	if (sep_ro) {
+		if (!m1_sro_proof(&why, false)) {
+			WRITE_ONCE(replay_done, 2);
+			pr_emerg("replay: called off at prepare: the SEP's driver doesn't show its store read-only now: %s; nothing stopped, nothing written, nothing sent\n",
+				 why);
+			return true;
+		}
+		if (m1_sro_wait(&v))
+			return false;
+		WRITE_ONCE(replay_done, 2);
+		pr_emerg("replay: called off at prepare: the SEP's power word still reads powered (%08x) after %u ms; nothing stopped, nothing written, nothing sent\n",
+			 v, SRO_WAIT_MS);
+		return true;
+	}
+	if (!m1_sep_bound(false))
 		return false;
 	WRITE_ONCE(replay_done, 2);
 	pr_emerg("replay: called off at prepare: a driver is bound to the SEP's device now; nothing stopped, nothing written, nothing sent\n");
@@ -1869,6 +1906,90 @@ static void e1_after_slpa(void)
  * The stage and the marks are the last record that landed: K3b's commands
  * go through the kernel's path, where a failure stops nothing after it.
  *
+ * sep_ro=1 (run-floor --m1-sep-ro; with sep_pg=1, never with wake_all=1) is
+ * the tenth run's: the enclave's driver is in the boot, its store read-only
+ * (last_look.h has why, the evidence and the byte). The launcher shows that
+ * before it loads the module, and the module doesn't take its word: sep_ro=1
+ * opts in and proves nothing. With it m1_init() doesn't refuse a driver bound
+ * to the SEP's device and m1_sep_recheck() doesn't call the replay off for
+ * one, but each asks m1_sro_proof() first, and without its yes the load is
+ * refused and the replay called off, as for a bound driver without sep_ro=1.
+ * The proof is the current binding's own status: the SEP device's sysfs
+ * attribute diag/xart, which omacom's driver registers at probe from the mode
+ * its store was opened in and removes at unbind. m1_sro_xart() asks it of the
+ * device itself, not of a path (a path is resolved in the task's own view of
+ * the filesystem, and proves nothing about whose bytes come back; Pullfrog on
+ * #134). For every device under an "apple,sep" node, under the device's lock
+ * (waited for at the load, only tried at the prepare): a driver has to be
+ * bound and its name has to be exactly apple_sep, the name the launcher goes
+ * by; the device's own node in sysfs (dev->kobj.sd) has to have a directory
+ * "diag" that is an attribute group of the device's own kobject (the driver
+ * imports devm_device_add_group() and nothing of kobjects; a directory that
+ * is a kobject of its own, or anyone else's, is no proof), and in it a file
+ * "xart" of an attribute's size whose node has KERNFS_HAS_SEQ_SHOW, the flag
+ * kernfs sets on a file whose operations have seq_show: sysfs gives those to
+ * a text attribute, and not to a binary one, whose node would carry a struct
+ * bin_attribute this call must never be handed (Pullfrog on #134; without the
+ * flag there is no proof and the show isn't called); and that file's show is
+ * called the way sysfs calls it (the device kobject's sysfs_ops, the driver
+ * core's, with the struct attribute the node carries), into a zeroed page,
+ * since sysfs_emit() wants one. sro_xart_ro() has the comparison: "disabled" and a newline, and
+ * the string's end. There has to be at least one such device; one that has
+ * a driver and doesn't pass, for whatever reason, is no proof for all. The
+ * lock stands in for the active reference a read through sysfs would hold: a
+ * driver is unbound, and what it registered at probe taken away, only under
+ * that lock, so with a driver seen bound under it the nodes and the attribute
+ * they carry stay until it is dropped; the nodes themselves are held by
+ * references of their own, each put back on every way out. It rests on two
+ * things about the driver's show: that it takes no lock of the device's (it
+ * would never return here), and that it reads a flag and touches no hardware
+ * (the device is suspended at the prepare). Both hold for the apple-sep.ko of
+ * 7.2.11-15-1-ARCH by its disassembly (2026-11-24) and by omacom's source
+ * (diag_shim.c: DEVICE_ATTR_RO(xart), a text attribute, as the node's flag
+ * has to say here): xart_show() loads one byte of the
+ * module's own data, picks one of two strings and calls sysfs_emit(), and
+ * the group it is in goes to devm_device_add_group(). A later build of the driver isn't covered by that:
+ * look again after a kernel update. kernfs_find_and_get_ns() and kernfs_put() are exported to GPL
+ * modules; nothing ties an open file to a node for a module, which is why the
+ * file isn't opened at all. At the prepare this runs in the task that asked
+ * for the suspend, which may sleep and allocate there. Without sep_ro=1 both checks
+ * stand as they were. Beside the proof m1_sro_wait() polls the SEP's power word
+ * (0x28e580c00) for actual state 0, up to 5 s, sleeping between reads: at the
+ * load (m1_sp_init() refuses if it never reads 0: the enclave reads powered in
+ * this boot, step 7 would leave the wait bit and the run would learn nothing)
+ * and at the first suspend's prepare, before the DCPs' shutdown (not 0 by
+ * then: replay_done becomes 2, nothing is stopped or written, prepare_late
+ * fails the suspend and the Mac wakes). Step 7 waits for nothing: interrupts
+ * are off there and WD1's marker is armed since step 4, and step 8's look
+ * takes the marker to stand only if its count has run on by no more than 5 s.
+ * m1_sp_clear() reads the SEP's word once and sp_writes() decides, as in every
+ * sep_pg=1 run: a word that reads powered there leaves the bit, and the byte
+ * at 0x6009 says so. One read is new: 0x2922c0044 right before that decision
+ * (it is read right after the control word's read-back in every sep_pg=1 run),
+ * so that the clear lies between two samples; its nibble goes to 0x6008 with
+ * bit 7 (SRO_MARK), in step 8, after that step's record and after 0x6009's
+ * byte, the run's first result, and K1 leaves 0x6008 as SRO_ARMED until then.
+ * No MMIO write is new.
+ *
+ * pw_noread=1 (run-floor --m1-sep-ro; with ps_words=1 and atc_down=1) leaves
+ * out every read of the four fabric-group power words once they are written:
+ * PCIE0_REF (0x28e080138), APCIE_GP_SYS (0x28e080320), AFNC1_LW2 (0x28e080220)
+ * and AFNC2_LW1 (0x28e580160). The reference says of three words of that kind
+ * (0x28e080138, 0x28e080150, 0x28e080320): "reading the three apcie PS words
+ * this late on the way down left the SoC stuck before sleep in 4 runs out of
+ * 4". m1_pw_write() makes the same four writes, each with its dsb, and no
+ * read-back; and gates_mark=1's reads in step 8, which end with AFNC2_LW1,
+ * leave that one out (the six gate words are read as before: they aren't
+ * power words). The loads still read all four awake. 0x6013's top two bits
+ * are then 0x80 (M1_PWN_MARK) in place of atc_down=1's 0x40, with the fabric
+ * group's bit, bit 5, always clear, so that the byte is never M1_K_MARK and a
+ * reader can tell "not read" from "read, and not as written"; 0x6016's bit 6
+ * stays clear, and means nothing in such a run. The other sixteen words and
+ * atc_down=1's six are polled as before. It never loads with an option whose
+ * own steps read one of the four, or APCIE_GP (0x28e080150), after step 5:
+ * sio_down=1, pcie_down=1, last_look=1 (and what builds on it) and probe=1
+ * (m1_pwn_reader()).
+ *
  * sio_down=1 (run-floor --m1-sio-down; with gates_mark=1, never with probe=1) is
  * B2's own switch-off of SIO's subtree, made by CPU0 before the commit, with the
  * gate polled as B2 polls it, and put back (PLAN.md, "The order after the look";
@@ -2312,6 +2433,7 @@ static bool m1_smc_acked;
 #define M1_K_MARK		0xa5	/* 0x6013, with the steps' outcomes at 0x6012 (the m1 comment) */
 #define M1_W_MARK		0xc0	/* ps_words=1: 0x6013's top two bits, in place of M1_K_MARK */
 #define M1_ATC_MARK		0x40	/* atc_down=1: in place of M1_W_MARK */
+#define M1_PWN_MARK		0x80	/* pw_noread=1: in place of M1_ATC_MARK; the fabric group's bit is then never set, so the byte is never M1_K_MARK */
 #define M1_RECFG_STAGE		0x47	/* recfg_bite=1: in place of 0x4f, after the release, with the sample at 0x6005 (the m1 comment) */
 #define M1_RECFG_STAGE_PEND	0x46	/* the same, with an exception pending on CPU0 after the sample's reads */
 #define M1_RECFG_MAP		0x4000	/* the SRAM's start: table A and A2's opening are in it */
@@ -2431,6 +2553,9 @@ static bool m1_pmu_ok(bool write, unsigned int addr, const u8 *b, unsigned int n
 	/* wake_all=1: 0x6008 by itself, and there only K1's mark or the byte, bits 7:6 set and bit 3 clear (wa_ok(); last_look.h). */
 	if (wake_all && addr == LL_AT && one && wa_ok(b[0]))
 		return true;
+	/* sep_ro=1: 0x6008 by itself, and there only K1's mark or the byte, bit 7 set and bits 6:4 clear (sro_ok(); last_look.h). */
+	if (sep_ro && addr == LL_AT && one && sro_ok(b[0]))
+		return true;
 	/* sep_pg=1: 0x6009 by itself, and there only K1's mark or the byte, bit 7 set (sp_ok(); last_look.h). */
 	if (sep_pg && addr == LL_AT + 1 && one && sp_ok(b[0]))
 		return true;
@@ -2497,6 +2622,11 @@ static int m1_pmu_start(void)
 		v = WA_ARMED;
 		if (!ret)
 			ret = m1_kwrite(LL_AT, &v, 1);
+	}
+	/* sep_ro=1: its mark at 0x6008, over the zeros the first clause above has written (it never loads with wake_all=1). */
+	if (!ret && sep_ro) {
+		v = SRO_ARMED;
+		ret = m1_kwrite(LL_AT, &v, 1);
 	}
 	/*
 	 * sep_pg=1: its mark at 0x6009, over the zeros one of the two clauses above has written (it loads with neither
@@ -3249,7 +3379,11 @@ static u8 m1_wa_read(void)
  * as found and the SEP's power word read actual state 0 (sp_writes()): the
  * wait is never cleared while the enclave reads powered; the control word
  * read again; then 0x2922c0044. It returns their byte, which step 8 sends
- * after its own record. One write, the writel() below, to the one address, of
+ * after its own record. sep_ro=1 adds one read, 0x2922c0044 right before the
+ * decision, into m1_sro as sro_byte() makes it, so that the write lies between
+ * two samples of that word in this one interrupts-off stretch; the SEP's word
+ * is read once here with it too, and nothing is waited for: WD1's marker is
+ * armed and counting. One write, the writel() below, to the one address, of
  * the word as found less bit 2: a PMGR register, not a write to the SEP, and
  * a restart undoes it (Corey's OK of 2026-11-23). Two of the reads CPU0 has
  * not made in this state before: the control word and the SEP's power word
@@ -3260,6 +3394,7 @@ static u8 m1_wa_read(void)
  * 0x02 at 0x6009 and a restart about 10 s later, if the panic's restart
  * works.
  */
+static u8 m1_sro;	/* sep_ro=1: 0x2922c0044's nibble right before step 7's write decision, as sro_byte() makes it; step 8 sends it */
 static u8 m1_sp_clear(void)
 {
 	u32 found, back, sep, g44;
@@ -3267,6 +3402,8 @@ static u8 m1_sp_clear(void)
 	/* Each read into its own variable, in this order: an argument list has none. */
 	found = readl(m1_sp);
 	sep = readl(m1_sio + SP_SEP_PS);
+	if (sep_ro)
+		m1_sro = sro_byte(readl(m1_pos + M1_POS_GATE44));
 	if (sp_writes(found, sep))
 		writel(found & ~SP_WAIT, m1_sp);
 	back = readl(m1_sp);
@@ -4077,7 +4214,9 @@ static bool m1_smc_idle(void)
 /*
  * ps_words=1, at the end of step 5 (the m1 comment says why there, and what Corey
  * OK'd). Interrupts are off. Goes on past a word that doesn't finish. Returns one bit
- * per group, set if the whole group read as asked.
+ * per group, set if the whole group read as asked. pw_noread=1: the fabric group's
+ * four words are written, each with its dsb, and not read; the group's bit is then
+ * clear, and step 8's mark says why (M1_PWN_MARK).
  */
 static u8 m1_pw_write(void)
 {
@@ -4090,7 +4229,9 @@ static u8 m1_pw_write(void)
 
 		writel(m1_pw[i].val, p);
 		dsb(sy);
-		if (m1_pw[i].grp == M1_PW_FABRIC) {
+		if (m1_pw[i].grp == M1_PW_FABRIC && pw_noread) {
+			ok = false;
+		} else if (m1_pw[i].grp == M1_PW_FABRIC) {
 			/* Bit 28 and the auto field 27:24, and the target 3:0; the others are status. */
 			ok = !((readl(p) ^ m1_pw[i].val) & (GENMASK(28, 24) | GENMASK(3, 0)));
 		} else {
@@ -4227,6 +4368,7 @@ static void m1_wd2_out(void)
 /*
  * gates_mark=1: the six gate words into g, in gates_mark.h's order (look.h's pages and offsets), then AFNC2_LW1 into
  * *lane. Reads only, each into its own variable, in this order; step 8's last before the commit, and the load's.
+ * lane NULL: AFNC2_LW1 isn't read (step 8 with pw_noread=1: it is one of the fabric group's power words).
  */
 static void m1_gates_read(u32 *g, u32 *lane)
 {
@@ -4237,7 +4379,8 @@ static void m1_gates_read(u32 *g, u32 *lane)
 		g[i] = readl(m1_look_ga + ga[i]);
 	for (i = 0; i < ARRAY_SIZE(gb); i++)
 		g[ARRAY_SIZE(ga) + i] = readl(m1_look_gb + gb[i]);
-	*lane = readl(m1_sio + GATE_LANE);
+	if (lane)
+		*lane = readl(m1_sio + GATE_LANE);
 }
 static_assert(ARRAY_SIZE(((u16[])LOOK_GATE_A_OFFS)) + ARRAY_SIZE(((u16[])LOOK_GATE_B_OFFS)) == GATES_N && GATES_AT == 0x6016);
 static_assert(LOOK_GATE_A == 0x28e5a0000ULL && LOOK_GATE_B == 0x28e09c000ULL && LOOK_SIO_PAGE == M1_PS_SIO_PAGE &&
@@ -4816,6 +4959,12 @@ static void __noreturn m1_after_slpa(void)
 	/* sep_pg=1: m1_sp_clear()'s byte to 0x6009, here for the same reason, and after wake_all=1's if both are set. */
 	if (sep_pg)
 		m1_crumb(LL_AT + 1, &sp, 1);
+	/*
+	 * sep_ro=1: the sample before the write decision to 0x6008, where wake_all=1's byte would be (the two never load together),
+	 * after 0x6009's, the run's first result: a command that fails stops every later one.
+	 */
+	if (sep_ro)
+		m1_crumb(LL_AT, &m1_sro, 1);
 	/* wd1_mark=1: does the marker stand? The last look before the commit: nothing here touches WD1 after it. */
 	if (wd1_mark)
 		wd1 = m1_wd1_bits_at(readl(m1_wdt + WD1_CTRL), readl(m1_wdt + WD1_BITE), readl(m1_wdt + WD1_COUNT),
@@ -4843,7 +4992,7 @@ static void __noreturn m1_after_slpa(void)
 		if (sio_stop) {
 			/* After the stage that says they're there; a failed command above stops this one (the m1 comment). */
 			b[0] = m1_disp_bits | (m1_smc_acked ? BIT(5) : 0) | m1_sio_code << 6;
-			b[1] = ps_words ? (atc_down ? M1_ATC_MARK : M1_W_MARK) | m1_pw_bits : M1_K_MARK;
+			b[1] = ps_words ? (pw_noread ? M1_PWN_MARK : atc_down ? M1_ATC_MARK : M1_W_MARK) | m1_pw_bits : M1_K_MARK;
 			m1_crumb(0x6012, b, 2);
 		}
 	} else {
@@ -4855,9 +5004,10 @@ static void __noreturn m1_after_slpa(void)
 	 * m1 comment; gates_mark.h).
 	 */
 	if (gates_mark && !sio_down && !pcie_down && !sio_steps && !a2_pre && !acc_last) {
-		u32 g[GATES_N], lane;
+		u32 g[GATES_N], lane = 0;
 
-		m1_gates_read(g, &lane);
+		/* pw_noread=1: AFNC2_LW1 is a fabric-group power word, and isn't read here: the byte's bit 6 stays clear. */
+		m1_gates_read(g, pw_noread ? NULL : &lane);
 		dsb(sy);
 		isb();
 		m1_gates = gates_byte(g, lane);
@@ -6576,12 +6726,132 @@ static bool m1_sep_bound(bool locked)
 }
 
 /*
+ * sep_ro=1: one SEP device's word on its store, asked of the device itself (the m1 comment has why, and what it rests
+ * on). Under the device's lock, waited for (the load) or only tried (the prepare, where a lock that is held is no proof):
+ * a driver named exactly apple_sep; the device's own sysfs node, its "diag" directory, a group of the device's own kobject
+ * and no other's, and in it the file "xart", a text attribute's by kernfs's own flag and of an attribute's size; the device kobject's show called with the node's
+ * attribute, as sysfs calls it, into a zeroed page. Every reference taken is put back and the page freed on every way out,
+ * and the lock dropped. What it found is logged. Returns 1 for a device that says exactly "disabled\n" (sro_xart_ro()), 0
+ * for one with no driver at all, which says nothing, and -1 for anything else: it writes nothing anywhere.
+ */
+#define M1_SEP_DRIVER	"apple_sep"
+static int m1_sro_xart(struct device *dev, bool wait)
+{
+	struct kernfs_node *diag = NULL, *xart = NULL;
+	const struct sysfs_ops *ops = NULL;
+	struct kobject *owner = NULL;
+	const char *why = NULL;
+	char *page = NULL;
+	ssize_t n = -1;
+	int ret = -1;
+
+	if (wait) {
+		device_lock(dev);
+	} else if (!device_trylock(dev)) {
+		pr_info("m1: sep_ro: %s: its lock is held, so its driver can't be asked now: no proof\n", dev_name(dev));
+		return -1;
+	}
+	if (!dev->driver) {
+		ret = 0;
+		why = "no driver is bound to it";
+	} else if (!dev->driver->name || strcmp(dev->driver->name, M1_SEP_DRIVER)) {
+		why = "the driver bound to it isn't named " M1_SEP_DRIVER ": no proof";
+	} else if (!dev->kobj.sd || !(diag = kernfs_find_and_get(dev->kobj.sd, SRO_XART_DIR))) {
+		why = "its node in sysfs has no " SRO_XART_DIR ": no proof";
+	} else if (kernfs_type(diag) != KERNFS_DIR || (owner = diag->priv) != &dev->kobj) {
+		why = "its " SRO_XART_DIR " isn't a directory of the device's own: no proof";
+	} else if (!(xart = kernfs_find_and_get(diag, SRO_XART_FILE))) {
+		why = "its " SRO_XART_DIR " has no " SRO_XART_FILE ": no proof";
+	} else if (kernfs_type(xart) != KERNFS_FILE || !(xart->flags & KERNFS_HAS_SEQ_SHOW) || !xart->priv || xart->attr.size != PAGE_SIZE) {
+		why = "its " SRO_XART_DIR "/" SRO_XART_FILE " isn't a text attribute's file: no proof";
+	} else if (!owner->ktype || !(ops = owner->ktype->sysfs_ops) || !ops->show) {
+		why = "its " SRO_XART_DIR "/" SRO_XART_FILE " has no show: no proof";
+	} else if (!(page = (char *)get_zeroed_page(GFP_KERNEL))) {
+		why = "no page for what its " SRO_XART_DIR "/" SRO_XART_FILE " says: no proof";
+	} else {
+		n = ops->show(owner, xart->priv, page);
+		if (sro_xart_ro(page, n, n >= 0 && n < (ssize_t)PAGE_SIZE ? page[n] : 1))
+			ret = 1;
+	}
+	if (why)
+		pr_info("m1: sep_ro: %s: %s\n", dev_name(dev), why);
+	else
+		pr_info("m1: sep_ro: %s: its driver's " SRO_XART_DIR "/" SRO_XART_FILE " returned %zd and says \"%.*s\": %s\n", dev_name(dev), n,
+			(int)(n < 0 ? 0 : n > 32 ? 32 : n && page[n - 1] == '\n' ? n - 1 : n), page, ret > 0 ? "read-only" : "NOT shown read-only: no proof");
+	if (page)
+		free_page((unsigned long)page);
+	if (xart)
+		kernfs_put(xart);
+	if (diag)
+		kernfs_put(diag);
+	device_unlock(dev);
+	return ret;
+}
+
+/*
+ * sep_ro=1, at the load and again at the first suspend's prepare: whether the binding that is there now says the enclave's
+ * store is read-only (last_look.h has why nothing else counts): every device under an "apple,sep" node that has a driver
+ * passes m1_sro_xart(), and there is at least one. wait: the load, which waits for each device's lock; the prepare only
+ * tries it. *why: what is missing if not. Reads only.
+ */
+static bool m1_sro_proof(const char **why, bool wait)
+{
+	struct device_node *np;
+	unsigned int ro = 0, bad = 0;
+
+	for_each_compatible_node(np, NULL, M1_SEP_COMPATIBLE) {
+		struct platform_device *pdev = of_find_device_by_node(np);
+		int r;
+
+		if (!pdev)
+			continue;
+		r = m1_sro_xart(&pdev->dev, wait);
+		if (r > 0)
+			ro++;
+		else if (r < 0)
+			bad++;
+		put_device(&pdev->dev);
+	}
+	if (bad)
+		*why = "a SEP device's driver doesn't say, in its own diag/xart, that the store is read-only (the lines above have what was found)";
+	else
+		*why = "no driver is bound to the SEP's device, so nothing says how its store is open";
+	return ro && !bad;
+}
+static_assert(sizeof(SRO_XART_RO) - 1 == 9 && sizeof(SRO_XART_RO) < PAGE_SIZE);
+
+/*
+ * sep_ro=1, in process context (the load, and the first suspend's prepare): up to SRO_WAIT_MS, the reference's 5 s, for
+ * the SEP's power word to read actual state 0, read every SRO_POLL_MS with a sleep between. The enclave gates itself
+ * when its driver leaves it idle; without a driver it stays powered (run 9). *last gets the last value read. True if it
+ * read off. Reads only, of the word the load reads in every sep_pg=1 run.
+ */
+static bool m1_sro_wait(u32 *last)
+{
+	u64 t0 = m1_now();
+	u32 v;
+
+	while (!ll_off(v = readl(m1_sio + SP_SEP_PS)) && m1_now() - t0 < (u64)SRO_WAIT_MS * (m1_tps / 1000))
+		msleep(SRO_POLL_MS);
+	*last = v;
+	return ll_off(v);
+}
+/* sep_ro=1's byte is none of K1's other marks at 0x6008 and never wake_all=1's byte, and its wait is the reference's. */
+static_assert(SRO_ARMED == 0x10 && SRO_MARK == 0x80 && !(SRO_ARMED & (SRO_MARK | WA_ARMED | LL_ARMED | LL_LOOKED | OG_ARMED)) &&
+	      (SRO_MARK & 0xf0) != (WA_MARK & 0xf0) && SRO_WAIT_MS == 5000 && SRO_POLL_MS && SRO_POLL_MS < SRO_WAIT_MS && LL_AT == 0x6008);
+/* pw_noread=1's mark is none of the other three at 0x6013, with or without the five group bits it can carry. */
+static_assert(M1_PWN_MARK == 0x80 && (M1_PWN_MARK & 0xc0) != (M1_W_MARK & 0xc0) && (M1_PWN_MARK & 0xc0) != (M1_ATC_MARK & 0xc0) &&
+	      (M1_K_MARK & BIT(M1_PW_FABRIC)) && M1_PW_FABRIC == 5);
+
+/*
  * sep_pg=1 at load, after m1_wd2_init(), which maps the engine's page in every run this loads with, as pmgr_late=1 maps
  * SIO's power page (m1_init() has refused by now if a driver is bound to the SEP's device): the control word isn't on the
  * never-write list; both of those pages are mapped (a refusal, should the family ever load without them); the word's own page is mapped here (m1_unmap() unmaps it, at the exit and after any
  * later refusal of the load); and the control word, the SEP's power word and 0x2922c0044 are logged as they read awake, with
  * what step 7 will do. A word whose bit 2 reads clear already, or a SEP's power word that reads powered, is said and the
  * load goes on: step 7 looks again, and writes only if the bit is set and the SEP's power word reads off then. Reads only.
+ * sep_ro=1: before those reads, up to 5 s for the SEP's power word to read actual state 0 (m1_sro_wait()), and a refusal
+ * if it never does: an enclave that reads powered in this boot leaves the wait bit in step 7, and the run would learn nothing.
  */
 static int __init m1_sp_init(void)
 {
@@ -6601,6 +6871,11 @@ static int __init m1_sp_init(void)
 		return -ENOMEM;
 	}
 	m1_sp += SP_CTL & ~PAGE_MASK;
+	if (sep_ro && !m1_sro_wait(&sep)) {
+		pr_err("m1: sep_ro: the SEP's power word 0x%llx still reads powered (%08x) after %u ms: the enclave isn't power-gated in this boot, so step 7 would leave the PMGR's wait bit as it is and the run would learn nothing; refusing\n",
+		       M1_PS_SIO_PAGE + SP_SEP_PS, sep, SRO_WAIT_MS);
+		return -EBUSY;
+	}
 	/* Each read into its own variable, in this order: an argument list has none. */
 	ctl = readl(m1_sp);
 	sep = readl(m1_sio + SP_SEP_PS);
@@ -7087,12 +7362,24 @@ static int __init m1_init(void)
 		m1_wa_init();
 	/*
 	 * sep_pg=1 and disp_hs=1: neither loads while a driver is bound to the SEP's device (m1_sep_bound()); the first suspend's
-	 * prepare looks again (m1_sep_recheck()).
+	 * prepare looks again (m1_sep_recheck()). Not with sep_ro=1: that run is made with the driver bound, its store read-only,
+	 * which the module has to find shown (m1_sro_proof(), below and at the prepare); m1_sp_init() and the prepare ask the
+	 * SEP's power word too.
 	 */
-	if ((sep_pg || disp_hs) && m1_sep_bound(true)) {
+	if ((sep_pg || disp_hs) && !sep_ro && m1_sep_bound(true)) {
 		pr_err("m1: a driver is bound to the SEP's device (%s): sep_pg=1 and disp_hs=1 let the SoC go down around the enclave, and are only loaded in a safe boot without its driver: pkexec sleep-drain-safe boot --no-sep; refusing\n",
 		       M1_SEP_COMPATIBLE);
 		return -EBUSY;
+	}
+	/* sep_ro=1 opts in and proves nothing: the binding's own word that its store is read-only, or no load. */
+	if (sep_ro) {
+		const char *why;
+
+		if (!m1_sro_proof(&why, true)) {
+			pr_err("m1: sep_ro: the SEP's driver doesn't show its store read-only: %s. A run with the enclave's driver in the boot is only made with that shown: pkexec sleep-drain-safe boot --sep-ro; refusing\n",
+			       why);
+			return -EBUSY;
+		}
 	}
 	/* After m1_wd2_init(), which maps the engine's page: m1_sp_init() refuses without it. */
 	if (sep_pg) {
@@ -7414,6 +7701,28 @@ static bool __init e1_safe_boot(void)
 }
 
 /*
+ * pw_noread=1: the option of this load, if any, whose own steps read one of the four fabric-group power words, or
+ * APCIE_GP (0x28e080150), the third of the reference's three, once step 5 has written them; NULL if none does. sio_down=1:
+ * m1_sio_down() reads the gate words with AFNC2_LW1 after them. pcie_down=1: m1_pcie_down() reads and polls APCIE_GP_SYS
+ * and reads APCIE_GP. last_look=1, and so ll_wake=1, gate_look=1 and ll_retn=1, which need it: the looks after the commit
+ * read both (pcie_down.h's five). probe=1: its looks read APCIE_GP_SYS and its gate test AFNC2_LW1, and nothing writes
+ * the words at all. gates_mark=1's own reads leave AFNC2_LW1 out with pw_noread=1 (step 8); a2_pre=1, acc_last=1 and
+ * sio_steps=1 read muxes, p-states, gate words and SIO's own words, none of the five; the loads' reads are made awake.
+ */
+static const char * __init m1_pwn_reader(void)
+{
+	if (sio_down)
+		return "sio_down=1 (its reads of the gate words end with AFNC2_LW1)";
+	if (pcie_down)
+		return "pcie_down=1 (it reads and polls APCIE_GP_SYS, and reads APCIE_GP)";
+	if (last_look)
+		return "last_look=1 (its looks after the commit read APCIE_GP_SYS and APCIE_GP)";
+	if (probe)
+		return "probe=1 (its looks read APCIE_GP_SYS, and it never makes the writes)";
+	return NULL;
+}
+
+/*
  * Before anything else at load. First the post-slpa table, whatever replay
  * is: an entry on the never-write list refuses the module, as does one this
  * port doesn't write as maralcbr does (a width other than 4 or 8, an
@@ -7648,6 +7957,18 @@ static int __init e1_check_params(void)
 		pr_err("sep_pg=1 needs gates_mark=1 and no observe=1 (it's that family's run with bit 2 of the PMGR control word 0x28e0cc200 cleared in step 7 and one byte at 0x6009; in an observer's run that byte is CPU7's)\n");
 		return -EINVAL;
 	}
+	if (sep_ro && (!sep_pg || wake_all)) {
+		pr_err("sep_ro=1 needs sep_pg=1 and no wake_all=1 (it's that run made with the SEP's driver loaded, its store read-only, and its byte at 0x6008 is in wake_all=1's place)\n");
+		return -EINVAL;
+	}
+	if (pw_noread && (!ps_words || !atc_down)) {
+		pr_err("pw_noread=1 needs ps_words=1 and atc_down=1 (it's that run without the read-backs of the four fabric-group power words, and its mark at 0x6013 is in atc_down=1's place)\n");
+		return -EINVAL;
+	}
+	if (pw_noread && m1_pwn_reader()) {
+		pr_err("pw_noread=1 never loads with %s: the run would read a word it is there not to read\n", m1_pwn_reader());
+		return -EINVAL;
+	}
 	if (disp_hs && (!disp_off || !gates_mark || observe)) {
 		pr_err("disp_hs=1 needs disp_off=1, gates_mark=1 and no observe=1 (it's that family's run with the set-up and the handshake on each display's fabric block in K3b, and four bytes at 0x600a-0x600d; in an observer's run those bytes are CPU7's)\n");
 		return -EINVAL;
@@ -7833,7 +8154,7 @@ unlock:
 		}
 	}
 	set_ops(&e1_ops);
-	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+	pr_info("loaded: s2idle ops set through %s; times are trace_clock_local(); replay=%u%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
 		sym, replay, quiet ? " quiet=1" : "", m1 ? " m1=1" : "", observe ? " observe=1" : "", obs_gate ? " obs_gate=1" : "",
 		pmgr_late ? " pmgr_late=1" : "", alarm ? " alarm=1" : "", hold ? " hold=1" : "",
 		hold_nowatch ? " hold_nowatch=1" : "", pmp_out ? " pmp_out=1" : "",
@@ -7841,7 +8162,7 @@ unlock:
 		disp_off ? " disp_off=1" : "", one_commit ? " one_commit=1" : "", smc_idle ? " smc_idle=1" : "",
 		sio_stop ? " sio_stop=1" : "", ps_words ? " ps_words=1" : "", atc_down ? " atc_down=1" : "", recfg_bite ? " recfg_bite=1" : "",
 		wd2_bite ? " wd2_bite=1" : "", cluster_ack ? " cluster_ack=1" : "", fabric_up ? " fabric_up=1" : "",
-		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", blink ? " blink=1" : "", wake_all ? " wake_all=1" : "", ll_retn ? " ll_retn=1" : "", sep_pg ? " sep_pg=1" : "", disp_hs ? " disp_hs=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
+		wd1_mark ? " wd1_mark=1" : "", gates_mark ? " gates_mark=1" : "", sio_down ? " sio_down=1" : "", pcie_down ? " pcie_down=1" : "", sio_steps ? " sio_steps=1" : "", a2_pre ? " a2_pre=1" : "", acc_last ? " acc_last=1" : "", last_look ? " last_look=1" : "", ll_wake ? " ll_wake=1" : "", gate_look ? " gate_look=1" : "", blink ? " blink=1" : "", wake_all ? " wake_all=1" : "", ll_retn ? " ll_retn=1" : "", sep_pg ? " sep_pg=1" : "", disp_hs ? " disp_hs=1" : "", sep_ro ? " sep_ro=1" : "", pw_noread ? " pw_noread=1" : "", pre_test ? " probe=1 look=1 pre_test=1: NO REPLAY, THE 22 WORDS' TEST" :
 		gate ? " probe=1 look=1 gate=1: NO REPLAY, THE GATE TEST" :
 		look ? " probe=1 look=1: NO REPLAY, READS ONLY" : probe ? " probe=1: NO REPLAY" : "");
 	return 0;

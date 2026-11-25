@@ -55,7 +55,14 @@ this section where they differ.
 
 **Next, in this order:**
 1. **The tenth run: the SEP's wait, in the state the reference sleeps in** (RESEARCH.md, "The
-   `disp_hs=1` run", 2026-11-24). The ninth run (`--m1-disp-hs` after `boot --no-sep`) made both
+   `disp_hs=1` run", 2026-11-24). **Built the same day** (RESEARCH.md, "`sep_ro=1` and `pw_noread=1` as
+   built"): `pkexec sleep-drain-safe boot --sep-ro`, then `run-floor --no-reading --m1-sep-ro`. Not to
+   be handed over before: the branch merged (both reviews done and their fixes built, 2026-11-25:
+   RESEARCH.md, same section), `pkexec bash
+   /home/corey/src/sleep-drain/install.sh` run (the installed `sleep-drain-safe` doesn't know
+   `--sep-ro`; by its full path: pkexec starts elsewhere), the module built from `main`. In that boot
+   Corey types the password and leaves the fingerprint sensor alone. What follows is the plan it was
+   built to. The ninth run (`--m1-disp-hs` after `boot --no-sep`) made both
    display handshakes and never read bit 2 set; the enclave read powered with no driver in the boot,
    so the guard left the wait bit (0x28e0cc200 bit 2) set. Read again, the reference refuses to sleep
    unless the SEP's power word reads actual 0, and says a PMGR that waits for a power gate nobody
@@ -75,7 +82,8 @@ this section where they differ.
      here, 2026-11-24). `run-floor` needs it to read "disabled" before anything is loaded or written.
      The module takes a bound SEP driver only with a parameter of its own for this mode (`sep_ro=1`),
      which opts in and proves nothing: at the load and again at the first suspend's prepare the module
-     itself reads that attribute of every bound SEP device and needs "disabled", whatever the power
+     itself asks that attribute of every SEP device with a driver (of the device, under its lock, a
+     driver named `apple_sep`; not of a path) and needs "disabled", whatever the power
      word says (this Mac read the enclave gated in a boot with writes enabled: the power state is no
      evidence of the policy). Missing, unreadable or anything else: refused as a bound driver is now,
      and the run stays blocked. Then the SEP's power word has to read actual 0, waited for up to 5 s as the reference does,
@@ -103,9 +111,10 @@ this section where they differ.
      `slpa` and the PMP's sleep word (the reference takes them down before both, each table with its
      PMP request still up), the GPU's port, the PMP powered off (never-write list: a fresh OK),
      `ps_late[]`, the memory controller's drain.
-   - A reply to Ante042 and RyanTheTide on #2198 with runs 8 and 9: needs Corey's OK. Questions for
-     Ante042 in it: how the gate word's bit 2 was seen to follow dispext0's handshake (their driver
-     never reads it), and whether a sleep ever went through with the SEP's wait armed and no SLEEP.
+   - Posted 2026-11-24 with Corey's OK, on aurora-silicon/linux#2198 (comment 7130985065): runs 8 and
+     9, and two questions for Ante042: how the gate word's bit 2 was seen to follow dispext0's
+     handshake (their driver never reads it), and whether a sleep ever went through with the SEP's
+     wait armed and no SLEEP. Unanswered.
    - Open asks: malik-na/linux-aurora#77 and omacom/linux-aurora#290 (11-20), unanswered.
    - **After an entry that completes**, the fix is a port: Ante042's t6000 core onto upstream's
      `sleep.c` (their notes map it area by area), and a wake needs the loader's mailbox, which is
@@ -131,7 +140,7 @@ this section where they differ.
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
 
 **As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
-`--m1-disp-hs` the latest launcher option (run 2026-11-24; `--m1-ll-retn` and `--m1-sep-pg` before it, neither run); the PMU's record bytes all zero; scratch that must outlast
+`--m1-sep-ro` the latest launcher option (built 2026-11-24, not run; `--m1-disp-hs` before it, run that day; `--m1-ll-retn` and `--m1-sep-pg`, neither run); the PMU's record bytes all zero; scratch that must outlast
 a restart in `~/.local/share/sleep-drain/`.
 
 ## Where things stand

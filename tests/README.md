@@ -16,15 +16,26 @@ used to sit in CLAUDE.md, entry for entry):
   Mac's ADT dump when it's there.
 - `tests/safe_boot_hook_test.py` runs the safe boot's initramfs hook in mkinitcpio's busybox ash, in a
   bubblewrap sandbox with stub mount and blockdev, one failure per case.
-- `tests/safe_boot_boot_test.py` runs `sleep-drain-safe boot` and `boot --no-sep` with its fixed paths pointed
-  into a scratch directory and GRUB's and mkinitcpio's tools replaced by stubs: the two entries it writes, each
-  with its own id (the regular command line; the same with `apple_sep` added to the last `module_blacklist=`'s
-  list), which one each command selects, that a selection queued earlier outlasts a later command that fails,
+- `tests/safe_boot_boot_test.py` runs `sleep-drain-safe boot`, `boot --no-sep` and `boot --sep-ro` with its fixed
+  paths pointed into a scratch directory and GRUB's and mkinitcpio's tools replaced by stubs: the three entries it
+  writes, each with its own id (the regular command line; the same with `apple_sep` added to the last
+  `module_blacklist=`'s list; the same with `apple_sep.xart_writes=0 apple_sep.provision_keybag=0`), which one
+  each command selects (`--no-sep` and `--sep-ro` together are a usage error), that a selection queued earlier outlasts a later command that fails,
   that a regeneration is made again after one that failed, that a candidate `grub.cfg` without the blacklist is
   refused before it replaces the live one, and the refusals (a regular line with `--`, after which nothing is the
   kernel's; one with any character outside the plain set, which GRUB may read another way than the script: a quote, a backslash (a line
-  carried on to the next among them), a carriage return, `#`, `;` or one outside ASCII; a blacklist over the kernel's 1024 bytes); and `status` in a fake safe boot: kept out only by the kernel's
-  own list, and not verified when that doesn't read, whatever the command line asks for. No boot is made.
+  carried on to the next among them), a carriage return, `#`, `;` or one outside ASCII; a blacklist over the kernel's 1024 bytes; `--sep-ro` alone on a line whose own blacklist keeps `apple_sep` out; a third entry one byte over the
+  kernel's line, though the other two fit; a regeneration that would drop either of the two words); a regular
+  line that already sets `apple_sep`'s `xart_writes` or `provision_keybag`, in any spelling of the module's name
+  or the parameter's, with a value or bare, once or several times, which stops no mode: the plain and the no-SEP
+  entry inherit the line, and the third entry's line has those words left out and exactly one setting of each,
+  the script's; and `status`
+  in a fake safe boot: kept out only by the kernel's own list, and not verified when that doesn't read, whatever
+  the command line asks for; and the enclave's store, read-only only if every device bound to `apple_sep`, at
+  least one, has `diag/xart` reading exactly `disabled` and a newline (the driver's directory in sysfs is a
+  directory the test fills: 27 cases, `enabled`, no driver, no device, no attribute, one that can't be read, an
+  empty one, no newline, more after it, another case, two devices, and what the command line asks for said
+  beside it and proving nothing). No boot is made.
 - `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe boot and `collect` in a fake next
   boot.
 - `tests/m1_crumbs_test.py` runs `e1-hook/m1-crumbs` on a fake PMU nvmem file, position=1's samples made by
@@ -174,6 +185,64 @@ used to sit in CLAUDE.md, entry for entry):
   light yet); other runs' stages, K1's stage and none (not read); anything a run can't have left in any of the other
   fields, and four bytes that aren't a record's (no field of any record read); a family run without the option after
   one with it; and `--clear` in fourteen cases that zero the seven and eighteen that leave them.
+  For sep_ro=1 and pw_noread=1 (`sep_ro_tests()`) it compiles `last_look.h`'s `sro_byte()`, `sro_ok()` and
+  `sro_xart_ro()` against a second writing-out (the comparison of what the SEP device's `diag/xart` says, in
+  eighteen cases: `disabled` and a newline with the string's end after it, and nothing else: not `enabled`,
+  nothing, the word without its newline, the word with something after it, counted in what the show returned or
+  not, something longer, a show that failed, another case, a space, a count one short); runs steps 7 and 8 in the
+  harness sep_pg=1's tests use, with the real `m1_sp_clear()`, `m1_crumb()` and `m1_pmu_ok()`, in seventeen runs
+  (the gate word read before the decision and after the read-back, 0x6008's byte sent after the record and after
+  0x6009's; a gate word that moves with the write, the other way, or by itself with no write; **the SEP's word
+  reading powered: no write and no wait**; a bit found clear; a write that doesn't take; each command not acked);
+  and pins that `m1_sp_clear()` has no loop, no clock and no wait. `m1_sro_xart()`, `m1_sro_proof()`,
+  `m1_sro_wait()`, `m1_sep_recheck()` and the last lines of `e1_prepare()` as they stand, over stand-ins for the
+  device tree, the driver core, kernfs, the device's lock, the page allocator and the clock: one bound device in 27
+  states of its own corner of sysfs, with the lock waited for and only tried, each against a second writing-out of
+  every call (the lock, the two nodes found with a reference each, the zeroed page, the device kobject's show
+  called with the node's attribute under the lock, everything undone on every way out: no reference, page or lock
+  left in any run); no proof for anything but `disabled` and a newline with the string's end after it, for a
+  directory that is a file, another kobject's or a kobject of its own, an `xart` that is a directory, of another
+  size or without an attribute, a binary attribute's node of exactly one page or a text one's without kernfs's
+  `KERNFS_HAS_SEQ_SHOW` (each refused with no page had and no show called, though the mock would have said
+  `disabled`), an owner with no type, operations or show, no node, no page; no driver, a driver
+  of six other names or none; three devices in eight combinations; a lock somebody holds at the prepare (no proof,
+  nothing asked, nothing dropped); the wait's sleeps counted (off at once, after 30 ms, at 4.99 s, at 5 s, never); and the
+  prepare: with the proof and the word off both firmware stops are made though a driver is bound; without the
+  proof, or with the word still powered after 5 s, the replay is called off and neither stop is made; without
+  sep_ro=1 nothing has changed. (What is mocked: the nodes, kobjects, locks and pages, which log; the attribute says what it is told to, by a letter per device; the
+  clock moves only when the code sleeps; the SEP's power word reads powered until a time given.) `m1_sp_init()`
+  with the wait (off at once, after 250 ms, at 5 s, never: the refusal, with nothing else read), and the load's
+  order in the source. For pw_noread=1: `m1_pw_write()` as it stands over one word per entry of `m1_pw[]`, in
+  nine runs against a second writing-out (the same twenty writes and `dsb`s with or without it; no read of the
+  fabric group's four with it, the other sixteen polled as before; the group's bit always clear), and
+  `m1_gates_read()` with and without a place for the lane: step 8's seven reads, six with pw_noread=1; and
+  `m1_pwn_reader()` in all sixteen combinations of sio_down=1, pcie_down=1, last_look=1 and probe=1, the load's
+  refusal on it pinned, with the set of the file's functions that touch those words (seventeen): a new one fails
+  the check until the rule knows it.
+  `m1_pmu_ok()` in the eight combinations of wake_all=1, sep_pg=1 and sep_ro=1, the real K1 and undo in five kinds
+  of run over five leftovers. And through m1-crumbs: every value of sep_pg=1's byte with every value of
+  sep_ro=1's, with K1's mark and without, through the decoder's own function against a second writing-out (the
+  two samples side by side only when both landed; "bit 2 clear before the write and set after it" in 64 of the
+  2,048 pairs, exactly those with the write made and read back; a clear skipped or not read back said to be no
+  test of the wait bit); the run's own record under `gates_mark=1`'s stage; K1's marks under eleven stages; a
+  stage no such run sends; one byte landed and the other's mark left (the mark at 0x6009 with 0x6008's byte
+  landed: acked and lost, but only if sep_ro=1's own reading takes 0x6008's byte: the reviewer's record, 88 02 00 05
+  under stage 0x39, where it is NOT READ and proves nothing); both under step 7's own stage, each with a line that
+  says 0x39 is the last stage the record kept: with the outcomes' marker at 0x6013, that the next stage's command
+  was acked and the stage not kept (0x6010-0x6013 are then read as the outcomes and not as a second), but only
+  for a run that 0x6008-0x600e show to be one that sends outcomes (`later_landed()`: ten records of the four
+  options' bytes and marks read whole, eleven that show nothing, the rules and K1's zeroing it rests on pinned
+  in `e1_hook.c`); otherwise AMBIGUOUS and read as no recipe's (`step7_ambiguous()`): run 7's archived record,
+  a position=1 run's whose sample is `14 dd`, with only the stage changed to 0xb9 or 0x39 (no ps_words=1
+  outcomes, no sample, nothing acked), the plain hold path's masks there, a gates_mark=1 run without the four
+  options, and that archived record as it is, still decoded line for line; with a second there, that the record doesn't say why no newer stage is
+  there; a mark under an earlier stage said the same way, in wake_all=1's, sep_pg=1's and disp_hs=1's tests too;
+  the gate byte's line for a later recipe's record, the reviewer's among them
+  (stage 0xd5, 0x6013 0x9f, 0x6016 0x81, 0x6008 0x88, 0x6009 0xfc: no word of a2_pre=1), and for `--m1-gates`'
+  own; what a run can't have left; last_look=1's
+  and an observer's stages; `--clear` in eleven cases that zero the seven and eight that leave them; every value
+  of 0x6013 ("not read (pw_noread=1)" for 0x80 to 0x9f, never "read back as written"); and every gate byte under
+  four markers (the lane "not read" by 0x6013's mark, not by its own bit).
   For ll_retn=1 it compiles `last_look.h`'s `llr_empty_code()`, `llr_b0()`, `llr_past()`, `llr_b2()`, `llr_b3()`, `llr_b4()`,
   `llr_wide()` and `ll_stage()`'s three sets against a second writing-out (every bit of each word alone for `llr_wide()`, the
   time bound to the tick, the empties' code at each edge), and runs `m1_deep_wfi()`, `m1_llr_empty()`,
@@ -280,12 +349,18 @@ used to sit in CLAUDE.md, entry for entry):
   user namespace against stub `insmod`, `rmmod`, `modinfo` and `sleep-drain-reading`: the parameters and the
   label each option loads with (`--m1-wake-all`: `--m1-a2-pre-blink`'s line and `wake_all=1`; `--m1-ll-retn`:
   `--m1-atc-down`'s line and `ll_retn=1`; `--m1-sep-pg`: `--m1-a2-pre-blink`'s line and `sep_pg=1`; `--m1-disp-hs`:
-  `--m1-sep-pg`'s line and `disp_hs=1`), the hand-off
+  `--m1-sep-pg`'s line and `disp_hs=1`; `--m1-sep-ro`: `--m1-disp-hs`' line without `a2_pre=1`, with `sep_ro=1
+  pw_noread=1`), the hand-off
   and the watch after it, every refusal (an older build without the option's parameter, a build that
   ignored it, two options together; `--m1-sep-pg` and `--m1-disp-hs` with `apple_sep` loaded, a directory beside
   the fake `e1_hook`'s, which every other option runs past; and those two against the kernel's `module_blacklist` parameter, a file the
   test points the launcher at: taken only if it lists `apple_sep` as a whole name,
-  eleven values in all, unset, other modules' names, quoting, an empty value and no file among them, which every other option runs past too), and every way out. A launcher that ends before the hand-off, where a check needs
+  eleven values in all, unset, other modules' names, quoting, an empty value and no file among them, which every other option runs past too;
+  and `--m1-sep-ro`'s own three conditions, each before anything is loaded or written: `apple_sep` not loaded; then the SEP driver's
+  directory in sysfs, another directory the test fills, in eighteen states: one bound device or two whose `diag/xart` says
+  `disabled` (the run goes on), and `enabled`, no driver's directory, no bound device, the attribute only under the driver's link
+  to its module, no attribute, one that can't be read, an empty one, no newline, more after it, another case, and one of two
+  devices saying otherwise (refused, with what was read); the kernel's module blacklist isn't asked by that option), and every way out. A launcher that ends before the hand-off, where a check needs
   it running, fails a check that shows what it printed, and that function's other checks are skipped: it doesn't stop
   the test. It takes about half a minute a launcher; options as
   arguments run only those launchers (`run-floor` by itself is the plain floor, which has the usage cases).
@@ -296,8 +371,9 @@ used to sit in CLAUDE.md, entry for entry):
   didn't notice. Run it after changing any of them, and give it the
   mutants a new rung calls for. A word as its argument runs only the mutants whose names have it
   (wake_all=1's are `"wa:" "wa "`: `wa` by itself is in ninety other names; ll_retn=1's are `llr`; sep_pg=1's are
-  `"sp:" "sp header" "sp decoder" "sp launcher"`, disp_hs=1's `"dh:" "dh header" "dh decoder" "dh launcher"`). Its
-  `ARGS` names seven launchers for a mutant of `run-floor` (the plain floor, `--m1-a2-pre-blink`, `--m1-wake-all`,
-  `--m1-atc-down`, `--m1-ll-retn`, `--m1-sep-pg` and `--m1-disp-hs`): about four minutes each.
+  `"sp:" "sp header" "sp decoder" "sp launcher"`, disp_hs=1's `"dh:" "dh header" "dh decoder" "dh launcher"`, and
+  sep_ro=1's and pw_noread=1's all begin `sro`). Its
+  `ARGS` names eight launchers for a mutant of `run-floor` (the plain floor, `--m1-a2-pre-blink`, `--m1-wake-all`,
+  `--m1-atc-down`, `--m1-ll-retn`, `--m1-sep-pg`, `--m1-disp-hs` and `--m1-sep-ro`): about four minutes each.
   Either way it first checks the whole list against the tree, in a second, and stops if a mutant's text
   isn't there exactly once: a rung that moved an older mutant's line fixes the list before anything runs.

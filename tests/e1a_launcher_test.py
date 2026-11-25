@@ -108,6 +108,8 @@ LAUNCHERS = (
      "floor-m1-sep-pg", ("--m1-sep-pg",)),
     ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 gates_mark=1 a2_pre=1 atc_down=1 blink=1 sep_pg=1 disp_hs=1",
      "floor-m1-disp-hs", ("--m1-disp-hs",)),
+    ("run-floor", "FLOOR", "replay=15 oneway=1 quiet=1 m1=1 pmgr_late=1 alarm=1 hold=1 hold_nowatch=1 pmp_out=1 sio_on=1 disp_off=1 one_commit=1 smc_idle=1 sio_stop=1 ps_words=1 wd2_bite=1 cluster_ack=1 fabric_up=1 wd1_mark=1 gates_mark=1 atc_down=1 blink=1 sep_pg=1 disp_hs=1 sep_ro=1 pw_noread=1",
+     "floor-m1-sep-ro", ("--m1-sep-ro",)),
 )
 
 failed = 0
@@ -121,7 +123,7 @@ def is_m1(launcher):
     """--m1, --m1-observe, --m1-late, --m1-alarm, the two --m1-hold, the two --m1-pmp and --m1-position: all load m1=1."""
     return any(a in ("--m1", "--m1-observe", "--m1-late", "--m1-alarm", "--m1-hold", "--m1-hold-nowatch", "--m1-pmp",
                      "--m1-pmp-idle", "--m1-position", "--m1-sio-pmp", "--m1-disp-off", "--m1-macos-end", "--m1-sio-stop",
-                     "--m1-power-words", "--m1-recfg-bite", "--m1-wd2-bite", "--m1-cluster-ack", "--m1-fabric-up", "--m1-mark", "--m1-gates", "--m1-sio-down", "--m1-pcie-down", "--m1-sio-steps", "--m1-a2-pre", "--m1-acc-last", "--m1-last-look", "--m1-last-look-wake", "--m1-gate-look", "--m1-obs-gate", "--m1-atc-down", "--m1-a2-pre-blink", "--m1-wake-all", "--m1-ll-retn", "--m1-sep-pg", "--m1-disp-hs") for a in launcher[4])
+                     "--m1-power-words", "--m1-recfg-bite", "--m1-wd2-bite", "--m1-cluster-ack", "--m1-fabric-up", "--m1-mark", "--m1-gates", "--m1-sio-down", "--m1-pcie-down", "--m1-sio-steps", "--m1-a2-pre", "--m1-acc-last", "--m1-last-look", "--m1-last-look-wake", "--m1-gate-look", "--m1-obs-gate", "--m1-atc-down", "--m1-a2-pre-blink", "--m1-wake-all", "--m1-ll-retn", "--m1-sep-pg", "--m1-disp-hs", "--m1-sep-ro") for a in launcher[4])
 
 
 def is_siodown(launcher):
@@ -135,8 +137,9 @@ def is_siosteps(launcher):
 
 
 def is_a2pre(launcher):
-    """--m1-a2-pre, --m1-a2-pre-blink, --m1-wake-all and --m1-sep-pg: --m1-gates' run with a2_pre=1."""
-    return "--m1-a2-pre" in launcher[4] or is_blink(launcher)
+    """--m1-a2-pre, --m1-a2-pre-blink, --m1-wake-all, --m1-sep-pg and --m1-disp-hs: --m1-gates' run with a2_pre=1. Not --m1-sep-ro, which
+    is --m1-disp-hs' line without it."""
+    return ("--m1-a2-pre" in launcher[4] or is_blink(launcher)) and not is_sepro(launcher)
 
 
 def is_blink(launcher):
@@ -150,13 +153,23 @@ def is_wakeall(launcher):
 
 
 def is_seppg(launcher):
-    """--m1-sep-pg: --m1-a2-pre-blink's run with sep_pg=1 (and without wake_all=1), and --m1-disp-hs, which is that run too."""
+    """--m1-sep-pg: --m1-a2-pre-blink's run with sep_pg=1 (and without wake_all=1), and --m1-disp-hs and --m1-sep-ro, which have it too."""
     return "--m1-sep-pg" in launcher[4] or is_disphs(launcher)
 
 
 def is_disphs(launcher):
-    """--m1-disp-hs: --m1-sep-pg's run with disp_hs=1."""
-    return "--m1-disp-hs" in launcher[4]
+    """--m1-disp-hs: --m1-sep-pg's run with disp_hs=1, and --m1-sep-ro, which has it too."""
+    return "--m1-disp-hs" in launcher[4] or is_sepro(launcher)
+
+
+def is_sepro(launcher):
+    """--m1-sep-ro: --m1-disp-hs' line without a2_pre=1, with sep_ro=1 and pw_noread=1; the one option made WITH the SEP's driver."""
+    return "--m1-sep-ro" in launcher[4]
+
+
+def keeps_sep_out(launcher):
+    """--m1-sep-pg and --m1-disp-hs: the options that refuse the SEP's driver, loaded or loadable. --m1-sep-ro asks for it."""
+    return is_seppg(launcher) and not is_sepro(launcher)
 
 
 def is_acclast(launcher):
@@ -201,7 +214,8 @@ def is_pciedown(launcher):
 
 def is_gates(launcher):
     """--m1-gates, and --m1-sio-down, --m1-pcie-down, --m1-sio-steps, --m1-a2-pre or --m1-acc-last on top of it: --m1-mark's run with gates_mark=1."""
-    return "--m1-gates" in launcher[4] or is_siodown(launcher) or is_pciedown(launcher) or is_siosteps(launcher) or is_a2pre(launcher) or is_acclast(launcher)
+    return ("--m1-gates" in launcher[4] or is_siodown(launcher) or is_pciedown(launcher) or is_siosteps(launcher) or is_a2pre(launcher) or is_acclast(launcher)
+            or is_sepro(launcher))
 
 
 def is_mark(launcher):
@@ -251,7 +265,7 @@ PARMS = {
              "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
              "observe:With m1=1 only (bool)\npmgr_late:With m1=1 only (bool)\n"
              "alarm:With m1=1 and pmgr_late=1 (bool)\nhold:With alarm=1 (bool)\nhold_nowatch:With hold=1 only (bool)\n"
-             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\none_commit:With disp_off=1 (bool)\nsmc_idle:With disp_off=1 (bool)\nsio_stop:With disp_off=1 (bool)\nps_words:With sio_stop=1 (bool)\nrecfg_bite:With ps_words=1 (bool)\nwd2_bite:With ps_words=1 (bool)\ncluster_ack:With wd2_bite=1 (bool)\nfabric_up:With cluster_ack=1 (bool)\nwd1_mark:With fabric_up=1 (bool)\ngates_mark:With wd1_mark=1 (bool)\nsio_down:With gates_mark=1 (bool)\npcie_down:With gates_mark=1 (bool)\nsio_steps:With gates_mark=1 (bool)\na2_pre:With gates_mark=1 (bool)\nacc_last:With gates_mark=1 (bool)\nlast_look:With wd1_mark=1 (bool)\nll_wake:With last_look=1 (bool)\ngate_look:With last_look=1 (bool)\natc_down:With ps_words=1 (bool)\nblink:With gates_mark=1 (bool)\nwake_all:With gates_mark=1 (bool)\nll_retn:With ll_wake=1 (bool)\nsep_pg:With gates_mark=1 (bool)\ndisp_hs:With disp_off=1 (bool)\nobs_gate:With observe=1 (bool)\nreplay:LAB ONLY (uint)\n",
+             "pmp_out:With alarm=1 (bool)\npmp_stop:With pmp_out=1 (bool)\nposition:With hold=1 (bool)\nsio_on:With position=1 (bool)\ndisp_off:With sio_on=1 (bool)\none_commit:With disp_off=1 (bool)\nsmc_idle:With disp_off=1 (bool)\nsio_stop:With disp_off=1 (bool)\nps_words:With sio_stop=1 (bool)\nrecfg_bite:With ps_words=1 (bool)\nwd2_bite:With ps_words=1 (bool)\ncluster_ack:With wd2_bite=1 (bool)\nfabric_up:With cluster_ack=1 (bool)\nwd1_mark:With fabric_up=1 (bool)\ngates_mark:With wd1_mark=1 (bool)\nsio_down:With gates_mark=1 (bool)\npcie_down:With gates_mark=1 (bool)\nsio_steps:With gates_mark=1 (bool)\na2_pre:With gates_mark=1 (bool)\nacc_last:With gates_mark=1 (bool)\nlast_look:With wd1_mark=1 (bool)\nll_wake:With last_look=1 (bool)\ngate_look:With last_look=1 (bool)\natc_down:With ps_words=1 (bool)\nblink:With gates_mark=1 (bool)\nwake_all:With gates_mark=1 (bool)\nll_retn:With ll_wake=1 (bool)\nsep_pg:With gates_mark=1 (bool)\ndisp_hs:With disp_off=1 (bool)\nsep_ro:With sep_pg=1 (bool)\npw_noread:With ps_words=1 (bool)\nobs_gate:With observe=1 (bool)\nreplay:LAB ONLY (uint)\n",
     "floor-nosiostop": "replay_done:0 not yet (uint)\noneway:Must be 1 for replay=13 or 15 (bool)\n"
                        "cancel:Write 1 to call the replay off (bool)\nquiet:replay=15 only (bool)\n"
                        "m1:With replay=15 oneway=1 quiet=1 only (bool)\nm1_ret:m1: the PMU (int)\nm1_undo:m1: 0x30 (int)\n"
@@ -335,13 +349,21 @@ PARMS["floor-nowakeall"] = PARMS["floor"].replace("wake_all:With gates_mark=1 (b
 PARMS["floor-nollretn"] = PARMS["floor"].replace("ll_retn:With ll_wake=1 (bool)" + "\n", "")
 PARMS["floor-noseppg"] = PARMS["floor"].replace("sep_pg:With gates_mark=1 (bool)" + "\n", "")
 PARMS["floor-nodisphs"] = PARMS["floor"].replace("disp_hs:With disp_off=1 (bool)" + "\n", "")
+PARMS["floor-nosepro"] = PARMS["floor"].replace("sep_ro:With sep_pg=1 (bool)" + "\n", "")
+PARMS["floor-nopwnoread"] = PARMS["floor"].replace("pw_noread:With ps_words=1 (bool)" + "\n", "")
 PARMS["floor-noobsgate"] = PARMS["floor"].replace("obs_gate:With observe=1 (bool)" + "\n", "")
+assert all(len(PARMS[k]) < len(PARMS["floor"]) for k in ("floor-nosepro", "floor-nopwnoread", "floor-nodisphs"))
 
 
 # The kernel's module_blacklist parameter as /sys/module/kernel/parameters/module_blacklist reads in the safe boot
 # sleep-drain-safe boot --no-sep starts, and in a boot where nothing set it.
 BLACKLIST = "apple_sep"
 BLACKLIST_UNSET = "(null)"
+# The SEP driver's directory in sysfs (/sys/bus/platform/drivers/apple_sep) as a boot started with sleep-drain-safe boot --sep-ro
+# has it: one device bound, whose diag/xart says the store is read-only. A value of None: the device has no such attribute; a
+# tuple: a directory in its place, which can't be read.
+SEPDEV = "396400000.sep"
+XART_RO = {SEPDEV: b"disabled\n"}
 
 
 def sysctl(tmp):
@@ -350,7 +372,7 @@ def sysctl(tmp):
 
 def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=PM_TEST, build="floor",
           takes=True, takes_quiet=True, takes_m1=True, takes_observe=True, takes_late=True, takes_alarm=True, takes_hold=True,
-          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, takes_gates=True, takes_siodown=True, takes_pciedown=True, takes_siosteps=True, takes_a2pre=True, takes_acclast=True, takes_lastlook=True, takes_llwake=True, takes_gatelook=True, takes_obsgate=True, takes_atcdown=True, takes_blink=True, takes_wakeall=True, takes_llretn=True, takes_seppg=True, takes_disphs=True, sep_loaded=False, blacklist=BLACKLIST, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
+          takes_nowatch=True, takes_pmp=True, takes_nostop=True, takes_position=True, awake_mark=True, takes_sio=True, pmp_rc=0, takes_disp=True, takes_macend=True, takes_siostop=True, takes_pwords=True, takes_recfg=True, bite_rc=0, takes_wd2=True, wd2_rc=0, takes_ack=True, takes_fab=True, takes_mark=True, takes_gates=True, takes_siodown=True, takes_pciedown=True, takes_siosteps=True, takes_a2pre=True, takes_acclast=True, takes_lastlook=True, takes_llwake=True, takes_gatelook=True, takes_obsgate=True, takes_atcdown=True, takes_blink=True, takes_wakeall=True, takes_llretn=True, takes_seppg=True, takes_disphs=True, takes_sepro=True, takes_pwnoread=True, sep_loaded=None, xart=XART_RO, blacklist=BLACKLIST, insmod_rc=0, tools=True, pmp_stale=False, attached=None, save_rc=0, srcs=None, dmesg="line"):
     script = launcher[0]
     calls = os.path.join(tmp, "calls")
     moddir = os.path.join(tmp, "module")
@@ -391,9 +413,24 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     write(os.path.join(tmp, "kbd", "brightness"), "0\n")
     if loaded:
         os.makedirs(moddir)
-    if sep_loaded:
-        # apple_sep as a loaded module: its directory beside e1_hook's own in /sys/module.
+    # apple_sep as a loaded module: its directory beside e1_hook's own in /sys/module. As a rule only where the option is the one
+    # that is made with it, --m1-sep-ro.
+    if sep_loaded if sep_loaded is not None else is_sepro(launcher):
         os.makedirs(os.path.join(os.path.dirname(moddir), "apple_sep"))
+    # The driver's directory in sysfs: bind, unbind, uevent, a link to its module, and a directory for each bound device.
+    if xart is not None:
+        drv = os.path.join(tmp, "sepdrv")
+        for f in ("bind", "unbind", "uevent"):
+            write(os.path.join(drv, f), "")
+        if "module" not in xart:
+            os.makedirs(os.path.join(drv, "module", "parameters"))
+        for dev, val in xart.items():
+            os.makedirs(os.path.join(drv, dev, "diag"))
+            if isinstance(val, tuple):
+                os.makedirs(os.path.join(drv, dev, "diag", "xart"))
+            elif val is not None:
+                with open(os.path.join(drv, dev, "diag", "xart"), "wb") as f:
+                    f.write(val)
     stubs = os.path.join(tmp, "stubs")
     # The module's directory and its parameters, as the kernel shows them; a
     # build that doesn't know replay and oneway (or quiet, m1, observe,
@@ -433,6 +470,8 @@ def setup(tmp, launcher, reading="ok", safe=True, ac="0", loaded=False, pm_test=
     quiet += f' ll_retn=1) echo Y > {moddir}/parameters/ll_retn ;;' if takes_llretn else ""
     quiet += f' sep_pg=1) echo Y > {moddir}/parameters/sep_pg ;;' if takes_seppg else ""
     quiet += f' disp_hs=1) echo Y > {moddir}/parameters/disp_hs ;;' if takes_disphs else ""
+    quiet += f' sep_ro=1) echo Y > {moddir}/parameters/sep_ro ;;' if takes_sepro else ""
+    quiet += f' pw_noread=1) echo Y > {moddir}/parameters/pw_noread ;;' if takes_pwnoread else ""
     quiet += f' obs_gate=1) echo Y > {moddir}/parameters/obs_gate ;;' if takes_obsgate else ""
     params = (f'for a; do case $a in replay=*) echo "${{a#replay=}}" > {moddir}/parameters/replay ;;'
               f' oneway=1) echo Y > {moddir}/parameters/oneway ;;{quiet} esac; done\n') if takes else ""
@@ -502,6 +541,7 @@ def env(tmp, launcher, watch_s=3):
         prefix + "_AC": os.path.join(tmp, "ac"),
         prefix + "_MODDIR": os.path.join(tmp, "module"),
         prefix + "_BLACKLIST": os.path.join(tmp, "blacklist"),
+        prefix + "_SEP_DRIVER": os.path.join(tmp, "sepdrv"),
         prefix + "_READING": os.path.join(tmp, "stubs", "reading"),
         prefix + "_PM_TEST": os.path.join(tmp, "pm_test"),
         prefix + "_SYSCTL": os.path.join(tmp, "sysctl"),
@@ -743,6 +783,9 @@ def test_refusals(launcher):
     # is loaded or written, wd2-bite's write included; every other option of run-floor goes on as ever with it there.
     if launcher[0] != "run-floor":
         return
+    if is_sepro(launcher):
+        test_sepro_refusals(launcher)
+        return
     with tempfile.TemporaryDirectory() as tmp:
         d = setup(tmp, launcher, sep_loaded=True, reading="ok" if is_seppg(launcher) else "fail")
         r = run(tmp, d, launcher)
@@ -776,7 +819,7 @@ def test_refusals(launcher):
             d = setup(tmp, launcher, blacklist=line, reading="fail")
             r = run(tmp, d, launcher)
             went_on = r.returncode == 1 and "apple_sep" not in r.stderr and [x.split()[0] for x in calls(tmp)] == ["insmod", "reading", "rmmod"]
-            if not is_seppg(launcher):
+            if not keeps_sep_out(launcher):
                 check(went_on, f"{name(launcher)}: {what}: an option that leaves the SEP's wait alone goes on as ever",
                       r.stdout + r.stderr + "\n".join(calls(tmp)))
             elif taken:
@@ -786,6 +829,65 @@ def test_refusals(launcher):
                 check(r.returncode == 1 and policy.replace("TMP", tmp) in r.stderr and calls(tmp) == [] and recfg_calls(tmp) == [] and wd2_calls(tmp) == [] and sysctl(tmp) == ("0", "0"),
                       f"{name(launcher)}: the kernel's module blacklist: {what}: refused, with why and what to do, and nothing loaded or written",
                       r.stdout + r.stderr + "\n".join(calls(tmp) + wd2_calls(tmp)))
+
+
+def test_sepro_refusals(launcher):
+    """--m1-sep-ro's own three conditions, each before anything is loaded or written, wd2-bite's store included: apple_sep loaded,
+    at least one device bound to it, and every such device's diag/xart reading exactly "disabled" and a newline. The kernel's
+    module blacklist, which the other two SEP options go by, isn't asked."""
+    nothing = lambda tmp: calls(tmp) == [] and recfg_calls(tmp) == [] and wd2_calls(tmp) == [] and sysctl(tmp) == ("0", "0")
+    with tempfile.TemporaryDirectory() as tmp:
+        d = setup(tmp, launcher, sep_loaded=False)
+        r = run(tmp, d, launcher)
+        check(r.returncode == 1 and nothing(tmp)
+              and "apple_sep isn't loaded: this run needs the enclave's driver, with its store read-only. It is only made in a safe boot started"
+                  " with: pkexec sleep-drain-safe boot --sep-ro" in r.stderr,
+              f"{name(launcher)}: refuses without apple_sep loaded, though a device's diag/xart says disabled: says why and what to do, and loads and"
+              " writes nothing (no wd2-bite either)", r.stdout + r.stderr + "\n".join(calls(tmp) + wd2_calls(tmp)))
+    shown = "the enclave's driver doesn't show its store read-only: {}. This run is only made with apple_sep's store read-only, in a safe boot started" \
+            " with: pkexec sleep-drain-safe boot --sep-ro; nothing loaded, nothing written"
+    nodev = "no device is bound to apple_sep (TMP)"
+    noread = SEPDEV + "'s diag/xart isn't there or can't be read"
+    odd = SEPDEV + "'s diag/xart reads {}, which isn't exactly \"disabled\" and a newline"
+    DEV2 = "396500000.sep"
+    states = (("one bound device whose diag/xart says disabled", XART_RO, None),
+              ("two bound devices that both say disabled", {SEPDEV: b"disabled\n", DEV2: b"disabled\n"}, None),
+              ("the device says enabled, as in a regular boot", {SEPDEV: b"enabled\n"}, odd.format("$'enabled\\n'")),
+              ("the driver's directory isn't there", None, nodev),
+              ("the driver has no device bound", {}, nodev),
+              ("only the driver's link to its module has the attribute", {"module": b"disabled\n"}, nodev),
+              ("the bound device has no such attribute", {SEPDEV: None}, noread),
+              ("the attribute can't be read", {SEPDEV: ()}, noread),
+              ("the attribute is empty", {SEPDEV: b""}, odd.format("''")),
+              ("the attribute says disabled with no newline", {SEPDEV: b"disabled"}, odd.format("disabled")),
+              ("the attribute says disabled and a line after it", {SEPDEV: b"disabled\nenabled\n"}, odd.format("$'disabled\\nenabled\\n'")),
+              ("the attribute says disabled and a second newline", {SEPDEV: b"disabled\n\n"}, odd.format("$'disabled\\n\\n'")),
+              ("the attribute says disabled with a space", {SEPDEV: b"disabled \n"}, odd.format("$'disabled \\n'")),
+              ("the attribute says DISABLED", {SEPDEV: b"DISABLED\n"}, odd.format("$'DISABLED\\n'")),
+              ("the attribute says 0", {SEPDEV: b"0\n"}, odd.format("$'0\\n'")),
+              ("the second of two devices says enabled", {SEPDEV: b"disabled\n", DEV2: b"enabled\n"}, DEV2 + odd.format("$'enabled\\n'")[len(SEPDEV):]),
+              ("the first of two devices says enabled", {SEPDEV: b"enabled\n", DEV2: b"disabled\n"}, odd.format("$'enabled\\n'")),
+              ("the second of two devices has no attribute", {SEPDEV: b"disabled\n", DEV2: None}, DEV2 + noread[len(SEPDEV):]))
+    for what, xart, why in states:
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, launcher, xart=xart, reading="fail")
+            r = run(tmp, d, launcher)
+            if why is None:
+                check(r.returncode == 1 and "apple_sep" not in r.stderr and "diag/xart" not in r.stderr and [x.split()[0] for x in calls(tmp)] == ["insmod", "reading", "rmmod"]
+                      and wd2_calls(tmp) != [],
+                      f"{name(launcher)}: apple_sep loaded and {what}: the store is shown read-only, and the run goes on", r.stdout + r.stderr + "\n".join(calls(tmp)))
+            else:
+                check(r.returncode == 1 and shown.format(why.replace("TMP", os.path.join(tmp, "sepdrv"))) in r.stderr and nothing(tmp),
+                      f"{name(launcher)}: apple_sep loaded and {what}: refused, with what was read and what to do, and nothing loaded or written (no wd2-bite either)",
+                      r.stdout + r.stderr + "\n".join(calls(tmp) + wd2_calls(tmp)))
+    # The kernel's module blacklist isn't this option's to ask: unset, as in the boot --sep-ro starts, or anything else.
+    for what, line in (("not set, as in the boot sleep-drain-safe boot --sep-ro starts", BLACKLIST_UNSET), ("no file to read", None), ("another module", "foo")):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = setup(tmp, launcher, blacklist=line, reading="fail")
+            r = run(tmp, d, launcher)
+            check(r.returncode == 1 and "apple_sep" not in r.stderr and [x.split()[0] for x in calls(tmp)] == ["insmod", "reading", "rmmod"],
+                  f"{name(launcher)}: the kernel's module blacklist: {what}: not asked by this option, which needs the driver: the run goes on",
+                  r.stdout + r.stderr + "\n".join(calls(tmp)))
 
 
 def test_floor_refusals(launcher):
@@ -897,11 +999,14 @@ def test_floor_refusals(launcher):
         cases.append(("a build without sep_pg", dict(build="floor-noseppg"), None, "without sep_pg"))
     if is_disphs(launcher):
         cases.append(("a build without disp_hs", dict(build="floor-nodisphs"), None, "without disp_hs"))
+    if is_sepro(launcher):
+        cases.append(("a build without sep_ro", dict(build="floor-nosepro"), None, "without sep_ro"))
+        cases.append(("a build without pw_noread", dict(build="floor-nopwnoread"), None, "without pw_noread"))
     if obsgate:
         cases.append(("a build without obs_gate", dict(build="floor-noobsgate"), None, "without obs_gate"))
     if plain:
         # The floor's build before quiet still runs the floor itself.
-        usage = "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn | --m1-sep-pg | --m1-disp-hs]"
+        usage = "usage: run-floor [--quick | --no-reading] [--quiet | --m1 | --m1-observe | --m1-late | --m1-alarm | --m1-hold | --m1-hold-nowatch | --m1-pmp | --m1-pmp-idle | --m1-position | --m1-sio-pmp | --m1-disp-off | --m1-macos-end | --m1-sio-stop | --m1-power-words | --m1-recfg-bite | --m1-wd2-bite | --m1-cluster-ack | --m1-fabric-up | --m1-mark | --m1-gates | --m1-sio-down | --m1-pcie-down | --m1-sio-steps | --m1-a2-pre | --m1-acc-last | --m1-last-look | --m1-last-look-wake | --m1-gate-look | --m1-obs-gate | --m1-atc-down | --m1-a2-pre-blink | --m1-wake-all | --m1-ll-retn | --m1-sep-pg | --m1-disp-hs | --m1-sep-ro]"
         cases += [("an unknown argument", {}, ["--loud"], usage),
                   ("a second argument", {}, ["--quiet", "--quiet"], usage),
                   ("--quiet and --m1 together", {}, ["--quiet", "--m1"], usage),
@@ -959,6 +1064,11 @@ def test_floor_refusals(launcher):
                   ("--m1-disp-hs twice", {}, ["--m1-disp-hs", "--m1-disp-hs"], usage),
                   ("--no-reading after --m1-disp-hs", {}, ["--m1-disp-hs", "--no-reading"], usage),
                   ("--disp-hs alone", {}, ["--disp-hs"], usage),
+                  ("--m1-sep-ro and --m1-disp-hs together", {}, ["--m1-sep-ro", "--m1-disp-hs"], usage),
+                  ("--m1-sep-ro and --m1-sep-pg together", {}, ["--m1-sep-pg", "--m1-sep-ro"], usage),
+                  ("--m1-sep-ro twice", {}, ["--m1-sep-ro", "--m1-sep-ro"], usage),
+                  ("--no-reading after --m1-sep-ro", {}, ["--m1-sep-ro", "--no-reading"], usage),
+                  ("--sep-ro alone", {}, ["--sep-ro"], usage),
                   ("--m1-late and --m1-obs-gate together", {}, ["--m1-late", "--m1-obs-gate"], usage),
                   ("--m1-acc-last and --m1-last-look together", {}, ["--m1-acc-last", "--m1-last-look"], usage),
                   ("--no-reading after the recipe", {}, ["--m1-last-look", "--no-reading"], usage),
@@ -1049,6 +1159,9 @@ def test_floor_refusals(launcher):
         ignored.append(("sep_pg", dict(takes_seppg=False)))
     if is_disphs(launcher):
         ignored.append(("disp_hs", dict(takes_disphs=False)))
+    if is_sepro(launcher):
+        ignored.append(("sep_ro", dict(takes_sepro=False)))
+        ignored.append(("pw_noread", dict(takes_pwnoread=False)))
     if is_obsgate(launcher):
         ignored.append(("obs_gate", dict(takes_obsgate=False)))
     for what, kw in ignored:
