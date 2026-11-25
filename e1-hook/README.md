@@ -426,14 +426,31 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
     `drivers/soc/apple/diag_shim.c`, as the brief for this build quotes it: `"enabled"` or `"disabled"`,
     registered at probe from the mode the store was opened in, removed at unbind; on this Mac
     `/sys/bus/platform/devices/396400000.sep/diag/xart`, which read `enabled` in the regular boot of
-    2026-11-24). `m1_sro_proof()` reads it in the kernel, through the VFS as user space would
-    (`filp_open()` of `"/sys"` + the device's kobject path + `"/diag/xart"`, read-only; `kernel_read()` of 16
-    bytes and then of one more; `filp_close()`), for every device under an `apple,sep` node that has a
-    driver. There has to be at least one, and each has to read exactly `disabled` and a newline with the
-    file's end after it (`sro_xart_ro()`). No such file, a read that fails, `enabled` or anything else: the
-    load is refused (-EBUSY), and at the prepare the replay is called off as it is for a bound driver
-    without `sep_ro=1` (`replay_done` 2, nothing stopped or written, prepare_late fails the suspend and
-    the Mac wakes).
+    2026-11-24). `m1_sro_proof()` asks it of the device itself, not of a path: a path is resolved in the
+    task's own view of the filesystem, and says nothing about whose bytes come back (Pullfrog on #134).
+    For every device under an `apple,sep` node, `m1_sro_xart()` takes the device's lock (waited for at the
+    load; only tried at the prepare, where a lock that is held is no proof) and under it needs: a driver
+    bound, named exactly `apple_sep`; the device's own node in sysfs (`dev->kobj.sd`) with a directory
+    `diag` that is an attribute group of the device's own kobject (the driver imports
+    `devm_device_add_group()`; a directory owned by any other kobject is no proof); in it a file `xart` of
+    an attribute's size; and that attribute's show, called as sysfs calls it (the device kobject's
+    `sysfs_ops`, with the `struct attribute` the node carries) into a zeroed page, returning exactly
+    `disabled` and a newline with the string's end after it (`sro_xart_ro()`). Both node references are
+    put back, the page freed and the lock dropped on every way out. There has to be at least one such
+    device, and one that has a driver and doesn't pass is no proof for all. No driver, another driver, no
+    such node, a lock that can't be had at the prepare, `enabled` or anything else: the load is refused
+    (-EBUSY), and at the prepare the replay is called off as it is for a bound driver without `sep_ro=1`
+    (`replay_done` 2, nothing stopped or written, prepare_late fails the suspend and the Mac wakes).
+    Why the show is called and the file not opened: the kernel exports `kernfs_find_and_get_ns()` and
+    `kernfs_put()` to GPL modules, and nothing that ties an open file to its kernfs node
+    (`kernfs_node_from_dentry()` isn't exported), so a file opened by path couldn't be proved to be that
+    node. The lock stands in for the active reference a read through sysfs holds: a driver is unbound, and
+    its devres group removed, only under that lock. It rests on two things about the driver's show: it
+    takes no lock of the device's (it would never return), and it reads a flag and touches no hardware.
+    Both hold for the `apple-sep.ko` of 7.2.11-15-1-ARCH by its disassembly (2026-11-24; the source wasn't
+    read): `xart_show()` loads one byte of the module's own data, picks one of two strings and calls
+    `sysfs_emit()`. A later build of the driver isn't covered by that: look again after a kernel update
+    (`objdump -dr --disassemble=xart_show` on the unpacked module).
   - Both places then poll the SEP's power word for actual state 0, up to 5 s in sleeping steps of 10 ms
     (`m1_sro_wait()`): `m1_sp_init()` refuses the load if it never reads 0 ("the enclave isn't power-gated
     in this boot ... the run would learn nothing"), and the prepare calls the replay off the same way,
@@ -444,19 +461,27 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
     reads 0x2922c0044 right before that decision (the word is read right after the control word's
     read-back in every `sep_pg=1` run), so that the clear lies between two samples of one interrupts-off
     stretch. That first sample goes to the PMU's 0x6008 as `0x80 | nibble` (`sro_byte()`), in step 8, after
-    that step's record and before 0x6009's byte; K1 leaves 0x10 there until it lands (`SRO_ARMED`), and
+    that step's record and after 0x6009's byte (the run's first result goes first: a command that fails
+    stops every later one); K1 leaves 0x10 there until it lands (`SRO_ARMED`), and
     `m1_pmu_ok()` lets a `sep_ro=1` run write only those there (`sro_ok()`). It is in `wake_all=1`'s place,
     which is why the two never load together.
   `e1-hook/m1-crumbs` reads 0x6008 under the stages it reads 0x6009 under, sets the two samples side by
   side when both landed, and says "bit 2 clear before the write and set after it" only if the write was
   made, the clear read back, the first sample had bit 2 clear and the second had it set. A clear that was
   skipped (the enclave read powered) or that didn't read back is said to be no test of the wait bit, and
-  nothing is concluded from the samples. The sysfs read at the prepare is made by the task that asked for
-  the suspend, with user space frozen and the devices suspended: it sleeps and allocates, which that
-  callback may (K3b's and K5's steps do); the attribute's show is taken to read a flag and touch no
-  hardware (inferred from the one line quoted, not read in the source); it needs sysfs at `/sys` for that
-  task, and if the open or the read fails the replay is called off. No MMIO write is new.
-- `pw_noread=1` (`run-floor --m1-sep-ro`, on `ps_words=1` and `atc_down=1`) leaves out every read of the four
+  nothing is concluded from the samples. Under step 7's own stage (0x39) a byte that landed is read with a
+  line saying what that stage establishes: no newer stage was kept, and nothing about which of the two
+  bytes could have landed. K1's mark still at 0x6009 with 0x6008's byte landed is said to be a command
+  that was acked and lost, since 0x6008's goes out after it. And the gate byte's own line (0x6016) gives
+  the reading of 0x28e5a0050 and leaves what follows to PLAN.md whenever the record is a later recipe's
+  (`pw_noread=1`'s mark, or `sep_ro=1`'s, `sep_pg=1`'s or `disp_hs=1`'s bytes or marks): only
+  `--m1-gates`' own record still says `a2_pre=1` is next. The proof at the prepare is asked by the task
+  that asked for the suspend, with user space frozen and the devices suspended: it may allocate there
+  (K3b's and K5's steps do), and it tries each lock and waits for none. No MMIO write is new.
+- `pw_noread=1` (`run-floor --m1-sep-ro`, on `ps_words=1` and `atc_down=1`; never with `sio_down=1`,
+  `pcie_down=1`, `last_look=1` or `probe=1`, whose own steps read one of the words or APCIE_GP 0x28e080150
+  after step 5: the load is refused, `m1_pwn_reader()`; `ll_wake=1`, `gate_look=1` and `ll_retn=1` need
+  `last_look=1`) leaves out every read of the four
   fabric-group power words once they are written: PCIE0_REF (0x28e080138), APCIE_GP_SYS (0x28e080320),
   AFNC1_LW2 (0x28e080220) and AFNC2_LW1 (0x28e580160). The reference says: "reading the three apcie PS words
   this late on the way down left the SoC stuck before sleep in 4 runs out of 4" (its three are 0x28e080138,

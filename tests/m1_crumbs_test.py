@@ -8550,10 +8550,10 @@ def wake_all_tests(g, src):
                               "\t\twritel(wake_all ? U32_MAX : m1_wake_mask[i], m1_aon + 4 * i);",
                               "\n\tfor (i = 0; i < M1_SPMI_WORDS; i++)\n\t\twritel(0, m1_spmi + M1_SPMI_EN(i));\n",
                               "\tif (wake_all)\n\t\twa = m1_wa_read();\n\t/*\n\t * sep_pg=1:", "\n\t/* 8 */\n\tm1_quiet_core();\n", "\tif (m1_raw && m1_spmi_raw(false, M1_PMU_RTC, rtc, 6))\n",
-                              "\tm1_crumb(0x6010, b, 7);\n", "\tif (wake_all)\n\t\tm1_crumb(LL_AT, &wa, 1);\n\t/* sep_ro=1:", "\t/* wd1_mark=1: does the marker stand?",
+                              "\tm1_crumb(0x6010, b, 7);\n", "\tif (wake_all)\n\t\tm1_crumb(LL_AT, &wa, 1);\n\t/* sep_pg=1:", "\t/* wd1_mark=1: does the marker stand?",
                               "\t\tm1_crumb(0x6004, b, 4);\n\t\tif (sio_stop) {", "\tif (a2_pre)\n\t\tm1_gates = m1_a2_pre();\n", "/* 9 */",
                               "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));", "\tlocal_daif_mask();", "writel_relaxed(1, commit);"])
-          and re.search(r"\tm1_crumb\(0x6010, b, 7\);\n\t/\*[^/]*\*/\n\tif \(wake_all\)\n\t\tm1_crumb\(LL_AT, &wa, 1\);\n\t/\* sep_ro=1", after)
+          and re.search(r"\tm1_crumb\(0x6010, b, 7\);\n\t/\*[^/]*\*/\n\tif \(wake_all\)\n\t\tm1_crumb\(LL_AT, &wa, 1\);\n\t/\* sep_pg=1", after)
           and after.index("\tif (sep_pg)\n\t\tsp = m1_sp_clear();\n") > after.index("\t\twa = m1_wa_read();\n")
           and "\tu8 wa = 0;\t/* wake_all=1: the byte m1_wa_read() makes in step 7, sent in step 8 */\n" in after
           and len(re.findall(r"\bm1_wa_read\(", code_only)) == 2 and len(re.findall(r"writel\([^;]*\bm1_aon\b", code_only)) == 1
@@ -8728,7 +8728,7 @@ def wake_all_tests(g, src):
         rc5, out5, err5, _, _ = wdec(b"\xf0", 0xb9)
         rc6, out6, err6, _, after6 = wdec(b"\xf0", 0xb9, clear=True)
         check(rc5 == 0 and head in out5
-              and "  the stage, 0x39, is step 7's own, still the stage when the byte goes out: this byte landed and no later command did\n" in out5
+              and "  the stage, 0x39, is step 7's own, still the stage when this byte goes out: the byte landed, and no newer stage was kept after it (the next stage's command comes after the options' bytes: it failed, or wasn't reached)\n" in out5
               and "  0x6008 = 0xf0, " + named + unnamed + none in out5 and "NOT READ" not in out5 and "last_look=1" not in out5
               and rc6 == 0 and not any(after6[0x6008:0x600f]) and "0x6004-0x600e" in out6,
               "wake_all=1's byte under step 7's own stage (0xb9, 0x39 with pmp_out=1's bit): read as the run's, with a line saying no later command landed, and cleared with the rest",
@@ -8985,37 +8985,52 @@ SEP_STUBS = r"""
 #define pr_info(...) printf("info " __VA_ARGS__)
 #define static_assert(...) _Static_assert(__VA_ARGS__, "")
 #define GFP_KERNEL 0
-#define O_RDONLY 0
-#define O_WRONLY 1
-#define O_RDWR 2
-#define ENOENT 2
 #define EIO 5
-#define IS_ERR(p) ((uintptr_t)(p) >= (uintptr_t)-4095)
-#define PTR_ERR(p) ((long)(p))
+#define PAGE_SIZE 0x4000UL
+/* sysfs as a module sees it: kernfs nodes, each a directory or a file, with the kobject or the attribute it carries. */
+#define KERNFS_DIR 0x0001
+#define KERNFS_FILE 0x0002
 struct device_node {
 	int unused;
 };
 struct device_driver {
 	const char *name;
 };
+struct attribute {
+	const char *name;
+};
+struct kobject;
+struct sysfs_ops {
+	ssize_t (*show)(struct kobject *, struct attribute *, char *);
+};
+struct kobj_type {
+	const struct sysfs_ops *sysfs_ops;
+};
+struct kernfs_elem_attr {
+	long long size;
+};
+struct kernfs_node {
+	unsigned short flags;
+	void *priv;
+	struct kernfs_elem_attr attr;
+	int refs;
+};
 struct kobject {
-	int unused;
+	struct kernfs_node *sd;
+	const struct kobj_type *ktype;
+	struct kobject *parent;
 };
 struct device {
 	struct device_driver *driver;
 	struct kobject kobj;
-};
-struct file {
-	int dev;
-	unsigned int reads;
 };
 struct platform_device {
 	struct device dev;
 };
 static struct device_node sep_node[3];
 static struct platform_device sep_pdev[3];
-static struct device_driver sep_drv = { "apple_sep" };
-static int sep_nodes = 1, sep_devs = 1, sep_bound = -1, locked;
+static struct device_driver sep_drv[3] = { { "apple_sep" }, { "apple_sep" }, { "apple_sep" } };
+static int sep_nodes = 1, sep_devs = 1, sep_bound = -1, locked, held = -1, lock_of[3];
 static struct device_node *of_find_compatible_node(struct device_node *from, const char *type, const char *compat)
 {
 	int next = from ? (int)(from - sep_node) + 1 : 0;
@@ -9032,18 +9047,37 @@ static struct platform_device *of_find_device_by_node(struct device_node *np)
 
 	printf("device %d\n", i);
 	/* sep_bound -2: every device has a driver. */
-	sep_pdev[i].dev.driver = i == sep_bound || sep_bound == -2 ? &sep_drv : NULL;
+	sep_pdev[i].dev.driver = i == sep_bound || sep_bound == -2 ? &sep_drv[i] : NULL;
 	return i < sep_devs ? &sep_pdev[i] : NULL;
 }
+/* The device's lock: taken, tried and dropped, each logged. The device numbered held has it taken by somebody else. */
+static int device_trylock(struct device *dev) __attribute__((unused));
 static void device_lock(struct device *dev)
 {
-	printf("lock %d\n", (int)((struct platform_device *)dev - sep_pdev));
+	const int i = (int)((struct platform_device *)dev - sep_pdev);
+
+	printf("lock %d%s\n", i, i == held ? " WOULD BLOCK" : "");
 	locked++;
+	lock_of[i]++;
+}
+static int device_trylock(struct device *dev)
+{
+	const int i = (int)((struct platform_device *)dev - sep_pdev);
+
+	printf("trylock %d%s\n", i, i == held ? " busy" : "");
+	if (i == held)
+		return 0;
+	locked++;
+	lock_of[i]++;
+	return 1;
 }
 static void device_unlock(struct device *dev)
 {
-	printf("unlock %d\n", (int)((struct platform_device *)dev - sep_pdev));
+	const int i = (int)((struct platform_device *)dev - sep_pdev);
+
+	printf("unlock %d\n", i);
 	locked--;
+	lock_of[i]--;
 }
 static void put_device(struct device *dev)
 {
@@ -9053,12 +9087,18 @@ static bool sep_pg, disp_hs, disp_off, sio_stop, sep_ro;
 static unsigned int replay_done;
 /*
  * sep_ro=1. The module's clock, which only a sleep moves, and the SEP's power word in SIO's page, which reads powered until
- * gate_ms have passed (-1: for good) and off from then on. And sysfs as m1_sro_xart() asks for it: the device's path from its
- * kobject, the file opened by that path, read and closed, every call logged. xart has one letter per device for what its
- * diag/xart holds: d "disabled" and a newline, e "enabled" and a newline, 0 nothing, n "disabled" with no newline, j
- * "disabled", a newline and a letter, t "disabled", a newline and 20 bytes more, w 16 bytes that begin "disabled" and a
- * newline, x no such file, r a read that fails, m "disabled" and a newline and then a second read that fails, s "disabled",
- * a newline and a letter from a file that hands out nine bytes a read at most.
+ * gate_ms have passed (-1: for good) and off from then on. And each device's own corner of sysfs, as m1_sro_xart() asks
+ * for it: the device's kobject with its node, a "diag" under it and an "xart" in that, found by name with a reference
+ * taken and put back, and the show of whichever kobject owns the directory. xart has one letter per device for what is
+ * there. What the attribute says: d "disabled" and a newline, e "enabled" and a newline, 0 nothing, n "disabled" with no
+ * newline, j "disabled", a newline and a letter, t "disabled", a newline and 20 bytes more, w 16 bytes that begin
+ * "disabled" and a newline, r "disabled" and a newline written and an error returned, s "disabled", a newline and a
+ * letter written and 9 returned, p a page of letters and the page's size returned. What is wrong with the nodes: x no
+ * diag, D a diag that is a file, g a diag owned by a kobject that is neither the device's nor right under it, G a diag
+ * that carries no kobject, f no xart, F an xart that is a directory, b an xart of another size than an attribute's, q an
+ * xart that carries no attribute, k an owner with no type, K a type with no operations, o operations with no show, S a
+ * device with no node at all, z no page to be had. And c and C: a diag that is a kobject of its own right under the
+ * device's, whose own show would say "disabled" or "enabled": not the device's attribute group, and never asked.
  */
 static u32 sio_pg[0x4000 / 4];
 static void *m1_sio = sio_pg;
@@ -9088,82 +9128,133 @@ static u32 readl(const void *p)
 		printf("r P\n");	/* the first read is logged, the polls' are counted by their sleeps */
 	return gate_ms < 0 || fake_now < (u64)gate_ms * (m1_tps / 1000) ? 0x100003ff : 0x1000030f;
 }
-static char *kobject_get_path(const struct kobject *kobj, int gfp)
+static struct kernfs_node dev_kn[3], diag_kn[3], xart_kn[3];
+static struct kobject diag_kobj[3], stranger;
+static struct attribute xart_attr[3] = { { "xart" }, { "xart" }, { "xart" } };
+static int pages;
+static const char *dev_name(const struct device *dev)
 {
-	int i = (int)((const struct platform_device *)((const char *)kobj - offsetof(struct platform_device, dev.kobj)) - sep_pdev);
-	char *path = malloc(64);
+	static const char *const names[3] = { "396400000.sep", "396400001.sep", "396400002.sep" };
 
-	(void)gfp;
-	printf("path %d\n", i);
-	snprintf(path, 64, "/devices/platform/soc/39640000%d.sep", i);
-	return path;
+	return names[(const struct platform_device *)dev - sep_pdev];
 }
-static char *kasprintf(int gfp, const char *fmt, ...)
+/* What the attribute of device i says, written into the page as sysfs_emit() would, and the count it returns. */
+static ssize_t xart_says(int i, char *page)
 {
-	char *out = malloc(256);
-	va_list ap;
+	const char k = xart[i];
+	const char *all = k == 'd' || k == 'r' || k == 'c' ? "disabled\n" : k == 'e' || k == 'C' ? "enabled\n" : k == 'n' ? "disabled" :
+			  k == 'j' || k == 's' ? "disabled\nx" : k == 't' ? "disabled\n01234567890123456789" : k == 'w' ? "disabled\n1234567" : "";
 
-	(void)gfp;
-	va_start(ap, fmt);
-	vsnprintf(out, 256, fmt, ap);
-	va_end(ap);
-	return out;
+	if (((unsigned long)page & (PAGE_SIZE - 1)) || page[0] || page[PAGE_SIZE - 1])
+		printf("show %d: the page isn't a zeroed page of its own\n", i);
+	if (k == 'p') {
+		memset(page, 'd', PAGE_SIZE);
+		return (ssize_t)PAGE_SIZE;
+	}
+	strcpy(page, all);
+	return k == 'r' ? -EIO : k == 's' ? 9 : (ssize_t)strlen(all);
 }
-static void kfree(const void *p)
+/* The device's own show, and a kobject's: each says whose attribute it was handed and whether the device's lock is held. */
+static ssize_t dev_show(struct kobject *kobj, struct attribute *attr, char *page)
 {
-	free((void *)p);
-}
-/* A read of the attribute that leaves one of these calls out still builds: its log shows what it didn't do. */
-static ssize_t kernel_read(struct file *f, void *buf, size_t n, loff_t *pos) __attribute__((unused));
-static int filp_close(struct file *f, void *id) __attribute__((unused));
-static void kfree(const void *p) __attribute__((unused));
-static struct file xfile;
-static struct file *filp_open(const char *path, int flags, int mode)
-{
-	static const char head[] = "/sys/devices/platform/soc/39640000", tail[] = ".sep/diag/xart";
-	const size_t n = strlen(path);
-	int i;
+	int i = (int)((struct platform_device *)((char *)kobj - offsetof(struct platform_device, dev.kobj)) - sep_pdev);
 
-	printf("open %s %d %d\n", path, flags, mode);
-	if (n != sizeof(head) + sizeof(tail) - 1 || strncmp(path, head, sizeof(head) - 1) || strcmp(path + sizeof(head), tail))
-		return (struct file *)(long)-ENOENT;
-	i = path[sizeof(head) - 1] - '0';
-	if (i < 0 || i >= (int)strlen(xart) || xart[i] == 'x')
-		return (struct file *)(long)-ENOENT;
-	xfile.dev = i;
-	xfile.reads = 0;
-	return &xfile;
-}
-static ssize_t kernel_read(struct file *f, void *buf, size_t n, loff_t *pos)
-{
-	const char k = xart[f->dev];
-	const char *all = k == 'd' || k == 'm' ? "disabled\n" : k == 'e' ? "enabled\n" : k == 'n' ? "disabled" : k == 'j' || k == 's' ? "disabled\nx" :
-			  k == 't' ? "disabled\n01234567890123456789" : k == 'w' ? "disabled\n1234567" : "";
-	const size_t len = strlen(all);
-	size_t got = (size_t)*pos < len ? len - (size_t)*pos : 0;
-
-	if (got > n)
-		got = n;
-	if (k == 's' && got > 9)
-		got = 9;
-	if (k == 'r' || (k == 'm' && f->reads)) {
-		printf("read %d %zu at %lld: error\n", f->dev, n, (long long)*pos);
-		f->reads++;
+	if (i < 0 || i > 2 || kobj != &sep_pdev[i].dev.kobj) {
+		printf("show: the device's show called with a kobject that isn't a device's\n");
 		return -EIO;
 	}
-	memcpy(buf, all + *pos, got);
-	printf("read %d %zu at %lld: %zu\n", f->dev, n, (long long)*pos, got);
-	*pos += (loff_t)got;
-	f->reads++;
-	return (ssize_t)got;
+	printf("show %d device%s%s\n", i, attr == &xart_attr[i] ? "" : " WRONG ATTRIBUTE", lock_of[i] ? "" : " UNLOCKED");
+	return xart_says(i, page);
 }
-static int filp_close(struct file *f, void *id)
+static ssize_t kobj_show(struct kobject *kobj, struct attribute *attr, char *page)
 {
-	printf("close %d%s\n", f->dev, id ? " ID" : "");
-	return 0;
+	int i = (int)(kobj - diag_kobj);
+
+	if (i < 0 || i > 2) {
+		printf("show: a kobject's show called with a kobject that isn't the directory's\n");
+		return -EIO;
+	}
+	printf("show %d kobject%s%s\n", i, attr == &xart_attr[i] ? "" : " WRONG ATTRIBUTE", lock_of[i] ? "" : " UNLOCKED");
+	return xart_says(i, page);
+}
+static const struct sysfs_ops dev_ops = { dev_show }, kobj_ops = { kobj_show }, no_show = { NULL };
+static const struct kobj_type dev_type = { &dev_ops }, kobj_ktype = { &kobj_ops }, no_ops = { NULL }, no_show_type = { &no_show };
+/* Device i's kobject and nodes, made as its letter says. */
+static void sysfs_make(int i)
+{
+	const char k = i < (int)strlen(xart) ? xart[i] : 'x';
+	struct kobject *dk = &sep_pdev[i].dev.kobj, *owner = k == 'c' || k == 'C' ? &diag_kobj[i] : k == 'g' ? &stranger : k == 'G' ? NULL : dk;
+
+	dk->sd = k == 'S' ? NULL : &dev_kn[i];
+	dk->ktype = k == 'k' ? NULL : k == 'K' ? &no_ops : k == 'o' ? &no_show_type : &dev_type;
+	dk->parent = NULL;
+	diag_kobj[i].parent = dk;
+	diag_kobj[i].ktype = &kobj_ktype;
+	stranger.ktype = &dev_type;
+	dev_kn[i].flags = KERNFS_DIR;
+	dev_kn[i].priv = dk;
+	diag_kn[i].flags = k == 'D' ? KERNFS_FILE : KERNFS_DIR;
+	diag_kn[i].priv = owner;
+	xart_kn[i].flags = k == 'F' ? KERNFS_DIR : KERNFS_FILE;
+	xart_kn[i].priv = k == 'q' ? NULL : &xart_attr[i];
+	xart_kn[i].attr.size = k == 'b' ? 9 : (long long)PAGE_SIZE;
+}
+static unsigned int kernfs_type(struct kernfs_node *kn)
+{
+	return kn->flags & 0xf;
+}
+static void kernfs_put(struct kernfs_node *kn) __attribute__((unused));
+static void free_page(unsigned long addr) __attribute__((unused));
+static struct kernfs_node *kernfs_find_and_get(struct kernfs_node *parent, const char *name)
+{
+	int i = (int)(parent - dev_kn), j = (int)(parent - diag_kn);
+	struct kernfs_node *kn = NULL;
+
+	if (i >= 0 && i < 3 && !strcmp(name, "diag") && xart[i] != 'x')
+		kn = &diag_kn[i];
+	else if (j >= 0 && j < 3 && !strcmp(name, "xart") && xart[j] != 'f')
+		kn = &xart_kn[j];
+	printf("find %s %d: %s\n", name, i >= 0 && i < 3 ? i : j >= 0 && j < 3 ? j : -1, kn ? "got" : "none");
+	if (kn)
+		kn->refs++;
+	return kn;
+}
+static void kernfs_put(struct kernfs_node *kn)
+{
+	int i = (int)(kn - diag_kn), j = (int)(kn - xart_kn);
+
+	printf("put %s %d\n", i >= 0 && i < 3 ? "diag" : "xart", i >= 0 && i < 3 ? i : j);
+	kn->refs--;
+}
+static unsigned long get_zeroed_page(int gfp)
+{
+	(void)gfp;
+	if (strchr(xart, 'z')) {
+		printf("page: none\n");
+		return 0;
+	}
+	printf("page\n");
+	pages++;
+	return (unsigned long)memset(aligned_alloc(PAGE_SIZE, PAGE_SIZE), 0, PAGE_SIZE);
+}
+static void free_page(unsigned long addr)
+{
+	printf("free\n");
+	pages--;
+	free((void *)addr);
+}
+/* What every run ends with: the references, the pages and the locks still held. All three have to be 0. */
+static void balance(void)
+{
+	int i, refs = 0;
+
+	for (i = 0; i < 3; i++)
+		refs += diag_kn[i].refs + xart_kn[i].refs;
+	printf("left: %d references, %d pages, %d locks\n", refs, pages, locked);
 }
 static bool m1_sro_wait(u32 *last);
-static bool m1_sro_proof(const char **why);
+static bool m1_sro_wait(u32 *last);
+static bool m1_sro_proof(const char **why, bool wait);
 static void m1_dcp_shutdown(void)
 {
 	printf("dcp shutdown\n");
@@ -9175,9 +9266,11 @@ static void m1_sio_fw_stop(void)
 static bool m1_sep_bound(bool locked);
 """
 # argv: what to run (bound: m1_sep_bound(); recheck: m1_sep_recheck(); prepare: e1_prepare()'s last lines; proof:
-# m1_sro_proof(); wait: m1_sro_wait()); locked; how many nodes, how many of them with a device, which one's device has a
-# driver (-1: none; -2: all); sep_pg, disp_hs, disp_off, sio_stop; which prepare this is; replay_done as found; sep_ro; what
-# each device's diag/xart holds; how long the SEP's power word reads powered, in ms (-1: for good).
+# m1_sro_proof(); wait: m1_sro_wait()); locked (for the proof: whether it waits for each device's lock, as the load does); how
+# many nodes, how many of them with a device, which one's device has a driver (-1: none; -2: all); sep_pg, disp_hs, disp_off,
+# sio_stop; which prepare this is; replay_done as found; sep_ro; what each device has in sysfs, a letter each; how long the
+# SEP's power word reads powered, in ms (-1: for good); the drivers' names, one per device with commas between ("-": a driver
+# with no name); the device whose lock somebody else holds (-1: none).
 SEP_MAIN = r"""
 static void prepare_tail(unsigned int n)
 {
@@ -9185,11 +9278,21 @@ static void prepare_tail(unsigned int n)
 
 int main(int argc, char **argv)
 {
-	if (argc != 15)
+	char names[96], *nm;
+	int i;
+
+	if (argc != 17)
 		return 2;
 	sep_ro = atoi(argv[12]);
 	xart = argv[13];
 	gate_ms = atol(argv[14]);
+	strncpy(names, argv[15], sizeof(names) - 1);
+	names[sizeof(names) - 1] = 0;
+	for (i = 0, nm = strtok(names, ","); i < 3 && nm; i++, nm = strtok(NULL, ","))
+		sep_drv[i].name = strcmp(nm, "-") ? strdup(nm) : NULL;
+	held = atoi(argv[16]);
+	for (i = 0; i < 3; i++)
+		sysfs_make(i);
 	sep_nodes = atoi(argv[3]);
 	sep_devs = atoi(argv[4]);
 	sep_bound = atoi(argv[5]);
@@ -9204,7 +9307,7 @@ int main(int argc, char **argv)
 		printf("off %%d\n", m1_sep_recheck((unsigned int)atoi(argv[10])));
 	else if (!strcmp(argv[1], "proof")) {
 		const char *why = "-";
-		const bool ok = m1_sro_proof(&why);
+		const bool ok = m1_sro_proof(&why, atoi(argv[2]));
 
 		printf("proof %%d\nwhy %%s\n", ok, ok ? "-" : why);
 	} else if (!strcmp(argv[1], "wait")) {
@@ -9216,6 +9319,8 @@ int main(int argc, char **argv)
 		prepare_tail((unsigned int)atoi(argv[10]));
 	if (sleeps)
 		printf("slept %%u times, %%llu ms\n", sleeps, (unsigned long long)(fake_now / (m1_tps / 1000)));
+	if (sep_ro)
+		balance();
 	printf("done %%u\n", replay_done);
 	return 0;
 }
@@ -9323,9 +9428,9 @@ def sep_pg_tests(g, src):
     recheck_fn = cut("static bool m1_sep_recheck(unsigned int n)", "\n}\n")
     # sep_ro=1's three: the wait for the SEP's power word, the read of the device's diag/xart, and the proof over every bound device.
     wait_fn = cut("static bool m1_sro_wait(u32 *last)\n{", "\n}\n")
-    xart_fn = ("".join(line + "\n" for line in src.splitlines() if re.match(r"#define M1_SYSFS\s", line))
-               + cut("static bool m1_sro_xart(struct device *dev)\n{", "\n}\n"))
-    proof_fn = cut("static bool m1_sro_proof(const char **why)\n{", "\n}\n")
+    xart_fn = ("".join(line + "\n" for line in src.splitlines() if re.match(r"#define M1_SEP_DRIVER\s", line))
+               + cut("static int m1_sro_xart(struct device *dev, bool wait)\n{", "\n}\n"))
+    proof_fn = cut("static bool m1_sro_proof(const char **why, bool wait)\n{", "\n}\n")
     prep = cut("static int e1_prepare(void)", "\n}\n")
     # e1_prepare()'s lines from the check of the SEP's device to its end, as they stand.
     prep_tail = prep[prep.index("\t/* sep_pg=1, disp_hs=1: no driver on the SEP's device"):prep.index("\treturn 0;\n}")]
@@ -9391,8 +9496,8 @@ def sep_pg_tests(g, src):
         inits = {sc: lines(initfn, sc) for sc in ("set", "setother", "clear", "other", "nosio", "nopos", "mapfail", "never", "never4", "sepon", "seponclear")}
         sepfn = build("spsep", SEP_STUBS + recheck_fn + bound_fn + wait_fn + xart_fn + proof_fn + SEP_MAIN % prep_tail)
 
-        def sep_run(what, locked=0, nodes=1, devs=1, bound=-1, sp=1, dh=0, doff=1, sio=1, n=1, done=0, ro=0, xart="d", gate=0):
-            return lines(sepfn, what, *(str(x) for x in (locked, nodes, devs, bound, sp, dh, doff, sio, n, done, ro, xart, gate)))
+        def sep_run(what, locked=0, nodes=1, devs=1, bound=-1, sp=1, dh=0, doff=1, sio=1, n=1, done=0, ro=0, xart="d", gate=0, drv="apple_sep", held=-1):
+            return lines(sepfn, what, *(str(x) for x in (locked, nodes, devs, bound, sp, dh, doff, sio, n, done, ro, xart, gate, drv, held)))
 
         # Every run of it the checks below ask for, made while the build is still there.
         sep_calls = [("bound", dict(locked=1, bound=0)), ("bound", dict(locked=1)), ("bound", dict(locked=0, bound=0)), ("bound", dict(locked=0)),
@@ -9519,18 +9624,18 @@ def sep_pg_tests(g, src):
                               "\n\tfor (i = 0; i < M1_SPMI_WORDS; i++)\n\t\twritel(0, m1_spmi + M1_SPMI_EN(i));\n",
                               "\tif (wake_all)\n\t\twa = m1_wa_read();\n", "\tif (sep_pg)\n\t\tsp = m1_sp_clear();\n\n\t/* 8 */\n\tm1_quiet_core();\n",
                               "\tif (m1_raw && m1_spmi_raw(false, M1_PMU_RTC, rtc, 6))\n", "\tm1_crumb(0x6010, b, 7);\n", "\tif (wake_all)\n\t\tm1_crumb(LL_AT, &wa, 1);\n",
-                              "\tif (sep_pg)\n\t\tm1_crumb(LL_AT + 1, &sp, 1);\n\t/* wd1_mark=1: does the marker stand?",
+                              "\tif (sep_pg)\n\t\tm1_crumb(LL_AT + 1, &sp, 1);\n", "\tif (sep_ro)\n\t\tm1_crumb(LL_AT, &m1_sro, 1);\n\t/* wd1_mark=1: does the marker stand?",
                               "\t\tm1_crumb(0x6004, b, 4);\n\t\tif (sio_stop) {", "\tif (a2_pre)\n\t\tm1_gates = m1_a2_pre();\n", "/* 9 */",
                               "writel(U32_MAX, m1_spmi + M1_SPMI_ACK(i));", "\tlocal_daif_mask();", "writel_relaxed(1, commit);"])
-          and re.search(r"\tif \(wake_all\)\n\t\tm1_crumb\(LL_AT, &wa, 1\);\n\t/\*[^/]*\*/\n\tif \(sep_ro\)\n\t\tm1_crumb\(LL_AT, &m1_sro, 1\);\n"
-                        r"\t/\*[^/]*\*/\n\tif \(sep_pg\)\n\t\tm1_crumb\(LL_AT \+ 1, &sp, 1\);\n\t/\* wd1_mark=1", after)
+          and re.search(r"\tif \(wake_all\)\n\t\tm1_crumb\(LL_AT, &wa, 1\);\n\t/\*[^/]*\*/\n\tif \(sep_pg\)\n\t\tm1_crumb\(LL_AT \+ 1, &sp, 1\);\n"
+                        r"\t/\*[^/]*\*/\n\tif \(sep_ro\)\n\t\tm1_crumb\(LL_AT, &m1_sro, 1\);\n\t/\* wd1_mark=1", after)
           and re.search(r"\tif \(wake_all\)\n\t\twa = m1_wa_read\(\);\n\t/\*[^/]*\*/\n\tif \(sep_pg\)\n\t\tsp = m1_sp_clear\(\);\n\n\t/\* 8 \*/\n", after)
           and "\tu8 sp = 0;\t/* sep_pg=1: the byte m1_sp_clear() makes in step 7, sent in step 8 */\n" in after
           and len(re.findall(r"\bm1_sp_clear\(", code_only)) == 2 and len(re.findall(r"m1_crumb\(LL_AT \+ 1, &sp, 1\)", code_only)) == 1
           and len(re.findall(r"\bsp\b", re.sub(r"/\*.*?\*/", "", after, flags=re.S))) == 3 and len(re.findall(wr, step7)) == 2 and not re.search(wr, send),
           "step 7: stage 0x39's command, the seven masks, nub-spmi0's enables, wake_all=1's read, then m1_sp_clear() with sep_pg=1 alone,"
           " its one caller, with nothing but its comment before it and step 8 right after. Step 8: the RTC's read and the record at"
-          " 0x6010, wake_all=1's byte, sep_ro=1's in the same place, then sep_pg=1's to 0x6009 with sep_pg=1 alone, the one place it is sent, before the marker's"
+          " 0x6010, wake_all=1's byte, then sep_pg=1's to 0x6009 with sep_pg=1 alone, the one place it is sent, then sep_ro=1's to 0x6008, before the marker's"
           " read, the family's stage, the outcomes and a2_pre=1's moves, and all of it before step 9's acks, its mask and the commit")
 
     # The load: m1_sp_init(), m1_never() and the module's own list.
@@ -9844,7 +9949,7 @@ def sep_pg_tests(g, src):
               out + err + out2 + err2)
         # Step 7's own stage: the byte landed and no later command did.
         rc, out, err, _, _ = sdec(b"\x00\xf8", 0xb9)
-        check(rc == 0 and head + "  the stage, 0x39, is step 7's own, still the stage when the byte goes out: this byte landed and no later command did\n"
+        check(rc == 0 and head + "  the stage, 0x39, is step 7's own, still the stage when this byte goes out: the byte landed, and no newer stage was kept after it (the next stage's command comes after the options' bytes: it failed, or wasn't reached)\n"
               + fields(0xf8) in out and "NOT READ" not in out,
               "sep_pg=1's byte under step 7's own stage (0xb9, 0x39 with pmp_out=1's bit): read as the run's, with a line saying no later command landed", out + err)
         # What such a run can't have left beside the byte: nothing of it is read then.
@@ -11046,21 +11151,21 @@ SRO_HDR = r"""
 #include "last_look.h"
 int main(void)
 {
-	/* What diag/xart read: the buffer, the first read's result, the result of the read of one byte more. */
+	/* What diag/xart's show left: the page, what it returned, and the byte after those in the page (0: the string ends there). */
 	static const struct {
 		const char *b;
 		long n, more;
 	} x[] = {
 		{ "disabled\n", 9, 0 },		/* 0: the one that counts */
 		{ "enabled\n", 8, 0 },
-		{ "", 0, 0 },			/* an empty file */
+		{ "", 0, 0 },			/* nothing said */
 		{ "disabled", 8, 0 },		/* no newline */
-		{ "disabled\nx", 10, 0 },	/* something after it, in the first read */
-		{ "disabled\n", 9, 1 },		/* something after it, in the second */
-		{ "disabled\n123456", 16, 1 },	/* too long: the buffer full and more to come */
-		{ "disabled\n123456", 16, 0 },	/* the buffer full exactly */
-		{ "disabled\n", -5, -1 },	/* the read failed */
-		{ "disabled\n", 9, -5 },	/* the second read failed */
+		{ "disabled\nx", 10, 0 },	/* something after it, counted */
+		{ "disabled\n", 9, 1 },		/* something after it in the page, not counted */
+		{ "disabled\n123456", 16, 1 },	/* longer, and more after that */
+		{ "disabled\n123456", 16, 0 },	/* longer */
+		{ "disabled\n", -5, -1 },	/* the show failed */
+		{ "disabled\n", 9, -5 },	/* what follows is anything but the string's end */
 		{ "DISABLED\n", 9, 0 },
 		{ "disabled ", 9, 0 },
 		{ "disabled\n", 8, 0 },		/* a count one short of what is there */
@@ -11072,7 +11177,7 @@ int main(void)
 	};
 	unsigned int g, v, i;
 
-	printf("const %x %x %u %u %s %u %zu\n", SRO_ARMED, SRO_MARK, SRO_WAIT_MS, SRO_POLL_MS, SRO_XART_ATTR, SRO_XART_BUF, sizeof(SRO_XART_RO) - 1);
+	printf("const %x %x %u %u %s %s %zu\n", SRO_ARMED, SRO_MARK, SRO_WAIT_MS, SRO_POLL_MS, SRO_XART_DIR, SRO_XART_FILE, sizeof(SRO_XART_RO) - 1);
 	for (g = 0; g < 18; g++) {
 		/* Every nibble, then two words with bits above it. */
 		const u32 gate = g < 16 ? g : g == 16 ? 0x1230000dU : 0xfffffff0U;
@@ -11184,7 +11289,7 @@ int main(void)
 }
 """
 SRO_HEAD = ("sep_ro=1's record: a sep_pg=1 run made with the SEP's driver loaded, its store read-only. Step 7 reads 0x2922c0044 right before it"
-            " decides whether to write the PMGR control word, and step 8 sends that nibble after its own record and before sep_pg=1's byte:\n")
+            " decides whether to write the PMGR control word, and step 8 sends that nibble after its own record and after sep_pg=1's byte:\n")
 
 
 def sro_field(v):
@@ -11239,9 +11344,9 @@ def sep_ro_tests(g, src):
     bound_fn = "#define M1_SEP_COMPATIBLE\t\"apple,sep\"\n" + cut("static bool m1_sep_bound(bool locked)\n{", "\n}\n")
     recheck_fn = cut("static bool m1_sep_recheck(unsigned int n)", "\n}\n")
     wait_fn = cut("static bool m1_sro_wait(u32 *last)\n{", "\n}\n")
-    xart_fn = ("".join(line + "\n" for line in src.splitlines() if re.match(r"#define M1_SYSFS\s", line))
-               + cut("static bool m1_sro_xart(struct device *dev)\n{", "\n}\n"))
-    proof_fn = cut("static bool m1_sro_proof(const char **why)\n{", "\n}\n")
+    xart_fn = ("".join(line + "\n" for line in src.splitlines() if re.match(r"#define M1_SEP_DRIVER\s", line))
+               + cut("static int m1_sro_xart(struct device *dev, bool wait)\n{", "\n}\n"))
+    proof_fn = cut("static bool m1_sro_proof(const char **why, bool wait)\n{", "\n}\n")
     prep = cut("static int e1_prepare(void)", "\n}\n")
     prep_tail = prep[prep.index("\t/* sep_pg=1, disp_hs=1: no driver on the SEP's device"):prep.index("\treturn 0;\n}")]
     table = cut("static const u32 m1_wake_mask[7] = {", "\n};\n")
@@ -11275,13 +11380,14 @@ def sep_ro_tests(g, src):
         "gatef": ("sro", "4", "ffffffff", "0", "0", SEP_OFF, "f", "-1", "0", "0"),
         "gatewide": ("sro", "4", "ffffffff", "0", "0", SEP_OFF, "1230000d", "-1", "0", "0"),
         "failrec": ("sro", "4", "ffffffff", "0", "0", SEP_OFF, "8", "0", "4", "0"),  # step 8's record isn't acked
-        "failsro": ("sro", "4", "ffffffff", "0", "0", SEP_OFF, "8", "1", "4", "0"),  # sep_ro=1's byte isn't
-        "failsp": ("sro", "4", "ffffffff", "0", "0", SEP_OFF, "8", "2", "4", "0"),  # sep_pg=1's byte isn't
+        "failsp": ("sro", "4", "ffffffff", "0", "0", SEP_OFF, "8", "1", "4", "0"),  # sep_pg=1's byte, the first of the two, isn't
+        "failsro": ("sro", "4", "ffffffff", "0", "0", SEP_OFF, "8", "2", "4", "0"),  # sep_ro=1's byte isn't
         "rawoff": ("sro", "4", "ffffffff", "0", "0", SEP_OFF, "8", "-2", "4", "0"),
     }
     left = {"88fc": "88fc0000000000", "marks": "10020000000000", "wa": "f0f80000000000", "junk": "10020304050607", "zeros": "00000000000000"}
     kinds = ("sepro", "sepro+dh", "seppg", "plain", "wakeall")
-    xkinds = "de0njtwxrms"
+    xkinds = "de0njtwrspxDgGfFbqkKoSzcC"
+    drivers = ("apple-sep", "apple_sep2", "apple_se", "sep", "APPLE_SEP", "-")
     with tempfile.TemporaryDirectory() as tmp:
         def build(name, code, *flags):
             c = os.path.join(tmp, name + ".c")
@@ -11302,23 +11408,29 @@ def sep_ro_tests(g, src):
         inits[("sepon", None)] = lines(initfn, "sepon")
         sepfn = build("srosep", SEP_STUBS + recheck_fn + bound_fn + wait_fn + xart_fn + proof_fn + SEP_MAIN % prep_tail)
 
-        def sep_run(what, locked=0, nodes=1, devs=1, bound=-1, sp=1, dh=0, doff=1, sio=1, n=1, done=0, ro=0, xart="d", gate=0):
-            return lines(sepfn, what, *(str(x) for x in (locked, nodes, devs, bound, sp, dh, doff, sio, n, done, ro, xart, gate)))
+        def sep_run(what, locked=0, nodes=1, devs=1, bound=-1, sp=1, dh=0, doff=1, sio=1, n=1, done=0, ro=0, xart="d", gate=0, drv="apple_sep", held=-1):
+            return lines(sepfn, what, *(str(x) for x in (locked, nodes, devs, bound, sp, dh, doff, sio, n, done, ro, xart, gate, drv, held)))
 
-        proofs = {k: sep_run("proof", bound=0, ro=1, xart=k) for k in xkinds}
-        sep_calls = [("proof", dict(ro=1)), ("proof", dict(ro=1, nodes=0)), ("proof", dict(ro=1, devs=0)),
-                     ("proof", dict(ro=1, nodes=3, devs=3, bound=-2, xart="ddd")), ("proof", dict(ro=1, nodes=3, devs=3, bound=-2, xart="ded")),
-                     ("proof", dict(ro=1, nodes=3, devs=3, bound=-2, xart="ddx")), ("proof", dict(ro=1, nodes=3, devs=3, bound=-2, xart="edd")),
-                     ("proof", dict(ro=1, nodes=3, devs=3, bound=1, xart="ede")), ("proof", dict(ro=1, nodes=3, devs=2, bound=-2, xart="dde")),
+        proofs = {(k, w): sep_run("proof", locked=w, bound=0, ro=1, xart=k) for k in xkinds for w in (1, 0)}
+        named = {d: sep_run("proof", locked=1, bound=0, ro=1, drv=d) for d in drivers}
+        sep_calls = [("proof", dict(ro=1, locked=1)), ("proof", dict(ro=1)), ("proof", dict(ro=1, locked=1, nodes=0)), ("proof", dict(ro=1, locked=1, devs=0)),
+                     ("proof", dict(ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="ddd")), ("proof", dict(ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="ded")),
+                     ("proof", dict(ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="ddx")), ("proof", dict(ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="edd")),
+                     ("proof", dict(ro=1, locked=1, nodes=3, devs=3, bound=1, xart="ede")), ("proof", dict(ro=1, locked=1, nodes=3, devs=2, bound=-2, xart="dde")),
+                     ("proof", dict(ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="ddd", drv="apple_sep,other,apple_sep")),
+                     ("proof", dict(ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="dcd")),
+                     ("proof", dict(ro=1, bound=0, held=0)), ("proof", dict(ro=1, nodes=2, devs=2, bound=-2, xart="dd", held=0)),
+                     ("proof", dict(ro=1, nodes=2, devs=2, bound=-2, xart="dd", held=1)), ("proof", dict(ro=1, nodes=2, devs=2, bound=-2, xart="dd")),
                      ("wait", dict(ro=1)), ("wait", dict(ro=1, gate=30)), ("wait", dict(ro=1, gate=4990)), ("wait", dict(ro=1, gate=5000)),
                      ("wait", dict(ro=1, gate=5010)), ("wait", dict(ro=1, gate=-1)),
                      ("prepare", dict(ro=1, bound=0)), ("prepare", dict(ro=1, bound=0, dh=1)), ("prepare", dict(ro=1, bound=0, xart="e")),
                      ("prepare", dict(ro=1, bound=0, xart="x")), ("prepare", dict(ro=1, bound=0, xart="n")), ("prepare", dict(ro=1, bound=0, xart="r")),
+                     ("prepare", dict(ro=1, bound=0, xart="c")), ("prepare", dict(ro=1, bound=0, drv="other")), ("prepare", dict(ro=1, bound=0, held=0)),
                      ("prepare", dict(ro=1)), ("prepare", dict(ro=1, bound=0, gate=200)), ("prepare", dict(ro=1, bound=0, gate=-1)),
                      ("prepare", dict(ro=1, bound=0, xart="e", gate=-1)), ("prepare", dict(ro=1, bound=0, n=2)), ("prepare", dict(ro=1, bound=0, done=1)),
                      ("prepare", dict(ro=1, bound=0, done=2)), ("prepare", dict(ro=1, bound=0, xart="e", n=2)),
                      ("prepare", dict(ro=1, nodes=3, devs=3, bound=-2, xart="dde")), ("prepare", dict(ro=1, nodes=3, devs=3, bound=-2, xart="ddd")),
-                     ("prepare", dict(bound=0)), ("prepare", dict(bound=0, xart="d", gate=-1)), ("prepare", dict(gate=-1)),
+                     ("prepare", dict(bound=0)), ("prepare", dict(bound=0, xart="d", gate=-1)), ("prepare", dict(gate=-1)), ("prepare", dict(bound=0, held=0)),
                      ("recheck", dict(ro=1, bound=0)), ("recheck", dict(ro=1, bound=0, xart="e")), ("recheck", dict(ro=1, bound=0, gate=-1))]
         sep_out = {(what, tuple(sorted(kw.items()))): sep_run(what, **kw) for what, kw in sep_calls}
         pwfn = build("sropw", PW_HARNESS + pw_defs + pw_table + "static void __iomem *m1_pw_map[ARRAY_SIZE(m1_pw)];\n" + pw_fn + PW_MAIN)
@@ -11339,18 +11451,18 @@ def sep_ro_tests(g, src):
     b = [[int(x, 16) for x in r[1:]] for r in hdr if r[0] == "b"]
     okv = {int(r[1], 16) for r in hdr if r[0] == "okv"}
     xs = [int(r[2]) for r in hdr if r[0] == "x"]
-    check([r for r in hdr if r[0] == "const"] == [["const", "10", "80", "5000", "10", "diag/xart", "16", "9"]]
+    check([r for r in hdr if r[0] == "const"] == [["const", "10", "80", "5000", "10", "diag", "xart", "9"]]
           and len(b) == 18 and all(v == 0x80 | gate & 0xf for gate, v in b) and {v for _, v in b} == set(range(0x80, 0x90)),
           "last_look.h: sep_ro=1's mark at K1 is 0x10 and its byte bit 7 with bits 6:4 clear; the waits are 5000 ms in steps of 10; the"
-          " attribute is diag/xart, asked for 16 bytes, of which nine may be there; sro_byte(): bit 7 and the gate word's low nibble,"
+          " attribute is xart in diag, and nine bytes are all it may say; sro_byte(): bit 7 and the gate word's low nibble,"
           " nothing above it", str(hdr[:3]))
     check(okv == {0x10} | set(range(0x80, 0x90)) and not okv & {0x00, 0x02, 0x04, 0x08, 0x20, 0x40, 0x90, 0xc0, 0xf0},
           "sro_ok(): of the 256 values, K1's mark, 0x10, and the sixteen from 0x80 to 0x8f, which sro_byte() makes, and no other: not 0, not"
           " the other marks (0x02, 0x04, 0x20, 0x40), and no byte wake_all=1 makes, which has bits 7:6 both", str(sorted(okv)))
     check(xs == [1] + [0] * 17,
-          "sro_xart_ro(): read-only only for \"disabled\" and its newline, nine bytes, with the read after it finding the file's end. Not"
-          " \"enabled\"; not an empty file; not the word without its newline; not the word with something after it, in the same read or"
-          " the next; not a buffer read full; not a read that failed, the first or the second; not another case, a space, a carriage"
+          "sro_xart_ro(): read-only only for \"disabled\" and its newline, nine bytes returned, with the string's end after them. Not"
+          " \"enabled\"; not nothing; not the word without its newline; not the word with something after it, counted in what the"
+          " show returned or not; not something longer; not a show that failed; not another case, a space, a carriage"
           " return or a second newline; not a count one short of what is in the buffer, and not nine bytes of something else", str(xs))
     tool = open(TOOL).read()
     check((g["SRO_ARMED"], g["SRO_MARK"], g["PWN_MARK"]) == (0x10, 0x80, 0x80)
@@ -11369,37 +11481,39 @@ def sep_ro_tests(g, src):
         control word again, the gate word again."""
         return ["r C", "r P", "r G"] + ([f"w C {wrote:x}"] if wrote is not None else []) + ["r C", "r G"]
 
-    check(runs["sro"] == table_w + sro_reads(0) + ["step 8", rec, "c 6008 88", "c 6009 f8", stage, "end 0"]
+    check(runs["sro"] == table_w + sro_reads(0) + ["step 8", rec, "c 6009 f8", "c 6008 88", stage, "end 0"]
           and runs["sp"] == table_w + ["r C", "r P", "w C 0", "r C", "r G", "step 8", rec, "c 6009 f8", stage, "end 0"],
           "with sep_ro=1 step 7 is sep_pg=1's with one read more: the control word (4), the SEP's power word, then 0x2922c0044 right before"
-          " the decision, the one write (0), the control word again, 0x2922c0044 again; step 8 sends the record, the first sample with"
-          " bit 7 to 0x6008 (0x88), sep_pg=1's byte to 0x6009, then the stage. Without sep_ro=1 the gate word is read once, after the"
-          " read-back, and nothing goes to 0x6008", "\n".join(runs["sro"]))
-    check(runs["moves"] == table_w + sro_reads(0) + ["step 8", rec, "c 6008 88", "c 6009 fc", stage, "end 0"]
-          and runs["drops"] == table_w + sro_reads(0) + ["step 8", rec, "c 6008 8c", "c 6009 f8", stage, "end 0"]
-          and runs["others"] == table_w + sro_reads(0x80000101) + ["step 8", rec, "c 6008 88", "c 6009 fc", stage, "end 80000101"]
-          and runs["gate0"][-5:] == [rec, "c 6008 80", "c 6009 f0", stage, "end 0"] and runs["gatef"][-5:] == [rec, "c 6008 8f", "c 6009 ff", stage, "end 0"]
-          and runs["gatewide"][-5:] == [rec, "c 6008 8d", "c 6009 fd", stage, "end 0"],
+          " the decision, the one write (0), the control word again, 0x2922c0044 again; step 8 sends the record, sep_pg=1's byte to"
+          " 0x6009, the run's first result, then the first sample with bit 7 to 0x6008 (0x88), then the stage. Without sep_ro=1 the"
+          " gate word is read once, after the read-back, and nothing goes to 0x6008", "\n".join(runs["sro"]))
+    check(runs["moves"] == table_w + sro_reads(0) + ["step 8", rec, "c 6009 fc", "c 6008 88", stage, "end 0"]
+          and runs["drops"] == table_w + sro_reads(0) + ["step 8", rec, "c 6009 f8", "c 6008 8c", stage, "end 0"]
+          and runs["others"] == table_w + sro_reads(0x80000101) + ["step 8", rec, "c 6009 fc", "c 6008 88", stage, "end 80000101"]
+          and runs["gate0"][-5:] == [rec, "c 6009 f0", "c 6008 80", stage, "end 0"] and runs["gatef"][-5:] == [rec, "c 6009 ff", "c 6008 8f", stage, "end 0"]
+          and runs["gatewide"][-5:] == [rec, "c 6009 fd", "c 6008 8d", stage, "end 0"],
           "the two samples are the word as it read on either side of the write: a bit 2 that comes up with the write is clear in"
           " 0x6008's nibble and set in 0x6009's (0x88, 0xfc), one that drops the other way round (0x8c, 0xf8); the low nibble alone,"
           " whatever is above it", "\n".join(runs["moves"][-5:] + runs["drops"][-5:]))
-    check(runs["sepon"] == table_w + sro_reads(None) + ["step 8", rec, "c 6008 88", "c 6009 c8", stage, "end 4"]
+    check(runs["sepon"] == table_w + sro_reads(None) + ["step 8", rec, "c 6009 c8", "c 6008 88", stage, "end 4"]
           and runs["sephalf"] == runs["sepon"]
-          and runs["sepondrift"] == table_w + sro_reads(None) + ["step 8", rec, "c 6008 88", "c 6009 cc", stage, "end 4"]
-          and runs["clear"] == table_w + sro_reads(None) + ["step 8", rec, "c 6008 88", "c 6009 b8", stage, "end 0"]
-          and runs["notake"] == table_w + sro_reads(0) + ["step 8", rec, "c 6008 88", "c 6009 dc", stage, "end 4"],
+          and runs["sepondrift"] == table_w + sro_reads(None) + ["step 8", rec, "c 6009 cc", "c 6008 88", stage, "end 4"]
+          and runs["clear"] == table_w + sro_reads(None) + ["step 8", rec, "c 6009 b8", "c 6008 88", stage, "end 0"]
+          and runs["notake"] == table_w + sro_reads(0) + ["step 8", rec, "c 6009 dc", "c 6008 88", stage, "end 4"],
           "with the SEP's power word reading powered in step 7 (actual state f or 1) NO write is made with sep_ro=1 either, and nothing"
           " is waited for: the same five reads, the bit left (end 4), and 0x6009 says found set, not clear, the SEP not off (0xc8); the"
           " first sample still goes to 0x6008, and a gate word that changed between the two reads with no write shows in the two"
           " nibbles (0x88, 0xcc); a bit found clear is not written; a write that doesn't take reads back with the bit set (0xdc)",
           "\n".join(runs["sepon"][-6:] + runs["notake"][-6:]))
     check(runs["failrec"] == table_w + sro_reads(0) + ["step 8", rec.replace("c ", "cfail ", 1), "end 0"]
-          and runs["failsro"] == table_w + sro_reads(0) + ["step 8", rec, "cfail 6008 88", "end 0"]
-          and runs["failsp"] == table_w + sro_reads(0) + ["step 8", rec, "c 6008 88", "cfail 6009 fc", "end 0"]
-          and runs["rawoff"] == table_w + sro_reads(0) + ["step 8", "end 0"],
-          "through the module's own m1_crumb(): a record that isn't acked stops both bytes and the stage; sep_ro=1's byte not acked stops"
-          " sep_pg=1's and the stage; sep_pg=1's not acked stops the stage, with 0x6008's out already; with raw SPMI off the write to the"
-          " control word is still made and nothing is sent", "\n".join(runs["failsro"][-3:] + runs["failsp"][-4:]))
+          and runs["failsp"] == table_w + sro_reads(0) + ["step 8", rec, "cfail 6009 fc", "end 0"]
+          and runs["failsro"] == table_w + sro_reads(0) + ["step 8", rec, "c 6009 fc", "cfail 6008 88", "end 0"]
+          and runs["rawoff"] == table_w + sro_reads(0) + ["step 8", "end 0"]
+          and send.index("\tif (sep_pg)\n\t\tm1_crumb(LL_AT + 1, &sp, 1);\n") < send.index("\tif (sep_ro)\n\t\tm1_crumb(LL_AT, &m1_sro, 1);\n"),
+          "through the module's own m1_crumb(): a record that isn't acked stops both bytes and the stage; sep_pg=1's byte, which goes"
+          " first as the run's first result, not acked stops sep_ro=1's and the stage; sep_ro=1's not acked stops the stage, with 0x6009's"
+          " out already; with raw SPMI off the write to the control word is still made and nothing is sent",
+          "\n".join(runs["failsp"][-3:] + runs["failsro"][-4:]))
     everything = [l for r in runs.values() for l in r]
     no_write = ("sepon", "sephalf", "sepondrift", "clear")
     check(not [l for l in everything if l.startswith(("r X", "w X", "read ", "refused"))] and len(runs) == 17
@@ -11416,82 +11530,147 @@ def sep_ro_tests(g, src):
           " of any kind: its one new line is the read of the gate word under if (sep_ro), right before if (sp_writes(found, sep)), and"
           " the sample is sent in one place, in step 8")
 
-    # The proof: m1_sro_xart() and m1_sro_proof() as they stand, over a stand-in for sysfs.
-    PATH = "/sys/devices/platform/soc/39640000{}.sep/diag/xart"
+    # The proof: m1_sro_xart() and m1_sro_proof() as they stand, over a stand-in for the device's own corner of sysfs.
     look = ["compatible - apple,sep", "device 0"]
+    LEFT = "left: 0 references, 0 pages, 0 locks"
+    SAYS = {"d": ("disabled\n", 9), "c": ("disabled\n", 9), "e": ("enabled\n", 8), "C": ("enabled\n", 8), "0": ("", 0), "n": ("disabled", 8), "j": ("disabled\nx", 10),
+            "t": ("disabled\n01234567890123456789", 29), "w": ("disabled\n1234567", 16), "r": ("disabled\n", -5), "s": ("disabled\nx", 9), "p": ("d" * 0x4000, 0x4000)}
 
-    def xread(i, kind):
-        """m1_sro_xart()'s calls for device i whose attribute is of that kind, and its line."""
-        p = PATH.format(i)
-        out = [f"path {i}", f"open {p} 0 0"]
+    def xask(i, kind="d", wait=False, drv="apple_sep", bound=True, busy=False):
+        """m1_sro_xart()'s calls for device i, written out a second time: the lock, taken or tried; the driver and its name; the
+        device's node, its diag and its xart, each found with a reference that is put back; the page; the show; the line that
+        says what was found; and everything undone in the reverse order."""
+        name = f"39640000{i}.sep"
+        out = [f"lock {i}" if wait else f"trylock {i}" + (" busy" if busy else "")]
+        if busy and not wait:
+            return out + [f"info m1: sep_ro: {name}: its lock is held, so its driver can't be asked now: no proof"]
+
+        def end(why, puts=()):
+            return out + [f"info m1: sep_ro: {name}: {why}"] + list(puts) + [f"unlock {i}"]
+
+        if not bound:
+            return end("no driver is bound to it")
+        if drv != "apple_sep":
+            return end("the driver bound to it isn't named apple_sep: no proof")
+        if kind == "S":
+            return end("its node in sysfs has no diag: no proof")
+        out.append(f"find diag {i}: " + ("none" if kind == "x" else "got"))
         if kind == "x":
-            return out + [f"info m1: sep_ro: {p} can't be opened (-2)"]
-        if kind == "r":
-            return out + [f"read {i} 16 at 0: error", f"close {i}", f"info m1: sep_ro: {p} can't be read (-5)"]
-        text = {"d": "disabled\n", "m": "disabled\n", "e": "enabled\n", "0": "", "n": "disabled", "j": "disabled\nx", "t": "disabled\n01234567890123456789",
-                "w": "disabled\n1234567", "s": "disabled\nx"}[kind]
-        first = text[:9 if kind == "s" else 16]
-        out.append(f"read {i} 16 at 0: {len(first)}")
-        out.append(f"read {i} 1 at {len(first)}: " + ("error" if kind == "m" else str(min(1, len(text) - len(first)))))
-        out.append(f"close {i}")
-        shown = first[:-1] if first.endswith("\n") else first
-        said = (f"info m1: sep_ro: {p} reads \"{shown}\"" + ("" if first.endswith("\n") else " with no newline") + ": "
-                + ("read-only" if kind == "d" else "NOT shown read-only"))
-        return out + said.split("\n")
+            return end("its node in sysfs has no diag: no proof")
+        putd = [f"put diag {i}"]
+        if kind in "DgGcC":
+            return end("its diag isn't a directory of the device's own: no proof", putd)
+        out.append(f"find xart {i}: " + ("none" if kind == "f" else "got"))
+        if kind == "f":
+            return end("its diag has no xart: no proof", putd)
+        putx = [f"put xart {i}"] + putd
+        if kind in "Fbq":
+            return end("its diag/xart isn't an attribute's file: no proof", putx)
+        if kind in "kKo":
+            return end("its diag/xart has no show: no proof", putx)
+        if kind == "z":
+            out.append("page: none")
+            return end("no page for what its diag/xart says: no proof", putx)
+        text, n = SAYS[kind]
+        shown = text[:0 if n < 0 else 32 if n > 32 else n - 1 if n and text[n - 1] == "\n" else n]
+        out += ["page", f"show {i} device"]
+        line = (f"info m1: sep_ro: {name}: its driver's diag/xart returned {n} and says \"{shown}\": "
+                + ("read-only" if kind == "d" else "NOT shown read-only: no proof"))
+        return out + line.split("\n") + ["free"] + putx + [f"unlock {i}"]
 
-    NOPROOF = "a bound SEP device's diag/xart doesn't read exactly \"disabled\" (it isn't there, can't be read, or says otherwise)"
+    NOPROOF = "a SEP device's driver doesn't say, in its own diag/xart, that the store is read-only (the lines above have what was found)"
     NODRIVER = "no driver is bound to the SEP's device, so nothing says how its store is open"
-    check(proofs["d"] == look + xread(0, "d") + ["put 0", "proof 1", "why -", "done 0"]
-          and all(proofs[k] == look + xread(0, k) + ["put 0", "proof 0", "why " + NOPROOF, "done 0"] for k in xkinds if k != "d"),
-          "m1_sro_proof() with one bound device: its path from its kobject, \"/sys\" + that + \"/diag/xart\" opened read-only, one read of 16"
-          " bytes from the start and one of a byte more, the file closed, what it read logged, the device put back. Proof only for"
-          " \"disabled\" and a newline with the file's end after it; none for \"enabled\", an empty file, the word without its newline,"
-          " the word with a letter after it, with 20 bytes after it or filling the buffer, a file that isn't there, a read that"
-          " fails, a second read that fails, or a file that hands out the nine bytes first and a letter at the second read."
-          " (sysfs here is a stand-in that serves what it is told to.)",
-          "\n".join(proofs["d"] + proofs["m"] + proofs["t"]))
+
+    def verdict(ok, why=None):
+        return [f"proof {int(ok)}", "why " + ("-" if ok else why), LEFT, "done 0"]
+
+    check(all(proofs[(k, w)] == look + xask(0, k, wait=bool(w)) + ["put 0"] + verdict(k == "d", NOPROOF) for k in xkinds for w in (1, 0)) and len(proofs) == 50,
+          "m1_sro_proof() with one device bound to apple_sep, in 25 states of its own corner of sysfs, waiting for the device's lock as"
+          " the load does and only trying it as the prepare does, each against a second writing-out of every call: the lock; the"
+          " device's own node asked for \"diag\" and that for \"xart\", each with a reference; a zeroed page; the device"
+          " kobject's own show, called with the attribute the node carries and the lock still held; the line that says"
+          " what was found; then the page freed, both references put back and the lock dropped, on every way out. Proof only for"
+          " \"disabled\" and a newline with the string's end after it: none for \"enabled\", nothing, the word without its newline,"
+          " with a letter or twenty bytes after it, a show that fails though it wrote the word, one that returns 9 with a letter"
+          " after the newline, or a full page; none with no diag, a diag that is a file, one owned by another kobject or by none,"
+          " no xart, an xart that is a directory, of another size or with no attribute, an owner with no type, no operations or"
+          " no show, a device with no node, or no page; and none for a diag that is a kobject of its own right under the device's,"
+          " whatever that kobject's show would say: the driver's is a group of the device's, and no other show is ever called. (The"
+          " nodes, the kobjects, the lock and the page are stand-ins that log.)", "\n".join(proofs[("d", 1)] + proofs[("s", 0)] + proofs[("g", 1)]))
+    check(all(named[d] == look + xask(0, "d", wait=True, drv=d) + ["put 0"] + verdict(False, NOPROOF) for d in drivers)
+          and not [l for d in drivers for l in named[d] if l.startswith(("find", "show", "page"))]
+          and sep("proof", ro=1, locked=1) == look + xask(0, wait=True, bound=False) + ["put 0"] + verdict(False, NODRIVER)
+          and sep("proof", ro=1) == look + xask(0, bound=False) + ["put 0"] + verdict(False, NODRIVER)
+          and sep("proof", ro=1, locked=1, nodes=0) == ["compatible - apple,sep"] + verdict(False, NODRIVER)
+          and sep("proof", ro=1, locked=1, devs=0) == look + verdict(False, NODRIVER),
+          "the driver: no proof with no driver bound (no such node, no device, or a device whose driver pointer reads empty under"
+          " its lock: nothing is asked of sysfs then), and none with a driver of any other name than apple_sep, the name the launcher"
+          " goes by (apple-sep, apple_sep2, apple_se, sep, APPLE_SEP, or a driver with no name): its attribute isn't even looked for",
+          "\n".join(named["apple_sep2"] + sep("proof", ro=1, locked=1)))
     three = ["compatible - apple,sep"]
-    check(sep("proof", ro=1) == look + ["put 0", "proof 0", "why " + NODRIVER, "done 0"]
-          and sep("proof", ro=1, nodes=0) == ["compatible - apple,sep", "proof 0", "why " + NODRIVER, "done 0"]
-          and sep("proof", ro=1, devs=0) == look + ["proof 0", "why " + NODRIVER, "done 0"]
-          and sep("proof", ro=1, nodes=3, devs=3, bound=-2, xart="ddd") == three + [l for i in range(3) for l in [f"device {i}"] + xread(i, "d") + [f"put {i}"]] + ["proof 1", "why -", "done 0"]
-          and sep("proof", ro=1, nodes=3, devs=3, bound=-2, xart="ded") == three + [l for i, k in enumerate("ded") for l in [f"device {i}"] + xread(i, k) + [f"put {i}"]] + ["proof 0", "why " + NOPROOF, "done 0"]
-          and sep("proof", ro=1, nodes=3, devs=3, bound=-2, xart="ddx")[-3:] == ["proof 0", "why " + NOPROOF, "done 0"]
-          and sep("proof", ro=1, nodes=3, devs=3, bound=-2, xart="edd")[-3:] == ["proof 0", "why " + NOPROOF, "done 0"]
-          and sep("proof", ro=1, nodes=3, devs=3, bound=1, xart="ede") == three + ["device 0", "put 0", "device 1"] + xread(1, "d") + ["put 1", "device 2", "put 2", "proof 1", "why -", "done 0"]
-          and sep("proof", ro=1, nodes=3, devs=2, bound=-2, xart="dde") == three + [l for i in range(2) for l in [f"device {i}"] + xread(i, "d") + [f"put {i}"]] + ["device 2", "proof 1", "why -", "done 0"],
-          "m1_sro_proof() over every node the tree marks apple,sep: no proof with no driver bound anywhere (no such node, no device, a"
-          " device without a driver), and then no file is opened; with three bound, proof only if each of the three says disabled (one"
-          " that says enabled, the first or the second, or one without the attribute, and there is none); a device without a driver"
-          " isn't asked, and what its attribute would say doesn't count; a node with no device isn't asked",
-          "\n".join(sep("proof", ro=1, nodes=3, devs=3, bound=-2, xart="ded")))
-    check(not re.search(wr, wait_fn + xart_fn + proof_fn) and "kernel_write" not in src and "O_WRONLY" not in src and "O_RDWR" not in src and "O_CREAT" not in src
-          and "\tf = filp_open(path, O_RDONLY, 0);\n\tif (IS_ERR(f)) {\n" in xart_fn and xart_fn.count("filp_open(") == 1 and xart_fn.count("filp_close(f, NULL);") == 1
-          and xart_fn.startswith("#define M1_SYSFS\t\"/sys\"\nstatic bool m1_sro_xart(struct device *dev)\n{\n")
-          and in_order_of(xart_fn, ["\tkpath = kobject_get_path(&dev->kobj, GFP_KERNEL);\n\tif (!kpath)\n\t\treturn false;\n",
-                                    "\tpath = kasprintf(GFP_KERNEL, M1_SYSFS \"%s/\" SRO_XART_ATTR, kpath);\n\tkfree(kpath);\n\tif (!path)\n\t\treturn false;\n",
-                                    "\tn = kernel_read(f, buf, sizeof(buf), &pos);\n\tif (n >= 0)\n\t\tm = kernel_read(f, &more, 1, &pos);\n\tfilp_close(f, NULL);\n"
-                                    "\tro = sro_xart_ro(buf, n, m);\n", "\tkfree(path);\n\treturn ro;\n}"])
-          and "\tchar buf[SRO_XART_BUF], more, *kpath, *path;\n\tssize_t n, m = -1;\n" in xart_fn
-          and "device_lock" not in xart_fn + proof_fn and "__init" not in wait_fn + xart_fn + proof_fn
-          and "\treturn bound && ro == bound;\n}" in proof_fn and "\t\tif (READ_ONCE(pdev->dev.driver)) {\n\t\t\tbound++;\n\t\t\tif (m1_sro_xart(&pdev->dev))\n\t\t\t\tro++;\n\t\t}\n\t\tput_device(&pdev->dev);\n" in proof_fn
+
+    def devices(kinds, wait=True, drv=None, bound=None, busy=()):
+        return three + [l for i, k in enumerate(kinds) for l in [f"device {i}"] + xask(i, k, wait=wait, drv=(drv or ["apple_sep"] * 3)[i],
+                                                                                    bound=bound is None or i in bound, busy=i in busy) + [f"put {i}"]]
+
+    check(sep("proof", ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="ddd") == devices("ddd") + verdict(True)
+          and sep("proof", ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="dcd") == devices("dcd") + verdict(False, NOPROOF)
+          and sep("proof", ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="ded") == devices("ded") + verdict(False, NOPROOF)
+          and sep("proof", ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="ddx") == devices("ddx") + verdict(False, NOPROOF)
+          and sep("proof", ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="edd") == devices("edd") + verdict(False, NOPROOF)
+          and sep("proof", ro=1, locked=1, nodes=3, devs=3, bound=1, xart="ede") == devices("ede", bound=(1,)) + verdict(True)
+          and sep("proof", ro=1, locked=1, nodes=3, devs=2, bound=-2, xart="dde") == devices("dd") + ["device 2"] + verdict(True)
+          and sep("proof", ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="ddd", drv="apple_sep,other,apple_sep")
+              == devices("ddd", drv=["apple_sep", "other", "apple_sep"]) + verdict(False, NOPROOF),
+          "m1_sro_proof() over every node the tree marks apple,sep: with three bound, proof only if each of the three says disabled"
+          " (one that says enabled, the first or the second, one without the directory, one whose directory is a kobject of its own, or one bound to a driver of another name,"
+          " and there is none, whatever the other two say); a device with no driver says nothing, and what its attribute would say"
+          " isn't asked; a node with no device isn't asked", "\n".join(sep("proof", ro=1, locked=1, nodes=3, devs=3, bound=-2, xart="ded")))
+    check(sep("proof", ro=1, bound=0, held=0) == look + xask(0, busy=True) + ["put 0"] + verdict(False, NOPROOF)
+          and sep("proof", ro=1, nodes=2, devs=2, bound=-2, xart="dd", held=0) == devices("dd", wait=False, busy=(0,)) + verdict(False, NOPROOF)
+          and sep("proof", ro=1, nodes=2, devs=2, bound=-2, xart="dd", held=1) == devices("dd", wait=False, busy=(1,)) + verdict(False, NOPROOF)
+          and sep("proof", ro=1, nodes=2, devs=2, bound=-2, xart="dd") == devices("dd", wait=False) + verdict(True),
+          "the lock at the prepare is tried and never waited for: a device whose lock somebody holds is no proof, with nothing asked"
+          " of it and no lock dropped that wasn't taken, and no proof for the whole though the other device says disabled; with both"
+          " locks to be had, both are asked", "\n".join(sep("proof", ro=1, nodes=2, devs=2, bound=-2, xart="dd", held=0)))
+    everything = [l for r in list(proofs.values()) + list(named.values()) + list(sep_out.values()) for l in r]
+    check(not [l for l in everything if "UNLOCKED" in l or "WRONG" in l or "isn't a zeroed page" in l or "WOULD BLOCK" in l or l.startswith("show:") or "kobject" in l]
+          and not [l for l in everything if l.startswith("left:") and l != LEFT]
+          and len([l for l in everything if l == LEFT]) == len(proofs) + len(named) + sum(1 for (w, k) in sep_out if dict(k).get("ro"))
+          and not re.search(wr, wait_fn + xart_fn + proof_fn) and "filp_open" not in src and "kernel_read" not in src and "kernel_write" not in src
+          and "kobject_get_path" not in src and "M1_SYSFS" not in src
+          and xart_fn.startswith("#define M1_SEP_DRIVER\t\"apple_sep\"\nstatic int m1_sro_xart(struct device *dev, bool wait)\n{\n")
+          and in_order_of(xart_fn, ["\tif (wait) {\n\t\tdevice_lock(dev);\n\t} else if (!device_trylock(dev)) {\n", "\t\treturn -1;\n\t}\n",
+                                    "\tif (!dev->driver) {\n\t\tret = 0;\n", "\t} else if (!dev->driver->name || strcmp(dev->driver->name, M1_SEP_DRIVER)) {\n",
+                                    "\t} else if (!dev->kobj.sd || !(diag = kernfs_find_and_get(dev->kobj.sd, SRO_XART_DIR))) {\n",
+                                    "\t} else if (kernfs_type(diag) != KERNFS_DIR || (owner = diag->priv) != &dev->kobj) {\n",
+                                    "\t} else if (!(xart = kernfs_find_and_get(diag, SRO_XART_FILE))) {\n",
+                                    "\t} else if (kernfs_type(xart) != KERNFS_FILE || !xart->priv || xart->attr.size != PAGE_SIZE) {\n",
+                                    "\t} else if (!owner->ktype || !(ops = owner->ktype->sysfs_ops) || !ops->show) {\n",
+                                    "\t} else if (!(page = (char *)get_zeroed_page(GFP_KERNEL))) {\n",
+                                    "\t\tn = ops->show(owner, xart->priv, page);\n\t\tif (sro_xart_ro(page, n, n >= 0 && n < (ssize_t)PAGE_SIZE ? page[n] : 1))\n\t\t\tret = 1;\n",
+                                    "\tif (page)\n\t\tfree_page((unsigned long)page);\n\tif (xart)\n\t\tkernfs_put(xart);\n\tif (diag)\n\t\tkernfs_put(diag);\n"
+                                    "\tdevice_unlock(dev);\n\treturn ret;\n}"])
+          and len(re.findall(r"\breturn\b", xart_fn)) == 2 and "__init" not in wait_fn + xart_fn + proof_fn
+          and "\t\tr = m1_sro_xart(&pdev->dev, wait);\n\t\tif (r > 0)\n\t\t\tro++;\n\t\telse if (r < 0)\n\t\t\tbad++;\n\t\tput_device(&pdev->dev);\n" in proof_fn
+          and "\treturn ro && !bad;\n}" in proof_fn
           and len(re.findall(r"\bm1_sro_proof\(", code_only)) == 4 and len(re.findall(r"\bm1_sro_xart\(", code_only)) == 2
-          and "static_assert(sizeof(SRO_XART_RO) - 1 == 9 && SRO_XART_BUF > sizeof(SRO_XART_RO));\n" in src
+          and "static_assert(sizeof(SRO_XART_RO) - 1 == 9 && sizeof(SRO_XART_RO) < PAGE_SIZE);\n" in src
           and "kmsg" not in src and "sro_bootargs" not in src,
-          "m1_sro_xart() writes nothing, to a register or a file: it opens the one path read-only, reads twice, closes, frees both"
-          " strings on every way out and takes no lock of the device's; the second read is left out, and counted as failed, if the"
-          " first failed. m1_sro_proof() wants a driver somewhere and a yes from every device that has one. Each has two callers"
-          " at most (the proof: the load and the prepare). Neither is init-only: the prepare calls them. Nothing of the kernel's log"
-          " or of the command line is read for this")
+          "in every run of the proof, the wait and the prepare the show is called with the lock held, with the attribute its node"
+          " carries and into a zeroed page of its own, by the device's own kobject and never by another; no lock is waited for that somebody"
+          " holds; and every run ends with no reference, no page and no lock left. m1_sro_xart() writes nothing, opens no file and"
+          " builds no path: it has one way out before the lock is had and one after everything is undone. m1_sro_proof() wants one"
+          " device that passes and none that has a driver and doesn't. Neither is init-only: the prepare calls them")
 
     # The wait: m1_sro_wait() as it stands, over a clock that only its sleeps move.
     slept = lambda n: [f"slept {n} times, {10 * n} ms"]
-    check(sep("wait", ro=1) == ["r P", "wait 1 1000030f", "done 0"]
-          and sep("wait", ro=1, gate=30) == ["r P", "wait 1 1000030f"] + slept(3) + ["done 0"]
-          and sep("wait", ro=1, gate=4990) == ["r P", "wait 1 1000030f"] + slept(499) + ["done 0"]
-          and sep("wait", ro=1, gate=5000) == ["r P", "wait 1 1000030f"] + slept(500) + ["done 0"]
-          and sep("wait", ro=1, gate=5010) == ["r P", "wait 0 100003ff"] + slept(500) + ["done 0"]
-          and sep("wait", ro=1, gate=-1) == ["r P", "wait 0 100003ff"] + slept(500) + ["done 0"]
+    check(sep("wait", ro=1) == ["r P", "wait 1 1000030f", LEFT, "done 0"]
+          and sep("wait", ro=1, gate=30) == ["r P", "wait 1 1000030f"] + slept(3) + [LEFT, "done 0"]
+          and sep("wait", ro=1, gate=4990) == ["r P", "wait 1 1000030f"] + slept(499) + [LEFT, "done 0"]
+          and sep("wait", ro=1, gate=5000) == ["r P", "wait 1 1000030f"] + slept(500) + [LEFT, "done 0"]
+          and sep("wait", ro=1, gate=5010) == ["r P", "wait 0 100003ff"] + slept(500) + [LEFT, "done 0"]
+          and sep("wait", ro=1, gate=-1) == ["r P", "wait 0 100003ff"] + slept(500) + [LEFT, "done 0"]
           and "\twhile (!ll_off(v = readl(m1_sio + SP_SEP_PS)) && m1_now() - t0 < (u64)SRO_WAIT_MS * (m1_tps / 1000))\n\t\tmsleep(SRO_POLL_MS);\n\t*last = v;\n\treturn ll_off(v);\n}" in wait_fn
           and wait_fn.count("readl(") == 1 and len(re.findall(r"\bm1_sro_wait\(", code_only)) == 4,
           "m1_sro_wait(): the SEP's power word read at once and then every 10 ms; true as soon as it reads actual state 0, with no sleep"
@@ -11504,49 +11683,57 @@ def sep_ro_tests(g, src):
                  " nothing sent")
     off_power = "emerg replay: called off at prepare: the SEP's power word still reads powered (100003ff) after 5000 ms; nothing stopped, nothing written, nothing sent"
     off_bound = "emerg replay: called off at prepare: a driver is bound to the SEP's device now; nothing stopped, nothing written, nothing sent"
-    go = ["dcp shutdown", "sio stop", "done 0"]
-    check(sep("prepare", ro=1, bound=0) == look + xread(0, "d") + ["put 0", "r P"] + go
+    go = ["dcp shutdown", "sio stop", LEFT, "done 0"]
+    off = lambda why: [off_proof.format(why), LEFT, "done 2"]
+    check(sep("prepare", ro=1, bound=0) == look + xask(0, "d") + ["put 0", "r P"] + go
           and sep("prepare", ro=1, bound=0, dh=1) == sep("prepare", ro=1, bound=0)
-          and sep("prepare", ro=1, bound=0, gate=200) == look + xread(0, "d") + ["put 0", "r P", "dcp shutdown", "sio stop"] + slept(20) + ["done 0"]
-          and sep("prepare", ro=1, nodes=3, devs=3, bound=-2, xart="ddd")[-4:] == ["r P"] + go,
+          and sep("prepare", ro=1, bound=0, gate=200) == look + xask(0, "d") + ["put 0", "r P", "dcp shutdown", "sio stop"] + slept(20) + [LEFT, "done 0"]
+          and sep("prepare", ro=1, nodes=3, devs=3, bound=-2, xart="ddd") == devices("ddd", wait=False) + ["r P"] + go,
           "the first suspend's prepare with sep_ro=1, e1_prepare()'s last lines as they stand: a driver bound to the SEP's device does"
-          " NOT call the replay off; the device's diag/xart is read, says disabled, the SEP's power word is read (and waited for, 200 ms"
-          " here), and only then are the DCPs shut down and SIO stopped", "\n".join(sep("prepare", ro=1, bound=0)))
-    check(sep("prepare", ro=1, bound=0, xart="e") == look + xread(0, "e") + ["put 0", off_proof.format(NOPROOF), "done 2"]
-          and sep("prepare", ro=1, bound=0, xart="x") == look + xread(0, "x") + ["put 0", off_proof.format(NOPROOF), "done 2"]
-          and sep("prepare", ro=1, bound=0, xart="n")[-2:] == [off_proof.format(NOPROOF), "done 2"]
-          and sep("prepare", ro=1, bound=0, xart="r")[-2:] == [off_proof.format(NOPROOF), "done 2"]
-          and sep("prepare", ro=1) == look + ["put 0", off_proof.format(NODRIVER), "done 2"]
-          and sep("prepare", ro=1, nodes=3, devs=3, bound=-2, xart="dde")[-2:] == [off_proof.format(NOPROOF), "done 2"]
+          " NOT call the replay off; the device's lock is tried, its driver is apple_sep, its own diag/xart says disabled, the SEP's"
+          " power word is read (and waited for, 200 ms here), and only then are the DCPs shut down and SIO stopped",
+          "\n".join(sep("prepare", ro=1, bound=0)))
+    check(sep("prepare", ro=1, bound=0, xart="e") == look + xask(0, "e") + ["put 0"] + off(NOPROOF)
+          and sep("prepare", ro=1, bound=0, xart="x") == look + xask(0, "x") + ["put 0"] + off(NOPROOF)
+          and sep("prepare", ro=1, bound=0, xart="n")[-3:] == off(NOPROOF)
+          and sep("prepare", ro=1, bound=0, xart="r")[-3:] == off(NOPROOF)
+          and sep("prepare", ro=1, bound=0, drv="other") == look + xask(0, drv="other") + ["put 0"] + off(NOPROOF)
+          and sep("prepare", ro=1, bound=0, xart="c") == look + xask(0, "c") + ["put 0"] + off(NOPROOF)
+          and sep("prepare", ro=1, bound=0, held=0) == look + xask(0, busy=True) + ["put 0"] + off(NOPROOF)
+          and sep("prepare", ro=1) == look + xask(0, bound=False) + ["put 0"] + off(NODRIVER)
+          and sep("prepare", ro=1, nodes=3, devs=3, bound=-2, xart="dde")[-3:] == off(NOPROOF)
           and sep("prepare", ro=1, bound=0, xart="e", gate=-1) == sep("prepare", ro=1, bound=0, xart="e")
-          and sep("recheck", ro=1, bound=0, xart="e")[-3:] == [off_proof.format(NOPROOF), "off 1", "done 2"]
-          and not any(l in ("dcp shutdown", "sio stop", "r P") or l.startswith("slept") for k in (dict(ro=1, bound=0, xart="e"), dict(ro=1, bound=0, xart="x"), dict(ro=1),
-                      dict(ro=1, nodes=3, devs=3, bound=-2, xart="dde")) for l in sep("prepare", **k)),
-          "with sep_ro=1 and no proof at the prepare (the attribute says enabled, as after a rebind with writes on; it isn't there; it"
-          " has no newline; its read fails; no driver is bound at all; one of three says enabled) the replay is called off as for a"
-          " bound driver without sep_ro=1: replay_done 2, a line that says why, NEITHER the DCPs' shutdown NOR SIO's stop, and the SEP's"
-          " power word isn't even waited for", "\n".join(sep("prepare", ro=1, bound=0, xart="e")))
-    check(sep("prepare", ro=1, bound=0, gate=-1) == look + xread(0, "d") + ["put 0", "r P", off_power] + slept(500) + ["done 2"]
-          and sep("recheck", ro=1, bound=0, gate=-1) == look + xread(0, "d") + ["put 0", "r P", off_power, "off 1"] + slept(500) + ["done 2"]
-          and sep("recheck", ro=1, bound=0) == look + xread(0, "d") + ["put 0", "r P", "off 0", "done 0"],
+          and sep("recheck", ro=1, bound=0, xart="e")[-4:] == [off_proof.format(NOPROOF), "off 1", LEFT, "done 2"]
+          and not any(l in ("dcp shutdown", "sio stop", "r P") or l.startswith("slept")
+                      for k in (dict(ro=1, bound=0, xart="e"), dict(ro=1, bound=0, xart="x"), dict(ro=1), dict(ro=1, bound=0, drv="other"), dict(ro=1, bound=0, held=0),
+                                dict(ro=1, nodes=3, devs=3, bound=-2, xart="dde")) for l in sep("prepare", **k)),
+          "with sep_ro=1 and no proof at the prepare (the attribute says enabled, as after a rebind with writes on; the directory"
+          " isn't there, or is a kobject of its own; the word has no newline; the show fails; the driver has another name; the device's lock is held; no"
+          " driver is bound at all; one of three says enabled) the replay is called off as for a bound driver without sep_ro=1:"
+          " replay_done 2, a line that says why, NEITHER the DCPs' shutdown NOR SIO's stop, and the SEP's power word isn't even"
+          " waited for", "\n".join(sep("prepare", ro=1, bound=0, xart="e") + sep("prepare", ro=1, bound=0, held=0)))
+    check(sep("prepare", ro=1, bound=0, gate=-1) == look + xask(0, "d") + ["put 0", "r P", off_power] + slept(500) + [LEFT, "done 2"]
+          and sep("recheck", ro=1, bound=0, gate=-1) == look + xask(0, "d") + ["put 0", "r P", off_power, "off 1"] + slept(500) + [LEFT, "done 2"]
+          and sep("recheck", ro=1, bound=0) == look + xask(0, "d") + ["put 0", "r P", "off 0", LEFT, "done 0"],
           "with the proof there and the SEP's power word still reading powered after 5 s of polls, the replay is called off the same"
           " way, with the word's last value in the line, and neither firmware is stopped; with the word off the recheck says go on",
           "\n".join(sep("prepare", ro=1, bound=0, gate=-1)))
-    check(sep("prepare", ro=1, bound=0, n=2) == ["done 0"] and sep("prepare", ro=1, bound=0, done=1) == ["done 1"] and sep("prepare", ro=1, bound=0, done=2) == ["done 2"]
-          and sep("prepare", ro=1, bound=0, xart="e", n=2) == ["done 0"]
+    check(sep("prepare", ro=1, bound=0, n=2) == [LEFT, "done 0"] and sep("prepare", ro=1, bound=0, done=1) == [LEFT, "done 1"]
+          and sep("prepare", ro=1, bound=0, done=2) == [LEFT, "done 2"] and sep("prepare", ro=1, bound=0, xart="e", n=2) == [LEFT, "done 0"]
           and sep("prepare", bound=0) == look + ["put 0", off_bound, "done 2"] and sep("prepare", bound=0, xart="d", gate=-1) == sep("prepare", bound=0)
-          and sep("prepare", gate=-1) == look + ["put 0"] + go,
+          and sep("prepare", bound=0, held=0) == sep("prepare", bound=0)
+          and sep("prepare", gate=-1) == look + ["put 0", "dcp shutdown", "sio stop", "done 0"],
           "a later prepare, or a replay already run or called off, looks at nothing with sep_ro=1 either. Without sep_ro=1 nothing has"
-          " changed: a bound driver calls the replay off whatever its attribute says, no file is opened, and the SEP's power word is"
-          " neither read nor waited for, powered or not", "\n".join(sep("prepare", bound=0)))
-    check(in_order_of(recheck_fn, ["\tif (!(sep_pg || disp_hs) || n != 1 || READ_ONCE(replay_done))\n\t\treturn false;\n\tif (sep_ro) {\n\t\tif (!m1_sro_proof(&why)) {\n\t\t\tWRITE_ONCE(replay_done, 2);\n",
+          " changed: a bound driver calls the replay off whatever its attribute says, no lock is tried and nothing is asked of sysfs,"
+          " and the SEP's power word is neither read nor waited for, powered or not", "\n".join(sep("prepare", bound=0)))
+    check(in_order_of(recheck_fn, ["\tif (!(sep_pg || disp_hs) || n != 1 || READ_ONCE(replay_done))\n\t\treturn false;\n\tif (sep_ro) {\n\t\tif (!m1_sro_proof(&why, false)) {\n\t\t\tWRITE_ONCE(replay_done, 2);\n",
                                    "\t\t\treturn true;\n\t\t}\n\t\tif (m1_sro_wait(&v))\n\t\t\treturn false;\n\t\tWRITE_ONCE(replay_done, 2);\n",
                                    "\t\treturn true;\n\t}\n\tif (!m1_sep_bound(false))\n\t\treturn false;\n\tWRITE_ONCE(replay_done, 2);\n"])
           and in_order_of(prep, ["\tm1_sep_recheck(n);\n", "\tif (disp_off && n == 1 && !READ_ONCE(replay_done))\n\t\tm1_dcp_shutdown();\n"])
           and not re.search(wr, recheck_fn) and "m1_kwrite" not in recheck_fn + wait_fn + xart_fn + proof_fn,
-          "m1_sep_recheck(): with sep_ro=1 the proof first, then the wait, each calling the replay off by replay_done 2, the value a write"
-          " to cancel leaves; the bound driver's check only without it; all of it before the DCPs' shutdown in e1_prepare(); no register"
-          " and no PMU byte is written")
+          "m1_sep_recheck(): with sep_ro=1 the proof first, with each device's lock only tried, then the wait, each calling the replay"
+          " off by replay_done 2, the value a write to cancel leaves; the bound driver's check only without it; all of it before the"
+          " DCPs' shutdown in e1_prepare(); no register and no PMU byte is written")
 
     # The load: m1_sp_init() with the wait, and m1_init()'s proof before it.
     set_line = ("info m1: sep_pg: awake: the PMGR control word 0x28e0cc200 00000004, bit 2 (wait for the SEP's power gate) set; the SEP's power word"
@@ -11583,20 +11770,20 @@ def sep_ro_tests(g, src):
     m1_init = cut("static int __init m1_init(void)", "\n}\n")
     params = cut("static int __init e1_check_params(void)", "\n}\n")
     check(in_order_of(m1_init, ["\tif ((sep_pg || disp_hs) && !sep_ro && m1_sep_bound(true)) {\n", "\t\treturn -EBUSY;\n\t}\n",
-                                "\tif (sep_ro) {\n\t\tconst char *why;\n\n\t\tif (!m1_sro_proof(&why)) {\n\t\t\tpr_err(\"m1: sep_ro: the SEP's driver doesn't show its store read-only: %s.",
+                                "\tif (sep_ro) {\n\t\tconst char *why;\n\n\t\tif (!m1_sro_proof(&why, true)) {\n\t\t\tpr_err(\"m1: sep_ro: the SEP's driver doesn't show its store read-only: %s.",
                                 "\t\t\treturn -EBUSY;\n\t\t}\n\t}\n", "\tif (sep_pg) {\n\t\tint ret = m1_sp_init();\n", "\tif (disp_hs) {\n\t\tint ret = m1_dh_init();\n"])
           and in_order_of(params, ["\tif (sep_pg && (!gates_mark || observe)) {\n",
                                    "\tif (sep_ro && (!sep_pg || wake_all)) {\n\t\tpr_err(\"sep_ro=1 needs sep_pg=1 and no wake_all=1 (", "\t\treturn -EINVAL;\n\t}\n",
                                    "\tif (pw_noread && (!ps_words || !atc_down)) {\n\t\tpr_err(\"pw_noread=1 needs ps_words=1 and atc_down=1 (", "\t\treturn -EINVAL;\n\t}\n",
                                    "\tif (disp_hs && (!disp_off || !gates_mark || observe)) {\n"])
           and "\nstatic bool sep_ro;\nmodule_param(sep_ro, bool, 0444);\nMODULE_PARM_DESC(sep_ro, \"With sep_pg=1, never with wake_all=1:" in src
-          and "\nstatic bool pw_noread;\nmodule_param(pw_noread, bool, 0444);\nMODULE_PARM_DESC(pw_noread, \"With ps_words=1 and atc_down=1:" in src
+          and "\nstatic bool pw_noread;\nmodule_param(pw_noread, bool, 0444);\nMODULE_PARM_DESC(pw_noread, \"With ps_words=1 and atc_down=1, never with sio_down=1, pcie_down=1, last_look=1 or probe=1, which read them:" in src
           and 'disp_hs ? " disp_hs=1" : "", sep_ro ? " sep_ro=1" : "", pw_noread ? " pw_noread=1" : "", pre_test ?' in src
           and " *   pkexec e1-hook/run-floor --m1-sep-ro          (--m1-disp-hs' without a2_pre=1, with sep_ro=1 and pw_noread=1:" in src
           and not re.search(r"\b(sep_ro|pw_noread)\s*=[^=]", code_only) and len(re.findall(r"\bsep_ro\b", code_only)) == 13
-          and len(re.findall(r"\bpw_noread\b", code_only)) == 8
+          and len(re.findall(r"\bpw_noread\b", code_only)) == 9
           and "\tif (blink && (!gates_mark || sio_down || sio_steps)) {\n" in params and not re.search(r"blink[^\n]*a2_pre|a2_pre[^\n]*blink", params),
-          "the load with sep_ro=1: m1_init() doesn't ask whether a driver is bound, asks m1_sro_proof() instead and refuses, -EBUSY,"
+          "the load with sep_ro=1: m1_init() doesn't ask whether a driver is bound, asks m1_sro_proof() instead, waiting for each device's lock, and refuses, -EBUSY,"
           " without it, before sep_pg=1's own start-up, which has the wait. sep_ro=1 and pw_noread=1 are off unless asked for, can't be"
           " set after the load and are named in the load line and, with their launcher, in the header's list; sep_ro=1 refuses without"
           " sep_pg=1 or with wake_all=1, pw_noread=1 without ps_words=1 or atc_down=1; and no rule ties blink=1 to a2_pre=1: the light"
@@ -11830,14 +12017,20 @@ def sep_ro_tests(g, src):
         rc, out, err, _, _ = rdec(b"\x88\x02")
         rc2, out2, err2, _, _ = rdec(b"\x10\xfc")
         rc3, out3, err3, _, _ = rdec(b"\x88\xfc", 0xb9)
-        check(rc == 0 and SRO_HEAD + sro_field(0x88) in out and sp_head + armed_sp + later.format(0x55) + "\n" in out and "on either side" not in out
+        after_it = ("0x6008's byte, which step 8 sends right after this one, landed, and a command that fails stops every later one: this byte's"
+                    " command was acked and the byte didn't land\n")
+        check(rc == 0 and SRO_HEAD + sro_field(0x88) in out and sp_head + armed_sp + after_it in out and "on either side" not in out
+              and "Stage 0x55 is a later command's" not in out[out.index("sep_pg=1's record"):]
               and rc2 == 0 and SRO_HEAD + armed_sro + later.format(0x55) + "\n" in out2 and sp_head + sp_fields(0xfc) + sro_after(0x10, 0xfc) in out2
               and "nothing is concluded from it\n" in out2 and "bit 2 clear before the write" not in out2
-              and rc3 == 0 and SRO_HEAD + "  the stage, 0x39, is step 7's own, still the stage when the byte goes out: this byte landed and no later command did\n" + sro_field(0x88) in out3
-              and sro_after(0x88, 0xfc) in out3,
+              and rc3 == 0 and SRO_HEAD + "  the stage, 0x39, is step 7's own, still the stage when this byte goes out: the byte landed, and no newer stage was kept after it (the next stage's command comes after the options' bytes: it failed, or wasn't reached)\n" + sro_field(0x88) in out3
+              and sro_after(0x88, 0xfc) in out3
+              and out3.count("no newer stage was kept after it") == 2 and "no later command did" not in out3,
               "one of the two bytes landed and the other's mark stayed: the one that landed is read by itself, and with only one sample"
-              " nothing is concluded (0x6008's sample with 0x6009 still K1's mark; 0x6009's byte with 0x6008 still the mark, which is said);"
-              " both under step 7's own stage are read as the run's, with a line saying no later command landed", out + err + out2 + err2 + out3 + err3)
+              " nothing is concluded (0x6008's sample with 0x6009 still K1's mark, which is then said to have been acked and lost, since"
+              " 0x6008's goes out after it; 0x6009's byte with 0x6008 still the mark, which is said); both under step 7's own stage are"
+              " read as the run's, each with a line saying what that stage establishes, that no newer stage was kept, and nothing about"
+              " which of the bytes could have landed", out + err + out2 + err2 + out3 + err3)
         rc, out, err, _, _ = rdec(b"\x10\x02" + REC)
         rc2, out2, err2, _, _ = rdec(b"\x10\xfc" + REC)
         check(rc == 0 and "disp_hs=1's record" in out and "    after dispext0's place, the second (0x600b bits 7:4): 0xc, bit 2 set\n  the first of these samples" in out
@@ -11925,6 +12118,77 @@ def sep_ro_tests(g, src):
                                                                                    "did NOT read 0x1000030f, macOS's value (the load log has it awake)")]
             if lane != want:
                 badg.append((m, v, lane))
+    # The gate byte's own conclusion: --m1-gates' record points at a2_pre=1, which followed it; a later recipe's doesn't.
+    closed = ("  so: 0x28e5a0050 read closed in the recipe's state: B2's poll of it at op 140 is cleared, as far as a read before B2's own writes can"
+              " clear it")
+    sos = {}
+    for what, m, r in (("pwn", 0x9f, bytes(7)), ("sro", 0x5f, bytes((0x88,)) + bytes(6)), ("sromark", 0x5f, bytes((0x10,)) + bytes(6)),
+                       ("sp", 0x5f, bytes((0, 0xfc)) + bytes(5)), ("spmark", 0x5f, bytes((0, 0x02)) + bytes(5)), ("dh", 0x5f, bytes(2) + REC + bytes(1)),
+                       ("dhmark", 0x5f, bytes((0, 0, 0x01)) + bytes(4)), ("gates", 0x5f, bytes(7)), ("gatesw", 0xdf, bytes(7)), ("wa", 0x5f, bytes((0xf0,)) + bytes(6)),
+                       ("junk", 0x5f, bytes((0x90, 0x45)) + bytes(5))):
+        b_ = bytearray(0x20)
+        b_[8:0x0f], b_[0x13], b_[0x16] = r, m, 0x81
+        sos[what] = [l for l in gates_lines(0x55, bytes(b_), True) if l.startswith("  so:")]
+        b_[0x16] = 0x80
+        sos[what + " open"] = [l for l in gates_lines(0x55, bytes(b_), True) if l.startswith("  so:")]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "nvmem")
+        sc = bytearray(base)
+        sc[8:0x0a], sc[0x13], sc[0x16] = b"\x88\xfc", 0x9f, 0x81
+        fake(path, bytes(sc), rtc_secs=112659 + 130, alarm=(0x41, 112659 + 3600, 0, 0))
+        crafted = run(path, cnt="960000000 24000000")
+    block = crafted.stdout[crafted.stdout.index("0x6016 = 0x81:"):] if "0x6016 = 0x81:" in crafted.stdout else ""
+    block = "".join(l + "\n" for i, l in enumerate(block.splitlines()) if i == 0 or l.startswith("  ")).split("\n0x")[0]
+    check(all(sos[k] == [closed + " (what follows from that is PLAN.md's to say)"] for k in ("pwn", "sro", "sromark", "sp", "spmark", "dh", "dhmark"))
+          and all(sos[k] == [closed + ", and a2_pre=1 is next (PLAN.md)"] for k in ("gates", "gatesw", "wa", "junk"))
+          and all(len(sos[k + " open"]) == 1 and sos[k + " open"][0].startswith("  so: 0x28e5a0050 read OPEN in the recipe's state too") and "a2_pre" not in sos[k + " open"][0]
+                  for k in ("pwn", "sro", "gates"))
+          and crafted.returncode == 0 and closed + " (what follows from that is PLAN.md's to say)\n" in block and "a2_pre" not in block and block.count("  so:") == 1,
+          "the gate byte with 0x28e5a0050 read closed: under --m1-gates' own record (ps_words=1's or atc_down=1's mark at 0x6013 and"
+          " nothing of the later options at 0x6008-0x600e, or only what none of them leaves) the line still says a2_pre=1 is next, as"
+          " it was then; under a record with pw_noread=1's mark, or with sep_ro=1's, sep_pg=1's or disp_hs=1's bytes or marks, it"
+          " gives the reading and leaves what follows to PLAN.md, with no word of a2_pre=1, which that recipe may not even have. The"
+          " reviewer's record (stage 0xd5, 0x6013 = 0x9f, 0x6016 = 0x81, 0x6008 = 0x88, 0x6009 = 0xfc) through the tool: one such line",
+          crafted.stdout[-3000:] + crafted.stderr + str(sos))
+
+    # pw_noread=1 and the options whose own steps read the words: m1_pwn_reader() as it stands, in every combination.
+    with tempfile.TemporaryDirectory() as tmp:
+        c = os.path.join(tmp, "pwn.c")
+        with open(c, "w") as f:
+            f.write("#include <stdio.h>\n#include <stdbool.h>\n#define __init\nstatic bool sio_down, pcie_down, last_look, probe;\n"
+                    + cut("static const char * __init m1_pwn_reader(void)", "\n}\n")
+                    + "int main(void)\n{\n\tunsigned int c;\n\n\tfor (c = 0; c < 16; c++) {\n\t\tconst char *r;\n\n"
+                      "\t\tsio_down = c & 1;\n\t\tpcie_down = c >> 1 & 1;\n\t\tlast_look = c >> 2 & 1;\n\t\tprobe = c >> 3 & 1;\n"
+                      "\t\tr = m1_pwn_reader();\n\t\tprintf(\"%u %s\\n\", c, r ? r : \"-\");\n\t}\n\treturn 0;\n}\n")
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-o", os.path.join(tmp, "pwn"), c], check=True)
+        readers = [l.split(" ", 1) for l in subprocess.run([os.path.join(tmp, "pwn")], capture_output=True, text=True, check=True).stdout.splitlines()]
+    named_ = ("sio_down=1 (", "pcie_down=1 (", "last_look=1 (", "probe=1 (")
+    code = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    tok = re.compile(r"m1_gates_read\(|GATE_LANE\b|PCD_OFFS|m1_pw_map\[|afnc_map \+|LOOK_PS_OFFS")
+    touch = {m.group(2): sorted(set(tok.findall(m.group(1))))
+             for m in re.finditer(r"\n(static [^\n;{}]*?\b(\w+)\([^;{}]*?\)\n\{\n.*?\n\}\n)", code, flags=re.S) if tok.search(m.group(1))}
+    params = cut("static int __init e1_check_params(void)", "\n}\n")
+    check(len(readers) == 16 and all((r == "-") == (int(c) == 0) for c, r in readers)
+          and all(r.startswith(named_[min(i for i in range(4) if int(c) >> i & 1)]) for c, r in readers if int(c))
+          and in_order_of(params, ["\tif (pw_noread && (!ps_words || !atc_down)) {\n", "\t\treturn -EINVAL;\n\t}\n",
+                                   "\tif (pw_noread && m1_pwn_reader()) {\n\t\tpr_err(\"pw_noread=1 never loads with %s: the run would read a word it is there not to read\\n\", m1_pwn_reader());\n"
+                                   "\t\treturn -EINVAL;\n\t}\n"])
+          and "\tif (ll_wake && !last_look) {\n" in params and "\tif (gate_look && !last_look) {\n" in params and "\tif (ll_retn && (!ll_wake || gate_look)) {\n" in params
+          and "\tif (m1 && (replay != 15 || !quiet)) {\n" in src
+          and len(re.findall(r"\bm1_pwn_reader\(", code_only)) == 3
+          and touch == {"e1_after_slpa": ["afnc_map +"], "m1_llr_look": ["PCD_OFFS"], "m1_ll_ret": ["PCD_OFFS"], "m1_ll_look": ["PCD_OFFS"],
+                        "m1_pw_write": ["m1_pw_map["], "m1_gates_read": ["GATE_LANE", "m1_gates_read("], "m1_sio_down": ["m1_gates_read("],
+                        "m1_pcie_down": ["PCD_OFFS"], "m1_after_slpa": ["m1_gates_read("], "m1_pw_init": ["m1_pw_map["], "m1_look": ["LOOK_PS_OFFS"],
+                        "m1_gate_test": ["GATE_LANE"], "m1_look_init": ["GATE_LANE"], "m1_gates_init": ["m1_gates_read("], "m1_pcd_init": ["PCD_OFFS"],
+                        "m1_ll_init": ["PCD_OFFS"], "m1_unmap": ["m1_pw_map["]},
+          "pw_noread=1 never loads with an option whose own steps read one of the four fabric-group power words, or APCIE_GP, once"
+          " step 5 has written them: m1_pwn_reader() as it stands, in all sixteen combinations, names sio_down=1, pcie_down=1,"
+          " last_look=1 or probe=1, the first of them that is set, and none only with none set; e1_check_params() refuses the load on"
+          " it, right after pw_noread=1's own rule; ll_wake=1, gate_look=1 and ll_retn=1 can't load without last_look=1. And the file's"
+          " functions that touch those words, by the names the code reaches them through, are exactly seventeen: the last look's three"
+          " (last_look=1), m1_sio_down(), m1_pcie_down(), the looks and the gate test (probe=1), step 8's own read, which pw_noread=1"
+          " leaves out, m1_pw_write(), the loads' awake reads, the unmap, and the plain replay's, which no m1 run reaches. A new one"
+          " fails this check until the rule knows it", str(readers) + str(touch))
     check(not badg,
           "0x6016 through the decoder's own function, every gate byte under four markers: with pw_noread=1's at 0x6013 the lane is \"not"
           " read\", never \"did NOT read macOS's value\", and a bit 6 that is set all the same is said to be none of that run's; with"
@@ -14176,7 +14440,7 @@ def position_tests(g, src):
            "\tif (wake_all)\n\t\tm1_wa_init();\n") in src
           and in_order_of(src, ["\tif (wake_all)\n\t\tm1_wa_init();\n\t/*\n\t * sep_pg=1 and disp_hs=1: neither loads while a driver is bound to the SEP's device",
                                 "\tif ((sep_pg || disp_hs) && !sep_ro && m1_sep_bound(true)) {\n", "\t\treturn -EBUSY;\n\t}\n"
-                                "\t/* sep_ro=1 opts in and proves nothing:", "\tif (sep_ro) {\n\t\tconst char *why;\n\n\t\tif (!m1_sro_proof(&why)) {\n",
+                                "\t/* sep_ro=1 opts in and proves nothing:", "\tif (sep_ro) {\n\t\tconst char *why;\n\n\t\tif (!m1_sro_proof(&why, true)) {\n",
                                 "\t\t\treturn -EBUSY;\n\t\t}\n\t}\n"
                                 "\t/* After m1_wd2_init(), which maps the engine's page: m1_sp_init() refuses without it. */\n"])
           and ("\t/* After m1_wd2_init(), which maps the engine's page: m1_sp_init() refuses without it. */\n"

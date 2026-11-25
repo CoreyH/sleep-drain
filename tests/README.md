@@ -24,10 +24,12 @@ used to sit in CLAUDE.md, entry for entry):
   that a regeneration is made again after one that failed, that a candidate `grub.cfg` without the blacklist is
   refused before it replaces the live one, and the refusals (a regular line with `--`, after which nothing is the
   kernel's; one with any character outside the plain set, which GRUB may read another way than the script: a quote, a backslash (a line
-  carried on to the next among them), a carriage return, `#`, `;` or one outside ASCII; a blacklist over the kernel's 1024 bytes; a regular line that already sets `apple_sep`'s `xart_writes` or
-  `provision_keybag`, in any spelling of the module's name or the parameter's, with a value or bare, in all three
-  modes; `--sep-ro` alone on a line whose own blacklist keeps `apple_sep` out; a third entry one byte over the
-  kernel's line, though the other two fit; a regeneration that would drop either of the two words); and `status`
+  carried on to the next among them), a carriage return, `#`, `;` or one outside ASCII; a blacklist over the kernel's 1024 bytes; `--sep-ro` alone on a line whose own blacklist keeps `apple_sep` out; a third entry one byte over the
+  kernel's line, though the other two fit; a regeneration that would drop either of the two words); a regular
+  line that already sets `apple_sep`'s `xart_writes` or `provision_keybag`, in any spelling of the module's name
+  or the parameter's, with a value or bare, once or several times, which stops no mode: the plain and the no-SEP
+  entry inherit the line, and the third entry's line has those words left out and exactly one setting of each,
+  the script's; and `status`
   in a fake safe boot: kept out only by the kernel's own list, and not verified when that doesn't read, whatever
   the command line asks for; and the enclave's store, read-only only if every device bound to `apple_sep`, at
   least one, has `diag/xart` reading exactly `disabled` and a newline (the driver's directory in sysfs is a
@@ -184,35 +186,48 @@ used to sit in CLAUDE.md, entry for entry):
   fields, and four bytes that aren't a record's (no field of any record read); a family run without the option after
   one with it; and `--clear` in fourteen cases that zero the seven and eighteen that leave them.
   For sep_ro=1 and pw_noread=1 (`sep_ro_tests()`) it compiles `last_look.h`'s `sro_byte()`, `sro_ok()` and
-  `sro_xart_ro()` against a second writing-out (the comparison of the SEP device's `diag/xart` in eighteen cases:
-  `disabled` and a newline with the file's end after it, and nothing else: not `enabled`, an empty file, the word
-  without its newline, the word with something after it in the same read or the next, a buffer read full, a read
-  that failed, the first or the second, another case, a space, a count one short); runs steps 7 and 8 in the
+  `sro_xart_ro()` against a second writing-out (the comparison of what the SEP device's `diag/xart` says, in
+  eighteen cases: `disabled` and a newline with the string's end after it, and nothing else: not `enabled`,
+  nothing, the word without its newline, the word with something after it, counted in what the show returned or
+  not, something longer, a show that failed, another case, a space, a count one short); runs steps 7 and 8 in the
   harness sep_pg=1's tests use, with the real `m1_sp_clear()`, `m1_crumb()` and `m1_pmu_ok()`, in seventeen runs
-  (the gate word read before the decision and after the read-back, 0x6008's byte sent after the record and before
+  (the gate word read before the decision and after the read-back, 0x6008's byte sent after the record and after
   0x6009's; a gate word that moves with the write, the other way, or by itself with no write; **the SEP's word
   reading powered: no write and no wait**; a bit found clear; a write that doesn't take; each command not acked);
   and pins that `m1_sp_clear()` has no loop, no clock and no wait. `m1_sro_xart()`, `m1_sro_proof()`,
   `m1_sro_wait()`, `m1_sep_recheck()` and the last lines of `e1_prepare()` as they stand, over stand-ins for the
-  device tree, the driver core, sysfs and the clock: the path asked of the device's kobject, opened read-only,
-  read twice, closed, with eleven kinds of content and failure (a file that hands out the word first and more at the second read among them); every bound device asked, an unbound one not; no
-  driver anywhere; the wait's sleeps counted (off at once, after 30 ms, at 4.99 s, at 5 s, never); and the
+  device tree, the driver core, kernfs, the device's lock, the page allocator and the clock: one bound device in 25
+  states of its own corner of sysfs, with the lock waited for and only tried, each against a second writing-out of
+  every call (the lock, the two nodes found with a reference each, the zeroed page, the device kobject's show
+  called with the node's attribute under the lock, everything undone on every way out: no reference, page or lock
+  left in any run); no proof for anything but `disabled` and a newline with the string's end after it, for a
+  directory that is a file, another kobject's or a kobject of its own, an `xart` that is a directory, of another
+  size or without an attribute, an owner with no type, operations or show, no node, no page; no driver, a driver
+  of six other names or none; three devices in eight combinations; a lock somebody holds at the prepare (no proof,
+  nothing asked, nothing dropped); the wait's sleeps counted (off at once, after 30 ms, at 4.99 s, at 5 s, never); and the
   prepare: with the proof and the word off both firmware stops are made though a driver is bound; without the
   proof, or with the word still powered after 5 s, the replay is called off and neither stop is made; without
-  sep_ro=1 nothing has changed. (What is mocked: sysfs serves what it is told to, by a letter per device; the
+  sep_ro=1 nothing has changed. (What is mocked: the nodes, kobjects, locks and pages, which log; the attribute says what it is told to, by a letter per device; the
   clock moves only when the code sleeps; the SEP's power word reads powered until a time given.) `m1_sp_init()`
   with the wait (off at once, after 250 ms, at 5 s, never: the refusal, with nothing else read), and the load's
   order in the source. For pw_noread=1: `m1_pw_write()` as it stands over one word per entry of `m1_pw[]`, in
   nine runs against a second writing-out (the same twenty writes and `dsb`s with or without it; no read of the
   fabric group's four with it, the other sixteen polled as before; the group's bit always clear), and
-  `m1_gates_read()` with and without a place for the lane: step 8's seven reads, six with pw_noread=1.
+  `m1_gates_read()` with and without a place for the lane: step 8's seven reads, six with pw_noread=1; and
+  `m1_pwn_reader()` in all sixteen combinations of sio_down=1, pcie_down=1, last_look=1 and probe=1, the load's
+  refusal on it pinned, with the set of the file's functions that touch those words (seventeen): a new one fails
+  the check until the rule knows it.
   `m1_pmu_ok()` in the eight combinations of wake_all=1, sep_pg=1 and sep_ro=1, the real K1 and undo in five kinds
   of run over five leftovers. And through m1-crumbs: every value of sep_pg=1's byte with every value of
   sep_ro=1's, with K1's mark and without, through the decoder's own function against a second writing-out (the
   two samples side by side only when both landed; "bit 2 clear before the write and set after it" in 64 of the
   2,048 pairs, exactly those with the write made and read back; a clear skipped or not read back said to be no
   test of the wait bit); the run's own record under `gates_mark=1`'s stage; K1's marks under eleven stages; a
-  stage no such run sends; one byte landed and the other's mark left; what a run can't have left; last_look=1's
+  stage no such run sends; one byte landed and the other's mark left (the mark at 0x6009 with 0x6008's byte
+  landed: acked and lost); both under step 7's own stage, each with what that stage establishes and nothing about
+  which byte could have landed; the gate byte's line for a later recipe's record, the reviewer's among them
+  (stage 0xd5, 0x6013 0x9f, 0x6016 0x81, 0x6008 0x88, 0x6009 0xfc: no word of a2_pre=1), and for `--m1-gates`'
+  own; what a run can't have left; last_look=1's
   and an observer's stages; `--clear` in eleven cases that zero the seven and eight that leave them; every value
   of 0x6013 ("not read (pw_noread=1)" for 0x80 to 0x9f, never "read back as written"); and every gate byte under
   four markers (the lane "not read" by 0x6013's mark, not by its own bit).

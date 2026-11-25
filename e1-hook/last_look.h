@@ -414,11 +414,17 @@
  * "enabled" : "disabled"), registered at probe from the store's opened mode
  * and removed on unbind. On this Mac it is
  * /sys/bus/platform/devices/396400000.sep/diag/xart, and read "enabled" in
- * the regular boot of 2026-11-24. The module reads it for every device under
- * an "apple,sep" node that has a driver, needs at least one, and needs
- * exactly "disabled\n" from each: nine bytes and then the file's end
- * (sro_xart_ro()). A file that isn't there, a read that fails, "enabled", or
- * anything else is no proof.
+ * the regular boot of 2026-11-24. The module asks it of the device itself and
+ * not of a path, which would be resolved in whatever view of the filesystem
+ * the task has (Pullfrog on #134): for every device under an "apple,sep"
+ * node, under the device's lock, it needs a driver named exactly apple_sep,
+ * finds the attribute through the device's own node in sysfs (its kobject's
+ * kernfs node, then "diag", then "xart") and calls the attribute's show as
+ * sysfs would, into a page of its own. There has to be at least one such
+ * device, and each has to say exactly "disabled\n": nine bytes, and the
+ * string's end after them (sro_xart_ro()). No driver of that name, a node
+ * that isn't there or isn't what it should be, a lock that can't be had at
+ * the prepare, "enabled", or anything else is no proof.
  * It polls the SEP's power word for actual state 0 too, up to SRO_WAIT_MS
  * in sleeping steps, twice: at the load, which it refuses if the word never
  * reads 0, and at the first suspend's prepare, before the DCPs' shutdown,
@@ -434,7 +440,8 @@
  *   0x6008  bit 7 set (SRO_MARK); bits 6:4 0; bits 3:0 0x2922c0044's low
  *           nibble right before the write decision
  * K1 leaves 0x6008 as SRO_ARMED until it lands; step 8 sends it after its own
- * record and before 0x6009's. sro_ok() is all that m1_pmu_ok() lets such a run
+ * record and after 0x6009's byte, the run's first result: a command that
+ * fails stops every later one. sro_ok() is all that m1_pmu_ok() lets such a run
  * write there, beside the zeros. A clear that was skipped, or one that didn't
  * read back, is no test of the wait bit, whatever the two samples read.
  */
@@ -585,15 +592,15 @@ static inline bool sp_ok(u8 v)
 }
 
 /* sep_ro=1's evidence: the SEP device's own word on its store, the sysfs attribute diag/xart (the comment at the top). */
-#define SRO_XART_ATTR		"diag/xart"	/* under the device's directory in sysfs */
-#define SRO_XART_RO		"disabled\n"	/* all it may read, to the byte */
-#define SRO_XART_BUF		16		/* how much is asked of it in one read: more than it may hold, so that a longer value shows */
+#define SRO_XART_DIR		"diag"		/* under the device's own node in sysfs */
+#define SRO_XART_FILE		"xart"		/* in it */
+#define SRO_XART_RO		"disabled\n"	/* all it may say, to the byte */
 
 /*
- * Whether what diag/xart read says the store is read-only. b, n: the buffer and the result of one read of SRO_XART_BUF bytes
- * from the file's start (negative: the read failed); more: the result of a read of one more byte after it, 0 at the file's
- * end. Only "disabled" and its newline, nine bytes, and then the end: not "enabled", not an empty file, not the word without
- * its newline, not the word with anything after it, not a read that failed.
+ * Whether what diag/xart said says the store is read-only. b, n: the page the attribute's show wrote into and what it
+ * returned, the number of bytes (negative: it failed); more: the byte after those in the page, 0 if the string ends there.
+ * Only "disabled" and its newline, nine bytes, and then the end: not "enabled", not nothing, not the word without its
+ * newline, not the word with anything after it, not a show that failed.
  */
 static inline bool sro_xart_ro(const char *b, long n, long more)
 {
