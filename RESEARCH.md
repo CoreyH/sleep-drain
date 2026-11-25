@@ -5459,8 +5459,11 @@ store read-only, the wait bit cleared only while the SEP's power word reads off.
   task's own view of the filesystem, and the first build opened "/sys/..." with `filp_open()`): under the
   device's lock, waited for at the load and only tried at the prepare, the bound driver's name has to be
   exactly `apple_sep`, the device's own sysfs node has to have a `diag` that is an attribute group of the
-  device's own kobject and in it a file `xart` of an attribute's size, and that attribute's show is called
-  as sysfs calls it, into a zeroed page. The lock stands in for the reference sysfs holds over a read: a
+  device's own kobject and in it a file `xart` of an attribute's size whose node is a text attribute's
+  (kernfs's `KERNFS_HAS_SEQ_SHOW`: a binary attribute's node hasn't it, and its `priv` must never reach a
+  text show; Pullfrog's second pass. omacom's `fs/sysfs/file.c` gives a device's text attribute
+  `sysfs_file_kfops_rw`, which has `seq_show`, and `fs/kernfs/file.c` sets the flag from that), and that
+  attribute's show is called as sysfs calls it, into a zeroed page. The lock stands in for the reference sysfs holds over a read: a
   driver is unbound, and its attributes taken away, only under it. A lock that is held at the prepare, a
   driver of another name, a node that isn't what it should be: no proof. Then, at both places, the SEP's power word has to
   read actual 0, polled up to 5 s as the reference's `prepare_late()` polls it. Step 7 waits for nothing
@@ -5529,13 +5532,17 @@ New in the boot: `apple_sep` bound, its store opened read-only.
 
 **Checked.** Built by a subagent from a written brief and three amendments (Pullfrog's passes on the plan,
 #133), then read here. Reviewed twice on #134: Pullfrog (the proof bound to the device, `pw_noread=1`'s
-refusals, the inherited parameters, a decoder sentence under stage 0x39) and one adversarial pass by a
+refusals, the inherited parameters, and in two passes what the decoder may say under stage 0x39: only that
+it is the last stage the record kept, and that a later command was acked where 0x6012-0x6013 carry the
+outcomes' marker, which `decode()` now reads as outcomes there and not as K1's second; and 0x6008 counts
+as evidence about 0x6009's command only where the decoder itself reads it) and one adversarial pass by a
 subagent, which couldn't get a run armed with a writable store and found the decoder saying "`a2_pre=1` is
 next" for this run's record (fixed) and the byte order (changed). After those fixes (2026-11-25):
-`tests/m1_crumbs_test.py` 1,673 ok; `tests/safe_boot_boot_test.py` 273 ok; `tests/e1a_launcher_test.py` 506
+`tests/m1_crumbs_test.py` 1,677 ok; `tests/safe_boot_boot_test.py` 273 ok; `tests/e1a_launcher_test.py` 506
 ok for `--m1-sep-ro`, `--m1-sep-pg` and `--m1-disp-hs` (the launcher wasn't changed by the fixes; its full
-test, 3,444 ok, was the day before); the other test files pass. Mutants: none stale of 1,686; the 234 that
-bear on the changed code all caught, none by a build failure only; the other 1,452 not run again. The
+test, 3,444 ok, was the day before); the other test files pass. Mutants: none stale of 1,708; the 234 that
+bear on the first round's changes and the 40 on the second's all caught, none by a build failure only; the
+rest not run again. The
 launcher's line was also walked through `e1_check_params()` by hand: it differs from `--m1-disp-hs`'s, which
 loaded on 11-24, by `a2_pre` off (no rule needs it on) and the two new options, whose rules it meets.
 Not checked by anything here: the attribute's value with writes off; that kmod hands the command line's
@@ -6014,8 +6021,8 @@ nothing already sent; the family's stage and `a2_pre=1`'s own bytes still come a
 
 K1 zeroes 0x6008-0x600e and leaves 0x20 at 0x6008 until that byte, so one that never landed shows. It needs
 `gates_mark=1` and refuses `observe=1`, whose record is in the same bytes. `m1-crumbs` reads the byte under
-that family's stages and under step 7's own (0x39, still the stage when the byte goes out: what the record
-keeps if the byte lands and nothing after it does), and `--clear` takes the byte or the mark with the rest
+that family's stages and under step 7's own (0x39, still the stage when the byte goes out; since
+2026-11-25 the decoder says only that it is the last stage kept, not that nothing after it landed), and `--clear` takes the byte or the mark with the rest
 when the six bytes after it are zero. At the load `m1_wa_init()` logs both sets of seven as they read awake.
 
 **One change to every run: K1 and the undo now zero 0x6008-0x600e whatever the options** (seven zeros, the
