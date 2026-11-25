@@ -57,7 +57,8 @@ this section where they differ.
 1. **The tenth run: the SEP's wait, in the state the reference sleeps in** (RESEARCH.md, "The
    `disp_hs=1` run", 2026-11-24). **Built the same day** (RESEARCH.md, "`sep_ro=1` and `pw_noread=1` as
    built"): `pkexec sleep-drain-safe boot --sep-ro`, then `run-floor --no-reading --m1-sep-ro`. Not to
-   be handed over before: the branch merged with both reviews done, `pkexec bash
+   be handed over before: the branch merged (both reviews done and their fixes built, 2026-11-25:
+   RESEARCH.md, same section), `pkexec bash
    /home/corey/src/sleep-drain/install.sh` run (the installed `sleep-drain-safe` doesn't know
    `--sep-ro`; by its full path: pkexec starts elsewhere), the module built from `main`. In that boot
    Corey types the password and leaves the fingerprint sensor alone. What follows is the plan it was
@@ -81,7 +82,8 @@ this section where they differ.
      here, 2026-11-24). `run-floor` needs it to read "disabled" before anything is loaded or written.
      The module takes a bound SEP driver only with a parameter of its own for this mode (`sep_ro=1`),
      which opts in and proves nothing: at the load and again at the first suspend's prepare the module
-     itself reads that attribute of every bound SEP device and needs "disabled", whatever the power
+     itself asks that attribute of every SEP device with a driver (of the device, under its lock, a
+     driver named `apple_sep`; not of a path) and needs "disabled", whatever the power
      word says (this Mac read the enclave gated in a boot with writes enabled: the power state is no
      evidence of the policy). Missing, unreadable or anything else: refused as a bound driver is now,
      and the run stays blocked. Then the SEP's power word has to read actual 0, waited for up to 5 s as the reference does,

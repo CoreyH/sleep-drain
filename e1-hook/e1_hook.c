@@ -1940,10 +1940,11 @@ static void e1_after_slpa(void)
  * things about the driver's show: that it takes no lock of the device's (it
  * would never return here), and that it reads a flag and touches no hardware
  * (the device is suspended at the prepare). Both hold for the apple-sep.ko of
- * 7.2.11-15-1-ARCH by its disassembly (2026-11-24; the driver's source wasn't
- * read): xart_show() loads one byte of the module's own data, picks one of
- * two strings and calls sysfs_emit(), and the group it is in goes to
- * devm_device_add_group(). A later build of the driver isn't covered by that:
+ * 7.2.11-15-1-ARCH by its disassembly (2026-11-24) and by omacom's source
+ * (diag_shim.c: DEVICE_ATTR_RO(xart), a text attribute and not a binary one,
+ * which this call couldn't tell apart): xart_show() loads one byte of the
+ * module's own data, picks one of two strings and calls sysfs_emit(), and
+ * the group it is in goes to devm_device_add_group(). A later build of the driver isn't covered by that:
  * look again after a kernel update. kernfs_find_and_get_ns() and kernfs_put() are exported to GPL
  * modules; nothing ties an open file to a node for a module, which is why the
  * file isn't opened at all. At the prepare this runs in the task that asked

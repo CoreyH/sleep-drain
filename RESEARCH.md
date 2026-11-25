@@ -5436,8 +5436,11 @@ store read-only, the wait bit cleared only while the SEP's power word reads off.
 **What they are.**
 - **`sleep-drain-safe boot --sep-ro`:** a third GRUB entry (`sleep-drain-safe-sepro`, written with the other
   two every time), the regular line with `apple_sep.xart_writes=0 apple_sep.provision_keybag=0` (the driver's
-  probe refuses the first without the second). Refused before anything is written: a regular line that
-  already has either word, and `--sep-ro` where the line's own blacklist keeps the driver out. `status` says
+  probe refuses the first without the second). A regular line that already sets either parameter stops no
+  mode: `boot` and `boot --no-sep` take the line as it is, and only the `--sep-ro` entry drops the line's
+  own setting (`-` read as `_`, with a value or bare) and adds ours, each parameter once, and says so
+  (Pullfrog on #134: the first build refused all three modes). Refused before anything is written:
+  `--sep-ro` where the line's own blacklist keeps the driver out. `status` says
   the store is read-only only on the bound driver's word, "OPEN TO WRITES" when that word is "enabled", NOT
   VERIFIED otherwise.
 - **The proof of read-only is the binding's own:** the SEP device's `diag/xart` attribute, "enabled" or
@@ -5448,16 +5451,25 @@ store read-only, the wait bit cleared only while the SEP's power word reads off.
   reads "disabled" with `xart_writes=0` is from the source, not yet seen on this Mac. `xart_store.rs` opens
   the block handle read-only then and refuses `write()` and the delete.
 - **`e1_hook sep_ro=1`** (needs `sep_pg=1`, never with `wake_all=1`): opts in and proves nothing. With it the
-  module reads `diag/xart` of every bound `apple,sep` device itself (`filp_open()` and `kernel_read()` on the
-  device's sysfs path), at the load and again at the first suspend's prepare before the DCPs' shutdown, and
-  needs exactly "disabled\n" from at least one and from all: anything else refuses the load, or calls the
-  replay off the way `cancel` does (nothing stopped, nothing written, the Mac wakes: NO FLOOR). No driver
-  bound at all is refused too: no binding, no proof. Then, at both places, the SEP's power word has to
+  module asks `diag/xart` of every `apple,sep` device itself, at the load and again at the first suspend's
+  prepare before the DCPs' shutdown, and needs exactly "disabled\n" from at least one and from every one
+  that has a driver: anything else refuses the load, or calls the replay off the way `cancel` does (nothing
+  stopped, nothing written, the Mac wakes: NO FLOOR). No driver bound at all is refused too: no binding, no
+  proof. It asks the device and not a path (`m1_sro_xart()`; Pullfrog on #134: a path is resolved in the
+  task's own view of the filesystem, and the first build opened "/sys/..." with `filp_open()`): under the
+  device's lock, waited for at the load and only tried at the prepare, the bound driver's name has to be
+  exactly `apple_sep`, the device's own sysfs node has to have a `diag` that is an attribute group of the
+  device's own kobject and in it a file `xart` of an attribute's size, and that attribute's show is called
+  as sysfs calls it, into a zeroed page. The lock stands in for the reference sysfs holds over a read: a
+  driver is unbound, and its attributes taken away, only under it. A lock that is held at the prepare, a
+  driver of another name, a node that isn't what it should be: no proof. Then, at both places, the SEP's power word has to
   read actual 0, polled up to 5 s as the reference's `prepare_late()` polls it. Step 7 waits for nothing
   (interrupts off, WD1 armed; a 5 s wait there would also have eaten the slack step 8's look gives the
   marker): `m1_sp_clear()` reads the word once and writes only if it reads off, as before, and with
   `sep_ro=1` reads 0x2922c0044 right before that decision as well as after the read-back.
-- **`e1_hook pw_noread=1`** (needs `ps_words=1` and `atc_down=1`): `m1_pw_write()` writes the four
+- **`e1_hook pw_noread=1`** (needs `ps_words=1` and `atc_down=1`; never with `sio_down=1`, `pcie_down=1`,
+  `last_look=1` or `probe=1`, whose own steps read one of the four or APCIE_GP after step 5:
+  `m1_pwn_reader()`, after the adversarial review found the first build let them load): `m1_pw_write()` writes the four
   fabric-group words (PCIE0_REF, APCIE_GP_SYS, AFNC1_LW2, AFNC2_LW1) and their `dsb` as before and doesn't
   read them back; step 8 leaves AFNC2_LW1 out of `gates_mark=1`'s reads. The reference: "reading the three
   apcie PS words this late on the way down left the SoC stuck before sleep in 4 runs out of 4".
@@ -5466,7 +5478,8 @@ store read-only, the wait bit cleared only while the SEP's power word reads off.
   at least one, has `diag/xart` reading exactly "disabled".
 
 **What step 8 does without `a2_pre=1`** (the stages are `gates_mark=1`'s, 0xcb then 0xd5 or 0xd4): the record
-at 0x6010-0x6016, `sep_ro=1`'s sample to 0x6008, `sep_pg=1`'s byte to 0x6009, WD1's three words read, the
+at 0x6010-0x6016, `sep_pg=1`'s byte to 0x6009, then `sep_ro=1`'s sample to 0x6008 (the run's first result
+first: a PMU command that fails stops every later one), WD1's three words read, the
 stage, 0x6012-0x6013, the six gate-status words read (0x28e5a0050, 0x28e5a0064, 0x28e5a030c, 0x28e09c310,
 0x28e09c338, 0x28e09c34c: not power words), their byte to 0x6016, then the light (FPWM0's power word read,
 written and polled up to 10 ms, and three PWM writes). None of A2's three moves: the fabric stays at 0x333
@@ -5481,9 +5494,13 @@ under `pw_noread=1`, read as "not read", never "read back as written" (the mark'
 is why the option needs `atc_down=1`). 0x600a-0x600d: `disp_hs=1`'s. 0x6016: the gate byte.
 
 **How `--m1-sep-ro` reads** (the keyboard filmed; WD1's marker at 90 s):
-- **NO FLOOR, the Mac awake again:** the store wasn't shown read-only, or the enclave read powered for 5 s at
+- **NO FLOOR, the Mac awake again:** the store wasn't shown read-only (the attribute said otherwise, the
+  driver had another name, or the device's lock was held at prepare), or the enclave read powered for 5 s at
   the load or at prepare (this kernel's `apple_sep` holds captures and entropy at its own suspend
-  notifier; whether the enclave still gates then isn't known). Nothing was stopped or written.
+  notifier; whether the enclave still gates then isn't known). Nothing was stopped or written by the module.
+  The module's load comes after `wd2-bite`'s store in the launcher, so a refusal there still wants a restart
+  before another try; the launcher's own check of `diag/xart` comes before the store. An earlier look at the
+  SEP's power word in the launcher wasn't built: it has no reader of its own for that word.
 - **the two samples:** bit 2 clear at 0x6008 and set at 0x6009 with the clear confirmed puts the gate
   word's change between two reads of one step, around one write. Clear in both: the bit doesn't follow the
   control bit with CPU0 up; the engine may still stop waiting.
@@ -5502,17 +5519,25 @@ works. `xart_guard=0` (this Mac's modprobe.d) still applies there and has nothin
 off (inferred).
 
 **What is new on hardware.** No register write is new, and the write-site count stays 80. New reads: the
-SEP's power word polled at the load and at prepare, 0x2922c0044 once more in step 7, a sysfs attribute read
-from inside the kernel at prepare (reasoned safe: process context, the driver's show reads a flag; not
+SEP's power word polled at the load and at prepare, 0x2922c0044 once more in step 7, the driver's attribute
+show called from inside the kernel under the device's lock, at the load and (lock tried) at prepare
+(reasoned safe: process context; the show takes no lock and reads a flag, by the installed `apple-sep.ko`'s
+disassembly and omacom's `diag_shim.c`, `DEVICE_ATTR_RO(xart)`; to look at again after a kernel update; not
 exercised on hardware). Reads gone: the four fabric-group words after their writes, AFNC2_LW1 in step 8.
 Writes gone: `a2_pre=1`'s three. One more PMU scratch byte (0x6008), inside the range OK'd on 2026-11-16.
 New in the boot: `apple_sep` bound, its store opened read-only.
 
 **Checked.** Built by a subagent from a written brief and three amendments (Pullfrog's passes on the plan,
-#133), then read here. `tests/m1_crumbs_test.py` 1,669 ok; `tests/e1a_launcher_test.py` 3,444 ok in full;
-`tests/safe_boot_boot_test.py` 237 ok; the other test files pass. 168 new mutants (`sro`) and 33 older ones
-whose lines moved: none missed; three were caught only by a build failure, were fixed and are caught by
-failing checks; the 155 others weren't run again after that last edit to the harness, the full test was.
+#133), then read here. Reviewed twice on #134: Pullfrog (the proof bound to the device, `pw_noread=1`'s
+refusals, the inherited parameters, a decoder sentence under stage 0x39) and one adversarial pass by a
+subagent, which couldn't get a run armed with a writable store and found the decoder saying "`a2_pre=1` is
+next" for this run's record (fixed) and the byte order (changed). After those fixes (2026-11-25):
+`tests/m1_crumbs_test.py` 1,673 ok; `tests/safe_boot_boot_test.py` 273 ok; `tests/e1a_launcher_test.py` 506
+ok for `--m1-sep-ro`, `--m1-sep-pg` and `--m1-disp-hs` (the launcher wasn't changed by the fixes; its full
+test, 3,444 ok, was the day before); the other test files pass. Mutants: none stale of 1,686; the 234 that
+bear on the changed code all caught, none by a build failure only; the other 1,452 not run again. The
+launcher's line was also walked through `e1_check_params()` by hand: it differs from `--m1-disp-hs`'s, which
+loaded on 11-24, by `a2_pre` off (no rule needs it on) and the two new options, whose rules it meets.
 Not checked by anything here: the attribute's value with writes off; that kmod hands the command line's
 two words to the module (if it doesn't, the attribute reads "enabled" or the probe fails, and the run
 refuses); the enclave's power word at prepare.
