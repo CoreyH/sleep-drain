@@ -5544,10 +5544,11 @@ decoder itself reads it. Left as it was, older than this branch: under 0x39 a `l
 0x6008 (bit 7) would be labelled as one of the newer options') and one adversarial pass by a
 subagent, which couldn't get a run armed with a writable store and found the decoder saying "`a2_pre=1` is
 next" for this run's record (fixed) and the byte order (changed). After those fixes (2026-11-25):
-`tests/m1_crumbs_test.py` 1,680 ok; `tests/safe_boot_boot_test.py` 273 ok; `tests/e1a_launcher_test.py` 506
+`tests/m1_crumbs_test.py` 1,681 ok; `tests/safe_boot_boot_test.py` 273 ok; `tests/e1a_launcher_test.py` 506
 ok for `--m1-sep-ro`, `--m1-sep-pg` and `--m1-disp-hs` (the launcher wasn't changed by the fixes; its full
-test, 3,444 ok, was the day before); the other test files pass. Mutants: none stale of 1,719; the 234 that
-bear on the first round's changes, the 40 on the second's and the 32 on the third's all caught, none by a
+test, 3,444 ok, was the day before); the other test files pass. Mutants: none stale of 1,721; the 234 that
+bear on the first round's changes, the 40 on the second's, the 32 on the third's and 8 on a last reworded
+message (the recipe shown, the marker not: NOT READ, not AMBIGUOUS) all caught, none by a
 build failure only; the rest not run again. The 68 archived records under `results/` decode as they did
 before the third round's change. The
 launcher's line was also walked through `e1_check_params()` by hand: it differs from `--m1-disp-hs`'s, which

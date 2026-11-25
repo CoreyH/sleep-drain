@@ -484,7 +484,8 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   it to `sio_stop=1`, which never loads with `position=1` and only with `hold_nowatch=1`; K1 zeroes the
   seven in every run). Without it, `m1-crumbs` says the four bytes are no second, that three recipes
   write there, and that 0x6012-0x6013 are AMBIGUOUS and read as none of them: so a `gates_mark=1` run
-  with none of the four options isn't told from the others there. A mark that is still there under an earlier stage is read the same way, with
+  with none of the four options isn't told from the others there. With the recipe shown and no marker at
+  0x6013 it says that instead, and that the two bytes are NOT READ. A mark that is still there under an earlier stage is read the same way, with
   no guess at which of the three happened. K1's mark still at 0x6009 with 0x6008's byte landed is said to
   be a command that was acked and lost, since 0x6008's goes out after it, but only if `sep_ro=1`'s own
   reading takes 0x6008's byte: one that is NOT READ for what is beside it is evidence of nothing. And the gate byte's own line (0x6016) gives

@@ -1398,8 +1398,9 @@ def later_landed(s, b, now=None):
 
 
 def step7_ambiguous(s, b, now):
-    """Under step 7's own stage, with 0x6010-0x6013 no second this run can have had and the recipe not shown
-    (later_landed()): the two bytes at 0x6012 are some later command's, and are read as no recipe's."""
+    """Under step 7's own stage, with 0x6010-0x6013 no second this run can have had and the outcomes not shown
+    (later_landed()): the two bytes at 0x6012 are some later command's, and are read as no recipe's. decode() says which
+    of the two is missing: the recipe (AMBIGUOUS), or, with the recipe shown, the outcomes' marker (NOT READ)."""
     return s == WA_STEP7 and int.from_bytes(b[0x10:0x14], "little") > now and not later_landed(s, b, now)
 
 
@@ -2830,12 +2831,19 @@ def decode(b, rtc, cnt=None, alarm=None, r0201=None):
             out += k_lines(b)
         elif step7_ambiguous(s, b, now):
             # The same stage and the same two bytes in three recipes, and nothing here that says which ran: none is decoded.
-            out.append(f"0x6010-0x6013 = {b[0x10:0x14].hex(' ')}: not one RTC second this run can have had (it would be {secs}, later than"
-                       f" now, {now}). Step 7's stage is every hold=1 recipe's, and three of them write 0x6012-0x6013 after a later stage:"
-                       " position=1 its first sample, the plain hold path its release masks, a sio_stop=1 run the steps' outcomes"
-                       + (" (0x6013 has one of their markers' values, which a sample or a mask can have too)" if fab_landed(b) else "")
-                       + ". 0x6008-0x600e don't show which this run was (no byte or mark, read whole, of an option that loads only with"
-                       " gates_mark=1): AMBIGUOUS, and 0x6012-0x6013 are read as none of the three")
+            # With the recipe shown and the marker not there (Pullfrog on #134): not "which recipe", but "not its outcomes".
+            if fam_clear(s, b[8:0x0f]):
+                out.append(f"0x6010-0x6013 = {b[0x10:0x14].hex(' ')}: not one RTC second this run can have had (it would be {secs}, later"
+                           f" than now, {now}). 0x6008-0x600e show a run of the gates_mark=1 family, whose step 8 sends the steps' outcomes"
+                           f" to 0x6012-0x6013 after a later stage, but 0x6013 = 0x{b[0x13]:02x} has none of their markers: the two bytes"
+                           " aren't the outcomes as e1_hook writes them: NOT READ")
+            else:
+                out.append(f"0x6010-0x6013 = {b[0x10:0x14].hex(' ')}: not one RTC second this run can have had (it would be {secs}, later"
+                           f" than now, {now}). Step 7's stage is every hold=1 recipe's, and three of them write 0x6012-0x6013 after a later"
+                           " stage: position=1 its first sample, the plain hold path its release masks, a sio_stop=1 run the steps' outcomes"
+                           + (" (0x6013 has one of their markers' values, which a sample or a mask can have too)" if fab_landed(b) else "")
+                           + ". 0x6008-0x600e don't show which this run was (no byte or mark, read whole, of an option that loads only"
+                           " with gates_mark=1): AMBIGUOUS, and 0x6012-0x6013 are read as none of the three")
         elif base >= 0x01 and secs:
             when = "just before the commit" if base >= 0x50 else "the replay's start (K1)"
             out.append(f"RTC second at {when}: {secs}, {now - secs} s before now ({now})")

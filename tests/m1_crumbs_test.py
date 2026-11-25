@@ -12265,6 +12265,19 @@ def sep_ro_tests(g, src):
               " 0x6013: not told from a position=1 or a plain hold run, AMBIGUOUS, the outcomes not read. With sep_ro=1's and"
               " sep_pg=1's bytes there: the run is one that sends outcomes, and they are read, as before",
               plain[1] + shown[1])
+        nomark = rdec(b"\x88\xfc", 0xb9, m=0x00)
+        check(nomark[0] == 0 and "AMBIGUOUS" not in nomark[1] and "don't show which this run was" not in nomark[1]
+              and ("0x6010-0x6013 = 13 b8 ff 00: not one RTC second this run can have had (it would be 16758803, later than now, 112789)."
+                   " 0x6008-0x600e show a run of the gates_mark=1 family, whose step 8 sends the steps' outcomes to 0x6012-0x6013 after a"
+                   " later stage, but 0x6013 = 0x00 has none of their markers: the two bytes aren't the outcomes as e1_hook writes them:"
+                   " NOT READ\n") in nomark[1]
+              and not any(t_ in nomark[1] for t_ in ("ps_words=1 wrote", "the steps before the commit", "RTC second at", "RTC second just", "landed (0x6013"))
+              and nomark[1].count(STEP7_ACKED) == 0
+              and "0x6008-0x600e = 88 fc 00 00 00 00 00" in nomark[1],
+              "sep_ro=1's and sep_pg=1's bytes under step 7's stage with no outcomes' marker at 0x6013 (13 b8 ff 00; Pullfrog on"
+              " #134): the recipe IS shown, so the line doesn't say it isn't; it says the two bytes have none of the outcomes'"
+              " markers and are NOT READ, nothing is said to have been acked, and the options' bytes are read as before",
+              nomark[1])
         rc, out, err, _, _ = rdec(b"\x10\x02" + REC)
         rc2, out2, err2, _, _ = rdec(b"\x10\xfc" + REC)
         check(rc == 0 and "disp_hs=1's record" in out and "    after dispext0's place, the second (0x600b bits 7:4): 0xc, bit 2 set\n  the first of these samples" in out
