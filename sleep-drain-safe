@@ -34,7 +34,10 @@
 # apple_sep.xart_writes=0 apple_sep.provision_keybag=0 added: the enclave's
 # driver loads as usual and is asked to open that store read-only (omacom's
 # sep.rs: "set to 0 for read-only operation"; it refuses to probe with
-# provision_keybag left on, so both are set). For a run that needs the enclave
+# provision_keybag left on, so both are set). A word of the regular line that
+# sets either of the two already is left out of this entry, whose line then
+# has one setting of each, this script's; the other two entries inherit the
+# regular line as it is. For a run that needs the enclave
 # power-gated, which it only is with its driver (e1-hook's sep_ro=1). The two
 # words are a request: what the driver took is its own to say, in the sysfs
 # attribute diag/xart of the device it is bound to ("enabled" or "disabled",
@@ -188,6 +191,38 @@ sets_sepro_param() {
   return 1
 }
 
+# The --sep-ro entry's command line: the regular one without any word that sets either of the driver's two parameters,
+# in whatever spelling modprobe and the kernel would take it (sep_param()), then this script's two words. So the entry
+# has one setting of each, and no earlier or later word of the regular line's can be the one the driver takes. Only for
+# a line followable() passes and with no "--" in it: a word here is a word to the kernel.
+sep_ro_cmdline() {
+  local a key n keep out=
+  local -a w
+  read -ra w <<< "$1"
+  for a in "${w[@]}"; do
+    key=${a%%=*}
+    key=${key//-/_}
+    keep=1
+    for n in $SEPRO_PARAMS; do
+      [[ $key != "apple_sep.$n" ]] || keep=0
+    done
+    ((!keep)) || out+=${out:+ }$a
+  done
+  echo "${out:+$out }$SEPRO_WORDS"
+}
+
+# sep_param_count LINE NAME: how many words of LINE set apple_sep's parameter NAME, in any spelling.
+sep_param_count() {
+  local a key n=0
+  local -a w
+  read -ra w <<< "$1"
+  for a in "${w[@]}"; do
+    key=${a%%=*}
+    [[ ${key//-/_} != "apple_sep.$2" ]] || n=$((n + 1))
+  done
+  echo "$n"
+}
+
 # Whether a command line asks for the read-only store: each of the two, as last given, is 0.
 asks_sepro() {
   local n
@@ -294,16 +329,18 @@ cmd_boot() {
   # The flag and the blacklist are added at the line's end, and what follows a "--" goes to init, not the kernel.
   ! has_separator "$cmdline" ||
     die "the regular command line has a -- in it: what is added after it goes to init and the kernel never sees it, the module blacklist included; nothing written, nothing selected: $cmdline"
-  # The third entry sets two of apple_sep's parameters. A regular line that sets either already is refused, in every
-  # mode, since all three entries are written every time: which of two words the driver would take isn't this
-  # script's to guess.
-  ! sets_sepro_param "$cmdline" ||
-    die "the regular command line already sets apple_sep's xart_writes or provision_keybag, which the --sep-ro entry sets too: which word the driver would take isn't this script's to guess; nothing written, nothing selected: $cmdline"
   # --sep-ro alone: with apple_sep on the regular line's own blacklist the driver never loads, and that boot isn't the one asked for.
   ((!sepro)) || ! sep_blacklisted "$cmdline" ||
     die "the regular command line keeps apple_sep out (its module blacklist lists it), so the driver wouldn't load in a --sep-ro boot at all; nothing written, nothing selected: $cmdline"
   plain_line="linux /vmlinuz-linux-aurora $cmdline sleepdrain.safe"
-  sepro_line="linux /vmlinuz-linux-aurora $cmdline $SEPRO_WORDS sleepdrain.safe"
+  # The third entry sets two of apple_sep's parameters. A regular line that sets either already keeps its word in the other
+  # two entries, which inherit the line as they always have; this one's line gets the two from this script alone, each once.
+  sepro_line="linux /vmlinuz-linux-aurora $(sep_ro_cmdline "$cmdline") sleepdrain.safe"
+  local name
+  for name in $SEPRO_PARAMS; do
+    [[ $(sep_param_count "${sepro_line#linux /vmlinuz-linux-aurora }" "$name") == 1 ]] ||
+      die "couldn't leave the --sep-ro entry with one setting of apple_sep.$name; nothing written, nothing selected: $cmdline"
+  done
   asks_sepro "${sepro_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep's read-only parameters on: $cmdline"
   nosep_line="linux /vmlinuz-linux-aurora $(no_sep_cmdline "$cmdline") sleepdrain.safe"
   sep_blacklisted "${nosep_line#linux /vmlinuz-linux-aurora }" || die "couldn't put apple_sep on the module blacklist of: $cmdline"
@@ -397,7 +434,7 @@ EOF
   if ((nosep)); then
     echo "the next restart is a safe boot ($release, disk read-only) without the Secure Enclave's driver (apple_sep on the module blacklist); every restart after that is the regular one"
   elif ((sepro)); then
-    echo "the next restart is a safe boot ($release, disk read-only) with the Secure Enclave's driver asked to open its store read-only ($SEPRO_WORDS); whether it did is the driver's to say, in that boot: sleep-drain-safe status; every restart after that is the regular one"
+    echo "the next restart is a safe boot ($release, disk read-only) with the Secure Enclave's driver asked to open its store read-only ($SEPRO_WORDS); whether it did is the driver's to say, in that boot: sleep-drain-safe status$(! sets_sepro_param "$cmdline" || echo "; the regular command line's own setting of those two is left out of this entry"); every restart after that is the regular one"
   elif sep_blacklisted "$cmdline"; then
     echo "the next restart is a safe boot ($release, disk read-only); the regular command line already keeps apple_sep out; every restart after that is the regular one"
   else

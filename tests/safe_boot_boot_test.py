@@ -280,20 +280,33 @@ def main():
                       f"{' '.join(args)} with a regeneration whose third entry would lack {drop}: refused before it replaces grub.cfg; the queued entry keeps both parameters",
                       p.stdout + p.stderr + cfg_of(t))
     # A regular line that sets either of the driver's two parameters already, in any spelling modprobe and the kernel take for
-    # the module's name and the parameter's, with a value or bare: which word would win isn't guessed. Refused in all three
-    # modes, before the image is built. Words that only look like them are taken.
-    for word in ("apple_sep.xart_writes=1", "apple_sep.xart_writes=0", "apple-sep.xart_writes=1", "apple_sep.xart-writes=1", "apple-sep.xart-writes=0",
-                 "apple_sep.provision_keybag=1", "apple-sep.provision_keybag=0", "apple_sep.provision-keybag=1", "apple_sep.xart_writes",
-                 "apple_sep.xart_writes="):
-        with tempfile.TemporaryDirectory() as t:
-            tool = setup(t, regular=f"root=UUID=aaaa rw {word} quiet")
-            before = cfg_of(t)
-            for args in MODES:
-                p = run(t, tool, *args)
-                check(p.returncode != 0 and "already sets apple_sep's xart_writes or provision_keybag" in p.stderr and "nothing written, nothing selected" in p.stderr
-                      and nxt(t) is None and cfg_of(t) == before and not os.path.exists(os.path.join(t, "etc/grub.d/44_sleep_drain_safe")) and image(t) == (None, 0),
-                      f"{' '.join(args)} with a regular line that has {word}: refused; no script, no grub.cfg change, no image built, nothing selected",
-                      p.stdout + p.stderr)
+    # the module's name and the parameter's, with a value or bare: it stops no mode. The plain entry and the no-SEP entry
+    # inherit the line as it is, as before; the third entry's line has the word left out and this script's two put on, so
+    # that it has exactly one setting of each parameter, and neither an earlier nor a later word can be the one the driver takes.
+    def settings(line, name):
+        return sum(w.split("=")[0].replace("-", "_") == "apple_sep." + name for w in line.split())
+
+    words = ("apple_sep.xart_writes=1", "apple_sep.xart_writes=0", "apple-sep.xart_writes=1", "apple_sep.xart-writes=1", "apple-sep.xart-writes=0",
+             "apple_sep.provision_keybag=1", "apple-sep.provision_keybag=0", "apple_sep.provision-keybag=1", "apple_sep.xart_writes",
+             "apple_sep.xart_writes=", "apple_sep.xart_writes=1 apple-sep.xart-writes=0 apple_sep.provision_keybag=1 x=1 apple_sep.xart_writes=1")
+    for word in words:
+        for tail in (" quiet", ""):
+            with tempfile.TemporaryDirectory() as t:
+                reg = f"root=UUID=aaaa rw {word}{tail}"
+                rest = " ".join(w for w in reg.split() if w.split("=")[0].replace("-", "_") not in ("apple_sep.xart_writes", "apple_sep.provision_keybag"))
+                tool = setup(t, regular=reg)
+                for args, want in ((["boot"], PLAIN), (["boot", "--no-sep"], NOSEP), (["boot", "--sep-ro"], SEPRO)):
+                    p = run(t, tool, *args)
+                    cfg = cfg_of(t)
+                    third = entry_line(cfg, SEPRO) or ""
+                    check(p.returncode == 0 and nxt(t) == want and entry_line(cfg, PLAIN) == f"linux /vmlinuz-linux-aurora {reg} sleepdrain.safe"
+                          and entry_line(cfg, NOSEP) == f"linux /vmlinuz-linux-aurora {reg} {NO_SEP} sleepdrain.safe"
+                          and third == f"linux /vmlinuz-linux-aurora {rest} {SEP_RO} sleepdrain.safe"
+                          and settings(third, "xart_writes") == 1 and settings(third, "provision_keybag") == 1
+                          and ("left out of this entry" in p.stdout) == (want == SEPRO),
+                          f"{' '.join(args)} with the regular line {reg[18:]!r}: taken; the plain and the no-SEP entry inherit the line, and the third entry"
+                          " has one setting of each of the two parameters, this script's" + (", and the command says the line's own was left out" if want == SEPRO else ""),
+                          p.stdout + p.stderr + cfg)
     with tempfile.TemporaryDirectory() as t:
         reg = "root=UUID=aaaa rw apple_sep.xart_guard=1 xapple_sep.xart_writes=1 apple_sep.xart_writes_x=1 foo=apple_sep.xart_writes=1 apple_sepxart_writes=1 quiet"
         tool = setup(t, regular=reg)
