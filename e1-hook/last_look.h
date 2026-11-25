@@ -419,8 +419,9 @@
  * the task has (Pullfrog on #134): for every device under an "apple,sep"
  * node, under the device's lock, it needs a driver named exactly apple_sep,
  * finds the attribute through the device's own node in sysfs (its kobject's
- * kernfs node, then "diag", then "xart") and calls the attribute's show as
- * sysfs would, into a page of its own. There has to be at least one such
+ * kernfs node, then "diag", then "xart", which has to be a text attribute's
+ * node: kernfs's KERNFS_HAS_SEQ_SHOW, which a binary attribute's node doesn't
+ * have) and calls the attribute's show as sysfs would, into a page of its own. There has to be at least one such
  * device, and each has to say exactly "disabled\n": nine bytes, and the
  * string's end after them (sro_xart_ro()). No driver of that name, a node
  * that isn't there or isn't what it should be, a lock that can't be had at

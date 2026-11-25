@@ -391,7 +391,7 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   power-word values are macOS's (0xf0400ff, 0xf0403f0; 0x3f0), where `m1_ps_off()` clears the target as
   the power-state driver does.
   `m1-crumbs` reads the four bytes by themselves, as it reads the other two options' bytes: under K3's
-  stage (still the stage when K3b sends them: they landed and K3b's own stage didn't), K3b's own, 0x84,
+  stage (still the stage when K3b sends them: they landed and K3b's own stage isn't in the record), K3b's own, 0x84,
   and every later stage of such a run; K1's mark alone under none, K1's or K3's stage (the run stopped
   before the bytes, in K3b's writes perhaps), or under a later one (K3b ran and its command failed, which
   on the kernel's path stops nothing after it); under another run's stage neither is read. It says the
@@ -433,7 +433,9 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
     bound, named exactly `apple_sep`; the device's own node in sysfs (`dev->kobj.sd`) with a directory
     `diag` that is an attribute group of the device's own kobject (the driver imports
     `devm_device_add_group()`; a directory owned by any other kobject is no proof); in it a file `xart` of
-    an attribute's size; and that attribute's show, called as sysfs calls it (the device kobject's
+    an attribute's size whose node has `KERNFS_HAS_SEQ_SHOW` (kernfs's flag for a file read through
+    `seq_show`, which sysfs gives a text attribute and not a binary one: a same-sized binary node is
+    refused before its show could be called with the wrong structure); and that attribute's show, called as sysfs calls it (the device kobject's
     `sysfs_ops`, with the `struct attribute` the node carries) into a zeroed page, returning exactly
     `disabled` and a newline with the string's end after it (`sro_xart_ro()`). Both node references are
     put back, the page freed and the lock dropped on every way out. There has to be at least one such
@@ -470,9 +472,13 @@ Each builds on the one before it, and `run-floor`'s options add them in this ord
   made, the clear read back, the first sample had bit 2 clear and the second had it set. A clear that was
   skipped (the enclave read powered) or that didn't read back is said to be no test of the wait bit, and
   nothing is concluded from the samples. Under step 7's own stage (0x39) a byte that landed is read with a
-  line saying what that stage establishes: no newer stage was kept, and nothing about which of the two
-  bytes could have landed. K1's mark still at 0x6009 with 0x6008's byte landed is said to be a command
-  that was acked and lost, since 0x6008's goes out after it. And the gate byte's own line (0x6016) gives
+  line saying what that stage is, the last one the record kept, and that the record doesn't say why no
+  newer one is there (the next stage's command not reached, failed, or acked and not kept); if 0x6013 has
+  the steps' outcomes' marker, which goes out only after that command is acked, the line says so: acked,
+  and the stage not kept. A mark that is still there under an earlier stage is read the same way, with
+  no guess at which of the three happened. K1's mark still at 0x6009 with 0x6008's byte landed is said to
+  be a command that was acked and lost, since 0x6008's goes out after it, but only if `sep_ro=1`'s own
+  reading takes 0x6008's byte: one that is NOT READ for what is beside it is evidence of nothing. And the gate byte's own line (0x6016) gives
   the reading of 0x28e5a0050 and leaves what follows to PLAN.md whenever the record is a later recipe's
   (`pw_noread=1`'s mark, or `sep_ro=1`'s, `sep_pg=1`'s or `disp_hs=1`'s bytes or marks): only
   `--m1-gates`' own record still says `a2_pre=1` is next. The proof at the prepare is asked by the task

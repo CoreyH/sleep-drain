@@ -196,13 +196,15 @@ used to sit in CLAUDE.md, entry for entry):
   reading powered: no write and no wait**; a bit found clear; a write that doesn't take; each command not acked);
   and pins that `m1_sp_clear()` has no loop, no clock and no wait. `m1_sro_xart()`, `m1_sro_proof()`,
   `m1_sro_wait()`, `m1_sep_recheck()` and the last lines of `e1_prepare()` as they stand, over stand-ins for the
-  device tree, the driver core, kernfs, the device's lock, the page allocator and the clock: one bound device in 25
+  device tree, the driver core, kernfs, the device's lock, the page allocator and the clock: one bound device in 27
   states of its own corner of sysfs, with the lock waited for and only tried, each against a second writing-out of
   every call (the lock, the two nodes found with a reference each, the zeroed page, the device kobject's show
   called with the node's attribute under the lock, everything undone on every way out: no reference, page or lock
   left in any run); no proof for anything but `disabled` and a newline with the string's end after it, for a
   directory that is a file, another kobject's or a kobject of its own, an `xart` that is a directory, of another
-  size or without an attribute, an owner with no type, operations or show, no node, no page; no driver, a driver
+  size or without an attribute, a binary attribute's node of exactly one page or a text one's without kernfs's
+  `KERNFS_HAS_SEQ_SHOW` (each refused with no page had and no show called, though the mock would have said
+  `disabled`), an owner with no type, operations or show, no node, no page; no driver, a driver
   of six other names or none; three devices in eight combinations; a lock somebody holds at the prepare (no proof,
   nothing asked, nothing dropped); the wait's sleeps counted (off at once, after 30 ms, at 4.99 s, at 5 s, never); and the
   prepare: with the proof and the word off both firmware stops are made though a driver is bound; without the
@@ -224,8 +226,13 @@ used to sit in CLAUDE.md, entry for entry):
   2,048 pairs, exactly those with the write made and read back; a clear skipped or not read back said to be no
   test of the wait bit); the run's own record under `gates_mark=1`'s stage; K1's marks under eleven stages; a
   stage no such run sends; one byte landed and the other's mark left (the mark at 0x6009 with 0x6008's byte
-  landed: acked and lost); both under step 7's own stage, each with what that stage establishes and nothing about
-  which byte could have landed; the gate byte's line for a later recipe's record, the reviewer's among them
+  landed: acked and lost, but only if sep_ro=1's own reading takes 0x6008's byte: the reviewer's record, 88 02 00 05
+  under stage 0x39, where it is NOT READ and proves nothing); both under step 7's own stage, each with a line that
+  says 0x39 is the last stage the record kept: with the outcomes' marker at 0x6013, that the next stage's command
+  was acked and the stage not kept (0x6010-0x6013 are then read as the outcomes and not as a second,
+  `later_landed()` in fourteen cases); with a second there, that the record doesn't say why no newer stage is
+  there; a mark under an earlier stage said the same way, in wake_all=1's, sep_pg=1's and disp_hs=1's tests too;
+  the gate byte's line for a later recipe's record, the reviewer's among them
   (stage 0xd5, 0x6013 0x9f, 0x6016 0x81, 0x6008 0x88, 0x6009 0xfc: no word of a2_pre=1), and for `--m1-gates`'
   own; what a run can't have left; last_look=1's
   and an observer's stages; `--clear` in eleven cases that zero the seven and eight that leave them; every value

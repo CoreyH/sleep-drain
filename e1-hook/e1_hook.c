@@ -1926,10 +1926,14 @@ static void e1_after_slpa(void)
  * "diag" that is an attribute group of the device's own kobject (the driver
  * imports devm_device_add_group() and nothing of kobjects; a directory that
  * is a kobject of its own, or anyone else's, is no proof), and in it a file
- * "xart" of an attribute's size; and that file's show is called the way sysfs
- * calls it (the device kobject's sysfs_ops, the driver core's, with the
- * struct attribute the node carries), into a zeroed page, since sysfs_emit()
- * wants one. sro_xart_ro() has the comparison: "disabled" and a newline, and
+ * "xart" of an attribute's size whose node has KERNFS_HAS_SEQ_SHOW, the flag
+ * kernfs sets on a file whose operations have seq_show: sysfs gives those to
+ * a text attribute, and not to a binary one, whose node would carry a struct
+ * bin_attribute this call must never be handed (Pullfrog on #134; without the
+ * flag there is no proof and the show isn't called); and that file's show is
+ * called the way sysfs calls it (the device kobject's sysfs_ops, the driver
+ * core's, with the struct attribute the node carries), into a zeroed page,
+ * since sysfs_emit() wants one. sro_xart_ro() has the comparison: "disabled" and a newline, and
  * the string's end. There has to be at least one such device; one that has
  * a driver and doesn't pass, for whatever reason, is no proof for all. The
  * lock stands in for the active reference a read through sysfs would hold: a
@@ -1941,8 +1945,8 @@ static void e1_after_slpa(void)
  * would never return here), and that it reads a flag and touches no hardware
  * (the device is suspended at the prepare). Both hold for the apple-sep.ko of
  * 7.2.11-15-1-ARCH by its disassembly (2026-11-24) and by omacom's source
- * (diag_shim.c: DEVICE_ATTR_RO(xart), a text attribute and not a binary one,
- * which this call couldn't tell apart): xart_show() loads one byte of the
+ * (diag_shim.c: DEVICE_ATTR_RO(xart), a text attribute, as the node's flag
+ * has to say here): xart_show() loads one byte of the
  * module's own data, picks one of two strings and calls sysfs_emit(), and
  * the group it is in goes to devm_device_add_group(). A later build of the driver isn't covered by that:
  * look again after a kernel update. kernfs_find_and_get_ns() and kernfs_put() are exported to GPL
@@ -6725,7 +6729,7 @@ static bool m1_sep_bound(bool locked)
  * sep_ro=1: one SEP device's word on its store, asked of the device itself (the m1 comment has why, and what it rests
  * on). Under the device's lock, waited for (the load) or only tried (the prepare, where a lock that is held is no proof):
  * a driver named exactly apple_sep; the device's own sysfs node, its "diag" directory, a group of the device's own kobject
- * and no other's, and in it the file "xart", of an attribute's size; the device kobject's show called with the node's
+ * and no other's, and in it the file "xart", a text attribute's by kernfs's own flag and of an attribute's size; the device kobject's show called with the node's
  * attribute, as sysfs calls it, into a zeroed page. Every reference taken is put back and the page freed on every way out,
  * and the lock dropped. What it found is logged. Returns 1 for a device that says exactly "disabled\n" (sro_xart_ro()), 0
  * for one with no driver at all, which says nothing, and -1 for anything else: it writes nothing anywhere.
@@ -6758,8 +6762,8 @@ static int m1_sro_xart(struct device *dev, bool wait)
 		why = "its " SRO_XART_DIR " isn't a directory of the device's own: no proof";
 	} else if (!(xart = kernfs_find_and_get(diag, SRO_XART_FILE))) {
 		why = "its " SRO_XART_DIR " has no " SRO_XART_FILE ": no proof";
-	} else if (kernfs_type(xart) != KERNFS_FILE || !xart->priv || xart->attr.size != PAGE_SIZE) {
-		why = "its " SRO_XART_DIR "/" SRO_XART_FILE " isn't an attribute's file: no proof";
+	} else if (kernfs_type(xart) != KERNFS_FILE || !(xart->flags & KERNFS_HAS_SEQ_SHOW) || !xart->priv || xart->attr.size != PAGE_SIZE) {
+		why = "its " SRO_XART_DIR "/" SRO_XART_FILE " isn't a text attribute's file: no proof";
 	} else if (!owner->ktype || !(ops = owner->ktype->sysfs_ops) || !ops->show) {
 		why = "its " SRO_XART_DIR "/" SRO_XART_FILE " has no show: no proof";
 	} else if (!(page = (char *)get_zeroed_page(GFP_KERNEL))) {

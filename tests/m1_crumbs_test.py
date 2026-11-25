@@ -52,6 +52,23 @@ runpy.run_path(tool, run_name="__main__")
 """
 
 
+# What m1-crumbs says of a stage that is older than the byte or the mark it is read under (step7_line(), early_how()): the last
+# stage the record kept, and no guess at why no newer one is there, unless the record shows a later command landed.
+STEP7_NEUTRAL = ("  the stage, 0x39, is step 7's own, still the stage when this byte goes out, and the last stage the record kept. The record doesn't"
+                 " say why no newer one is there: the next stage's command wasn't reached, failed, or was acked and not kept\n")
+STEP7_ACKED = ("  the stage, 0x39, is step 7's own, still the stage when this byte goes out, and the last stage the record kept. The next stage's"
+               " command was acked all the same, and the stage wasn't kept: the steps' outcomes at 0x6012-0x6013, which go out only after that"
+               " command is acked, landed (0x6013 has their marker)\n")
+EARLY_NEUTRAL = ("Stage 0x{:02x} is the last the record kept: the run stopped before the byte's command, or that command failed, which stops every"
+                 " later one, or it was acked and neither the byte nor a later stage was kept. The record doesn't say which")
+EARLY_ACKED = ("Stage 0x{:02x} is the last the record kept, and the steps' outcomes at 0x6012-0x6013, which go out after the byte's command and only"
+               " if no command before them failed, landed (0x6013 has their marker): the byte's command was acked and the byte didn't land")
+# decode()'s own line for 0x6010-0x6013 then, in place of a second that would lie in the future, and its line for a second.
+OUTCOMES_39 = "0x6010-0x6013 = {}: not one RTC second (it would be {}, later than now, 112789): 0x6013 has the marker of the steps' outcomes, which"
+SECOND_39 = "RTC second at the replay's start (K1): 112659, 130 s before now (112789)\n"
+A_SECOND = b"\x01\x00"  # 0x6012-0x6013 as the upper bytes of the fixtures' second, 112659: no marker
+
+
 def fake(path, scratch, rtc_secs=5000, alarm=(0, 0, 0, 0)):
     """alarm: 0x1401, 0x140c (the compare value), 0x14c0, 0x14c2."""
     b = bytearray(0xffff)
@@ -8504,7 +8521,7 @@ def wake_all_tests(g, src):
           and g["WA_EARLY"] == (0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x28, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x39)
           and not set(g["WA_EARLY"]) & set(g["WA_STAGES"] + g["LL_STAGES"] + g["OG_STAGES"])
           and "m1_stage((hold ? 0x31 : pmgr_late ? 0x29 : 0x21) + i);" in after and "\t\tb[0] = 0x28;\n" in after and "\tb[0] = 0x10;\n" in after
-          and "    if fam_record(s, r):\n        return fam_lines(s, r)\n" in tool and "    if not sro and not sp and not dh:\n        return wa_lines(s, r)\n" in tool
+          and "    if fam_record(s, r):\n        return fam_lines(s, r, later_landed(s, b, now))\n" in tool and "    if not sro and not sp and not dh:\n        return wa_lines(s, r, acked=acked)\n" in tool
           and "or fam_clear(st, b[8:0x0f])\n" in tool,
           "m1-crumbs has the header's four values; it reads the byte under the gates_mark=1 family's stages, none of which is last_look=1's"
           " or an observer's, and under step 7's own, 0x39; the stages it takes a run to be at before its byte are none, K1's to K5's,"
@@ -8649,9 +8666,10 @@ def wake_all_tests(g, src):
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "nvmem")
 
-        def wdec(r, stage=0x9b, clear=False, armed=0x41):
+        def wdec(r, stage=0x9b, clear=False, armed=0x41, up=None):
             sc = bytearray(base)
             sc[4] = stage
+            sc[0x12:0x14] = sc[0x12:0x14] if up is None else up
             sc[8:8 + len(r)] = r
             before = fake(path, bytes(sc), rtc_secs=112659 + 130, alarm=(armed, 112659 + 3600, 0, 0))
             p = run(path, *(["--clear"] if clear else []), cnt="960000000 24000000")
@@ -8689,20 +8707,23 @@ def wake_all_tests(g, src):
         # and any other, which is some other run's.
         armed_line = ("  0x6008 = 0x20: wake_all=1 was set and its byte never landed: K1 writes this, and the byte's command, after step 8's record,"
                       " writes over it. ")
-        early = ("Stage 0x{:02x} is as far as the record goes: the run stopped before the byte's command, or that command failed, which stops every"
-                 " later one")
+        early = EARLY_NEUTRAL
         fault = (". Step 7's reads of the masks and the status words come between this stage and the byte: a read that faulted there panics, and"
                  " the Mac restarts about 10 s later")
         later = "Stage 0x{:02x} is a later command's, and a command that fails stops every later one: the byte's command was acked and the byte didn't land"
         fields = ("the masks read back", "the ids with no name", "inferred to be the AP's wake status")
-        for stage, how in ((0x9b, later), (0x99, later), (0xd5, later), (0x93, later), (0xb9, early + fault), (0xa8, early), (0xb1, early), (0xb7, early),
-                           (0x90, early), (0x82, early), (0x83, early), (0x84, early), (0x85, early), (0x01, early), (0x00, early)):
-            rc, out, err, _, _ = wdec(b"\x20", stage)
+        for stage, how, up in ((0x9b, later, None), (0x99, later, None), (0xd5, later, None), (0x93, later, None), (0xb9, EARLY_ACKED, None),
+                               (0xb9, early + fault, A_SECOND), (0xa8, early, None), (0xb1, early, None), (0xb7, early, None), (0x90, early, None),
+                               (0x82, early, None), (0x83, early, None), (0x84, early, None), (0x85, early, None), (0x01, early, None), (0x00, early, None)):
+            rc, out, err, _, _ = wdec(b"\x20", stage, up=up)
             check(rc == 0 and head + armed_line + how.format(stage & 0x7f) + "\n" in out and not any(f in out for f in fields)
-                  and ("faulted there" in out) == (stage == 0xb9) and "last_look=1" not in out and "obs_gate" not in out and "NOT READ" not in out,
-                  f"K1's mark alone, 0x20, under stage 0x{stage:02x}: wake_all=1's byte never landed, said with what the stage allows (a stage sent"
-                  " after the byte can't follow a command that failed; one the run passes before it can; under step 7's own, the reads that"
-                  " could fault are named), and no field is read from it", out + err)
+                  and ("faulted there" in out) == (up is not None) and ("not one RTC second" in out) == (stage == 0xb9 and up is None)
+                  and "last_look=1" not in out and "obs_gate" not in out and "NOT READ" not in out,
+                  f"K1's mark alone, 0x20, under stage 0x{stage:02x}{' with a second at 0x6010-0x6013' if up else ''}: wake_all=1's byte never"
+                  " landed, said with what the stage allows (a stage sent after the byte can't follow a command that failed; one the run"
+                  " passes before it is the last the record kept, with the three things that can mean and no choice among them; under"
+                  " step 7's own the reads that could fault are named, unless 0x6013 has the outcomes' marker, which says the byte's"
+                  " command was acked), and no field is read from it", out + err)
         stale = ("0x6008-0x600e = 20 00 00 00 00 00 00: K1's mark for wake_all=1 (0x20 at 0x6008), under a stage no such run is at:\n"
                  "  NOT READ: stage 0x{:02x} isn't this mark's run's. A wake_all=1 run is at one of K1's to step 7's stages before its byte goes out and"
                  " at one of the gates_mark=1 family's after it: the mark was left by an earlier run\n")
@@ -8727,12 +8748,19 @@ def wake_all_tests(g, src):
         # Step 7's own stage: the byte landed and no later command did. It is still the run's, read and cleared.
         rc5, out5, err5, _, _ = wdec(b"\xf0", 0xb9)
         rc6, out6, err6, _, after6 = wdec(b"\xf0", 0xb9, clear=True)
+        rc7, out7, err7, _, _ = wdec(b"\xf0", 0xb9, up=A_SECOND)
         check(rc5 == 0 and head in out5
-              and "  the stage, 0x39, is step 7's own, still the stage when this byte goes out: the byte landed, and no newer stage was kept after it (the next stage's command comes after the options' bytes: it failed, or wasn't reached)\n" in out5
+              and STEP7_ACKED in out5 and STEP7_NEUTRAL not in out5 and OUTCOMES_39.format("13 b8 ff 5f", 0x5fffb813) in out5 and "RTC second at" not in out5
+              and "0x6012 = 0xff, the steps before the commit:\n" in out5
+              and rc7 == 0 and head + STEP7_NEUTRAL in out7 and STEP7_ACKED not in out7 and SECOND_39 in out7 and "not one RTC second" not in out7
+              and "the steps before the commit" not in out7 and "it failed, or wasn't reached" not in out5 + out7
               and "  0x6008 = 0xf0, " + named + unnamed + none in out5 and "NOT READ" not in out5 and "last_look=1" not in out5
               and rc6 == 0 and not any(after6[0x6008:0x600f]) and "0x6004-0x600e" in out6,
-              "wake_all=1's byte under step 7's own stage (0xb9, 0x39 with pmp_out=1's bit): read as the run's, with a line saying no later command landed, and cleared with the rest",
-              out5 + err5 + out6 + err6)
+              "wake_all=1's byte under step 7's own stage (0xb9, 0x39 with pmp_out=1's bit): read as the run's and cleared with the rest. With"
+              " the outcomes' marker at 0x6013, which goes out only after the next stage's command is acked: that command was acked and"
+              " the stage not kept, 0x6010-0x6013 are said not to be a second, and the outcomes are read. With a second there and no"
+              " marker: 0x39 is the last stage the record kept, and the record doesn't say why (not reached, failed, or acked and not"
+              " kept)", out5 + err5 + out6 + err6 + out7 + err7)
         # Whose bytes: the stage says. last_look=1's stages and an observer's keep their own readings, and the byte under a stage
         # that is neither theirs nor the family's isn't read as wake_all=1's.
         # The fallback's own text names wake_all=1 among the records these bytes aren't: what mustn't appear is its record or its mark's line.
@@ -8990,6 +9018,8 @@ SEP_STUBS = r"""
 /* sysfs as a module sees it: kernfs nodes, each a directory or a file, with the kobject or the attribute it carries. */
 #define KERNFS_DIR 0x0001
 #define KERNFS_FILE 0x0002
+#define KERNFS_HAS_SEQ_SHOW 0x0040
+#define KERNFS_HAS_MMAP 0x0080
 struct device_node {
 	int unused;
 };
@@ -9097,7 +9127,9 @@ static unsigned int replay_done;
  * diag, D a diag that is a file, g a diag owned by a kobject that is neither the device's nor right under it, G a diag
  * that carries no kobject, f no xart, F an xart that is a directory, b an xart of another size than an attribute's, q an
  * xart that carries no attribute, k an owner with no type, K a type with no operations, o operations with no show, S a
- * device with no node at all, z no page to be had. And c and C: a diag that is a kobject of its own right under the
+ * device with no node at all, z no page to be had, B an xart that is a binary attribute's node of exactly a page (no
+ * seq_show flag, the mmap one, and a structure that is no struct attribute), P a text attribute's node without the
+ * seq_show flag (a preallocated one's), which would say "disabled" if it were asked. And c and C: a diag that is a kobject of its own right under the
  * device's, whose own show would say "disabled" or "enabled": not the device's attribute group, and never asked.
  */
 static u32 sio_pg[0x4000 / 4];
@@ -9131,6 +9163,7 @@ static u32 readl(const void *p)
 static struct kernfs_node dev_kn[3], diag_kn[3], xart_kn[3];
 static struct kobject diag_kobj[3], stranger;
 static struct attribute xart_attr[3] = { { "xart" }, { "xart" }, { "xart" } };
+static struct attribute xart_bin[3] = { { "xart" }, { "xart" }, { "xart" } };	/* stands for a struct bin_attribute: never to be shown */
 static int pages;
 static const char *dev_name(const struct device *dev)
 {
@@ -9142,7 +9175,7 @@ static const char *dev_name(const struct device *dev)
 static ssize_t xart_says(int i, char *page)
 {
 	const char k = xart[i];
-	const char *all = k == 'd' || k == 'r' || k == 'c' ? "disabled\n" : k == 'e' || k == 'C' ? "enabled\n" : k == 'n' ? "disabled" :
+	const char *all = k == 'd' || k == 'r' || k == 'c' || k == 'B' || k == 'P' ? "disabled\n" : k == 'e' || k == 'C' ? "enabled\n" : k == 'n' ? "disabled" :
 			  k == 'j' || k == 's' ? "disabled\nx" : k == 't' ? "disabled\n01234567890123456789" : k == 'w' ? "disabled\n1234567" : "";
 
 	if (((unsigned long)page & (PAGE_SIZE - 1)) || page[0] || page[PAGE_SIZE - 1])
@@ -9195,8 +9228,9 @@ static void sysfs_make(int i)
 	dev_kn[i].priv = dk;
 	diag_kn[i].flags = k == 'D' ? KERNFS_FILE : KERNFS_DIR;
 	diag_kn[i].priv = owner;
-	xart_kn[i].flags = k == 'F' ? KERNFS_DIR : KERNFS_FILE;
-	xart_kn[i].priv = k == 'q' ? NULL : &xart_attr[i];
+	xart_kn[i].flags = k == 'F' ? KERNFS_DIR | KERNFS_HAS_SEQ_SHOW : k == 'B' ? KERNFS_FILE | KERNFS_HAS_MMAP : k == 'P' ? KERNFS_FILE :
+			   KERNFS_FILE | KERNFS_HAS_SEQ_SHOW;
+	xart_kn[i].priv = k == 'q' ? NULL : k == 'B' ? &xart_bin[i] : &xart_attr[i];
 	xart_kn[i].attr.size = k == 'b' ? 9 : (long long)PAGE_SIZE;
 }
 static unsigned int kernfs_type(struct kernfs_node *kn)
@@ -9544,7 +9578,7 @@ def sep_pg_tests(g, src):
     tool = open(TOOL).read()
     check((g["SP_ARMED"], g["SP_MARK"], g["SP_FOUND"], g["SP_CLEAR"], g["SP_SEP_OFF"]) == (0x02, 0x80, 0x40, 0x20, 0x10)
           and "(s in WA_STAGES or s == WA_STEP7) and bool(r[1] & SP_MARK))" in tool and "if b1 == SP_ARMED and s not in WA_EARLY and s not in WA_STAGES:" in tool
-          and "    if fam_record(s, r):\n        return fam_lines(s, r)\n" in tool and "or fam_clear(st, b[8:0x0f])\n" in tool,
+          and "    if fam_record(s, r):\n        return fam_lines(s, r, later_landed(s, b, now))\n" in tool and "or fam_clear(st, b[8:0x0f])\n" in tool,
           "m1-crumbs has the header's five values, reads the byte under the stages it reads wake_all=1's under (the gates_mark=1"
           " family's and step 7's own) and takes the same stages for where a run can be before its byte")
 
@@ -9850,9 +9884,10 @@ def sep_pg_tests(g, src):
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "nvmem")
 
-        def sdec(r, stage=0x9b, clear=False, armed=0x41):
+        def sdec(r, stage=0x9b, clear=False, armed=0x41, up=None):
             sc = bytearray(base)
             sc[4] = stage
+            sc[0x12:0x14] = sc[0x12:0x14] if up is None else up
             sc[8:8 + len(r)] = r
             before = fake(path, bytes(sc), rtc_secs=112659 + 130, alarm=(armed, 112659 + 3600, 0, 0))
             p = run(path, *(["--clear"] if clear else []), cnt="960000000 24000000")
@@ -9909,23 +9944,24 @@ def sep_pg_tests(g, src):
                       " writes over it. ")
         wa_armed = ("  0x6008 = 0x20: wake_all=1 was set and its byte never landed: K1 writes this, and the byte's command, after step 8's record,"
                     " writes over it. ")
-        early = ("Stage 0x{:02x} is as far as the record goes: the run stopped before the byte's command, or that command failed, which stops every"
-                 " later one")
+        early = EARLY_NEUTRAL
         fault = (". Step 7's reads of the control word, the SEP's power word and 0x2922c0044 and its write to the control word come between this"
                  " stage and the byte: an access that faulted there panics, and the Mac restarts about 10 s later")
         later = "Stage 0x{:02x} is a later command's, and a command that fails stops every later one: the byte's command was acked and the byte didn't land"
         said = ("the control word's bit 2", "the control word had", "the SEP's power word, read", "low nibble read")
-        for stage, how in ((0x9b, later), (0x99, later), (0xd5, later), (0x93, later), (0xb9, early + fault), (0xa8, early), (0xb1, early), (0xb7, early),
-                           (0x90, early), (0x82, early), (0x83, early), (0x84, early), (0x85, early), (0x01, early), (0x00, early)):
-            rc, out, err, _, _ = sdec(b"\x00\x02", stage)
-            rc2, out2, err2, _, _ = sdec(b"\x20\x02", stage)
+        for stage, how, up in ((0x9b, later, None), (0x99, later, None), (0xd5, later, None), (0x93, later, None), (0xb9, EARLY_ACKED, None),
+                               (0xb9, early + fault, A_SECOND), (0xa8, early, None), (0xb1, early, None), (0xb7, early, None), (0x90, early, None),
+                               (0x82, early, None), (0x83, early, None), (0x84, early, None), (0x85, early, None), (0x01, early, None), (0x00, early, None)):
+            rc, out, err, _, _ = sdec(b"\x00\x02", stage, up=up)
+            rc2, out2, err2, _, _ = sdec(b"\x20\x02", stage, up=up)
             check(rc == 0 and "0x6008-0x600e = 00 02 00 00 00 00 00: " + head + armed_line + how.format(stage & 0x7f) + "\n" in out and not any(f in out for f in said)
-                  and ("faulted there" in out) == (stage == 0xb9) and "last_look=1" not in out and "obs_gate" not in out and "wake_all" not in out and "NOT READ" not in out
+                  and ("faulted there" in out) == (up is not None) and "last_look=1" not in out and "obs_gate" not in out and "wake_all" not in out and "NOT READ" not in out
                   and rc2 == 0 and wa_head + wa_armed in out2 and head + armed_line + how.format(stage & 0x7f) + "\n" in out2 and "NOT READ" not in out2
                   and not any(f in out2 for f in said),
-                  f"K1's mark alone, 0x02 at 0x6009, under stage 0x{stage:02x}: sep_pg=1's byte never landed, said with what the stage allows (a"
-                  " stage sent after the byte can't follow a command that failed; one the run passes before it can; under step 7's own, the"
-                  " write and the reads that could fault are named), no field read from it; with wake_all=1's mark at 0x6008 too, each mark"
+                  f"K1's mark alone, 0x02 at 0x6009, under stage 0x{stage:02x}{' with a second at 0x6010-0x6013' if up else ''}: sep_pg=1's byte never"
+                  " landed, said with what the stage allows (a stage sent after the byte can't follow a command that failed; one the run"
+                  " passes before it is the last the record kept, with the three things that can mean; under step 7's own the write and"
+                  " the reads that could fault are named, unless 0x6013 has the outcomes' marker), no field read from it; with wake_all=1's mark at 0x6008 too, each mark"
                   " is said by itself", out + err + out2 + err2)
         stale = ("0x6008-0x600e = 00 02 00 00 00 00 00: K1's mark for sep_pg=1 (0x02 at 0x6009), under a stage no such run is at:\n"
                  "  NOT READ: stage 0x{:02x} isn't this mark's run's. A sep_pg=1 run is at one of K1's to step 7's stages before its byte goes out and"
@@ -9942,16 +9978,23 @@ def sep_pg_tests(g, src):
         # One byte landed and the other's mark stayed: each is said by itself.
         rc, out, err, _, _ = sdec(b"\xf0\x02", 0xb9)
         rc2, out2, err2, _, _ = sdec(b"\x20\xf8")
-        check(rc == 0 and wa_head in out and "  0x6008 = 0xf0, bit 5:" in out and head + armed_line + early.format(0x39) + fault + "\n" in out
+        rc3, out3, err3, _, _ = sdec(b"\xf0\x02", 0xb9, up=A_SECOND)
+        check(rc == 0 and wa_head + STEP7_ACKED + "  0x6008 = 0xf0, bit 5:" in out and head + armed_line + EARLY_ACKED.format(0x39) + "\n" in out
+              and rc3 == 0 and wa_head + STEP7_NEUTRAL + "  0x6008 = 0xf0, bit 5:" in out3 and head + armed_line + early.format(0x39) + fault + "\n" in out3
               and rc2 == 0 and wa_head + wa_armed + later.format(0x1b) + "\n" in out2 and head + fields(0xf8) in out2 and "NOT READ" not in out + out2,
-              "wake_all=1's byte landed and sep_pg=1's mark stayed, under step 7's stage (the run stopped between the two commands, or the"
-              " second failed): the first is read and the second said not to have landed; and the other way round under a later stage",
-              out + err + out2 + err2)
+              "wake_all=1's byte landed and sep_pg=1's mark stayed, under step 7's stage: the first is read and the second said not to"
+              " have landed, its command acked if 0x6013 has the outcomes' marker and, with a second there, one of three things the"
+              " record doesn't choose among (the run stopped between the two commands, the second failed, or it was acked and not"
+              " kept); and the other way round under a later stage", out + err + out2 + err2 + out3 + err3)
         # Step 7's own stage: the byte landed and no later command did.
         rc, out, err, _, _ = sdec(b"\x00\xf8", 0xb9)
-        check(rc == 0 and head + "  the stage, 0x39, is step 7's own, still the stage when this byte goes out: the byte landed, and no newer stage was kept after it (the next stage's command comes after the options' bytes: it failed, or wasn't reached)\n"
-              + fields(0xf8) in out and "NOT READ" not in out,
-              "sep_pg=1's byte under step 7's own stage (0xb9, 0x39 with pmp_out=1's bit): read as the run's, with a line saying no later command landed", out + err)
+        rc2, out2, err2, _, _ = sdec(b"\x00\xf8", 0xb9, up=A_SECOND)
+        check(rc == 0 and head + STEP7_ACKED + fields(0xf8) in out and "NOT READ" not in out and OUTCOMES_39.format("13 b8 ff 5f", 0x5fffb813) in out
+              and rc2 == 0 and head + STEP7_NEUTRAL + fields(0xf8) in out2 and "NOT READ" not in out2 and SECOND_39 in out2
+              and "it failed, or wasn't reached" not in out + out2,
+              "sep_pg=1's byte under step 7's own stage (0xb9, 0x39 with pmp_out=1's bit): read as the run's, with a line saying it is the"
+              " last stage the record kept: with the outcomes' marker at 0x6013, that the next stage's command was acked and the stage"
+              " not kept; with a second there, that the record doesn't say why no newer stage is there", out + err + out2 + err2)
         # What such a run can't have left beside the byte: nothing of it is read then.
         junk_line = "  {}: not what e1_hook writes in such a run (K1 zeroes the seven, and a run sends its options' bytes alone): NOT READ\n"
         rc, out, err, _, _ = sdec(bytes((0, 0xf8, 0, 5, 0, 0, 0)))
@@ -10985,9 +11028,10 @@ def disp_hs_tests(g, src):
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "nvmem")
 
-        def ddec(r, stage=0x9b, clear=False, armed=0x41):
+        def ddec(r, stage=0x9b, clear=False, armed=0x41, up=None):
             sc = bytearray(base)
             sc[4] = stage
+            sc[0x12:0x14] = sc[0x12:0x14] if up is None else up
             sc[8:8 + len(r)] = r
             before = fake(path, bytes(sc), rtc_secs=112659 + 130, alarm=(armed, 112659 + 3600, 0, 0))
             p = run(path, *(["--clear"] if clear else []), cnt="960000000 24000000")
@@ -11005,10 +11049,11 @@ def disp_hs_tests(g, src):
               " no sample from step 7, which is sep_pg=1's; every other line of the record is as without the bytes", out + err + "\n".join(rest))
         for stage in (0x02, 0x84, 0x83, 0x85, 0x90, 0xa8, 0xb1, 0xb7, 0xb9, 0xcb, 0xd5, 0xbd, 0x9d, 0x95, 0x99, 0x9b, 0x93):
             rc, out, err, _, _ = ddec(b"\x00\x00\xa8\x88\xa0\x88", stage)
-            own = "  the stage, 0x02, is K3's, still the stage when the four bytes go out: they landed and K3b's own stage didn't\n"
+            own = ("  the stage, 0x02, is K3's, still the stage when the four bytes go out: they landed, and K3b's own stage isn't in the record"
+                   " (not reached, failed, or acked and not kept: the record doesn't say)\n")
             check(rc == 0 and head + "\n" + (own if stage == 0x02 else "") + "\n".join(fields(b"\xa8\x88\xa0\x88")) + "\n" in out and (own in out) == (stage == 0x02),
                   f"the four bytes under stage 0x{stage:02x}, one a disp_hs=1 run can be at once K3b has sent them: read as its record"
-                  + (", with a line saying K3b's own stage didn't land" if stage == 0x02 else ""), out + err)
+                  + (", with a line saying K3b's own stage isn't in the record, and not why" if stage == 0x02 else ""), out + err)
         # All three options' records, each read by itself; sep_pg=1's nibble is then one more sample of the same word.
         rc, out, err, _, _ = ddec(b"\xf0\xfc" + REC)
         rc2, out2, err2, _, _ = ddec(b"\xf0\xf8\xe8\x88\xe8\x88")
@@ -11030,8 +11075,8 @@ def disp_hs_tests(g, src):
               " isn't mentioned; beside sep_pg=1's mark, whose byte never landed, there is no step-7 sample to list", out + err + out2 + err2 + out3 + err3)
         # K1's mark.
         armed_line = "  0x600a = 0x01: disp_hs=1 was set and its four bytes never landed: K1 writes this, and K3b's command writes over it. "
-        before = ("Stage 0x{:02x} is as far as the record goes: the run stopped before K3b's command for the four bytes, or that command failed and"
-                  " K3b's own stage after it didn't land either")
+        before = ("Stage 0x{:02x} is the last the record kept: the run stopped before K3b's command for the four bytes, or that command and K3b's"
+                  " own stage after it both failed or weren't kept. The record doesn't say which")
         fault = (". K3b's writes to the two fabric blocks come between this stage and the bytes, with no watchdog armed and the keyboard's light"
                  " not yet on: a write to a block that had lost its power faults there and the kernel panics, and one that stalls, or a panic"
                  " whose restart fails, leaves the Mac dark with no light ever having blinked")
@@ -11386,7 +11431,7 @@ def sep_ro_tests(g, src):
     }
     left = {"88fc": "88fc0000000000", "marks": "10020000000000", "wa": "f0f80000000000", "junk": "10020304050607", "zeros": "00000000000000"}
     kinds = ("sepro", "sepro+dh", "seppg", "plain", "wakeall")
-    xkinds = "de0njtwrspxDgGfFbqkKoSzcC"
+    xkinds = "de0njtwrspxDgGfFbqkKoSzcCBP"
     drivers = ("apple-sep", "apple_sep2", "apple_se", "sep", "APPLE_SEP", "-")
     with tempfile.TemporaryDirectory() as tmp:
         def build(name, code, *flags):
@@ -11564,8 +11609,8 @@ def sep_ro_tests(g, src):
         if kind == "f":
             return end("its diag has no xart: no proof", putd)
         putx = [f"put xart {i}"] + putd
-        if kind in "Fbq":
-            return end("its diag/xart isn't an attribute's file: no proof", putx)
+        if kind in "FbqBP":
+            return end("its diag/xart isn't a text attribute's file: no proof", putx)
         if kind in "kKo":
             return end("its diag/xart has no show: no proof", putx)
         if kind == "z":
@@ -11584,8 +11629,9 @@ def sep_ro_tests(g, src):
     def verdict(ok, why=None):
         return [f"proof {int(ok)}", "why " + ("-" if ok else why), LEFT, "done 0"]
 
-    check(all(proofs[(k, w)] == look + xask(0, k, wait=bool(w)) + ["put 0"] + verdict(k == "d", NOPROOF) for k in xkinds for w in (1, 0)) and len(proofs) == 50,
-          "m1_sro_proof() with one device bound to apple_sep, in 25 states of its own corner of sysfs, waiting for the device's lock as"
+    check(all(proofs[(k, w)] == look + xask(0, k, wait=bool(w)) + ["put 0"] + verdict(k == "d", NOPROOF) for k in xkinds for w in (1, 0)) and len(proofs) == 54
+          and not [l for k in "BPFbq" for w in (1, 0) for l in proofs[(k, w)] if l.startswith(("show", "page"))],
+          "m1_sro_proof() with one device bound to apple_sep, in 27 states of its own corner of sysfs, waiting for the device's lock as"
           " the load does and only trying it as the prepare does, each against a second writing-out of every call: the lock; the"
           " device's own node asked for \"diag\" and that for \"xart\", each with a reference; a zeroed page; the device"
           " kobject's own show, called with the attribute the node carries and the lock still held; the line that says"
@@ -11593,7 +11639,9 @@ def sep_ro_tests(g, src):
           " \"disabled\" and a newline with the string's end after it: none for \"enabled\", nothing, the word without its newline,"
           " with a letter or twenty bytes after it, a show that fails though it wrote the word, one that returns 9 with a letter"
           " after the newline, or a full page; none with no diag, a diag that is a file, one owned by another kobject or by none,"
-          " no xart, an xart that is a directory, of another size or with no attribute, an owner with no type, no operations or"
+          " no xart, an xart that is a directory, of another size or with no attribute, an xart that is a binary attribute's node"
+          " of exactly one page or a text one's without kernfs's seq_show flag (each refused before any page is had and with no"
+          " show called, though the mock would have said disabled), an owner with no type, no operations or"
           " no show, a device with no node, or no page; and none for a diag that is a kobject of its own right under the device's,"
           " whatever that kobject's show would say: the driver's is a group of the device's, and no other show is ever called. (The"
           " nodes, the kobjects, the lock and the page are stand-ins that log.)", "\n".join(proofs[("d", 1)] + proofs[("s", 0)] + proofs[("g", 1)]))
@@ -11645,7 +11693,7 @@ def sep_ro_tests(g, src):
                                     "\t} else if (!dev->kobj.sd || !(diag = kernfs_find_and_get(dev->kobj.sd, SRO_XART_DIR))) {\n",
                                     "\t} else if (kernfs_type(diag) != KERNFS_DIR || (owner = diag->priv) != &dev->kobj) {\n",
                                     "\t} else if (!(xart = kernfs_find_and_get(diag, SRO_XART_FILE))) {\n",
-                                    "\t} else if (kernfs_type(xart) != KERNFS_FILE || !xart->priv || xart->attr.size != PAGE_SIZE) {\n",
+                                    "\t} else if (kernfs_type(xart) != KERNFS_FILE || !(xart->flags & KERNFS_HAS_SEQ_SHOW) || !xart->priv || xart->attr.size != PAGE_SIZE) {\n",
                                     "\t} else if (!owner->ktype || !(ops = owner->ktype->sysfs_ops) || !ops->show) {\n",
                                     "\t} else if (!(page = (char *)get_zeroed_page(GFP_KERNEL))) {\n",
                                     "\t\tn = ops->show(owner, xart->priv, page);\n\t\tif (sro_xart_ro(page, n, n >= 0 && n < (ssize_t)PAGE_SIZE ? page[n] : 1))\n\t\t\tret = 1;\n",
@@ -11943,9 +11991,10 @@ def sep_ro_tests(g, src):
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "nvmem")
 
-        def rdec(r, stage=0xd5, clear=False, armed=0x41, m=0x9f, gates=0x80):
+        def rdec(r, stage=0xd5, clear=False, armed=0x41, m=0x9f, gates=0x80, k=None):
             sc = bytearray(base)
             sc[4], sc[0x13], sc[0x16] = stage, m, gates
+            sc[0x12] = sc[0x12] if k is None else k
             sc[8:8 + len(r)] = r
             before = fake(path, bytes(sc), rtc_secs=112659 + 130, alarm=(armed, 112659 + 3600, 0, 0))
             p = run(path, *(["--clear"] if clear else []), cnt="960000000 24000000")
@@ -11993,10 +12042,10 @@ def sep_ro_tests(g, src):
                      " over it. ")
         armed_sp = ("  0x6009 = 0x02: sep_pg=1 was set and its byte never landed: K1 writes this, and the byte's command, after step 8's record,"
                     " writes over it. ")
-        early = "Stage 0x{:02x} is as far as the record goes: the run stopped before the byte's command, or that command failed, which stops every later one"
+        early = EARLY_NEUTRAL
         later = "Stage 0x{:02x} is a later command's, and a command that fails stops every later one: the byte's command was acked and the byte didn't land"
-        for stage, how in ((0xd5, later), (0xcb, later), (0xd4, later), (0xb9, early), (0xa8, early), (0xb7, early), (0x90, early), (0x82, early), (0x84, early),
-                           (0x01, early), (0x00, early)):
+        for stage, how in ((0xd5, later), (0xcb, later), (0xd4, later), (0xb9, EARLY_ACKED), (0xa8, early), (0xb7, early), (0x90, early), (0x82, early),
+                           (0x84, early), (0x01, early), (0x00, early)):
             rc, out, err, _, _ = rdec(b"\x10\x02\x01", stage)
             check(rc == 0 and "0x6008-0x600e = 10 02 01 00 00 00 00: " + SRO_HEAD + armed_sro + how.format(stage & 0x7f) + "\n" in out
                   and armed_sp + how.format(stage & 0x7f) in out and "disp_hs=1 was set and its four bytes never landed" in out
@@ -12017,20 +12066,81 @@ def sep_ro_tests(g, src):
         rc, out, err, _, _ = rdec(b"\x88\x02")
         rc2, out2, err2, _, _ = rdec(b"\x10\xfc")
         rc3, out3, err3, _, _ = rdec(b"\x88\xfc", 0xb9)
+        rc4, out4, err4, _, _ = rdec(b"\x88\xfc", 0xb9, m=0x00, k=0x01)
+        rc5, out5, err5, _, _ = rdec(b"\x10\x02\x01", 0xb9, m=0x00, k=0x01)
+        fault_sp = (". Step 7's reads of the control word, the SEP's power word and 0x2922c0044 and its write to the control word come between this"
+                    " stage and the byte: an access that faulted there panics, and the Mac restarts about 10 s later")
         after_it = ("0x6008's byte, which step 8 sends right after this one, landed, and a command that fails stops every later one: this byte's"
                     " command was acked and the byte didn't land\n")
         check(rc == 0 and SRO_HEAD + sro_field(0x88) in out and sp_head + armed_sp + after_it in out and "on either side" not in out
               and "Stage 0x55 is a later command's" not in out[out.index("sep_pg=1's record"):]
               and rc2 == 0 and SRO_HEAD + armed_sro + later.format(0x55) + "\n" in out2 and sp_head + sp_fields(0xfc) + sro_after(0x10, 0xfc) in out2
               and "nothing is concluded from it\n" in out2 and "bit 2 clear before the write" not in out2
-              and rc3 == 0 and SRO_HEAD + "  the stage, 0x39, is step 7's own, still the stage when this byte goes out: the byte landed, and no newer stage was kept after it (the next stage's command comes after the options' bytes: it failed, or wasn't reached)\n" + sro_field(0x88) in out3
-              and sro_after(0x88, 0xfc) in out3
-              and out3.count("no newer stage was kept after it") == 2 and "no later command did" not in out3,
+              and rc3 == 0 and SRO_HEAD + STEP7_ACKED + sro_field(0x88) in out3 and sp_head + STEP7_ACKED + sp_fields(0xfc) in out3
+              and sro_after(0x88, 0xfc) in out3 and out3.count(STEP7_ACKED) == 2 and STEP7_NEUTRAL not in out3
+              and OUTCOMES_39.format("13 b8 ff 9f", 0x9fffb813) in out3 and "RTC second at" not in out3
+              and "0x6013 = 0x9f: ps_words=1 wrote the 20 power words" in out3
+              and rc4 == 0 and SRO_HEAD + STEP7_NEUTRAL + sro_field(0x88) in out4 and sp_head + STEP7_NEUTRAL + sp_fields(0xfc) in out4
+              and sro_after(0x88, 0xfc) in out4 and out4.count(STEP7_NEUTRAL) == 2 and STEP7_ACKED not in out4 and SECOND_39 in out4
+              and "not one RTC second" not in out4 and "ps_words=1 wrote" not in out4
+              and rc5 == 0 and SRO_HEAD + armed_sro + early.format(0x39) + "\n" in out5 and armed_sp + early.format(0x39) + fault_sp + "\n" in out5
+              and "landed (0x6013 has their marker)" not in out4 + out5
+              and not any(t in o for t in ("it failed, or wasn't reached", "no later command did", "is as far as the record goes") for o in (out, out2, out3, out4, out5)),
               "one of the two bytes landed and the other's mark stayed: the one that landed is read by itself, and with only one sample"
               " nothing is concluded (0x6008's sample with 0x6009 still K1's mark, which is then said to have been acked and lost, since"
               " 0x6008's goes out after it; 0x6009's byte with 0x6008 still the mark, which is said); both under step 7's own stage are"
-              " read as the run's, each with a line saying what that stage establishes, that no newer stage was kept, and nothing about"
-              " which of the bytes could have landed", out + err + out2 + err2 + out3 + err3)
+              " read as the run's, each with a line saying that 0x39 is the last stage the record kept. The fixture with 0x6013 = 0x9f,"
+              " the outcomes' marker, which step 8 sends only after the next stage's command is acked: that command was acked and the"
+              " stage wasn't kept, 0x6010-0x6013 aren't read as a second, and the outcomes are read. The same with a second at"
+              " 0x6010-0x6013 and no marker: the record doesn't say why no newer stage is there (not reached, failed, or acked and not"
+              " kept). And the three marks under 0x39 with no marker: each byte's command not reached, failed, or acked and not kept,"
+              " with no choice among them", out + err + out2 + err2 + out3 + err3 + out4 + err4 + out5 + err5)
+        # Pullfrog on #134: 0x6008's byte beside something no such run leaves is NOT READ, and a byte that isn't read is evidence of
+        # nothing: sep_pg=1's mark is then said with what the stage, or 0x6013's marker, shows, and never with what 0x6008 would.
+        bad_r = bytes((0x88, 0x02, 0x00, 0x05))
+        notread = ("  0x600a-0x600d = 00 05 00 00: not what e1_hook writes in such a run (K1 zeroes the seven, and a run sends its options' bytes alone):"
+                   " NOT READ\n")
+        beside = "; 0x600a-0x600d = 00 05 00 00: not what e1_hook writes in such a run: NOT READ\n"
+        evid = "0x6008's byte, which step 8 sends right after this one, landed"
+        o39 = rdec(bad_r, 0xb9)
+        o39s = rdec(bad_r, 0xb9, m=0x00, k=0x01)
+        od5 = rdec(bad_r)
+        oe = rdec(bytes((0x88, 0x02, 0, 0, 0, 0, 0x80)))
+        good = rdec(b"\x88\x02", 0xb9, m=0x00, k=0x01)
+        direct = {r_: "\n".join(fam_lines(0x39, r_)) for r_ in (bad_r + bytes(3), bytes((0x88, 0x02)) + bytes(5), bytes((0x88, 0x02, 0, 0, 0, 0, 0x80)),
+                                                                 bytes((0x10, 0x02, 0, 5, 0, 0, 0)))}
+        check(all(o[0] == 0 and SRO_HEAD + notread in o[1] and evid not in o[1] and "low nibble read" not in o[1] for o in (o39, o39s, od5))
+              and sp_head + armed_sp + EARLY_ACKED.format(0x39) + beside in o39[1]
+              and sp_head + armed_sp + early.format(0x39) + fault_sp + beside in o39s[1]
+              and sp_head + armed_sp + later.format(0x55) + beside in od5[1]
+              and oe[0] == 0 and evid not in oe[1] and "0x600e = 0x80" in oe[1] and "NOT READ" in oe[1]
+              and good[0] == 0 and sp_head + armed_sp + after_it in good[1] and SRO_HEAD + STEP7_NEUTRAL + sro_field(0x88) in good[1]
+              and [evid in v for v in direct.values()] == [False, True, False, False]
+              and "    pre = r[0] if sro and not other else None\n" in tool
+              and "+ (sp_lines(s, r, [v for k, v in other.items() if k != \"sp\"], pre, acked) if sp else [])" in tool
+              and "    step7 = r[1] & 0xf if sp and r[1] & SP_MARK and not other else None\n    pre7 = r[0] & 0xf if sro and r[0] != SRO_ARMED and not other else None\n" in tool,
+              "0x6008 as evidence for 0x6009's reading only when sep_ro=1's own reading takes it. The reviewer's record, 88 02 00 05 00 00 00"
+              " under stage 0x39: 0x6008's sample is NOT READ for the bytes at 0x600a, and sep_pg=1's mark is no longer said to have been"
+              " acked because 0x6008's byte landed: it is said with what 0x6013's marker shows (the fixture's), with what the stage"
+              " allows when a second is there, and with the later stage under 0xd5; the same with 0x600e not 0. With nothing beside"
+              " the two the byte at 0x6008 is read and is evidence, as before. disp_hs=1's reading takes the two step-7 samples the same"
+              " way, only with nothing beside them that isn't read", o39[1] + o39[2] + o39s[1] + od5[1] + good[1] + str(direct))
+        ll_ = g["later_landed"]
+        at = lambda four: bytes(0x10) + four + bytes(12)
+        check(ll_(0x39, at(b"\x13\xb8\xff\x9f"), 112789) and ll_(0x39, at(b"\x13\xb8\xff\x9f")) and ll_(0x39, at(b"\x13\xb8\xff\x9f"), 0x9fffb812)
+              and not ll_(0x39, at(b"\x13\xb8\xff\x9f"), 0x9fffb813) and not ll_(0x39, at(b"\x13\xb8\xff\x9f"), 0xa0000000)
+              and not ll_(0x39, at(b"\x13\xb8\x01\x00"), 112789) and not ll_(0x39, at(b"\x13\xb8\xff\x00"), 112789)
+              and not ll_(0x39, at(b"\x13\xb8\xff\xa0"), 112789) and not ll_(0x39, at(b"\x13\xb8\xff\x3f"), 112789)
+              and all(ll_(0x39, at(bytes((0x13, 0xb8, 0xff, m_))), 112789) for m_ in (0xa5, 0xc0, 0xff, 0x40, 0x7f, 0x80, 0x9f))
+              and not any(ll_(st, at(b"\x13\xb8\xff\x9f"), 112789) for st in (0x38, 0x37, 0x28, 0x02, 0x01, 0x00, 0x4b, 0x55, 0x54))
+              and "    return s == WA_STEP7 and fab_landed(b) and (now is None or int.from_bytes(b[0x10:0x14], \"little\") > now)\n" in tool
+              and "        if later_landed(s, b, now):\n" in tool and "            out += k_lines(b)\n        elif base >= 0x01 and secs:\n" in tool
+              and "        out += ll_lines(s, b, now)\n" in tool and tool.count("later_landed(s, b") == 3,
+              "later_landed(): the record shows a later command landed only under step 7's own stage, with one of the outcomes' markers"
+              " at 0x6013 (0xa5, 0x40 to 0x7f, 0x80 to 0x9f, 0xc0 and up) and with 0x6010-0x6013 no second the run can have had, one"
+              " later than the RTC's now: not with a second there, not with 0x6013 0, 0x3f or 0xa0, not when the four bytes could be a"
+              " second (now at or past them), and under no other stage. decode() reads the two bytes as the outcomes exactly then, and"
+              " hands the same answer to the lines for 0x6008-0x600e")
         rc, out, err, _, _ = rdec(b"\x10\x02" + REC)
         rc2, out2, err2, _, _ = rdec(b"\x10\xfc" + REC)
         check(rc == 0 and "disp_hs=1's record" in out and "    after dispext0's place, the second (0x600b bits 7:4): 0xc, bit 2 set\n  the first of these samples" in out
