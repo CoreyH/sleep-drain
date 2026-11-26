@@ -118,10 +118,18 @@ this section where they differ.
      installed safe-only and its entry selected (`test-kernel install --safe-only`, then
      `test-kernel boot s2rref --safe-sepro`); only then the bundle installed
      (`ref-loader install --recovery-checked`), and a restart. If the kernel's install or the
-     selection fails, the loader isn't touched. If the swap fails, `boot.bin` is the stock one (the
-     tool says so) and `test-kernel unselect` clears the one-shot selection; a restart with it still
-     set would be the test kernel in its safe boot under the stock loader, where its S2R driver finds
-     no mailbox and does nothing. In the test boot: `ref-sleep check` (the mailbox line, the store
+     selection fails, the loader isn't touched. If the swap fails, what the tool printed decides:
+     - "not installed: boot.bin is as it was" or "is the stock one again", with its sha256: the
+       stock loader is live and verified. `test-kernel unselect` clears the one-shot selection; a
+       restart with it still set would be the test kernel in its safe boot under the stock loader,
+       where its S2R driver finds no mailbox and does nothing.
+     - "BOOT.BIN IS NOT VERIFIED ... DO NOT RESTART": **no restart, and nothing else of this
+       order, until the stock loader is back and verified.** `pkexec ref-loader restore`, then
+       `ref-loader status` has to say the live `boot.bin` is the recorded stock; failing that the
+       kept `boot.bin.stock` copied over it by hand and compared by sha256, and if the Mac was
+       restarted all the same and Linux doesn't start, the copy from macOS (the recovery notes).
+       Clearing the selection doesn't help there: the next boot would still go through an
+       unverified second stage. In the test boot: `ref-sleep check` (the mailbox line, the store
      read-only), and only then `ref-sleep go`; afterwards `ref-loader restore` (it works from that
      boot) before the next regular boot.
    - **One reference-shaped run from here:** every remaining pre-commit difference made at once in
