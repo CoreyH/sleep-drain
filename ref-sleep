@@ -46,6 +46,12 @@
 # the sleep it always was, not an unchecked deep one, and switches the alarm
 # it armed off again (after a timed wake there is nothing left to switch off).
 #
+# One "go" at a time: it takes a lock (flock on /run/ref-sleep.lock) before it
+# reads or writes anything of the sleep state, and holds it until its last
+# line, the putting-back included. A second "go" meanwhile ends at once with
+# nothing written: two of them would each take the other's "deep" for the
+# selection to put back, and switch off each other's alarm.
+#
 # It never loads or unloads a module, and never touches the loader.
 #
 # The paths are fixed; the RS_* variables point them elsewhere for
@@ -67,6 +73,7 @@ RTC_SYS=${RS_RTC_SYS:-/sys/class/rtc/rtc1}
 RTC_DEV=${RS_RTC_DEV:-/dev/rtc1}
 KMSG=${RS_KMSG:-/dev/kmsg}
 SAVE=${RS_SAVE:-/usr/local/bin/sleep-drain-safe}
+LOCK=${RS_LOCK:-/run/ref-sleep.lock}
 MAILBOX="apple-s2r: m1n1 mailbox at"
 MIN_SECONDS=15
 MAX_SECONDS=3600
@@ -252,6 +259,10 @@ cmd_go() {
     die "SECONDS is a whole number from $MIN_SECONDS to $MAX_SECONDS: the wake is armed before the suspend starts, and an alarm that fires before the Mac is asleep wakes nothing. Nothing written"
   secs=$((10#$secs))
   [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
+  # One go at a time, from before anything of the sleep state is read until this process is gone: the lock is on a
+  # descriptor this shell keeps open to its end, the EXIT trap's work included.
+  { exec 9> "$LOCK"; } 2> /dev/null || die "couldn't open the lock $LOCK; nothing written"
+  flock -n 9 || die "another ref-sleep go is running (it holds $LOCK): this one wrote nothing and asked for no suspend. Wait for it to end"
   preconditions
   state_of_things
   ((bad == 0)) || die "$bad of the preconditions don't hold (NOT OK above): nothing written, no suspend asked for"

@@ -7,16 +7,20 @@ through its RS_* variables: files stand in for /sys/module/apple_s2r, /sys/power
 reads sysfs: the stub answers for the kernel where a file can't (a written 1 reads back Y, a written deep reads back
 "s2idle [deep]") and can be told to answer otherwise.
 
+Each of those stubs also notes, in a second log, whether go's lock was held when it was called, by trying to take it.
+
 The order of what "go" does is read from one log: every stub call, and every read of the enable parameter, mem_sleep
 and the xART attribute, is written there with what the three files the script writes (enable, mem_sleep, state) held
 at that moment. The write of mem returns at once here: a regular file takes it.
 
     python3 -I -B tests/ref_sleep_test.py
 """
+import fcntl
 import os
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.realpath(os.path.join(HERE, ".."))
@@ -72,7 +76,14 @@ def setup(t, enable="N", devices=None, klog=BASE, rtc_name="rtc-apple-pmu 23d1f0
     write(f"{t}/klog-after", AFTER)
     c = f"{t}/calls"
     snap = f'''raw() {{ /usr/bin/cat "$1" 2> /dev/null | tr -d '\\n'; }}
-snap() {{ echo "enable=$(raw {t}/s2r/parameters/enable) mem_sleep=$(raw {t}/mem_sleep) state=$(raw {t}/state)"; }}
+ARGS="$*"
+snap() {{
+  # Whether go's lock is held now: a try on a descriptor of this stub's own.
+  if [[ ! -e {t}/lock ]]; then echo "${{0##*/}} $ARGS nolock" >> {c}/locklog
+  elif flock -n {t}/lock true; then echo "${{0##*/}} $ARGS free" >> {c}/locklog
+  else echo "${{0##*/}} $ARGS held" >> {c}/locklog; fi
+  echo "enable=$(raw {t}/s2r/parameters/enable) mem_sleep=$(raw {t}/mem_sleep) state=$(raw {t}/state)"
+}}
 '''
     # cat: the kernel's side of the three files a regular file can't play.
     stub(t, "cat", snap + f'''(($#)) || exec /usr/bin/cat
@@ -114,18 +125,22 @@ esac
 ''')
     stub(t, "save", snap + f'''echo "save $* | $(snap)" >> {c}/log
 n=$(grep -c "^save " {c}/log)
+# calls/hold-save: this save waits until calls/release is there (a go held in the middle, for the second go's test).
+if [[ -e {c}/hold-save && $n == 1 ]]; then touch {c}/holding; while [[ ! -e {c}/release ]]; do /usr/bin/sleep 0.05; done; fi
 [[ ! -e {c}/fail-save-$n ]] || {{ echo "sleep-drain-safe: couldn't write to the boot partition" >&2; exit 1; }}
 echo "saved to the boot partition (sleep-drain-safe/saved/x.tar)."
 ''')
 
 
-def run(t, *args, root=True):
+def run(t, *args, root=True, start=False):
     env = {"PATH": f"{t}/bin:/usr/bin", "RS_SAFE_FLAG": f"{t}/run/active", "RS_PROC_CMDLINE": f"{t}/proc-cmdline", "RS_S2R": f"{t}/s2r",
            "RS_MEM_SLEEP": f"{t}/mem_sleep", "RS_STATE": f"{t}/state", "RS_PM_TEST": f"{t}/pm_test", "RS_SEP_DRIVER": f"{t}/sepdrv",
-           "RS_RTC_SYS": f"{t}/rtc1", "RS_RTC_DEV": f"{t}/dev/rtc1", "RS_KMSG": f"{t}/kmsg", "RS_SAVE": f"{t}/bin/save"}
+           "RS_RTC_SYS": f"{t}/rtc1", "RS_RTC_DEV": f"{t}/dev/rtc1", "RS_KMSG": f"{t}/kmsg", "RS_SAVE": f"{t}/bin/save", "RS_LOCK": f"{t}/lock"}
     cmd = [TOOL, *args]
     if root:
         cmd = ["bwrap", "--unshare-user", "--uid", "0", "--gid", "0", "--dev-bind", "/", "/"] + cmd
+    if start:
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
 
 
@@ -454,6 +469,78 @@ def go_stops():
                   f"{cmd} with pm_test set to devices: a note that the suspend would be the kernel's test of one", p.stdout + p.stderr)
 
 
+def one_at_a_time():
+    """Pullfrog on #136: two go's at once would each put back the other's mem_sleep and switch off the other's alarm."""
+    def locklog(t):
+        p = f"{t}/calls/locklog"
+        return open(p).read().splitlines() if os.path.exists(p) else []
+
+    # The lock held by somebody else: go ends at once, with nothing read of the sleep state and nothing written.
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        with open(f"{t}/lock", "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            p = run(t, "go")
+            check(p.returncode != 0 and "another ref-sleep go is running" in p.stderr and "wrote nothing and asked for no suspend" in p.stderr and untouched(t)
+                  and events(t) == [] and p.stdout == "",
+                  "go while another holds the lock: it ends at once; nothing read, nothing written, no save, no alarm, no suspend", p.stdout + p.stderr)
+            p = run(t, "check")
+            check(p.returncode == 0 and "all of the preconditions hold" in p.stdout and untouched(t), "    check meanwhile: it changes nothing, and needs no lock", p.stdout + p.stderr)
+        p = run(t, "go")
+        check(p.returncode == 0 and raw(t, "state") == "mem\n", "    go once the lock is free: the attempt is made", p.stdout + p.stderr)
+    # The lock is held from before the first reading to the end of the putting-back: every stub call of a go finds it held.
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        p = run(t, "go")
+        ll = locklog(t)
+        check(p.returncode == 0 and len(ll) >= 12 and all(l.endswith(" held") for l in ll) and ll[-1].startswith("cat ") and any(l.startswith("rtcwake -d rtc1 -m disable") for l in ll[-3:])
+              and any("cat" in l and "xart" in l for l in ll[:2]),
+              "go: the lock is held at every step, from the first reading of the preconditions to the last of the EXIT trap (the alarm switched off, mem_sleep put back and read)",
+              "\n".join(ll))
+        with open(f"{t}/lock", "w") as f:
+            got = True
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                got = False
+        check(got, "    and it is free again once go has ended")
+    # And when go stops early: still held through the putting-back.
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        flag(t, "xart-after-arm", b"enabled\n")
+        p = run(t, "go")
+        ll = locklog(t)
+        check(p.returncode != 0 and all(l.endswith(" held") for l in ll) and ll[-1].startswith("cat ") and raw(t, "mem_sleep") == "s2idle\n",
+              "go that stops at the last xART check: the lock is held until mem_sleep is put back", "\n".join(ll))
+    # Two at once: the first is held in the middle of its save, with deep selected and nothing armed yet.
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        flag(t, "hold-save")
+        first = run(t, "go", "30", start=True)
+        deadline = time.time() + 30
+        while not os.path.exists(f"{t}/calls/holding") and time.time() < deadline:
+            time.sleep(0.05)
+        mid = raw(t, "mem_sleep")
+        n = len(events(t))
+        second = run(t, "go", "40")
+        same = len(events(t)) == n and raw(t, "mem_sleep") == mid == "deep\n" and raw(t, "state") == ""
+        flag(t, "release")
+        out, err = first.communicate(timeout=60)
+        kinds = [e[0] for e in events(t)]
+        check(os.path.exists(f"{t}/calls/holding") and second.returncode != 0 and "another ref-sleep go is running" in second.stderr and second.stdout == "" and same,
+              "a second go while the first is in the middle (deep selected, its save running): the second ends at once and touches nothing: mem_sleep still deep, no call of its own",
+              second.stdout + second.stderr)
+        check(first.returncode == 0 and raw(t, "mem_sleep") == "s2idle\n" and raw(t, "state") == "mem\n" and kinds.count("rtcwake -d rtc1 -m no -s 30") == 1
+              and not any("-s 40" in k for k in kinds) and kinds.count("rtcwake -d rtc1 -m disable") == 1 and "mem_sleep is back to: [s2idle] deep" in out.replace(f"{t}/", ""),
+              "    the first then finishes as if alone: its own alarm armed once and switched off once, and mem_sleep back to s2idle, the selection from before either of them",
+              out + err + str(kinds))
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        os.makedirs(f"{t}/lock")
+        p = run(t, "go")
+        check(p.returncode != 0 and "couldn't open the lock" in p.stderr and untouched(t) and events(t) == [], "go when the lock can't be opened: refused, nothing written", p.stdout + p.stderr)
+
+
 def source():
     src = open(TOOL).read()
     code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
@@ -467,6 +554,7 @@ def source():
 
 def main():
     happy()
+    one_at_a_time()
     preconditions()
     go_stops()
     source()
