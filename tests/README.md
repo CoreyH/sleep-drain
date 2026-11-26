@@ -35,7 +35,73 @@ used to sit in CLAUDE.md, entry for entry):
   least one, has `diag/xart` reading exactly `disabled` and a newline (the driver's directory in sysfs is a
   directory the test fills: 27 cases, `enabled`, no driver, no device, no attribute, one that can't be read, an
   empty one, no newline, more after it, another case, two devices, and what the command line asks for said
-  beside it and proving nothing). No boot is made.
+  beside it and proving nothing). No boot is made. And `sepro-cmdline` (`sepro_cmdline_tests()`): run without
+  root in a copy whose `need_root` is the real one; its line held against the third entry `boot --sep-ro` then
+  writes, before and after that command, over the regular lines that set either parameter already; refused in
+  `boot --sep-ro`'s own words, with nothing printed and nothing written, over the lines that command refuses (a
+  blacklisted `apple_sep`, quotes, backslashes, control characters, a GRUB variable, `--`); the length counted
+  with the kernel path it is given (the last byte that fits and one over, for three paths; a line that fits the
+  regular kernel's entry and not a test kernel's); no regular entry to copy; no `grub.cfg`; a kernel path that
+  isn't a plain absolute one.
+- `tests/test_kernel_test.py` runs `test-kernel` as uid 0 in a bubblewrap user namespace with its `TK_*` paths in
+  a scratch directory, a real `.tar.zst` package made there, the real `sleep-drain-safe` (a copy reading the
+  scratch `grub.cfg`) for `sepro-cmdline`, and stubs for mkinitcpio, GRUB's tools, df, pacman and uname. `install`
+  with the hook there: two entries in the one script, the safe one's line what `sepro-cmdline` says for this
+  kernel's path, each with its own initramfs, the safe image built with `-A sleepdrain-safe`, the state file's
+  `entries=`; `boot`, and `boot --safe-sepro` in both argument orders, each read back from GRUB's environment (a
+  `grub-reboot` that fails, one that returns 0 and writes nothing, an environment that can't be read);
+  `--safe-sepro` refused for a safe entry that lacks either word, has `=1`, a second setting, no
+  `sleepdrain.safe`, a word after it, a `--`, a quote, another kernel or the plain initramfs, for a missing image
+  or one without the hook, and for an entry made from an older regular line; `regen_grub`'s rule with two entries
+  (a regeneration that changes the regular section, at install and at remove; one that would publish the safe
+  entry without a word); `remove` (both entries, both images, a queued safe entry unselected); `list`. The plain
+  entry alone, with the reason said, in thirteen cases (no hook, a line `sleep-drain-safe` refuses, a blacklisted
+  driver, a `sleep-drain-safe` without the command or missing, one that prints a line that isn't a safe one in
+  five ways, mkinitcpio failing for the safe image, an image without the hook, the regular line changing during
+  the builds), and for each of them `install --safe-only` failing with nothing left behind: every file under the
+  scratch boot partition, grub.d, modules and state compared before and after. `--safe-only` when it works: one
+  entry, no plain entry or plain initramfs anywhere, `boot` without `--safe-sepro` refused; its failures on
+  GRUB's side (three), again with nothing left. The space check with one and with two images counted (one MiB
+  short and exactly enough, six cases), names ending in `-safe`, an existing module tree, a state file from
+  before the safe entry, and every command without root.
+- `tests/ref_loader_test.py` runs `ref-loader` with its `REFL_*` paths in a scratch directory (a directory for
+  the boot partition, made-up m1n1.bin, U-Boot and device trees with real headers, a made-up
+  `/etc/default/update-m1n1`), the root commands as uid 0 in a bubblewrap user namespace; findmnt, df, mount,
+  umount, mountpoint, lsblk and findfs are stubs, and cp, mv and sync wrappers that log, run the real one, and
+  fail or damage their output on request. The recipe: `build`'s bytes piece by piece (m1n1.bin, the device trees
+  in the C locale's order under a language's locale or in a list's own order, one gzip member that unpacks to
+  U-Boot with the file's name and time in its header, the configuration's accepted lines) and, where
+  `/usr/bin/update-m1n1` is installed, that script itself run on the same inputs in a sandbox: the same bytes,
+  and `verify-recipe` says match (it says so and skips if the script isn't there). `build`'s sixteen refusals
+  (not a device tree by its magic or its size, none that names this Mac, an output in the live directory);
+  `verify-recipe`'s mismatch for one bit in each kind of piece, with the piece named, and its refusals.
+  `install`: refused without `--recovery-checked`, root or not, in words that name the write check from macOS;
+  fourteen refusals with nothing written (a safe boot by the marker or by the command line, `/boot` not mounted or
+  not FAT, no bundle or an empty one, a live file the recipe doesn't rebuild, the stock bundle, a bare m1n1.bin, a bundle cut short, with
+  another U-Boot byte, without the configuration or without this Mac's device tree, one byte too little room);
+  the install with exactly the room it needs, its twelve logged steps in order (each file written beside its
+  name, fsync'd, renamed, the filesystem synced; boot.bin last), the two records, the way back printed;
+  `status`; a second install over the bundle; `restore`, twice; the kept stock found without a record, with a
+  record that isn't a hash, damaged, older than the recipe, or recorded and missing. Each write fault, at the
+  stock's copy and at the bundle's (a copy that doesn't read back, an fsync or a rename that fails, a file that
+  reads back wrong after its rename: the stock put back, or `BOOT.BIN IS NOT VERIFIED`), and the same for
+  `restore`. A safe boot: `install` refused, `status` and `restore` mounting the boot partition of the disk's own
+  fstab and unmounting it on every way out, the mount failing, the unmount failing. `recovery-notes`: the
+  partition's identity, the scratch-file check, that the macOS steps weren't tried, what the flag stands for.
+  `install.sh` installs it; `uninstall.sh` keeps it while a stock loader is kept.
+- `tests/ref_sleep_test.py` runs `ref-sleep` as uid 0 in a bubblewrap user namespace with its `RS_*` paths in a
+  scratch directory and stubs for dmesg, journalctl, rtcwake, `sleep-drain-safe` and cat (how the script reads
+  sysfs: the stub answers for the kernel, so a written `deep` reads back `s2idle [deep]`, and logs each read with
+  what enable, mem_sleep and state held then). `check`: the five findings and what `go` would do, nothing
+  changed. `go`'s order from that log: 1 to enable before anything, deep after it, the save before any alarm,
+  the alarm, the xART attribute read as the last thing before state holds mem, then the reading again and the
+  second save, mem_sleep put back and the alarm switched off. Each precondition failing alone, for `check` and
+  `go` (seven ways for the first four, fourteen states of the SEP driver's directory), all five at once, the
+  mailbox line only in the journal, no root: nothing written. Each step of `go` failing (an enable or a deep that
+  doesn't take, the save, rtcwake, the xART attribute changing after the alarm is armed, the write of mem, the
+  proof gone or the save failing after the wake, mem_sleep not going back, a kernel log that can't be marked), no
+  PMU RTC in three forms (said, and the attempt made), SECONDS out of range, `pm_test` set. The write of mem
+  returns at once there: no suspend is made, and what the reference kernel does with it isn't modelled.
 - `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe boot and `collect` in a fake next
   boot.
 - `tests/m1_crumbs_test.py` runs `e1-hook/m1-crumbs` on a fake PMU nvmem file, position=1's samples made by
