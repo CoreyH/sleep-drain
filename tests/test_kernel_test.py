@@ -96,9 +96,20 @@ fi
 echo "image hooks: base {'$'}{{add:-}}" > "$out"
 ''')
     stub(t, "lsinitcpio", f'[[ -e {t}/calls/no-hook ]] && exit 0; grep -o "sleepdrain-safe" "$2" | sed "s|^|hooks/|"; exit 0\n')
-    stub(t, "grub-probe", "echo 553C-45DC\n")
+    # grub-probe runs after install's first checks and before it creates anything: calls/probe-hook, if there, is run
+    # then, for the cases where something appears between the check and the creation.
+    stub(t, "grub-probe", f"[[ ! -e {t}/calls/probe-hook ]] || bash {t}/calls/probe-hook\necho 553C-45DC\n")
     stub(t, "grub-reboot", f'echo "$1" > {t}/next\n')
-    stub(t, "grub-editenv", f'if [[ $2 == unset ]]; then rm -f {t}/next; else [[ -f {t}/next ]] && echo "next_entry=$(cat {t}/next)"; fi; exit 0\n')
+    stub(t, "grub-editenv", f'''if [[ $2 == unset ]]; then
+  [[ ! -e {t}/calls/unset-fails ]] || exit 1
+  [[ -e {t}/calls/unset-noop ]] || rm -f {t}/next
+else
+  [[ ! -e {t}/calls/list-fails ]] || exit 1
+  [[ ! -e {t}/calls/saved ]] || echo "saved_entry=$(cat {t}/calls/saved)"
+  [[ -f {t}/next ]] && echo "next_entry=$(cat {t}/next)"
+fi
+exit 0
+''')
     stub(t, "sync", "exit 0\n")
     stub(t, "df", f'echo Avail; echo "$(cat {t}/calls/avail)M"\n')
     stub(t, "pacman", "exit 1\n")
@@ -167,14 +178,15 @@ def calls(t, word):
 
 
 def written(t):
-    """Everything the tool could have written: every file under the boot partition, grub.d, the modules and the state
-    directory, with a hash of its contents. A refused install must leave this as it was."""
+    """Everything the tool could have written: every directory, file and link under the boot partition, grub.d, the
+    modules and the state directory, a file with a hash of its contents. A refused install must leave this as it was."""
     out = {}
     for sub in ("boot", "etc", "modules", "state"):
-        for d, _, files in os.walk(os.path.join(t, sub)):
-            for f in files:
+        for d, dirs, files in os.walk(os.path.join(t, sub)):
+            out[os.path.relpath(d, t) + "/"] = "a directory"
+            for f in files + [x for x in dirs if os.path.islink(os.path.join(d, x))]:
                 p = os.path.join(d, f)
-                out[os.path.relpath(p, t)] = hashlib.sha256(open(p, "rb").read()).hexdigest()
+                out[os.path.relpath(p, t)] = "-> " + os.readlink(p) if os.path.islink(p) else hashlib.sha256(open(p, "rb").read()).hexdigest()
     return out
 
 
@@ -501,7 +513,141 @@ def space_and_names():
             check(p.returncode != 0 and "run as root (pkexec)" in p.stderr and written(t) == before, f"{args[0]} without root: refused", p.stdout + p.stderr)
 
 
+def not_ours():
+    """What an install may write over or take back is only what that run created (Pullfrog on #136)."""
+    D, S = "boot/aurora-test/s2r", "etc/grub.d/43_aurora_test_s2r"
+    # The reviewer's reproduction: a file in the image directory of that name, no record, and a grub-mkconfig that fails.
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        write(os.path.join(t, D, "keep"), "somebody's file\n")
+        stub(t, "grub-mkconfig", "exit 1\n")
+        before = written(t)
+        for mode in (("--safe-only",), ()):
+            p = install(t, *mode)
+            check(p.returncode != 0 and written(t) == before and os.path.isfile(os.path.join(t, D, "keep"))
+                  and "there is no record of a kernel named s2r, and yet this is there" in p.stderr and f"{t}/{D} (a directory holding: keep )" in p.stderr
+                  and "Nothing installed" in p.stderr and calls(t, "mkinitcpio") == [] and "taken back" not in p.stderr,
+                  f"install {' '.join(mode)} with a file in the image directory of that name, no record, and grub-mkconfig failing (the reviewer's case):"
+                  " refused before anything is written; the file is still there", p.stdout + p.stderr)
+    # One per thing found beforehand, in both modes, with a GRUB that works: refused up front, what was found is said, nothing touched.
+    def there_dir(t): write(os.path.join(t, D, "vmlinuz"), "an older kernel\n")
+    def there_empty_dir(t): os.makedirs(os.path.join(t, D))
+    def there_file(t): write(os.path.join(t, D), "a file where the directory would be\n")
+    def there_link(t): os.makedirs(os.path.join(t, "boot/aurora-test")); os.symlink("/nonexistent", os.path.join(t, D))
+    def there_script(t): write(os.path.join(t, S), "#!/bin/sh\necho somebody's entry\n", 0o755)
+    def there_script_link(t): os.symlink("/nonexistent", os.path.join(t, S))
+    def there_both(t): there_dir(t); there_script(t)
+    for what, do, names in (("an image directory of that name", there_dir, [D + " (a directory holding: vmlinuz )"]),
+                            ("an empty image directory of that name", there_empty_dir, [D + " (a directory holding: )"]),
+                            ("a file where the image directory would be", there_file, [D + " (not a directory)"]),
+                            ("a dangling link where the image directory would be", there_link, [D + " (not a directory)"]),
+                            ("a GRUB script of that name", there_script, [S]),
+                            ("a dangling link where the GRUB script would be", there_script_link, [S]),
+                            ("both", there_both, [D, S])):
+        with tempfile.TemporaryDirectory() as t:
+            setup(t)
+            do(t)
+            before = written(t)
+            for mode in ((), ("--safe-only",)):
+                p = install(t, *mode)
+                check(p.returncode != 0 and "there is no record of a kernel named s2r, and yet this is there" in p.stderr and all(f"{t}/{n}" in p.stderr for n in names)
+                      and "Nothing installed" in p.stderr and written(t) == before and os.path.lexists(os.path.join(t, D if D in names[0] else S))
+                      and state(t) is None and not os.path.exists(os.path.join(t, "modules", REL)) and calls(t, "mkinitcpio") == [] and cfg_of(t) == regular_section(REG),
+                      f"install {' '.join(mode)} with {what} and no record: refused before anything is written, saying what is there; it is left as it was", p.stdout + p.stderr)
+    # Something that appears between the first checks and its creation (here: while grub-probe runs). The creation
+    # fails; what this run had created by then is taken back, and the thing that appeared is not.
+    made = {"the module tree": (f"modules/{REL}/theirs", f"mkdir -p {{t}}/modules/{REL} && echo theirs > {{t}}/modules/{REL}/theirs", "couldn't create", []),
+            "the record": ("state/s2r", "echo theirs > {t}/state/s2r", "couldn't create the record", [f"modules/{REL}"]),
+            "the image directory": (D + "/theirs", "mkdir -p {t}/" + D + " && echo theirs > {t}/" + D + "/theirs", "couldn't create", [f"modules/{REL}", "state/s2r"]),
+            "the GRUB script": (S, "echo theirs > {t}/" + S, "couldn't create", [f"modules/{REL}", "state/s2r", D])}
+    for what, (path, hook, why, ours) in made.items():
+        for mode in ((), ("--safe-only",)):
+            with tempfile.TemporaryDirectory() as t:
+                setup(t)
+                before = written(t)
+                write(os.path.join(t, "calls/probe-hook"), hook.format(t=t) + "\n")
+                p = install(t, *mode)
+                now = written(t)
+                # What is there now and wasn't before: the thing that appeared (and a directory it was made in), nothing else.
+                top = path.split("/theirs")[0]
+                only_theirs = (all(now.get(k) == v for k, v in before.items())
+                               and all(k.rstrip("/") == top or k.startswith(top + "/") or top.startswith(k) for k in now if k not in before))
+                check(p.returncode != 0 and why in p.stderr and only_theirs and os.path.isfile(os.path.join(t, path)) and open(os.path.join(t, path)).read() == "theirs\n"
+                      and all(not os.path.lexists(os.path.join(t, o)) for o in ours if o != os.path.dirname(path) and o != path)
+                      and all((f"{t}/{o}" in p.stderr) for o in ours) and f"{t}/{top}" not in (p.stderr.split("taken back", 1) + [""])[1] and "installed" not in p.stdout
+                      and (("taken back" in p.stderr) == bool(ours) or bool(mode)),
+                      f"install {' '.join(mode)} when {what} appears after the first checks: its creation fails; "
+                      + (f"the {len(ours)} thing{'s' if len(ours) > 1 else ''} this run had created {'are' if len(ours) > 1 else 'is'} taken back, and named" if ours else "nothing had been created yet")
+                      + "; what appeared is left where it is, untouched", p.stdout + p.stderr + str(sorted(set(now.items()) ^ set(before.items()))))
+    # The two directories those live in, made by a first install that fails: gone again.
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        os.rmdir(os.path.join(t, "state"))
+        stub(t, "grub-mkconfig", "exit 1\n")
+        p = install(t, "--safe-only")
+        check(p.returncode != 0 and not os.path.exists(os.path.join(t, "boot/aurora-test")) and not os.path.exists(os.path.join(t, "state")),
+              "install --safe-only failing where neither /boot/aurora-test nor the state directory was there before: both are gone again", p.stdout + p.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        write(os.path.join(t, "boot/aurora-test/other/vmlinuz"), "another kernel\n")
+        stub(t, "grub-mkconfig", "exit 1\n")
+        before = written(t)
+        p = install(t, "--safe-only")
+        check(p.returncode != 0 and written(t) == before and "nothing of s2r is left behind" in p.stderr,
+              "install --safe-only failing beside another kernel's image directory: that one is untouched", p.stdout + p.stderr)
+    # A plain install that fails after its four things exist is what it was: left for remove.
+    with tempfile.TemporaryDirectory() as t:
+        setup(t, hook=False)
+        stub(t, "grub-mkconfig", "exit 1\n")
+        p = install(t)
+        check(p.returncode != 0 and "not in grub.cfg yet" in p.stderr and state(t) == f"{REL}\nentries=plain\n" and images(t) == ["initramfs.img", "vmlinuz"] and "taken back" not in p.stderr,
+              "a plain install whose grub-mkconfig fails: as before, installed and not in grub.cfg yet, nothing taken back", p.stdout + p.stderr)
+        stub(t, "grub-mkconfig", "out=\nwhile (($#)); do [[ $1 == -o ]] && out=$2; shift; done\ncat " + t + "/regular > \"$out\"\n")
+        p = run(t, "remove", "s2r")
+        check(p.returncode == 0 and state(t) is None and images(t) is None and script_of(t) is None, "    and remove takes it away", p.stdout + p.stderr)
+
+
+def unselect():
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        assert install(t).returncode == 0
+        for how, eid in ((["boot", "s2r"], PLAIN), (["boot", "s2r", "--safe-sepro"], SAFE)):
+            assert run(t, *how).returncode == 0 and nxt(t) == eid
+            p = run(t, "unselect")
+            check(p.returncode == 0 and nxt(t) is None and f"cleared the selection of {eid}: the next restart is GRUB's default entry, the regular kernel" in p.stdout,
+                  f"unselect after {' '.join(how)}: the selection of {eid} is cleared and read back, and it says the next restart is the default entry", p.stdout + p.stderr)
+        p = run(t, "unselect")
+        check(p.returncode == 0 and nxt(t) is None and "nothing is selected for the next restart" in p.stdout and "Nothing changed" in p.stdout,
+              "unselect with nothing selected: says so, changes nothing", p.stdout + p.stderr)
+        write(os.path.join(t, "calls/saved"), "regular\n")
+        for other in ("sleep-drain-safe-sepro", "sleep-drain-safe", "aurora-testing", "xaurora-test-s2r", "0"):
+            write(os.path.join(t, "next"), other + "\n")
+            p = run(t, "unselect")
+            check(p.returncode == 0 and nxt(t) == other and f"the next restart is the entry {other}, once: not one of test-kernel's" in p.stdout and "left as it is" in p.stdout,
+                  f"unselect with another tool's entry selected ({other}): left alone, and said", p.stdout + p.stderr)
+        write(os.path.join(t, "next"), "aurora-test-gone\n")
+        p = run(t, "unselect")
+        check(p.returncode == 0 and nxt(t) is None and "cleared the selection of aurora-test-gone" in p.stdout and "GRUB's default entry (regular)" in p.stdout,
+              "unselect with an aurora-test entry of a kernel that isn't installed any more: cleared all the same; the saved default is named", p.stdout + p.stderr)
+        write(os.path.join(t, "next"), SAFE + "\n")
+        for flag, why in (("unset-fails", f"couldn't clear the selection: the next restart STILL boots {SAFE}"), ("unset-noop", f"the next entry still reads {SAFE}: NOT cleared"),
+                          ("list-fails", "GRUB's environment block couldn't be read")):
+            write(os.path.join(t, "calls", flag), "")
+            p = run(t, "unselect")
+            check(p.returncode != 0 and why in p.stderr and nxt(t) == SAFE and "cleared the selection" not in p.stdout,
+                  f"unselect when {flag.replace('-', ' ')}: it fails and says the entry is still selected or not known; not called cleared", p.stdout + p.stderr)
+            os.remove(os.path.join(t, "calls", flag))
+        p = run(t, "unselect", "s2r")
+        check(p.returncode == 2 and nxt(t) == SAFE, "unselect with an argument: the usage, nothing cleared", p.stderr)
+        p = run(t, "unselect", root=False)
+        check(p.returncode != 0 and "run as root" in p.stderr and nxt(t) == SAFE, "unselect without root: refused", p.stderr)
+        p = run(t)
+        check("| unselect |" in p.stderr, "the usage names unselect", p.stderr)
+
+
 def main():
+    not_ours()
+    unselect()
     both_entries()
     plain_only()
     safe_only()

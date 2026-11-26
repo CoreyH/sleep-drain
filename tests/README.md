@@ -63,7 +63,18 @@ used to sit in CLAUDE.md, entry for entry):
   entry, no plain entry or plain initramfs anywhere, `boot` without `--safe-sepro` refused; its failures on
   GRUB's side (three), again with nothing left. The space check with one and with two images counted (one MiB
   short and exactly enough, six cases), names ending in `-safe`, an existing module tree, a state file from
-  before the safe entry, and every command without root.
+  before the safe entry, and every command without root. What isn't the install's own (`not_ours()`, Pullfrog on
+  #136): a file in the image directory of that name with no record and a `grub-mkconfig` that fails, the
+  reviewer's case, refused before anything is written, in both modes; one case per thing found beforehand (an
+  image directory, an empty one, a file or a dangling link in its place, a GRUB script, a dangling link in its
+  place, both), each said and left as it was; and each of the four things (the module tree, the record, the
+  image directory, the script) appearing between the first checks and its creation, in both modes: the creation
+  fails, what the run had created by then is taken back and named, and what appeared is still there with its
+  contents. The snapshot compared is every directory, file and link under the scratch boot partition, grub.d,
+  modules and state. `unselect`: one of the tool's entries selected (the plain one, the safe one, one of a
+  kernel no longer installed) cleared and read back; another tool's entry (five ids, `sleep-drain-safe-sepro`
+  and near-misses of the prefix among them) left alone and said; nothing selected; an unset that fails, one
+  that returns 0 and clears nothing, an environment that can't be read.
 - `tests/ref_loader_test.py` runs `ref-loader` with its `REFL_*` paths in a scratch directory (a directory for
   the boot partition, made-up m1n1.bin, U-Boot and device trees with real headers, a made-up
   `/etc/default/update-m1n1`), the root commands as uid 0 in a bubblewrap user namespace; findmnt, df, mount,
@@ -100,7 +111,12 @@ used to sit in CLAUDE.md, entry for entry):
   mailbox line only in the journal, no root: nothing written. Each step of `go` failing (an enable or a deep that
   doesn't take, the save, rtcwake, the xART attribute changing after the alarm is armed, the write of mem, the
   proof gone or the save failing after the wake, mem_sleep not going back, a kernel log that can't be marked), no
-  PMU RTC in three forms (said, and the attempt made), SECONDS out of range, `pm_test` set. The write of mem
+  PMU RTC in three forms (said, and the attempt made), SECONDS out of range, `pm_test` set. One `go` at a time
+  (`one_at_a_time()`, Pullfrog on #136): with the lock held by the test, `go` ends at once with nothing read or
+  written while `check` still runs; every stub call of a `go` finds the lock held, from the first reading to the
+  last line of the EXIT trap, also when it stops early; and a second `go` started while the first is held in the
+  middle of its save ends at once and touches nothing, after which the first finishes with its own alarm armed
+  and switched off once and mem_sleep back to s2idle. The write of mem
   returns at once there: no suspend is made, and what the reference kernel does with it isn't modelled.
 - `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe boot and `collect` in a fake next
   boot.

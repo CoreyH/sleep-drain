@@ -4,6 +4,7 @@
 #
 #   test-kernel install [--safe-only] <linux-aurora-*.pkg.tar.zst> <name>
 #   test-kernel boot <name> [--safe-sepro]  boot it at the next restart only (grub-reboot)
+#   test-kernel unselect                    take back a "boot": no test kernel at the next restart
 #   test-kernel remove <name>
 #   test-kernel list
 #
@@ -41,6 +42,18 @@
 # isn't taken) it installs nothing and leaves nothing behind. "boot <name>"
 # without --safe-sepro then refuses.
 #
+# What an install may write over or take back is only what that same run
+# created. It refuses, before anything is written, if the image directory or
+# the GRUB script of that name is there with no record of such a kernel, and it
+# creates each of its four things (the module tree, the record, the image
+# directory, the script) so that the creation fails if the thing exists. A run
+# that fails takes back the ones it created, and no other: until all four
+# exist in any mode, and to the end with --safe-only.
+#
+# "unselect" clears GRUB's one-shot selection if it is one of this tool's
+# entries (aurora-test-*), reads the environment back, and says what the next
+# restart is. Another tool's selection is left as it is.
+#
 # grub.cfg is replaced only when the regenerated one differs from the current
 # one by this kernel's section alone, both entries of it. Otherwise it is left
 # as it is and the difference shown. The new config is staged beside grub.cfg
@@ -65,7 +78,7 @@ SAFE_FLAG_WORD=sleepdrain.safe
 
 die() { echo "test-kernel: $*" >&2; exit 1; }
 usage() {
-  echo "usage: test-kernel install [--safe-only] <pkg.tar.zst> <name> | boot <name> [--safe-sepro] | remove <name> | list" >&2
+  echo "usage: test-kernel install [--safe-only] <pkg.tar.zst> <name> | boot <name> [--safe-sepro] | unselect | remove <name> | list" >&2
   exit 2
 }
 
@@ -188,12 +201,24 @@ menuentry '$1' --class omarchy --class gnu-linux --id $2 {
 EOF
 }
 
-# What a --safe-only install that doesn't finish takes back: everything it wrote.
-undo_safe_only() {
-  rm -f -- "${undo_script:?}" "${undo_state:?}"
-  rm -rf -- "${undo_dir:?}" "${undo_tree:?}"
+# What an install that doesn't finish takes back: the things this run created, each named here only once its creation
+# has succeeded, and nothing else. (Globals: when set -e ends the script inside install_kernel, its locals are gone by
+# the time the EXIT trap runs.)
+undo_name= undo_only= undo_script= undo_state= undo_dir= undo_tree= undo_stage= undo_parents=
+undo_install() {
+  local took=
   [[ -z $undo_stage ]] || rm -rf -- "${undo_stage:?}"
-  echo "test-kernel: --safe-only: the install didn't finish; nothing of $undo_name is left behind" >&2
+  [[ -z $undo_script ]] || { rm -f -- "${undo_script:?}"; took+=" $undo_script"; }
+  [[ -z $undo_dir ]] || { rm -rf -- "${undo_dir:?}"; took+=" $undo_dir"; }
+  [[ -z $undo_state ]] || { rm -f -- "${undo_state:?}"; took+=" $undo_state"; }
+  [[ -z $undo_tree ]] || { rm -rf -- "${undo_tree:?}"; took+=" $undo_tree"; }
+  # The two directories those live in, if this run made them and they are empty again.
+  [[ -z $undo_parents ]] || rmdir -- $undo_parents 2> /dev/null || true
+  if [[ -n $undo_only ]]; then
+    echo "test-kernel: --safe-only: the install didn't finish; nothing of $undo_name is left behind${took:+ (taken back:$took)}" >&2
+  elif [[ -n $took ]]; then
+    echo "test-kernel: the install didn't finish; what it had created for $undo_name is taken back:$took" >&2
+  fi
 }
 
 install_kernel() {
@@ -217,6 +242,13 @@ install_kernel() {
   [[ ! -e $MODULES/$release ]] || die "$MODULES/$release exists; refusing to touch it"
   script=$(script_of "$name")
   local kernel=/aurora-test/$name/vmlinuz dir=$IMAGES/$name
+  # With no record of a kernel of this name, an image directory or a GRUB script of this name is somebody else's, or
+  # what an older run left: not this run's to write into, or to remove if it fails.
+  local -a found=()
+  [[ ! -e $dir && ! -L $dir ]] || found+=("$dir ($([[ -d $dir && ! -L $dir ]] && echo "a directory holding: $(ls -A "$dir" | tr '\n' ' ')" || echo "not a directory"))")
+  [[ ! -e $script && ! -L $script ]] || found+=("$script")
+  ((${#found[@]} == 0)) ||
+    die "there is no record of a kernel named $name, and yet this is there: ${found[*]}. It isn't this install's to write over, or to remove if it failed: look at what it is and move it away first. Nothing installed"
 
   # The regular entry's kernel command line, so the test kernel boots the same
   # root the same way.
@@ -249,27 +281,41 @@ install_kernel() {
   avail=$(df --output=avail -BM "$BOOT" | tail -1 | tr -dc 0-9)
   (( avail >= need )) || die "/boot has ${avail} MiB free; $name needs about ${need} MiB"
 
-  # --safe-only is all or nothing: from here on, any way out but the last line takes back what was written. (The
-  # trap's names are globals: when set -e ends the script inside this function, its locals are gone by then.)
-  if ((safe_only)); then
-    undo_name=$name undo_script=$script undo_state=$STATE/$name undo_dir=$dir undo_tree=$MODULES/$release undo_stage=
-    trap undo_safe_only EXIT
-  fi
+  # From here on, any way out before the four things exist takes back the ones this run created; with --safe-only,
+  # which is all or nothing, any way out but the last line does. Each is created so that the creation fails if it is
+  # there already (mkdir without -p, a file under noclobber), and is named for the trap only after that.
+  undo_name=$name undo_only=$( ((!safe_only)) || echo 1) undo_script= undo_state= undo_dir= undo_tree= undo_stage= undo_parents=
+  trap undo_install EXIT
 
   stage=$(mktemp -d)
   undo_stage=$stage
   tar --zstd -xf "$pkg" -C "$stage" "usr/lib/modules/$release"
   rm -f "$stage/usr/lib/modules/$release/pkgbase"
   rm -rf -- "${stage:?}/usr/lib/modules/$release/dtbs"
-  mv "$stage/usr/lib/modules/$release" "$MODULES/$release"
+  mkdir "$MODULES/$release" || die "couldn't create $MODULES/$release (it wasn't there a moment ago); refusing to touch it"
+  undo_tree=$MODULES/$release
+  cp -a "$stage/usr/lib/modules/$release/." "$MODULES/$release/"
   rm -rf -- "${stage:?}"
   undo_stage=
-  mkdir -p "$STATE"
+  local d
+  for d in "$IMAGES" "$STATE"; do
+    [[ -d $d ]] || { mkdir -p "$d"; undo_parents+=" $d"; }
+  done
   write_state() { printf '%s\nentries=%s\n' "$release" "$1" > "$STATE/$name"; }
+  (set -o noclobber; : > "$STATE/$name") 2> /dev/null || die "couldn't create the record $STATE/$name (it wasn't there a moment ago); not written over"
+  undo_state=$STATE/$name
   write_state "$( ((safe_only)) && echo safe || echo plain)"
+  mkdir "$dir" || die "couldn't create $dir (it wasn't there a moment ago); not written into"
+  undo_dir=$dir
+  # The script's place is taken now, empty and not executable (grub-mkconfig runs only executable ones); it gets its
+  # entries and its mode once the images are built.
+  (set -o noclobber; : > "$script") 2> /dev/null || die "couldn't create $script (it wasn't there a moment ago); not written over"
+  undo_script=$script
+  # All four are this run's. Without --safe-only a failure from here on leaves an install that "remove" takes away,
+  # as it always has.
+  ((safe_only)) || trap - EXIT
 
   depmod "$release"
-  mkdir -p "$dir"
   cp "$MODULES/$release/vmlinuz" "$dir/vmlinuz"
   ((safe_only)) || mkinitcpio -k "$release" -g "$dir/initramfs.img"
 
@@ -389,6 +435,32 @@ boot_kernel() {
   echo "the next restart boots $name ($release) once, as a safe boot (its image has the sleepdrain-safe hook and its line $SAFE_FLAG_WORD: the disk read-only under RAM overlays) with the Secure Enclave's driver asked to open its store read-only ($SEPRO_WORDS); whether it did is the driver's to say, in that boot: sleep-drain-safe status; every restart after that, the regular kernel"
 }
 
+# unselect: take back a "boot". Only a selection of one of this tool's entries is cleared; the environment is read
+# back, and what the next restart is, is said either way.
+unselect() {
+  (($# == 0)) || usage
+  local env next after default
+  env=$(grub-editenv - list 2> /dev/null) ||
+    die "GRUB's environment block couldn't be read: what the next restart is isn't known, and nothing was changed"
+  next=$(sed -n 's/^next_entry=//p' <<< "$env")
+  default=$(sed -n 's/^saved_entry=//p' <<< "$env")
+  default="GRUB's default entry${default:+ ($default)}, the regular kernel unless that default was changed"
+  if [[ -z $next ]]; then
+    echo "nothing is selected for the next restart: it is $default. Nothing changed"
+    return
+  fi
+  if [[ $next != aurora-test-* ]]; then
+    echo "the next restart is the entry $next, once: not one of test-kernel's (aurora-test-*), so it is left as it is. No test kernel is selected"
+    return
+  fi
+  grub-editenv - unset next_entry || die "couldn't clear the selection: the next restart STILL boots $next"
+  env=$(grub-editenv - list 2> /dev/null) ||
+    die "the selection of $next was cleared by grub-editenv's word, but the environment block couldn't be read back: whether it still boots next isn't known"
+  after=$(sed -n 's/^next_entry=//p' <<< "$env")
+  [[ -z $after ]] || die "grub-editenv returned 0, but the next entry still reads $after: NOT cleared"
+  echo "cleared the selection of $next: the next restart is $default"
+}
+
 remove_kernel() {
   local name=${1:-} release script
   check_name "$name"
@@ -437,6 +509,7 @@ list_kernels() {
 case "${1:-}" in
   install) shift; install_kernel "$@" ;;
   boot) shift; boot_kernel "$@" ;;
+  unselect) shift; unselect "$@" ;;
   remove) shift; remove_kernel "$@" ;;
   list) list_kernels ;;
   *) usage ;;
