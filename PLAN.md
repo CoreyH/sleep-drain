@@ -25,9 +25,11 @@ this section where they differ.
   here, before the commit, it doesn't. Each complex's own down sequence runs to its end when
   its cores are gone (state word 0x1a; the E complex's too, read 2026-11-19). Bit 3 was set in
   every reading that kept it.
-- The PMGR's wait for the SEP's power gate (0x28e0cc200 bit 2) isn't the hold by itself: cleared and
-  read back clear with the enclave gated (`apple_sep` bound read-only), the light still blinked to the
-  marker, and 0x2922c0044 read 8 on both sides of the clear (the tenth run, 2026-11-26).
+- The tenth run (2026-11-26), observed: in step 7 the SEP's power word read actual 0 (`apple_sep` bound
+  read-only), the PMGR's wait bit for its power gate (0x28e0cc200 bit 2) was cleared and read back
+  clear, 0x2922c0044 read 8 on both sides of that write, and the light still blinked to the marker.
+  Neither word is read again before GO, and the run changed three other things: it is a result of the
+  combined recipe, not a finding about the wait alone.
 - So with a core up the gate is closed because the core is up, and the stall of runs A and B is in
   the state no core sees: the last complex's sequence not finishing, or B2 past its first poll and
   held at op 3, op 6 or the first handshake, before its tenth SIO word (the light).
@@ -61,8 +63,10 @@ this section where they differ.
    tenth run, the last of the strategy review's ten, had the enclave gated, the SEP's wait bit cleared
    and read back clear, no `a2_pre=1` and no late reads of the four fabric-group words, and ended as
    every run since run A: the light to WD1's marker. 0x2922c0044's bit 2 read clear before and after
-   the clear, as in every sample of every run: nothing a core can read before the commit tells a step
-   that works from one that doesn't, so a run yields one bit. Against the reference about eight groups
+   the clear, as in every sample of every run. Read-backs before the commit do say whether a step took
+   (the wait bit's clear, the fabric back at 0x333); what is missing is a read that predicts B2's
+   progress, and none has been found, so for that a run yields the light and the restart's time.
+   Against the reference about eight groups
    of differences are untried (`~/.local/share/sleep-drain/ante042-20261123/diff-vs-recipe.md`): the
    PMP powered off and its request word withdrawn, `ps_late[]`'s fifty or so PMGR words, the memory
    controller's drain, the GPU's firmware and port, the AOP, dispext1, the displays' order against
@@ -71,13 +75,38 @@ this section where they differ.
      their m1n1, which their notes say sleeps and wakes a J314s daily. It answers whether the entry
      completes on this Mac with code that is known to work, and it is what the fix would be ported
      from. Their driver does nothing without their loader's mailbox, so it needs their m1n1 as the
-     second stage: **Corey's to decide and to do** (the boot chain; and m1n1 is off limits to Claude,
-     its build and install included). Claude's part would be the kernel side only: building their
-     Linux branch as a one-off test kernel (`test-kernel`), and reading its log.
+     second stage: **the boot chain, Corey's to decide** (asked 2026-11-26, with whether Claude may
+     build their m1n1 branch unchanged and swap `/boot/m1n1/boot.bin`, the old file kept; Claude
+     writes and changes no m1n1 code either way).
+     What their notes say the working setup is, all of it part of that decision
+     (`S2R-T600X-NOTES.md`, "Building and booting"):
+     - **Stage 2** from their m1n1 branch, **with the device trees of their kernel branch appended**.
+       `test-kernel` drops a package's DTBs (the tree comes from the loader's bundle), so a test
+       kernel alone doesn't bring theirs.
+     - **Stage 1 was not the stock one in any sleep they report:** a thin stage 1 of their own, and
+       "I never retested with a full stage 1". Replacing stage 1 is a bigger step than a file on the
+       boot partition; a first try keeps the stock one, and a failure then is not a failure of their
+       setup.
+     - `CONFIG_APPLE_S2R=y`; at boot the driver has to log "apple-s2r: m1n1 mailbox at ..."; then 1
+       written to `/sys/module/apple_s2r/parameters/enable` and `deep` to `/sys/power/mem_sleep`.
+       **No suspend counts unless the mailbox line and `deep` were seen first.**
+     - Their own boot loads `apple_sep` with `xart_writes=0 provision_keybag=0`.
+     **Safety, before the first deep suspend there:** a `test-kernel` boot is one-shot, not a safe
+     boot: it copies the regular command line, and the regular boot here opens xART for writes with
+     its guard off. So, as for the tenth run: the bound driver's `diag/xart` has to read "disabled"
+     (the boot's words are a request), and the root disk has to be protected separately (a safe-boot
+     entry for that kernel, with the hook's read-only root; not built). Both are preconditions, and
+     the steps for Corey say each.
    - **One reference-shaped run from here:** every remaining pre-commit difference made at once in
-     the replay, then halved if the light stops. A large build with many new writes (the memory
-     controller's among them), and the PMP's power word is on the never-write list: a fresh OK.
-     It would not give a wake either way.
+     the replay. A large build with many new writes (the memory controller's among them), and the
+     PMP's power word is on the never-write list: a fresh OK. It would not give a wake either way.
+     It matches the reference only up to GO. After GO the first such run would keep what the replay
+     does now (the alarm's commands, WD2's bite to 120 s, the `PHASE` read), so that the restart's
+     time reads as before; a light that blinks to the marker would then speak for the pre-GO bundle
+     only, and the work after GO would be the next thing to drop, with WD1's marker (set before GO)
+     and the light as the witnesses that don't need it. What splits the bundle: a light that starts
+     and then stops before the restart (B2 reached its tenth SIO word: halve the bundle). A light
+     that never starts is a stall before step 8, read from the record, and no evidence either way.
    - Until that is decided, nothing new is built for a one-way run. `--m1-sep-pg` and `--m1-ll-retn`
      are built and not planned as runs.
    - **The read-only-driver boot works** (`boot --sep-ro`): the enclave gates, the store is shown

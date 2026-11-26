@@ -5454,21 +5454,25 @@ module built at b97f879). The tenth one-way run since the strategy review, and t
   bite, `PHASE` 4. The restart 89.5 to 91.5 s after the commit: WD1's marker. 0x0201 = 0x02.
 
 **What it shows.**
-- **The hypothesis of 11-24 doesn't hold as the whole answer.** With the enclave gated, the PMGR's wait for
-  its power gate cleared and confirmed, the fabric left at 0x333 and none of the four fabric-group power
-  words read after their writes, B2 still doesn't reach its power-downs: the light blinked to the marker.
-  None of those three is the only hold. Not excluded: that one of them is needed together with something
-  still missing, which one run of the combination can't say.
-- **The read-only-driver state is usable here.** The enclave gates itself with this kernel's `apple_sep`
-  bound, as it did in the regular boot of 11-23, and stayed gated to the commit.
+- **What was observed, and its window.** In step 7 the SEP's power word read actual 0 and the wait bit's
+  clear read back; step 5 ended with the fabric at 0x333; none of the four fabric-group power words was
+  read after its write; and the light blinked to the marker, so B2 didn't reach its power-downs. Neither
+  the SEP's power word nor the control word is read again in steps 8 and 9, so their state at GO isn't
+  observed. This is the combined recipe's result: the hypothesis of 11-24 isn't borne out by it, and it
+  doesn't say which of the changes would have mattered in an earlier run, or whether one of them is
+  needed together with something still missing.
+- **The read-only-driver state is usable here.** The enclave read gated with this kernel's `apple_sep`
+  bound, at the load and in step 7, as it did in the regular boot of 11-23.
 - **Fingerprint requests don't reach the enclave in that boot.** Every polkit prompt asked fprintd for a
   verify, and the driver refused each itself ("ioctl failed: Read-only file system"; `matching: blocked` in
   its `diag`), once before the run in its boot and twice in the boot before; the enclave read gated after. The hand-over's "leave the
   sensor alone" holds for touching it, and the prompts are harmless.
-- **Nothing a core can read before the commit has moved in ten runs.** 0x2922c0044's bit 2 has read clear in
+- **No read made before the commit has predicted B2's progress.** 0x2922c0044's bit 2 has read clear in
   every sample of every run, whatever was done first, which fits the old reading that it is "every complex
-  down" and that no core can see it set. If so, sampling it before the commit can't tell a step that works
-  from one that doesn't, and each one-way run yields one bit: the light, and the restart's time.
+  down" and that no core can see it set. Other read-backs do tell a step that took from one that didn't
+  (this run's clear of the wait bit, the fabric back at 0x333): they check the steps, not the engine. For
+  the engine's progress each one-way run has given the light and the restart's time, and no validated
+  predictor before GO.
 
 **Where that leaves the method.** Against the reference, the differences tried so far are the SEP's wait,
 both display handshakes (made here after `slpa`, not before), `a2_pre=1`'s moves and the late reads. Still
@@ -5478,8 +5482,9 @@ and its port's handshake, the AOP told, dispext1's block, the displays' order ag
 does after GO (the reference touches nothing; the replay sends SPMI commands and writes WD2). One difference
 a run is eight or more runs, each ending in the same light unless it happens to be the last one missing. The
 two ways out of that are in PLAN.md: one run that takes all of the reference's remaining state at once, or
-the reference's own kernel and loader on this Mac. The second is Corey's to decide and to do: it needs
-Ante042's m1n1, which Claude doesn't touch.
+the reference's own kernel and loader on this Mac. The second is Corey's to decide: it changes the boot
+chain (their m1n1 as the second stage with their device trees; and every sleep in their notes also had a
+thin first stage of their own, never retested with the stock one). Claude writes and changes no m1n1 code.
 
 **Three boots for one run** (the hand-over's faults, kept so they aren't repeated): on 11-25/26 the first
 `--sep-ro` boot ended at a "NOT VERIFIED" from `status` and a restart, as told; that boot's log wasn't
