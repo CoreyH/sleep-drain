@@ -56,7 +56,8 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   and removes it again, without touching anything pacman owns. With the
   safe-boot hook installed it also writes a second entry for that kernel, a
   safe boot with the Secure Enclave's store asked read-only
-  (`boot <name> --safe-sepro`; the line is `sleep-drain-safe sepro-cmdline`'s).
+  (`boot <name> --safe-sepro`; the line is `sleep-drain-safe sepro-cmdline`'s;
+  `unselect` clears a one-shot selection of its own).
   `install --safe-only` writes that entry alone: for a kernel whose own
   enclave driver must never bind with a writable store.
 - `ref-loader`: swaps m1n1's second stage (`/boot/m1n1/boot.bin`) for a bundle

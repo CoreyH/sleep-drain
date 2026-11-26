@@ -113,11 +113,17 @@ this section where they differ.
      configuration with `CONFIG_APPLE_S2R=y` (release `7.3.0-s2rref`,
      `linux-s2rref-7.3.0-s2rref.pkg.tar.zst`), and its 137 device trees (`dtbs/`).
      `ref-loader verify-recipe` rebuilt the live stock `boot.bin` byte for byte on this Mac.
-     **The order of the first try:** Corey's check from macOS; `install.sh`; the bundle built and
-     installed (`ref-loader install --recovery-checked`); the test kernel installed safe-only;
-     `test-kernel boot s2rref --safe-sepro` and a restart; in that boot `ref-sleep check` (the
-     mailbox line, the store read-only), and only then `ref-sleep go`; afterwards
-     `ref-loader restore` (it works from that boot) before the next regular boot.
+     **The order of the first try** (the loader is swapped last, when everything that boots through
+     it is in place; Pullfrog on #136): Corey's check from macOS; `install.sh`; the test kernel
+     installed safe-only and its entry selected (`test-kernel install --safe-only`, then
+     `test-kernel boot s2rref --safe-sepro`); only then the bundle installed
+     (`ref-loader install --recovery-checked`), and a restart. If the kernel's install or the
+     selection fails, the loader isn't touched. If the swap fails, `boot.bin` is the stock one (the
+     tool says so) and `test-kernel unselect` clears the one-shot selection; a restart with it still
+     set would be the test kernel in its safe boot under the stock loader, where its S2R driver finds
+     no mailbox and does nothing. In the test boot: `ref-sleep check` (the mailbox line, the store
+     read-only), and only then `ref-sleep go`; afterwards `ref-loader restore` (it works from that
+     boot) before the next regular boot.
    - **One reference-shaped run from here:** every remaining pre-commit difference made at once in
      the replay. A large build with many new writes (the memory controller's among them), and the
      PMP's power word is on the never-write list: a fresh OK. It would not give a wake either way.
