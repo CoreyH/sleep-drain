@@ -126,7 +126,9 @@ this section where they differ.
        `update-m1n1` builds from the installed packages, **as written to the partition**: it syncs
        the boot partition first and fails if the sync does (a match read from memory after a
        failed writeback says nothing about what a restart loads), then reads the file from the
-       device. So the stock loader is live. That works even if the install stopped before it
+       device, and a match that only the page cache gives is "NOT CONFIRMED" and fails too. So
+       only its "confirmed on the partition" match says the stock loader is live, here and after
+       each of the recovery steps below. That works even if the install stopped before it
        recorded anything. Then `test-kernel unselect` clears the
        one-shot selection (with it still set, a restart would be the test kernel in its safe boot
        under the stock loader, where its S2R driver finds no mailbox and does nothing).
