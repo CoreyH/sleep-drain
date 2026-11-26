@@ -100,10 +100,18 @@ used to sit in CLAUDE.md, entry for entry):
   has been renamed over, the reviewer's fault, `install` ends in `DO NOT RESTART` with the file reading as the
   stock through the cache, and `verify-recipe`, `status`, `restore` and a second `install` each fail saying the
   partition's writeback isn't confirmed, with no match and no "the stock" said, until the sync succeeds, when
-  `verify-recipe` gives a fresh match; a filesystem that can't be synced before anything was written; the kind
-  of read said on both lines, and where no direct read is possible (a dd that fails) a match "read through the
-  cache", exit 0, never called confirmed on the partition; `restore` not saying "already the stock" without the
-  sync. A safe boot: `install` refused, `status` and `restore` mounting the boot partition of the disk's own
+  `verify-recipe` gives a fresh match; a filesystem that can't be synced before anything was written; `restore`
+  not saying "already the stock" without the sync. A cache read confirms nothing (`device_read()`, Pullfrog's
+  last point on #136; dd is a wrapper that can fail the read from the device): with no direct read at all, and
+  with one that delivers every byte and then reports an I/O error, `verify-recipe` prints the cache's hash and
+  that the bytes match there, with dd's error, says NOT CONFIRMED and DO NOT RESTART, and fails; `status` and
+  `install` fail the same way, nothing written; a differing file is a MISMATCH said to be the cache's reading;
+  a copy that reads back right only through the cache, the stock's or the bundle's, is not renamed into place;
+  with boot.bin unreadable from the device once renamed over, `install` ends in `BOOT.BIN IS NOT VERIFIED`
+  though the cache reads the stock, and `verify-recipe`, `status`, `restore` and `install` after it each fail
+  until the device reads again; and the same for `restore`'s own read-backs (boot.bin.stock, its copy, boot.bin
+  after the rename). The scratch directory has to take O_DIRECT reads; where it doesn't the test says so and
+  runs nothing. A safe boot: `install` refused, `status` and `restore` mounting the boot partition of the disk's own
   fstab and unmounting it on every way out, the mount failing, the unmount failing. `recovery-notes`: the
   partition's identity, the scratch-file check, that the macOS steps weren't tried, what the flag stands for.
   `install.sh` installs it; `uninstall.sh` keeps it while a stock loader is kept.

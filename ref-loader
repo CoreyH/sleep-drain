@@ -31,9 +31,13 @@
 #   also the gate for "the stock loader is what a restart loads": so it first
 #   syncs the boot partition's filesystem, and a sync that fails fails the
 #   command (what the partition holds isn't known then, whatever the page
-#   cache reads); then it reads boot.bin past the page cache where it can, and
-#   says which kind of read it was. status, and restore before it says "already
-#   the stock", do the same.
+#   cache reads); then it reads boot.bin from the device, past the page cache
+#   (O_DIRECT). If that read fails, for whatever reason, it still prints what
+#   the cache reads, with the error, and fails: bytes that match only as the
+#   cache has them confirm nothing about what a restart would load. The same
+#   holds for status, for restore before it says "already the stock", and for
+#   every read-back in install and restore that decides "verified": nothing is
+#   verified by a cache read.
 # install: only with --recovery-checked (the owner's word that the way back
 #   from macOS was tried: see recovery-notes), only in a regular boot with
 #   /boot the mounted FAT partition, only if verify-recipe passes in the same
@@ -119,33 +123,45 @@ sha_of() {
 }
 size_of() { stat -c %s -- "$1"; }
 
-# read_back FILE: sets rb_sha to FILE's sha256 as the device has it, where that can be asked (O_DIRECT, past the page
-# cache), else as the page cache has it, and rb_how to which of the two it was.
+# read_back FILE: FILE's sha256 as the device has it (O_DIRECT, past the page cache): rb_sha, with rb_direct 1. If the
+# read from the device fails, for any reason, rb_direct is 0, rb_err has dd's own words, and rb_sha is what the page
+# cache reads: for information only. Nothing may be called verified, confirmed or "the stock" on rb_direct 0: a cache
+# read says what Linux has in memory, not what the partition holds. Fails only if the file can't be read at all.
 read_back() {
   local out
-  if out=$(dd if="$1" iflag=direct bs=1M status=none 2> /dev/null | sha256sum); then
-    rb_how="read from the device"
-  elif out=$(sha256sum < "$1"); then
-    rb_how="read through the page cache (no direct read here)"
+  rb_sha= rb_direct=0 rb_err= rb_how=
+  [[ -n $work ]] || work=$(mktemp -d)
+  if out=$(dd if="$1" iflag=direct bs=1M status=none 2> "$work/dd.err" | sha256sum); then
+    rb_direct=1 rb_how="read from the device"
   else
-    return 1
+    rb_err=$(tr '\n' ' ' < "$work/dd.err")
+    rb_err=${rb_err% }
+    rb_err=${rb_err:-no message}
+    out=$(sha256sum < "$1") || return 1
+    rb_how="read through the page cache only: the read from the device failed ($rb_err)"
   fi
   rb_sha=${out%% *}
+}
+
+# What a cache-only reading of FILE ($1) is worth, for the messages that refuse on one.
+cache_only() {
+  echo "$1 reads sha256 $rb_sha through the page cache, but the read from the device failed ($rb_err): that doesn't confirm what the partition holds, or what a restart would load"
 }
 
 # confirm_live WHAT-WASN'T-DONE: what the boot partition holds as m1n1/boot.bin, as far as Linux can say it. First the
 # filesystem's writeback (syncfs, through the loader's directory): if that fails, a write to the partition is not known
 # to have landed, and nothing read afterwards says what a restart would load, so the command ends there. Then the file,
-# read as read_back() reads. Sets live_sha and live_how ("confirmed on the partition" only for a read from the device).
+# read as read_back() reads. Sets live_sha, live_direct (0: a cache reading, which the caller must not take for a
+# confirmation), live_err and live_how.
 confirm_live() {
   sync -f "$ESP/${LOADER%/*}" ||
     die "couldn't sync the filesystem that holds $LOADER: the boot partition's writeback isn't confirmed, so nothing read now says what a restart would load. DO NOT RESTART on this; find out why the sync fails (the kernel log) and run this again. $1"
   read_back "$ESP/$LOADER" || die "couldn't read $ESP/$LOADER after the sync. $1"
-  live_sha=$rb_sha
-  if [[ $rb_how == "read from the device" ]]; then
+  live_sha=$rb_sha live_direct=$rb_direct live_err=$rb_err
+  if ((live_direct)); then
     live_how="confirmed on the partition (synced, then read from the device)"
   else
-    live_how="after a successful sync, read through the cache (a direct read of the partition isn't possible here)"
+    live_how="NOT CONFIRMED: synced, but $rb_how"
   fi
 }
 
@@ -255,7 +271,8 @@ write_record() {
 
 # verify_recipe WHAT-WASN'T-DONE: rebuilds the stock bundle and compares it with the live loader on $ESP, read by
 # confirm_live() (which ends the command if the partition can't be synced). Prints what it found; sets v_rebuilt (the
-# file), v_rebuilt_sha and v_live_sha. Returns 0 only on a match.
+# file), v_rebuilt_sha and v_live_sha. Returns 0 only on a match read from the device; 3 if the bytes match only as
+# the page cache has them, which confirms nothing; 1 on a mismatch.
 verify_recipe() {
   local live=$ESP/$LOADER gz conf
   confirm_live "${1:-}"
@@ -271,9 +288,14 @@ verify_recipe() {
   echo "$BOOT/$LOADER as it is: sha256 $v_live_sha ($(size_of "$live") bytes), $live_how"
   [[ -z $s_disabled ]] || echo "note: $DEFAULTS sets M1N1_UPDATE_DISABLED, so update-m1n1 itself writes nothing on this system"
   if [[ $v_rebuilt_sha == "$v_live_sha" ]]; then
+    if ((!live_direct)); then
+      echo "NOT CONFIRMED: the bytes are what the recipe builds as read through the page cache, but the read from the device failed ($live_err). That doesn't confirm what the partition holds or what a restart would load: DO NOT RESTART on this"
+      return 3
+    fi
     echo "match: the live boot.bin is exactly what the recipe builds, $live_how"
     return 0
   fi
+  ((live_direct)) || echo "(and that reading is the page cache's only: the read from the device failed)"
   # Where the first difference is, by the pieces' sizes: which input to look at.
   local at off=0 p piece=
   at=$(cmp "$v_rebuilt" "$live" 2> /dev/null | sed -n 's/.* byte \([0-9]*\),.*/\1/p' || true)
@@ -298,7 +320,8 @@ verify_recipe() {
 # write_verified SRC DST SHA: DST becomes SRC's bytes, whose sha256 is SHA. Written under a temporary name beside DST,
 # fsync'd, read back and compared; renamed over DST; the filesystem synced; DST read back and compared again.
 # Returns 0: DST reads back as SHA. 1: it failed before the rename, and DST is as it was. 2: DST was replaced and
-# doesn't read back as SHA, or couldn't be synced or read: what it holds isn't known to be right.
+# doesn't read back as SHA, or couldn't be synced or read: what it holds isn't known to be right. "Reads back" is a
+# read from the device both times: one the page cache alone can answer verifies nothing (1 before the rename, 2 after).
 write_verified() {
   local src=$1 dst=$2 want=$3
   new_tmp=$dst.ref-loader.new
@@ -309,8 +332,12 @@ write_verified() {
     new_tmp=
     return 1
   fi
-  if ! read_back "$new_tmp" || [[ $rb_sha != "$want" ]]; then
-    say "$new_tmp doesn't read back as written (sha256 ${rb_sha:-unreadable}, wanted $want)"
+  if ! read_back "$new_tmp" || ((!rb_direct)) || [[ $rb_sha != "$want" ]]; then
+    if [[ -n $rb_sha ]] && ((!rb_direct)); then
+      say "$(cache_only "$new_tmp") (wanted $want). Not renamed into place"
+    else
+      say "$new_tmp doesn't read back as written (sha256 ${rb_sha:-unreadable}, wanted $want)"
+    fi
     rm -f -- "$new_tmp"
     new_tmp=
     return 1
@@ -323,9 +350,12 @@ write_verified() {
   fi
   new_tmp=
   sync -f "$dst" || { say "couldn't sync the filesystem after renaming over $dst"; return 2; }
-  rb_sha=
-  if ! read_back "$dst" || [[ $rb_sha != "$want" ]]; then
-    say "$dst doesn't read back as written after the rename (sha256 ${rb_sha:-unreadable}, wanted $want)"
+  if ! read_back "$dst" || ((!rb_direct)) || [[ $rb_sha != "$want" ]]; then
+    if [[ -n $rb_sha ]] && ((!rb_direct)); then
+      say "after the rename, $(cache_only "$dst") (wanted $want)"
+    else
+      say "$dst doesn't read back as written after the rename (sha256 ${rb_sha:-unreadable}, wanted $want)"
+    fi
     return 2
   fi
 }
@@ -521,7 +551,10 @@ cmd_install() {
 
   # The recipe first: without it, neither "the live boot.bin is the stock one" nor "this bundle was built the way
   # the loader is read" is known.
-  verify_recipe "Nothing written" || die "the stock recipe doesn't rebuild the live boot.bin (above), so this tool can't say what the live file is or how a bundle should be made. Nothing written. (If the live file is an installed bundle: ref-loader status, and restore first.)"
+  rc=0
+  verify_recipe "Nothing written" || rc=$?
+  ((rc != 3)) || die "the live boot.bin couldn't be read from the device (above), so that it is the stock one isn't confirmed, and neither would any write here be. Nothing written"
+  ((rc == 0)) || die "the stock recipe doesn't rebuild the live boot.bin (above), so this tool can't say what the live file is or how a bundle should be made. Nothing written. (If the live file is an installed bundle: ref-loader status, and restore first.)"
 
   # The bundle: not the stock one, and ending as the stock one ends, with the gzip'd U-Boot and the configuration
   # lines, which a bare m1n1.bin or a cut-off file doesn't.
@@ -547,6 +580,7 @@ cmd_install() {
   if [[ -e $stock ]]; then
     [[ -n $rec ]] || die "$stock exists and no sha256 is recorded for it in $STATE/stock.sha256: what it is isn't known. Nothing written"
     read_back "$stock" || die "couldn't read $stock; nothing written"
+    ((rb_direct)) || die "$(cache_only "$stock"), so that it is the recorded stock isn't confirmed. Nothing written"
     [[ $rb_sha == "$rec" ]] ||
       die "$stock isn't the recorded stock (it reads sha256 $rb_sha, the record says $rec). Nothing written"
     [[ $rec == "$v_live_sha" ]] ||
@@ -615,12 +649,15 @@ cmd_restore() {
     die "no sha256 of the stock loader is recorded in $STATE/stock.sha256, so nothing here is known to be the stock. Nothing written"
   [[ -f $stock ]] || die "there is no $STOCK on the boot partition to put back. Nothing written"
   read_back "$stock" || die "couldn't read $STOCK; nothing written"
+  ((rb_direct)) || die "$(cache_only "$STOCK"), so that it is the recorded stock isn't confirmed. DO NOT RESTART on a reading like this. Nothing written"
   [[ $rb_sha == "$rec" ]] ||
     die "$STOCK isn't the recorded stock (it reads sha256 $rb_sha, the record says $rec). Nothing written"
   # What is there now, with the partition's writeback confirmed first: "already the stock" is a statement about what
   # a restart loads, and after a write whose sync failed the page cache alone would say it too.
   confirm_live "Nothing written"
   if [[ $live_sha == "$rec" ]]; then
+    ((live_direct)) ||
+      die "boot.bin's bytes are the stock loader's as read through the page cache (sha256 $live_sha), but the read from the device failed ($live_err). That doesn't confirm what the partition holds or what a restart would load: DO NOT RESTART on this. Nothing written"
     echo "boot.bin already is the stock loader (sha256 $rec, $live_how): nothing written"
     return 0
   fi
@@ -650,8 +687,9 @@ cmd_status() {
   else
     esp_regular
   fi
-  local live=$ESP/$LOADER stock=$ESP/$STOCK rec= ref= what
+  local live=$ESP/$LOADER stock=$ESP/$STOCK rec= ref= what unconfirmed=
   confirm_live "Nothing is said about boot.bin."
+  ((live_direct)) || unconfirmed="$LOADER ($live_err)"
   rec=$(read_record "$STATE/stock.sha256") || rec=
   ref=$(read_record "$STATE/ref.sha256") || ref=
   if [[ -n $rec && $live_sha == "$rec" ]]; then
@@ -662,15 +700,20 @@ cmd_status() {
     what="neither the recorded stock nor the recorded bundle${rec:+ (stock $rec)}${ref:+ (bundle $ref)}"
     [[ -n $rec || -n $ref ]] || what="not held against a record: none is kept yet"
   fi
+  ((live_direct)) || what="by the page cache's bytes only, $what"
   echo "$LOADER: sha256 $live_sha ($(size_of "$live") bytes): $what"
   echo "  that reading: $live_how"
   if [[ -e $stock ]]; then
-    if [[ -z $rec ]]; then
-      echo "$STOCK: present, sha256 $(sha_of "$stock"), and NO record to hold it against"
-    elif [[ $(sha_of "$stock") == "$rec" ]]; then
-      echo "$STOCK: present and intact (the recorded sha256 $rec)"
+    read_back "$stock" || die "couldn't read $STOCK"
+    if ((!rb_direct)); then
+      unconfirmed+="${unconfirmed:+, }$STOCK ($rb_err)"
+      echo "$STOCK: present; by the page cache's bytes only, sha256 $rb_sha$([[ -z $rec ]] || { [[ $rb_sha == "$rec" ]] && echo ", the recorded one" || echo ", NOT the recorded $rec"; }). NOT CONFIRMED: the read from the device failed"
+    elif [[ -z $rec ]]; then
+      echo "$STOCK: present, sha256 $rb_sha, and NO record to hold it against"
+    elif [[ $rb_sha == "$rec" ]]; then
+      echo "$STOCK: present and intact (the recorded sha256 $rec, read from the device)"
     else
-      echo "$STOCK: present and NOT the recorded stock (sha256 $(sha_of "$stock"), recorded $rec)"
+      echo "$STOCK: present and NOT the recorded stock (sha256 $rb_sha, recorded $rec)"
     fi
   else
     echo "$STOCK: not there${rec:+ (a stock is recorded: $rec)}"
@@ -684,6 +727,8 @@ cmd_status() {
   else
     echo "update-m1n1's recipe builds another bundle now (sha256 $what)$([[ $what != "$rec" ]] || echo ": the recorded stock")"
   fi
+  [[ -z $unconfirmed ]] ||
+    die "NOT CONFIRMED: what is said above of $unconfirmed is the page cache's reading; the read from the device failed. It doesn't confirm what the partition holds or what a restart would load: DO NOT RESTART on this"
 }
 
 case "${1:-}" in

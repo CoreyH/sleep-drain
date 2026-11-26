@@ -6,7 +6,9 @@ directory stands in for the boot partition, made-up files for m1n1.bin, U-Boot a
 /etc/default/update-m1n1 names them. Commands that need root run as uid 0 in a bubblewrap user namespace. findmnt, df,
 mount, umount, mountpoint, lsblk and findfs are stubs on PATH; cp, mv and sync are wrappers that log their call, run
 the real one, and can be told to fail or to damage what they wrote, for the cases where a write doesn't read back.
-gzip, sha256sum, dd and the rest are the real ones.
+dd is a wrapper too: the real one, unless told that the read from the device fails. gzip, sha256sum and the rest are
+the real ones. The scratch directory has to take O_DIRECT reads, as the boot partition does: the tool confirms
+nothing without one, so where it can't (the test says so first) nothing here could pass, and nothing is run.
 
 The recipe is held against two things: the bundle's bytes worked out here piece by piece, and, where
 /usr/bin/update-m1n1 is installed, that script itself run on the same made-up inputs in a sandbox.
@@ -146,8 +148,17 @@ if [[ $1 == -f ]]; then
 fi
 exec /usr/bin/sync "$@"
 ''')
-    # dd: calls/no-direct makes a direct read impossible, as on a filesystem without O_DIRECT.
-    stub(t, "dd", f'[[ ! -e {c}/no-direct ]] || exit 1\nexec /usr/bin/dd "$@"\n')
+    # dd, the read from the device. calls/no-direct: no direct read at all, as on a filesystem without O_DIRECT.
+    # calls/direct-eio names a file (a glob, by its base name) whose read delivers every byte and then fails, as a
+    # device error at the end would; calls/direct-eio-after-mv fails boot.bin's once it has been renamed over.
+    stub(t, "dd", f'''src=
+for a in "$@"; do [[ $a != if=* ]] || src=${{a#if=}}; done
+eio() {{ echo "dd: error reading '$src': Input/output error" >&2; exit 1; }}
+[[ ! -e {c}/no-direct ]] || {{ echo "dd: failed to open '$src': Invalid argument" >&2; exit 1; }}
+if [[ -f {c}/direct-eio && ${{src##*/}} == $(cat {c}/direct-eio) ]]; then /usr/bin/dd "$@"; eio; fi
+if [[ -e {c}/direct-eio-after-mv && -e {c}/moved-boot.bin && ${{src##*/}} == boot.bin ]]; then eio; fi
+exec /usr/bin/dd "$@"
+''')
     if safe:
         write(os.path.join(t, "run/active"), "/dev/mapper/root\n")
         write(os.path.join(t, "run/lower/root/etc/fstab"), "UUID=725346d2 / btrfs rw,subvol=@ 0 0\n# UUID=dead /boot vfat rw 0 2\nUUID=553C-45DC /boot vfat rw,relatime 0 2\n")
@@ -440,7 +451,8 @@ def install_and_restore():
               " the bundle the same way; boot.bin is touched last, by one rename", "\n".join(log(t, confirm=True)))
         p = run(t, "status", root=False)
         check(p.returncode == 0 and f"m1n1/boot.bin: sha256 {r_sha} ({len(bundle)} bytes): the bundle ref-loader installed" in p.stdout
-              and f"m1n1/boot.bin.stock: present and intact (the recorded sha256 {s_sha})" in p.stdout and "builds another bundle now" in p.stdout and "the recorded stock" in p.stdout,
+              and f"m1n1/boot.bin.stock: present and intact (the recorded sha256 {s_sha}, read from the device)" in p.stdout and "builds another bundle now" in p.stdout
+              and "the recorded stock" in p.stdout and "  that reading: confirmed on the partition (synced, then read from the device)" in p.stdout,
               "status after it, without root: boot.bin is the installed bundle, boot.bin.stock present and intact", p.stdout + p.stderr)
         # A second install over the bundle: the recipe no longer rebuilds the live file.
         clear_log(t)
@@ -465,8 +477,8 @@ def install_and_restore():
         clear_log(t)
         p = run(t, "restore")
         check(p.returncode == 0 and "boot.bin already is the stock loader" in p.stdout and "nothing written" in p.stdout and log(t, confirm=True) == [CONFIRM] and read(live) == stock
-              and ("confirmed on the partition (synced, then read from the device)" in p.stdout or "after a successful sync, read through the cache" in p.stdout),
-              "restore a second time: after a sync of the filesystem it says boot.bin already is the stock, with the kind of read it was, and writes nothing", p.stdout + p.stderr)
+              and "confirmed on the partition (synced, then read from the device)" in p.stdout,
+              "restore a second time: after a sync of the filesystem and a read from the device it says boot.bin already is the stock, and writes nothing", p.stdout + p.stderr)
         p = run(t, "status", root=False)
         check(f"m1n1/boot.bin: sha256 {s_sha} ({len(stock)} bytes): the stock loader" in p.stdout and "present and intact" in p.stdout
               and "builds exactly the live boot.bin now" in p.stdout, "status after it: boot.bin is the stock loader", p.stdout + p.stderr)
@@ -615,7 +627,7 @@ def sync_gate():
     """Pullfrog on #136: verify-recipe is the gate for "the stock loader is live, a restart is allowed", so it has to
     mean the partition, not the page cache: a filesystem that can't be synced fails it, whatever reads back."""
     SAYS = "the boot partition's writeback isn't confirmed"
-    DEVICE, CACHE = "confirmed on the partition (synced, then read from the device)", "after a successful sync, read through the cache (a direct read of the partition isn't possible here)"
+    DEVICE = "confirmed on the partition (synced, then read from the device)"
     # The reviewer's fault: both syncs of the filesystem after a rename over boot.bin fail, the bundle's and the rollback's.
     with tempfile.TemporaryDirectory() as t:
         setup(t)
@@ -637,8 +649,8 @@ def sync_gate():
                   " though the bytes read back are the stock's", p.stdout + p.stderr)
         unflag(t, "fail-syncfs-after-mv")
         p = run(t, "verify-recipe", root=False)
-        check(p.returncode == 0 and "match: the live boot.bin is exactly what the recipe builds, " in p.stdout and (DEVICE in p.stdout or CACHE in p.stdout),
-              "verify-recipe once the filesystem syncs: a fresh match, exit 0, with the kind of read said", p.stdout + p.stderr)
+        check(p.returncode == 0 and "match: the live boot.bin is exactly what the recipe builds, " + DEVICE in p.stdout,
+              "verify-recipe once the filesystem syncs: a fresh match, read from the device, exit 0", p.stdout + p.stderr)
         p = run(t, "restore")
         check(p.returncode == 0 and "boot.bin already is the stock loader" in p.stdout, "    and restore then says boot.bin already is the stock", p.stdout + p.stderr)
     # The plain cases: a filesystem that doesn't sync, before anything was written.
@@ -652,22 +664,8 @@ def sync_gate():
             check(p.returncode != 0 and SAYS in p.stderr and "match" not in p.stdout and esp(t) == before and records(t) == {} and log(t) == [] and "installed:" not in p.stdout,
                   f"{cmd[0]} on a boot partition whose filesystem can't be synced: it fails saying so, with no match said and nothing written", p.stdout + p.stderr)
         unflag(t, "fail-syncfs")
-        # The kind of read: from the device where a direct read works, and said to be through the cache where it doesn't.
         p = run(t, "verify-recipe", root=False)
-        check(p.returncode == 0 and p.stdout.count(DEVICE) + p.stdout.count(CACHE) == 2 and (p.stdout.count(DEVICE) == 2 or p.stdout.count(CACHE) == 2),
-              "verify-recipe: the live file's line and the match's line both say which kind of read it was", p.stdout + p.stderr)
-        flag(t, "no-direct")
-        p = run(t, "verify-recipe", root=False)
-        check(p.returncode == 0 and p.stdout.count(CACHE) == 2 and DEVICE not in p.stdout and "confirmed on the partition" not in p.stdout,
-              "verify-recipe where no direct read is possible: a match after a successful sync, said in plain words to be read through the cache, exit 0;"
-              " never called confirmed on the partition", p.stdout + p.stderr)
-        p = run(t, "status", root=False)
-        check(p.returncode == 0 and "  that reading: " + CACHE in p.stdout, "    status says the same of its reading", p.stdout + p.stderr)
-        flag(t, "fail-syncfs")
-        p = run(t, "verify-recipe", root=False)
-        check(p.returncode != 0 and SAYS in p.stderr and "match" not in p.stdout, "    and with the sync failing as well: it fails, as with a direct read", p.stdout + p.stderr)
-        unflag(t, "fail-syncfs")
-        unflag(t, "no-direct")
+        check(p.returncode == 0 and p.stdout.count(DEVICE) == 2, "verify-recipe: the live file's line and the match's line both say it was synced and read from the device", p.stdout + p.stderr)
         # restore's "already the stock" needs the sync too.
         assert run(t, "install", FLAG, ref).returncode == 0 and run(t, "restore").returncode == 0
         flag(t, "fail-syncfs")
@@ -675,6 +673,129 @@ def sync_gate():
         p = run(t, "restore")
         check(p.returncode != 0 and SAYS in p.stderr and "Nothing written" in p.stderr and "already is the stock" not in p.stdout and log(t) == [],
               "restore with boot.bin reading as the stock and a filesystem that can't be synced: it doesn't say \"already the stock\"; it fails, nothing written", p.stdout + p.stderr)
+
+
+def device_read():
+    """Pullfrog on #136, the last point: a match that only the page cache gives confirms nothing. Wherever the tool would say
+    what boot.bin is, or that a write is verified, a read from the device that failed makes it say NOT CONFIRMED and fail,
+    with the cache's hash and the error printed."""
+    DEVICE = "confirmed on the partition (synced, then read from the device)"
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        ref = make_ref(t)
+        stock, bundle, live = stock_bundle(t), ref_bundle(t), os.path.join(t, "boot/m1n1/boot.bin")
+        s_sha, r_sha = sha(stock), sha(bundle)
+        before = esp(t)
+        for what, name, value, err in (("no direct read is possible at all", "no-direct", "", "Invalid argument"),
+                                       ("the read from the device delivers every byte and then fails with an I/O error", "direct-eio", "boot.bin", "Input/output error")):
+            flag(t, name, value)
+            p = run(t, "verify-recipe", root=False)
+            check(p.returncode != 0 and "NOT CONFIRMED: the bytes are what the recipe builds as read through the page cache, but the read from the device failed" in p.stdout
+                  and err in p.stdout and "DO NOT RESTART on this" in p.stdout and p.stdout.count(f"sha256 {s_sha} ({len(stock)} bytes)") == 2
+                  and "read through the page cache only" in p.stdout and "match:" not in p.stdout and "confirmed on the partition" not in p.stdout,
+                  f"verify-recipe when {what}: it fails; the cache's hash is printed, and that the bytes match there, with dd's own error; NOT CONFIRMED, DO NOT RESTART; no match said",
+                  p.stdout + p.stderr)
+            p = run(t, "status", root=False)
+            check(p.returncode != 0 and f"m1n1/boot.bin: sha256 {s_sha} ({len(stock)} bytes): by the page cache's bytes only, " in p.stdout and err in p.stdout
+                  and "NOT CONFIRMED" in p.stderr and "DO NOT RESTART" in p.stderr and DEVICE not in p.stdout,
+                  f"status when {what}: the cache's hash for information, and it fails with NOT CONFIRMED", p.stdout + p.stderr)
+            clear_log(t)
+            p = run(t, "install", FLAG, ref)
+            check(p.returncode != 0 and "couldn't be read from the device" in p.stderr and "Nothing written" in p.stderr and esp(t) == before and records(t) == {} and log(t) == []
+                  and "installed:" not in p.stdout and "match:" not in p.stdout,
+                  f"install when {what}: its own check isn't confirmed, so it refuses; nothing written", p.stdout + p.stderr)
+            unflag(t, name)
+        # A live file that differs, read through the cache only: a mismatch, and said to be the cache's.
+        write(live, stock + b"x")
+        flag(t, "no-direct")
+        p = run(t, "verify-recipe", root=False)
+        check(p.returncode != 0 and "MISMATCH" in p.stdout and "that reading is the page cache's only" in p.stdout and "match:" not in p.stdout,
+              "verify-recipe with a live file that differs and no direct read: MISMATCH, and it says the reading is the cache's", p.stdout + p.stderr)
+        unflag(t, "no-direct")
+        write(live, stock)
+        # The read-backs that decide "verified" in install: the stock's copy and the bundle's, before their renames.
+        flag(t, "direct-eio", "boot.bin.stock.ref-loader.new")
+        p = run(t, "install", FLAG, ref)
+        check(p.returncode != 0 and "reads sha256 " + s_sha + " through the page cache, but the read from the device failed" in p.stderr and "Not renamed into place" in p.stderr
+              and "couldn't keep the stock file" in p.stderr and read(live) == stock and os.listdir(f"{t}/boot/m1n1") == ["boot.bin"] and "installed:" not in p.stdout,
+              "install where the stock's copy reads back right only through the cache: not verified, not renamed into place; boot.bin untouched, no boot.bin.stock", p.stdout + p.stderr)
+        flag(t, "direct-eio", "boot.bin.ref-loader.new")
+        p = run(t, "install", FLAG, ref)
+        check(p.returncode != 0 and "reads sha256 " + r_sha + " through the page cache, but the read from the device failed" in p.stderr and "Not renamed into place" in p.stderr
+              and "the bundle is not installed: boot.bin is as it was" in p.stderr and read(live) == stock and read(live + ".stock") == stock and "installed:" not in p.stdout
+              and "ref.sha256" not in records(t),
+              "install where the bundle's copy reads back right only through the cache: not verified, not renamed over boot.bin, which is as it was", p.stdout + p.stderr)
+        unflag(t, "direct-eio")
+        # After the rename: boot.bin can't be read from the device any more. Neither the bundle nor the stock put back is verified.
+        flag(t, "direct-eio-after-mv")
+        p = run(t, "install", FLAG, ref)
+        check(p.returncode != 0 and "after the rename, " in p.stderr and "through the page cache, but the read from the device failed (dd: error reading" in p.stderr
+              and "BOOT.BIN IS NOT VERIFIED and the stock could not be put back" in p.stderr and "DO NOT RESTART" in p.stderr and "installed:" not in p.stdout
+              and read(live) == stock and "stock one again" not in p.stderr,
+              "install where boot.bin can't be read from the device once it has been renamed over: the bundle isn't verified, the stock put back isn't either, though the"
+              " cache reads it as the stock: BOOT.BIN IS NOT VERIFIED, DO NOT RESTART", p.stdout + p.stderr)
+        # The recovery paths, while the device read still fails: none of them lifts the prohibition on the cache's word.
+        for cmd, root, said in ((["verify-recipe"], False, "NOT CONFIRMED: the bytes are what the recipe builds as read through the page cache"),
+                                (["status"], False, "by the page cache's bytes only, the stock loader"),
+                                (["restore"], True, "boot.bin's bytes are the stock loader's as read through the page cache"),
+                                (["install", FLAG, ref], True, "couldn't be read from the device")):
+            clear_log(t)
+            now = esp(t)
+            p = run(t, *cmd, root=root)
+            check(p.returncode != 0 and said in p.stdout + p.stderr and "Input/output error" in p.stdout + p.stderr and "DO NOT RESTART" in p.stdout + p.stderr
+                  and "match:" not in p.stdout and "already is the stock" not in p.stdout and "restored" not in p.stdout and DEVICE not in p.stdout
+                  and esp(t) == now and log(t) == [],
+                  f"{cmd[0]} after it, while the device read still fails: non-zero, the cache's reading said for what it is, with the error; nothing confirmed, nothing written",
+                  p.stdout + p.stderr)
+        unflag(t, "direct-eio-after-mv")
+        p = run(t, "verify-recipe", root=False)
+        check(p.returncode == 0 and p.stdout.count(DEVICE) == 2, "verify-recipe once the device reads again: the match, confirmed on the partition, exit 0", p.stdout + p.stderr)
+        p = run(t, "restore")
+        check(p.returncode == 0 and "boot.bin already is the stock loader" in p.stdout and DEVICE in p.stdout, "    and restore then says boot.bin already is the stock, read from the device", p.stdout + p.stderr)
+        # restore's own read-backs.
+        os.remove(f"{t}/calls/moved-boot.bin")
+        assert run(t, "install", FLAG, ref).returncode == 0
+        flag(t, "direct-eio", "boot.bin.stock")
+        clear_log(t)
+        p = run(t, "restore")
+        check(p.returncode != 0 and "m1n1/boot.bin.stock reads sha256 " + s_sha + " through the page cache, but the read from the device failed" in p.stderr
+              and "Nothing written" in p.stderr and read(live) == bundle and log(t) == [],
+              "restore where boot.bin.stock can be read through the cache only: that it is the recorded stock isn't confirmed; nothing written", p.stdout + p.stderr)
+        p = run(t, "status", root=False)
+        check(p.returncode != 0 and "m1n1/boot.bin.stock: present; by the page cache's bytes only, sha256 " + s_sha + ", the recorded one. NOT CONFIRMED" in p.stdout
+              and "the bundle ref-loader installed" in p.stdout and "  that reading: " + DEVICE in p.stdout and "present and intact" not in p.stdout,
+              "status there: boot.bin confirmed from the device, boot.bin.stock said by the cache's bytes only and not called intact; it fails", p.stdout + p.stderr)
+        flag(t, "direct-eio", "boot.bin.ref-loader.new")
+        p = run(t, "restore")
+        check(p.returncode != 0 and "Not renamed into place" in p.stderr and "the stock is NOT restored: boot.bin is as it was" in p.stderr and read(live) == bundle and "restored:" not in p.stdout,
+              "restore where its copy reads back right only through the cache: not renamed over boot.bin; NOT restored", p.stdout + p.stderr)
+        unflag(t, "direct-eio")
+        os.remove(f"{t}/calls/moved-boot.bin")
+        flag(t, "direct-eio-after-mv")
+        p = run(t, "restore")
+        check(p.returncode != 0 and "after the rename, " in p.stderr and "BOOT.BIN IS NOT VERIFIED after the write" in p.stderr and "DO NOT RESTART" in p.stderr
+              and "restored:" not in p.stdout and read(live) == stock,
+              "restore where boot.bin can't be read from the device after its rename: BOOT.BIN IS NOT VERIFIED, DO NOT RESTART, though the cache reads the stock; not called restored",
+              p.stdout + p.stderr)
+        unflag(t, "direct-eio-after-mv")
+        p = run(t, "restore")
+        check(p.returncode == 0 and "boot.bin already is the stock loader" in p.stdout and DEVICE in p.stdout, "    and once the device reads again restore says it already is the stock", p.stdout + p.stderr)
+        # install over a kept stock that only the cache can read: that it is the recorded stock isn't confirmed.
+        flag(t, "direct-eio", "boot.bin.stock")
+        clear_log(t)
+        now = esp(t)
+        p = run(t, "install", FLAG, ref)
+        check(p.returncode != 0 and "boot.bin.stock reads sha256 " + s_sha + " through the page cache, but the read from the device failed" in p.stderr
+              and "isn't confirmed. Nothing written" in p.stderr and esp(t) == now and log(t) == [] and read(live) == stock and "installed:" not in p.stdout,
+              "install where the kept boot.bin.stock can be read through the cache only: that it is the recorded stock isn't confirmed; refused, nothing written", p.stdout + p.stderr)
+        unflag(t, "direct-eio")
+
+
+def direct_reads_work():
+    """Whether the scratch directory takes O_DIRECT reads, as ref-loader's read-backs need."""
+    with tempfile.TemporaryDirectory() as t:
+        write(os.path.join(t, "f"), b"x" * 5000)
+        return subprocess.run(["dd", f"if={t}/f", "iflag=direct", "bs=1M", "status=none"], capture_output=True).returncode == 0
 
 
 def safe_boot():
@@ -806,11 +927,16 @@ def installer():
 
 
 def main():
+    if not direct_reads_work():
+        print(f"skip the scratch directory ({tempfile.gettempdir()}) takes no O_DIRECT read, and ref-loader confirms nothing without one: nothing run here."
+              " Set TMPDIR to a filesystem that does")
+        return 0
     installer()
     recipe()
     install_and_restore()
     write_faults()
     sync_gate()
+    device_read()
     safe_boot()
     notes()
     print("all ok" if not fails else f"{fails} failed")
