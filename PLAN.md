@@ -118,18 +118,26 @@ this section where they differ.
      installed safe-only and its entry selected (`test-kernel install --safe-only`, then
      `test-kernel boot s2rref --safe-sepro`); only then the bundle installed
      (`ref-loader install --recovery-checked`), and a restart. If the kernel's install or the
-     selection fails, the loader isn't touched. If the swap fails, what the tool printed decides:
-     - "not installed: boot.bin is as it was" or "is the stock one again", with its sha256: the
-       stock loader is live and verified. `test-kernel unselect` clears the one-shot selection; a
-       restart with it still set would be the test kernel in its safe boot under the stock loader,
-       where its S2R driver finds no mailbox and does nothing.
-     - "BOOT.BIN IS NOT VERIFIED ... DO NOT RESTART": **no restart, and nothing else of this
-       order, until the stock loader is back and verified.** `pkexec ref-loader restore`, then
-       `ref-loader status` has to say the live `boot.bin` is the recorded stock; failing that the
-       kept `boot.bin.stock` copied over it by hand and compared by sha256, and if the Mac was
-       restarted all the same and Linux doesn't start, the copy from macOS (the recovery notes).
-       Clearing the selection doesn't help there: the next boot would still go through an
-       unverified second stage. In the test boot: `ref-sleep check` (the mailbox line, the store
+     selection fails, the loader isn't touched. **After any `ref-loader install` that didn't end
+     with its "installed:" lines (a refusal, an error, an interruption, no message at all): no
+     restart until the live loader is positively known.** What the tool printed doesn't decide
+     that; a check does:
+     - `ref-loader verify-recipe` passing means the live `boot.bin` is byte for byte what
+       `update-m1n1` builds from the installed packages: the stock loader is live. That works even
+       if the install stopped before it recorded anything. Then `test-kernel unselect` clears the
+       one-shot selection (with it still set, a restart would be the test kernel in its safe boot
+       under the stock loader, where its S2R driver finds no mailbox and does nothing).
+     - Otherwise the stock goes back first: `pkexec ref-loader restore`, which writes only a
+       `boot.bin.stock` that matches the recorded sha256, and then `verify-recipe` has to pass.
+       If `restore` refuses (no kept file, no record, or a mismatch), nothing is copied by hand
+       from a file that hasn't been checked: the kept file's sha256 is compared first with the one
+       `verify-recipe` prints for its rebuilt bundle, and only a match is copied, and the
+       destination compared again. With no verified source at all, the distribution's own
+       `update-m1n1` (as root, in a regular boot) rebuilds the stock `boot.bin` from the packages,
+       and `verify-recipe` is run after it. The prohibition stands until `verify-recipe` passes;
+       the copy from macOS (the recovery notes) is for a Mac that was restarted all the same and
+       doesn't start Linux.
+     In the test boot: `ref-sleep check` (the mailbox line, the store
      read-only), and only then `ref-sleep go`; afterwards `ref-loader restore` (it works from that
      boot) before the next regular boot.
    - **One reference-shaped run from here:** every remaining pre-commit difference made at once in
