@@ -90,7 +90,7 @@ while (($#)); do
   shift
 done
 if [[ -n $add ]]; then
-  [[ ! -e {t}/calls/mk-fail-safe ]] || exit 1
+  [[ ! -e {t}/calls/mk-fail-safe ]] || {{ echo "==> ERROR: module not found: overlay"; exit 1; }}
   [[ ! -e {t}/calls/mk-edit ]] || bash {t}/calls/mk-edit
 fi
 echo "image hooks: base {'$'}{{add:-}}" > "$out"
@@ -374,7 +374,8 @@ def plain_only():
                     # mk-edit changed the regular line itself; everything of the kernel's is gone all the same.
                     now = written(t)
                     same = now == before if flag != "mk-edit" else set(now) == set(before)
-                    check(p.returncode != 0 and why in p.stderr and "--safe-only" in p.stderr and same and nxt(t) is None and "installed" not in p.stdout,
+                    check(p.returncode != 0 and why in p.stderr and "--safe-only" in p.stderr and same and nxt(t) is None and "installed" not in p.stdout
+                          and (flag != "mk-fail-safe" or "==> ERROR: module not found: overlay" in p.stderr),
                           f"install --safe-only with {what}: it fails, and nothing is installed or left behind (no script, no entry, no image, no modules, no state)",
                           p.stdout + p.stderr + str(sorted(set(now) ^ set(before))))
                     if flag == "mk-edit":

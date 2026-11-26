@@ -279,6 +279,9 @@ install_kernel() {
     local img=$dir/initramfs-safe.img again
     if ! mkinitcpio -k "$release" -A sleepdrain-safe -g "$img.new" > "$dir/mkinitcpio-safe.log" 2>&1; then
       safe=0 safe_why="mkinitcpio failed for the safe image; see $dir/mkinitcpio-safe.log"
+      # Its last lines here too: with --safe-only the log goes with everything else.
+      echo "test-kernel: mkinitcpio -k $release -A sleepdrain-safe failed; its last lines:" >&2
+      tail -n 20 "$dir/mkinitcpio-safe.log" >&2 || true
     elif ! lsinitcpio -a "$img.new" 2> /dev/null | grep 'sleepdrain-safe' > /dev/null; then
       safe=0 safe_why="the safe image as built has no sleepdrain-safe hook"
     elif ! again=$("$SAFE" sepro-cmdline "$kernel" 2>&1) || [[ $again != "$safe_args" ]]; then
