@@ -75,9 +75,14 @@ this section where they differ.
      their m1n1, which their notes say sleeps and wakes a J314s daily. It answers whether the entry
      completes on this Mac with code that is known to work, and it is what the fix would be ported
      from. Their driver does nothing without their loader's mailbox, so it needs their m1n1 as the
-     second stage: **the boot chain, Corey's to decide** (asked 2026-11-26, with whether Claude may
-     build their m1n1 branch unchanged and swap `/boot/m1n1/boot.bin`, the old file kept; Claude
-     writes and changes no m1n1 code either way).
+     second stage: **the boot chain, Corey's decision, given 2026-11-26** ("go ahead": Claude builds
+     their m1n1 branch unchanged and swaps `/boot/m1n1/boot.bin` for a first try, the old file kept;
+     macOS is bootable on this Mac. Claude writes and changes no m1n1 code).
+     **A way back that doesn't boot through the new loader comes first** (Pullfrog on #135): the
+     regular kernel boots through that same file, so a loader that fails before GRUB leaves no Linux
+     to restore from. Before the swap Corey confirms from macOS that the boot partition mounts and
+     shows `m1n1/boot.bin`, and has the restore steps (copy the kept file back) written down outside
+     this Mac; the swap tool refuses without that word.
      What their notes say the working setup is, all of it part of that decision
      (`S2R-T600X-NOTES.md`, "Building and booting"):
      - **Stage 2** from their m1n1 branch, **with the device trees of their kernel branch appended**.
@@ -91,22 +96,29 @@ this section where they differ.
        written to `/sys/module/apple_s2r/parameters/enable` and `deep` to `/sys/power/mem_sleep`.
        **No suspend counts unless the mailbox line and `deep` were seen first.**
      - Their own boot loads `apple_sep` with `xart_writes=0 provision_keybag=0`.
-     **Safety, before the first deep suspend there:** a `test-kernel` boot is one-shot, not a safe
-     boot: it copies the regular command line, and the regular boot here opens xART for writes with
-     its guard off. So, as for the tenth run: the bound driver's `diag/xart` has to read "disabled"
-     (the boot's words are a request), and the root disk has to be protected separately (a safe-boot
-     entry for that kernel, with the hook's read-only root; not built). Both are preconditions, and
-     the steps for Corey say each.
+     **Safety, from the first boot of that kernel:** a plain `test-kernel` boot is one-shot, not a
+     safe boot: it copies the regular command line, and the regular boot here opens xART for writes
+     with its guard off. The reference's `apple_sep` opens the store at probe, with writes and
+     provisioning on by default, and a check afterwards can't undo a write. So the reference kernel
+     gets **only** a safe entry with `apple_sep.xart_writes=0 apple_sep.provision_keybag=0` on its
+     command line (no plain entry is written for it, so no boot of it binds the driver any other
+     way, a boot made only to look for the mailbox included), with the hook's read-only root; and
+     the bound driver's `diag/xart` reading "disabled" stays a separate check of what the binding
+     did, before any suspend. Being built 2026-11-26 (`test-kernel --safe-only`, `ref-loader`,
+     `ref-sleep`).
    - **One reference-shaped run from here:** every remaining pre-commit difference made at once in
      the replay. A large build with many new writes (the memory controller's among them), and the
      PMP's power word is on the never-write list: a fresh OK. It would not give a wake either way.
      It matches the reference only up to GO. After GO the first such run would keep what the replay
      does now (the alarm's commands, WD2's bite to 120 s, the `PHASE` read), so that the restart's
      time reads as before; a light that blinks to the marker would then speak for the pre-GO bundle
-     only, and the work after GO would be the next thing to drop, with WD1's marker (set before GO)
-     and the light as the witnesses that don't need it. What splits the bundle: a light that starts
-     and then stops before the restart (B2 reached its tenth SIO word: halve the bundle). A light
-     that never starts is a stall before step 8, read from the record, and no evidence either way.
+     only, and the work after GO would be the next thing to drop. Without that work WD2 keeps A2's
+     own 30 s and can reset the Mac before WD1's marker, so the old timing classes don't apply to
+     such a run: the light's change is its progress signal, and a restart's time says nothing by
+     itself. What splits the bundle: a light that starts and then stops before the restart (B2
+     reached its tenth SIO word: halve the bundle). A light that never starts is inconclusive
+     unless the record places a failure before GO: step 8's own set-up of the light can time out
+     and the replay commits all the same.
    - Until that is decided, nothing new is built for a one-way run. `--m1-sep-pg` and `--m1-ll-retn`
      are built and not planned as runs.
    - **The read-only-driver boot works** (`boot --sep-ro`): the enclave gates, the store is shown
