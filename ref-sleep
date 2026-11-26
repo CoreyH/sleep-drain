@@ -1,0 +1,337 @@
+#!/bin/bash
+# The first deep-sleep attempts with Ante042's suspend-to-RAM reference kernel
+# (Ante042/linux t600x-s2r-reference, booted as a test kernel through their
+# loader), with the preconditions checked first.
+#
+#   ref-sleep check           say whether an attempt could be made here, and what "go" would do
+#   ref-sleep go [SECONDS]    make one attempt, with a wake armed SECONDS from now (60)
+#
+# Run as root by its full path (pkexec /home/corey/src/sleep-drain/ref-sleep ...):
+# install.sh doesn't install it.
+#
+# Both commands first hold this boot against the same list, and "go" writes
+# nothing unless all of it holds:
+# - a safe boot: sleep-drain-safe's marker is there and sleepdrain.safe is on
+#   the kernel's command line, so nothing this boot does reaches the disk;
+# - the reference's driver is in this kernel (/sys/module/apple_s2r);
+# - the kernel log has its line "apple-s2r: m1n1 mailbox at": the loader
+#   published the mailbox the driver brings the cores back through. Without
+#   it the driver does nothing;
+# - the Secure Enclave's store (xART) is read-only, on the bound driver's own
+#   word and nothing else: every device bound to apple_sep, at least one, has
+#   diag/xart reading exactly "disabled" and a newline. The read-only root
+#   doesn't cover that store, and the reference driver opens it writable
+#   unless told otherwise.
+# Whether the Mac is on the charger doesn't matter here.
+#
+# "go", in this order:
+#  1. writes 1 to /sys/module/apple_s2r/parameters/enable, unless it reads
+#     enabled already, and reads it back. One way: the reference has no way to
+#     take it back in this boot.
+#  2. writes deep to /sys/power/mem_sleep and requires "[deep]" to read back.
+#  3. saves the boot's log (sleep-drain-safe save): the record, if the Mac
+#     never comes back. No save, no attempt.
+#  4. arms the wake: rtcwake -d rtc1 -m no -s SECONDS, if /dev/rtc1 is there
+#     and its name says it is the PMU's RTC. If not, it says no timed wake is
+#     armed: the power button, a key or the lid are then the wakes.
+#  5. marks the kernel log, and holds the xART proof once more.
+#  6. writes mem to /sys/power/state.
+# When that write returns (the Mac woke, or the kernel refused the suspend) it
+# prints the write's result and how long it took, the kernel log's lines since
+# the mark that mention s2r, PM: or suspend, and whether the xART proof still
+# holds, and saves again.
+#
+# On every way out after step 2 it puts /sys/power/mem_sleep back to what was
+# selected before, so that a lid close after a failed or finished attempt is
+# the sleep it always was, not an unchecked deep one, and switches the alarm
+# it armed off again (after a timed wake there is nothing left to switch off).
+#
+# It never loads or unloads a module, and never touches the loader.
+#
+# The paths are fixed; the RS_* variables point them elsewhere for
+# tests/ref_sleep_test.py (pkexec passes no such variable on).
+set -euo pipefail
+
+SAFE_FLAG=${RS_SAFE_FLAG:-/run/sleep-drain-safe/active}
+PROC_CMDLINE=${RS_PROC_CMDLINE:-/proc/cmdline}
+S2R=${RS_S2R:-/sys/module/apple_s2r}
+ENABLE=$S2R/parameters/enable
+MEM_SLEEP=${RS_MEM_SLEEP:-/sys/power/mem_sleep}
+STATE=${RS_STATE:-/sys/power/state}
+PM_TEST=${RS_PM_TEST:-/sys/power/pm_test}
+# The SEP driver's directory in sysfs, with a link for each device bound to it (as sleep-drain-safe status reads it).
+SEP_DRIVER=${RS_SEP_DRIVER:-/sys/bus/platform/drivers/apple_sep}
+XART_ATTR=diag/xart
+# The reference kernel's PMU RTC, whose alarm wakes its deep sleep.
+RTC_SYS=${RS_RTC_SYS:-/sys/class/rtc/rtc1}
+RTC_DEV=${RS_RTC_DEV:-/dev/rtc1}
+KMSG=${RS_KMSG:-/dev/kmsg}
+SAVE=${RS_SAVE:-/usr/local/bin/sleep-drain-safe}
+MAILBOX="apple-s2r: m1n1 mailbox at"
+MIN_SECONDS=15
+MAX_SECONDS=3600
+
+# What the EXIT trap puts back: globals, since a failing command under set -e leaves no locals behind.
+mem_prev=
+alarm_armed=0
+
+say() { echo "ref-sleep: $*" >&2; }
+die() { say "$*"; exit 1; }
+usage() {
+  echo "usage: ref-sleep check | go [SECONDS]   (SECONDS: the wake, $MIN_SECONDS to $MAX_SECONDS from now; 60 if not given)" >&2
+  exit 2
+}
+
+# The enclave's store: read-only only on the bound driver's own word. Every device bound to apple_sep, at least one,
+# with diag/xart reading exactly "disabled" and a newline (sleep-drain-safe status and e1-hook/run-floor's
+# sep_ro_shown() make the same reading). Sets xart_n, and xart_why when it doesn't hold.
+xart_ro() {
+  local d v
+  xart_n=0 xart_why=
+  for d in "$SEP_DRIVER"/*; do
+    # The driver's directory has a link for each device bound to it, and one to its module.
+    [[ -d $d && ${d##*/} != module ]] || continue
+    xart_n=$((xart_n + 1))
+    # With a dot after it, so that the value's own newline, or the lack of one, is still there to compare.
+    if ! v=$(cat "$d/$XART_ATTR" 2> /dev/null && echo .); then
+      xart_why="${d##*/}'s $XART_ATTR isn't there or can't be read"
+      return 1
+    fi
+    if [[ $v != $'disabled\n.' ]]; then
+      xart_why="${d##*/}'s $XART_ATTR reads $(printf '%q' "${v%.}"), which isn't exactly \"disabled\" and a newline"
+      return 1
+    fi
+  done
+  ((xart_n)) && return 0
+  xart_why="no device is bound to apple_sep ($SEP_DRIVER), so nothing says how the store is open"
+  return 1
+}
+
+# This boot's kernel log: the ring buffer, which has a line as soon as it is printed, and the journal's copy of it,
+# which keeps the early lines when the buffer has wrapped.
+klog_ring() { dmesg 2> /dev/null; }
+klog_journal() { journalctl -k -b -o short-monotonic --no-pager 2> /dev/null; }
+
+# The driver's line about the loader's mailbox, from either; empty if neither has it.
+mailbox_line() {
+  local out
+  out=$(klog_ring | grep -F -- "$MAILBOX" | tail -n 1) || true
+  [[ -n $out ]] || out=$(klog_journal | grep -F -- "$MAILBOX" | tail -n 1) || true
+  echo "$out"
+}
+
+on_cmdline() {
+  local a
+  local -a w=()
+  read -ra w < "$PROC_CMDLINE" 2> /dev/null || true
+  for a in "${w[@]}"; do
+    [[ $a != -- ]] || break
+    [[ $a != "$1" ]] || return 0
+  done
+  return 1
+}
+
+# Whether a module parameter's text is "on": a bool reads Y, an int 1.
+is_on() { [[ $1 == Y || $1 == 1 ]]; }
+
+# The word mem_sleep has in brackets: the one selected.
+selected() { sed -n 's/.*\[\([a-z0-9]*\)\].*/\1/p' <<< "$1"; }
+
+# Whether the alarm that wakes the reference's deep sleep is there: /dev/rtc1, named as the PMU's. Sets rtc_name.
+pmu_rtc() {
+  rtc_name=$(cat "$RTC_SYS/name" 2> /dev/null) || rtc_name=
+  [[ -e $RTC_DEV && ${rtc_name,,} == *pmu* ]]
+}
+
+# The preconditions. Prints every finding, and sets bad to how many don't hold.
+preconditions() {
+  local line
+  bad=0
+  good() { echo "ok      $*"; }
+  miss() {
+    echo "NOT OK  $*"
+    bad=$((bad + 1))
+  }
+  if [[ -f $SAFE_FLAG ]]; then good "a safe boot: $SAFE_FLAG is there"; else miss "not a safe boot: $SAFE_FLAG isn't there"; fi
+  if on_cmdline sleepdrain.safe; then
+    good "sleepdrain.safe is on the kernel's command line"
+  else
+    miss "sleepdrain.safe isn't on the kernel's command line: the initramfs hook didn't make this boot read-only"
+  fi
+  if [[ -d $S2R ]]; then good "the reference's driver is in this kernel: $S2R"; else miss "no $S2R: this kernel doesn't have the reference's driver"; fi
+  line=$(mailbox_line)
+  if [[ -n $line ]]; then
+    good "the kernel log has the mailbox line: $line"
+  else
+    miss "the kernel log has no \"$MAILBOX\" line (dmesg, journalctl -k -b): the loader didn't publish the mailbox, and without it the driver does nothing"
+  fi
+  if xart_ro; then
+    good "the Secure Enclave's store (xART) is read-only: the bound driver's $XART_ATTR reads \"disabled\"$( ((xart_n == 1)) || echo ", for each of its $xart_n devices")"
+  else
+    miss "the Secure Enclave's store (xART) is NOT shown read-only: $xart_why"
+  fi
+}
+
+# What isn't a precondition, said all the same.
+state_of_things() {
+  local v
+  v=$(cat "$ENABLE" 2> /dev/null) || v="unreadable"
+  echo "        apple_s2r's enable reads: $v"
+  v=$(cat "$MEM_SLEEP" 2> /dev/null) || v="unreadable"
+  echo "        $MEM_SLEEP reads: $v"
+  if v=$(cat "$PM_TEST" 2> /dev/null) && [[ $v != *"[none]"* ]]; then
+    echo "        NOTE: $PM_TEST reads: $v. A suspend would be the kernel's test of one, not a real one"
+  fi
+  if pmu_rtc; then
+    echo "        ${RTC_DEV##*/} is there and is named \"$rtc_name\": the timed wake can be armed"
+  else
+    echo "        no timed wake: ${RTC_DEV##*/} $([[ -e $RTC_DEV ]] && echo "is named \"$rtc_name\", which isn't the PMU's RTC" || echo "isn't there")"
+  fi
+}
+
+cmd_check() {
+  (($# == 0)) || usage
+  [[ $EUID -eq 0 ]] || die "run as root (pkexec): the kernel log and the checks need it"
+  preconditions
+  state_of_things
+  if ((bad)); then
+    echo "$bad of the preconditions don't hold: \"go\" would refuse and write nothing"
+    exit 1
+  fi
+  local v
+  v=$(cat "$ENABLE" 2> /dev/null) || v=
+  cat <<EOF
+all of the preconditions hold. "go [SECONDS]" would, in this order:
+  1. $(is_on "$v" && echo "leave apple_s2r's enable as it is (it reads $v)" || echo "write 1 to $ENABLE (one way for this boot) and read it back")
+  2. write deep to $MEM_SLEEP and require [deep] to read back
+  3. save this boot's log: $SAVE save
+  4. $(pmu_rtc && echo "arm the wake: rtcwake -d ${RTC_DEV##*/} -m no -s SECONDS" || echo "arm NO timed wake (see above): the power button, a key or the lid would be the wakes")
+  5. mark the kernel log, and hold the xART proof once more
+  6. write mem to $STATE
+and afterwards print the result, put $MEM_SLEEP back and save again. Nothing was changed by this check.
+EOF
+}
+
+# On every way out: the alarm this run armed switched off (it has fired already if it was the wake; if the attempt
+# wasn't made, or something else woke the Mac, it would fire awake, where it does nothing), and mem_sleep back to what
+# was selected.
+undo() {
+  local rc=$? now
+  if ((alarm_armed)); then
+    rtcwake -d "${RTC_DEV##*/}" -m disable > /dev/null 2>&1 ||
+      say "the alarm armed for the attempt could not be switched off: if it is still set it fires awake, which does nothing"
+  fi
+  if [[ -n $mem_prev ]]; then
+    if echo "$mem_prev" > "$MEM_SLEEP" 2> /dev/null && now=$(cat "$MEM_SLEEP" 2> /dev/null) && [[ $(selected "$now") == "$mem_prev" ]]; then
+      echo "$MEM_SLEEP is back to: $now"
+    else
+      say "COULD NOT put $MEM_SLEEP back to $mem_prev: it reads $(cat "$MEM_SLEEP" 2> /dev/null || echo unreadable). A lid close now would be a deep sleep: restart before closing the lid"
+      rc=1
+    fi
+  fi
+  exit "$rc"
+}
+
+# The kernel log's lines after the mark that mention the reference's driver or the suspend.
+lines_since() {
+  local mark=$1 src out
+  for src in klog_ring klog_journal; do
+    out=$("$src" | TOKEN=$mark awk 'index($0, ENVIRON["TOKEN"]) { n = NR } { l[NR] = $0 } END { if (!n) exit 3; for (i = n + 1; i <= NR; i++) print l[i] }') || continue
+    grep -iE 's2r|PM:|suspend' <<< "$out" || echo "(none)"
+    return 0
+  done
+  echo "(the mark isn't in the kernel log, by dmesg or the journal; the last lines that mention them:)"
+  { klog_ring || klog_journal || true; } | grep -iE 's2r|PM:|suspend' | tail -n 40 || echo "(none)"
+}
+
+cmd_go() {
+  (($# <= 1)) || usage
+  local secs=60
+  (($# == 0)) || secs=$1
+  [[ $secs =~ ^[0-9]{1,5}$ ]] && ((10#$secs >= MIN_SECONDS && 10#$secs <= MAX_SECONDS)) ||
+    die "SECONDS is a whole number from $MIN_SECONDS to $MAX_SECONDS: the wake is armed before the suspend starts, and an alarm that fires before the Mac is asleep wakes nothing. Nothing written"
+  secs=$((10#$secs))
+  [[ $EUID -eq 0 ]] || die "run as root (pkexec)"
+  preconditions
+  state_of_things
+  ((bad == 0)) || die "$bad of the preconditions don't hold (NOT OK above): nothing written, no suspend asked for"
+  trap undo EXIT
+
+  # 1. enable, one way.
+  local v now
+  v=$(cat "$ENABLE") || die "can't read $ENABLE; nothing written"
+  if is_on "$v"; then
+    echo "1. apple_s2r's enable already reads $v: not written"
+  else
+    echo 1 > "$ENABLE" || die "couldn't write 1 to $ENABLE; nothing else written"
+    v=$(cat "$ENABLE") || v=unreadable
+    is_on "$v" || die "wrote 1 to $ENABLE and it reads $v: deep sleep is not enabled. Nothing else written"
+    echo "1. wrote 1 to $ENABLE: it reads $v (one way: it stays on in this boot)"
+  fi
+
+  # 2. deep. From here on, undo() puts the selection back.
+  now=$(cat "$MEM_SLEEP") || die "can't read $MEM_SLEEP; no suspend asked for"
+  mem_prev=$(selected "$now")
+  [[ -n $mem_prev ]] || die "$MEM_SLEEP reads \"$now\", with nothing selected: no suspend asked for"
+  echo deep > "$MEM_SLEEP" || die "couldn't write deep to $MEM_SLEEP (it read: $now); no suspend asked for"
+  now=$(cat "$MEM_SLEEP") || now=unreadable
+  [[ $(selected "$now") == deep ]] || die "wrote deep to $MEM_SLEEP and it reads \"$now\": [deep] isn't selected. No suspend asked for"
+  echo "2. wrote deep to $MEM_SLEEP: it reads $now"
+
+  # 3. the record, before anything can go wrong.
+  journalctl --sync > /dev/null 2>&1 || true
+  "$SAVE" save || die "the save failed, and without it there would be no record if the Mac didn't come back. No suspend asked for"
+  echo "3. saved this boot's log"
+
+  # 4. the wake.
+  if pmu_rtc; then
+    rtcwake -d "${RTC_DEV##*/}" -m no -s "$secs" || die "rtcwake couldn't arm ${RTC_DEV##*/}; no suspend asked for"
+    alarm_armed=1
+    echo "4. armed the wake: ${RTC_DEV##*/} (\"$rtc_name\"), $secs s from now$(v=$(cat "$RTC_SYS/wakealarm" 2> /dev/null) && echo "; its wakealarm reads ${v:-nothing}")"
+  else
+    echo "4. NO TIMED WAKE IS ARMED: ${RTC_DEV##*/} $([[ -e $RTC_DEV ]] && echo "is named \"$rtc_name\", not the PMU's RTC" || echo "isn't there"). The power button, a key or the lid are the wakes"
+  fi
+
+  # 5. the mark, then the proof once more: the last thing before the write.
+  local mark="ref-sleep: attempt $$-$EPOCHSECONDS"
+  echo "$mark: mem_sleep deep, $( ((alarm_armed)) && echo "wake armed $secs s from now" || echo "no timed wake")" >> "$KMSG" 2> /dev/null ||
+    say "couldn't mark the kernel log ($KMSG): the lines since the attempt will be picked out without it"
+  xart_ro || die "the Secure Enclave's store (xART) is no longer shown read-only: $xart_why. No suspend asked for"
+  echo "5. the xART proof holds still ($xart_n device$( ((xart_n == 1)) || echo s))"
+
+  # 6. the suspend. The write returns when the Mac is awake again, or at once if the kernel refuses.
+  echo "6. writing mem to $STATE now"
+  local t0=${EPOCHREALTIME/[.,]/} t1 rc=0 err ok=1
+  err=$({ echo mem > "$STATE"; } 2>&1) || rc=$?
+  t1=${EPOCHREALTIME/[.,]/}
+
+  echo
+  if ((rc == 0)); then
+    echo "the write of mem returned without an error after $(((t1 - t0) / 1000000)).$(printf '%03d' $(((t1 - t0) / 1000 % 1000))) s by the clock: the Mac slept and woke, or the kernel made the suspend and came straight back; the kernel log says which"
+  else
+    echo "THE WRITE OF mem FAILED after $(((t1 - t0) / 1000000)).$(printf '%03d' $(((t1 - t0) / 1000 % 1000))) s (exit $rc): ${err:-no message}. The kernel refused or aborted the suspend"
+    ok=0
+  fi
+  echo "the kernel log since the attempt (lines that mention s2r, PM: or suspend):"
+  lines_since "$mark" | sed 's/^/    /'
+  if xart_ro; then
+    echo "the xART proof still holds: the bound driver's $XART_ATTR reads \"disabled\""
+  else
+    echo "THE xART PROOF NO LONGER HOLDS: $xart_why"
+    ok=0
+  fi
+  journalctl --sync > /dev/null 2>&1 || true
+  if "$SAVE" save; then
+    echo "saved this boot's log again"
+  else
+    say "the save after the attempt failed: what is above is only on this screen"
+    ok=0
+  fi
+  ((ok)) || exit 1
+}
+
+case "${1:-}" in
+  check) shift; cmd_check "$@" ;;
+  go) shift; cmd_go "$@" ;;
+  *) usage ;;
+esac
