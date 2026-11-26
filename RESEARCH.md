@@ -5426,6 +5426,74 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The `sep_ro=1` run: the enclave gated, the wait bit cleared, and the same stall (2026-11-26)
+
+`run-floor --no-reading --m1-sep-ro` in a safe boot started with `sleep-drain-safe boot --sep-ro`, on battery
+at 100%, nothing in the USB-C ports, the nights off around it, loaded 11:19 (`results/sep-ro-20261126/`; the
+module built at b97f879). The tenth one-way run since the strategy review, and the last of its ten.
+
+- **Corey:** "seems like about the same as previous runs. blinking keyboard for the whole time." The light to
+  the restart.
+- **The boot was the one asked for.** The driver bound and opened the store read-only ("writes disabled" in
+  its log, `diag/xart` "disabled"); the launcher's check passed, and at the load the module's own call of the
+  attribute's show "returned 9 and says "disabled"". Both of the two things the desk couldn't check are
+  seen: kmod hands the command line's two words to the module, and the driver says "disabled" with them.
+- **The enclave was gated.** At the load the SEP's power word read 0x1000030f (actual 0), the control word
+  0x28e0cc200 read 4 and 0x2922c0044 read 8. The prepare's proof and its wait passed, since the run went on
+  (their lines came after the launcher's save and aren't kept).
+- **`sep_pg=1`, 0x6009 = 0xf8:** the wait bit was set as found, the SEP's power word read off right before
+  the write, **the write was made, and the word read back with bit 2 clear and every other bit as found.**
+- **`sep_ro=1`, 0x6008 = 0x88, with 0x6009's nibble 8:** 0x2922c0044 read 8 right before the write decision
+  and 8 right after the read-back, in one interrupts-off stretch. **The gate word's bit 2 doesn't follow the
+  control bit** with CPU0 up.
+- **`disp_hs=1`, 0x600a-0x600d = e8 88 e8 00:** as in the ninth run: both tables, both handshakes, the nibble
+  8 in every sample kept, 0x600d lost again.
+- **The rest of the record is whole:** stage 0xd5 (`gates_mark=1`'s, no `a2_pre=1`), 0x6012 = 0xff, 0x6013 =
+  0x9f (`pw_noread=1`'s mark; the sixteen other words and `atc_down=1`'s six read actual 0), 0x6016 = 0x96
+  (0x28e5a0050 open, as in every gates read), the fabric at 0x333 at step 5's end, WD2 armed with the 120 s
+  bite, `PHASE` 4. The restart 89.5 to 91.5 s after the commit: WD1's marker. 0x0201 = 0x02.
+
+**What it shows.**
+- **What was observed, and its window.** In step 7 the SEP's power word read actual 0 and the wait bit's
+  clear read back; step 5 ended with the fabric at 0x333; none of the four fabric-group power words was
+  read after its write; and the light blinked to the marker, so B2 didn't reach its power-downs. Neither
+  the SEP's power word nor the control word is read again in steps 8 and 9, so their state at GO isn't
+  observed. This is the combined recipe's result: the hypothesis of 11-24 isn't borne out by it, and it
+  doesn't say which of the changes would have mattered in an earlier run, or whether one of them is
+  needed together with something still missing.
+- **The read-only-driver state is usable here.** The enclave read gated with this kernel's `apple_sep`
+  bound, at the load and in step 7, as it did in the regular boot of 11-23.
+- **Fingerprint requests don't reach the enclave in that boot.** Every polkit prompt asked fprintd for a
+  verify, and the driver refused each itself ("ioctl failed: Read-only file system"; `matching: blocked` in
+  its `diag`), once before the run in its boot and twice in the boot before; the enclave read gated after. The hand-over's "leave the
+  sensor alone" holds for touching it, and the prompts are harmless.
+- **No read made before the commit has predicted B2's progress.** 0x2922c0044's bit 2 has read clear in
+  every sample of every run, whatever was done first, which fits the old reading that it is "every complex
+  down" and that no core can see it set. Other read-backs do tell a step that took from one that didn't
+  (this run's clear of the wait bit, the fabric back at 0x333): they check the steps, not the engine. For
+  the engine's progress each one-way run has given the light and the restart's time, and no validated
+  predictor before GO.
+
+**Where that leaves the method.** Against the reference, the differences tried so far are the SEP's wait,
+both display handshakes (made here after `slpa`, not before), `a2_pre=1`'s moves and the late reads. Still
+different (`diff-vs-recipe.md`, 11-23): the PMP powered off and its request word withdrawn (the never-write
+list), about fifty PMGR words at GO (`ps_late[]`), the memory controller's drain, the GPU's firmware parked
+and its port's handshake, the AOP told, dispext1's block, the displays' order against `slpa`, and what CPU0
+does after GO (the reference touches nothing; the replay sends SPMI commands and writes WD2). One difference
+a run is eight or more runs, each ending in the same light unless it happens to be the last one missing. The
+two ways out of that are in PLAN.md: one run that takes all of the reference's remaining state at once, or
+the reference's own kernel and loader on this Mac. The second is Corey's to decide: it changes the boot
+chain (their m1n1 as the second stage with their device trees; and every sleep in their notes also had a
+thin first stage of their own, never retested with the stock one). Claude writes and changes no m1n1 code.
+
+**Three boots for one run** (the hand-over's faults, kept so they aren't repeated): on 11-25/26 the first
+`--sep-ro` boot ended at a "NOT VERIFIED" from `status` and a restart, as told; that boot's log wasn't
+saved, so which line it was isn't known (run without root, `status` says NOT VERIFIED about the *no-driver*
+mode's blacklist, which means nothing in this mode: the steps should have named the store's line). The second
+boot ran a check script that saved the boot's log and said "READ-ONLY SHOWN"; the run wasn't started there,
+because the steps didn't say plainly that it has to be in that same boot, and gave the command with a full
+stop after it. The third boot is the run.
+
 ### `sep_ro=1` and `pw_noread=1` as built: the tenth run, with the enclave's driver read-only (2026-11-24)
 
 **Why.** "The `disp_hs=1` run", below: the reference never sleeps with the SEP's power word off actual 0, the
@@ -5555,7 +5623,8 @@ launcher's line was also walked through `e1_check_params()` by hand: it differs 
 loaded on 11-24, by `a2_pre` off (no rule needs it on) and the two new options, whose rules it meets.
 Not checked by anything here: the attribute's value with writes off; that kmod hands the command line's
 two words to the module (if it doesn't, the attribute reads "enabled" or the probe fails, and the run
-refuses); the enclave's power word at prepare.
+refuses); the enclave's power word at prepare. All three were seen in the run of 2026-11-26 (above), and
+the module's call of the driver's show under the device's lock was exercised at the load and at prepare.
 
 ### The `disp_hs=1` run: both handshakes made, bit 2 never set, and the enclave read powered (2026-11-24)
 
