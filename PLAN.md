@@ -123,8 +123,11 @@ this section where they differ.
      restart until the live loader is positively known.** What the tool printed doesn't decide
      that; a check does:
      - `ref-loader verify-recipe` passing means the live `boot.bin` is byte for byte what
-       `update-m1n1` builds from the installed packages: the stock loader is live. That works even
-       if the install stopped before it recorded anything. Then `test-kernel unselect` clears the
+       `update-m1n1` builds from the installed packages, **as written to the partition**: it syncs
+       the boot partition first and fails if the sync does (a match read from memory after a
+       failed writeback says nothing about what a restart loads), then reads the file from the
+       device. So the stock loader is live. That works even if the install stopped before it
+       recorded anything. Then `test-kernel unselect` clears the
        one-shot selection (with it still set, a restart would be the test kernel in its safe boot
        under the stock loader, where its S2R driver finds no mailbox and does nothing).
      - Otherwise the stock goes back first: `pkexec ref-loader restore`, which writes only a
