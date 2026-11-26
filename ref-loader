@@ -1,0 +1,670 @@
+#!/bin/bash
+# Swap m1n1's second stage on the boot partition for another build's bundle, and
+# put the stock one back.
+#
+#   ref-loader build <m1n1.bin> <dtb-dir | dtb-list-file> <out>   assemble a bundle (no root)
+#   ref-loader verify-recipe          rebuild the stock bundle; is it the live boot.bin? (no root)
+#   ref-loader recovery-notes         how to put the stock back from macOS: keep it off this Mac (no root)
+#   ref-loader install --recovery-checked <bundle>   make the bundle /boot/m1n1/boot.bin (root, regular boot)
+#   ref-loader restore                put the stock boot.bin back (root; regular or safe boot)
+#   ref-loader status                 is boot.bin the stock, the installed bundle, or neither?
+#
+# /boot/m1n1/boot.bin is what Apple's boot chain hands over to: m1n1, then the
+# device trees, then U-Boot, gzip'd, then m1n1's configuration lines, in one
+# file. Omarchy's update-m1n1 (asahi-scripts, MIT) builds it from the installed
+# packages. A bundle that doesn't start means no Linux until the stock file is
+# back, and then the only way there is from macOS. So every command here fails
+# closed, says what it did and didn't do, and never leaves a half-written file
+# under a name something reads.
+#
+# m1n1.bin is handled as an opaque file: this tool doesn't look into it, and
+# nothing here is m1n1's code.
+#
+# build: the bundle as update-m1n1 makes it, with another m1n1.bin and other
+#   device trees: every *.dtb of a directory, sorted in the C locale, or the
+#   paths of a list file, one a line, in its order. U-Boot and the
+#   configuration are the installed ones, as for the stock bundle. Each device
+#   tree must be one by its header, and one of them must name this Mac.
+# verify-recipe: builds the stock bundle from the installed inputs exactly as
+#   update-m1n1 would and compares it with the live boot.bin. That is the proof
+#   that the recipe here is the right one; install refuses without it.
+# install: only with --recovery-checked (the owner's word that the way back
+#   from macOS was tried: see recovery-notes), only in a regular boot with
+#   /boot the mounted FAT partition, only if verify-recipe passes in the same
+#   run (so the live boot.bin is the stock one), only with room. It keeps the
+#   stock file as m1n1/boot.bin.stock, with its sha256 recorded in
+#   /var/lib/sleep-drain/ref-loader/stock.sha256: written once, and never with
+#   anything but the recorded stock. The new file is written beside boot.bin,
+#   fsync'd, read back and compared with the source, renamed over boot.bin,
+#   synced, and read back and compared again; if that last reading is wrong,
+#   the stock is put back the same way.
+# restore: boot.bin.stock over boot.bin, by the same steps, if boot.bin.stock is
+#   the recorded stock. In a safe boot, where /boot isn't mounted, it mounts the
+#   boot partition itself for the write, as "sleep-drain-safe save" does, and
+#   unmounts it. Doing it twice is harmless: the second time says so.
+#
+# The paths are fixed; the REFL_* variables point them elsewhere for
+# tests/ref_loader_test.py (pkexec passes no such variable on).
+set -euo pipefail
+
+BOOT=${REFL_BOOT:-/boot}
+STATE=${REFL_STATE:-/var/lib/sleep-drain/ref-loader}
+# update-m1n1's own configuration: where the stock bundle's inputs are said.
+DEFAULTS=${REFL_DEFAULTS:-/etc/default/update-m1n1}
+# The safe boot's directory (sleep-drain-safe), and the kernel's command line.
+RUN=${REFL_RUN:-/run/sleep-drain-safe}
+PROC_CMDLINE=${REFL_PROC_CMDLINE:-/proc/cmdline}
+SYS_BLOCK=${REFL_SYS_BLOCK:-/sys/class/block}
+# This Mac's own name for itself, as the running device tree's root has it: its first string (apple,j314s here).
+COMPATIBLE=${REFL_COMPATIBLE:-/proc/device-tree/compatible}
+# Free space asked for beyond the files written.
+MARGIN=$((16 * 1048576))
+LOADER=m1n1/boot.bin
+STOCK=m1n1/boot.bin.stock
+
+# What the EXIT trap undoes: globals, since a failing command under set -e leaves no locals behind.
+work=
+new_tmp=
+esp_mounted=0
+esp_mnt=$RUN/ref-loader-boot
+ESP=
+
+say() { echo "ref-loader: $*" >&2; }
+die() { say "$*"; exit 1; }
+usage() {
+  echo "usage: ref-loader build <m1n1.bin> <dtb-dir | dtb-list-file> <out> | verify-recipe | recovery-notes | install --recovery-checked <bundle> | restore | status" >&2
+  exit 2
+}
+need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }
+
+cleanup() {
+  local rc=$?
+  [[ -z $new_tmp ]] || rm -f -- "$new_tmp"
+  [[ -z $work ]] || rm -rf -- "${work:?}"
+  if ((esp_mounted)); then
+    if umount "$esp_mnt"; then
+      rmdir "$esp_mnt" 2> /dev/null || true
+    else
+      say "the boot partition is still mounted at $esp_mnt: restart now"
+      rc=1
+    fi
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+
+# Whether this is a safe boot: sleep-drain-safe's marker, or the hook's flag on the kernel's command line.
+is_safe() {
+  local a
+  local -a w=()
+  [[ ! -f $RUN/active ]] || return 0
+  read -ra w < "$PROC_CMDLINE" 2> /dev/null || true
+  for a in "${w[@]}"; do
+    [[ $a != -- ]] || break
+    [[ $a != sleepdrain.safe ]] || return 0
+  done
+  return 1
+}
+
+sha_of() {
+  local out
+  out=$(sha256sum < "$1") || return 1
+  echo "${out%% *}"
+}
+size_of() { stat -c %s -- "$1"; }
+
+# read_back FILE: sets rb_sha to FILE's sha256 as the device has it, where that can be asked (O_DIRECT, past the page
+# cache), else as the page cache has it, and rb_how to which of the two it was.
+read_back() {
+  local out
+  if out=$(dd if="$1" iflag=direct bs=1M status=none 2> /dev/null | sha256sum); then
+    rb_how="read from the device"
+  elif out=$(sha256sum < "$1"); then
+    rb_how="read through the page cache (no direct read here)"
+  else
+    return 1
+  fi
+  rb_sha=${out%% *}
+}
+
+# The inputs of the stock bundle, resolved as update-m1n1 resolves them: its defaults file sourced by sh, then its own
+# defaults for what that leaves unset, the directory form of DTBS, and $DTBS split and expanded unquoted as its cat
+# does. The configuration's accepted lines go to $2 by its own loop. (These lines follow /usr/bin/update-m1n1 of
+# asahi-scripts, SPDX MIT, so that what comes out is what it would build.) Prints, NUL-separated: whether updates are
+# disabled, M1N1, U_BOOT, then each device tree.
+STOCK_SH='
+set -e
+[ -e "$1" ] && . "$1"
+: ${SOURCE:="/usr/lib/asahi-boot/"}
+: ${M1N1:="$SOURCE/m1n1.bin"}
+: ${U_BOOT:="$SOURCE/u-boot-nodtb.bin"}
+: ${DTBS:=$(/bin/ls -d /lib/modules/*-ARCH | sort -rV | head -1)/dtbs/*.dtb}
+: ${CONFIG:=/etc/m1n1.conf}
+if [ -z "$DTBS" ]; then
+    echo "DTBS unset or empty" >&2
+    exit 1
+fi
+if [ -d "$DTBS" ]; then
+    DTBS="${DTBS}/apple/t6*.dtb ${DTBS}/apple/t81*.dtb"
+fi
+m1n1config=$2
+>"$m1n1config"
+if [ -e "$CONFIG" ]; then
+    while read line; do
+        case "$line" in
+            "") ;;
+            \#*) ;;
+            chosen.*=*|display=*|mitigations=*)
+                echo "$line" >> "$m1n1config"
+                ;;
+            *) ;;
+        esac
+    done <$CONFIG
+fi
+printf "%s\0" "${M1N1_UPDATE_DISABLED:+disabled}" "$M1N1" "$U_BOOT" $DTBS
+'
+
+# Sets s_disabled, s_m1n1, s_uboot, s_conf and the array s_dtbs; dies if an input isn't there.
+stock_inputs() {
+  local -a f
+  local p
+  [[ -n $work ]] || work=$(mktemp -d)
+  s_conf=$work/m1n1.conf
+  env -i PATH="$PATH" sh -c "$STOCK_SH" sh "$DEFAULTS" "$s_conf" > "$work/inputs" ||
+    die "couldn't work out the stock bundle's inputs from $DEFAULTS as update-m1n1 does"
+  mapfile -d '' f < "$work/inputs"
+  ((${#f[@]} >= 4)) || die "the stock recipe has no device trees ($DEFAULTS)"
+  s_disabled=${f[0]} s_m1n1=${f[1]} s_uboot=${f[2]}
+  s_dtbs=("${f[@]:3}")
+  for p in "$s_m1n1" "$s_uboot" "${s_dtbs[@]}"; do
+    [[ -f $p && -r $p ]] || die "an input of the stock bundle isn't a readable file: $p"
+  done
+}
+
+# gzip'd U-Boot as update-m1n1 makes it: gzip -c on the installed file's own path, so the header has that file's name
+# and time, and nothing from the environment.
+gz_uboot() { env -u GZIP gzip -c "$1"; }
+
+# assemble M1N1 U_BOOT CONF OUT DTB...: update-m1n1's three lines.
+assemble() {
+  local m1n1=$1 uboot=$2 conf=$3 out=$4
+  shift 4
+  cat "$m1n1" "$@" > "$out"
+  gz_uboot "$uboot" >> "$out"
+  cat "$conf" >> "$out"
+}
+
+# The boot partition in a regular boot: $BOOT itself must be a mounted FAT filesystem with the loader on it.
+esp_regular() {
+  local fstype
+  fstype=$(findmnt -n -o FSTYPE --mountpoint "$BOOT" 2> /dev/null) || die "$BOOT isn't a mount point: the boot partition isn't mounted there"
+  [[ $fstype == vfat ]] || die "$BOOT is ${fstype:-of no known type}, not the FAT boot partition"
+  [[ -f $BOOT/$LOADER ]] || die "no $LOADER on $BOOT: this isn't the partition m1n1's second stage is on"
+  ESP=$BOOT
+}
+
+# The boot partition in a safe boot, which doesn't mount it: from the disk's own fstab below the overlay, mounted at a
+# place of this tool's own ($1: rw or ro), and unmounted by the EXIT trap whatever happens. As sleep-drain-safe save.
+esp_safe() {
+  local src
+  need_root
+  [[ -f $RUN/lower/root/etc/fstab ]] || die "this is a safe boot, and the disk's fstab isn't at $RUN/lower/root/etc/fstab: the boot partition can't be found"
+  src=$(awk '$1 !~ /^#/ && $2 == "/boot" { print $1; exit }' "$RUN/lower/root/etc/fstab")
+  [[ -n $src ]] || die "no /boot in the disk's fstab"
+  ! mountpoint -q "$esp_mnt" 2> /dev/null || die "something is mounted at $esp_mnt already: unmount it or restart"
+  mkdir -p "$esp_mnt"
+  mount -t vfat -o "$1,flush" "$src" "$esp_mnt" || die "couldn't mount $src; nothing written"
+  esp_mounted=1
+  [[ -f $esp_mnt/$LOADER ]] || die "no $LOADER on $src: this isn't the partition m1n1's second stage is on; nothing written"
+  ESP=$esp_mnt
+}
+
+# A record: one sha256 on the first line of a file. Prints it; fails if the file isn't that.
+read_record() {
+  local l
+  [[ -f $1 ]] || return 1
+  IFS= read -r l < "$1" || true
+  [[ $l =~ ^[0-9a-f]{64}$ ]] || return 1
+  echo "$l"
+}
+write_record() {
+  mkdir -p "$STATE" && printf '%s\n' "$2" > "$1.new" && sync "$1.new" && mv -f -- "$1.new" "$1"
+}
+
+# verify_recipe: rebuilds the stock bundle and compares it with the live loader on $ESP. Prints what it found; sets
+# v_rebuilt (the file), v_rebuilt_sha and v_live_sha. Returns 0 only on a match.
+verify_recipe() {
+  local live=$ESP/$LOADER gz conf
+  stock_inputs
+  v_rebuilt=$work/stock.rebuilt
+  assemble "$s_m1n1" "$s_uboot" "$s_conf" "$v_rebuilt" "${s_dtbs[@]}"
+  v_rebuilt_sha=$(sha_of "$v_rebuilt")
+  v_live_sha=$(sha_of "$live")
+  gz=$(gz_uboot "$s_uboot" | wc -c)
+  conf=$(wc -l < "$s_conf")
+  echo "the stock recipe (update-m1n1's, from $DEFAULTS): $s_m1n1 ($(size_of "$s_m1n1") bytes), ${#s_dtbs[@]} device trees, $s_uboot gzip'd ($gz bytes), $conf configuration lines"
+  echo "rebuilt from the installed inputs: sha256 $v_rebuilt_sha ($(size_of "$v_rebuilt") bytes)"
+  echo "$BOOT/$LOADER as it is: sha256 $v_live_sha ($(size_of "$live") bytes)"
+  [[ -z $s_disabled ]] || echo "note: $DEFAULTS sets M1N1_UPDATE_DISABLED, so update-m1n1 itself writes nothing on this system"
+  if [[ $v_rebuilt_sha == "$v_live_sha" ]]; then
+    echo "match: the live boot.bin is exactly what the recipe builds"
+    return 0
+  fi
+  # Where the first difference is, by the pieces' sizes: which input to look at.
+  local at off=0 p piece=
+  at=$(cmp "$v_rebuilt" "$live" 2> /dev/null | sed -n 's/.* byte \([0-9]*\),.*/\1/p' || true)
+  if [[ -n $at ]]; then
+    for p in "$s_m1n1" "${s_dtbs[@]}"; do
+      off=$((off + $(size_of "$p")))
+      if ((at <= off)); then
+        piece=$p
+        break
+      fi
+    done
+    if [[ -z $piece ]]; then
+      if ((at <= off + gz)); then piece="the gzip'd U-Boot (byte $((at - off)) of it; bytes 5 to 8 are the time in its header)"; else piece="the configuration lines"; fi
+    fi
+    echo "MISMATCH: the first byte that differs is byte $at, in $piece"
+  else
+    echo "MISMATCH: the two are the same up to the end of the shorter one"
+  fi
+  return 1
+}
+
+# write_verified SRC DST SHA: DST becomes SRC's bytes, whose sha256 is SHA. Written under a temporary name beside DST,
+# fsync'd, read back and compared; renamed over DST; the filesystem synced; DST read back and compared again.
+# Returns 0: DST reads back as SHA. 1: it failed before the rename, and DST is as it was. 2: DST was replaced and
+# doesn't read back as SHA, or couldn't be synced or read: what it holds isn't known to be right.
+write_verified() {
+  local src=$1 dst=$2 want=$3
+  new_tmp=$dst.ref-loader.new
+  rm -f -- "$new_tmp"
+  if ! cp -- "$src" "$new_tmp" || ! sync "$new_tmp"; then
+    say "couldn't write $new_tmp"
+    rm -f -- "$new_tmp"
+    new_tmp=
+    return 1
+  fi
+  if ! read_back "$new_tmp" || [[ $rb_sha != "$want" ]]; then
+    say "$new_tmp doesn't read back as written (sha256 ${rb_sha:-unreadable}, wanted $want)"
+    rm -f -- "$new_tmp"
+    new_tmp=
+    return 1
+  fi
+  if ! mv -f -- "$new_tmp" "$dst"; then
+    say "couldn't rename $new_tmp over $dst"
+    rm -f -- "$new_tmp"
+    new_tmp=
+    return 1
+  fi
+  new_tmp=
+  sync -f "$dst" || { say "couldn't sync the filesystem after renaming over $dst"; return 2; }
+  rb_sha=
+  if ! read_back "$dst" || [[ $rb_sha != "$want" ]]; then
+    say "$dst doesn't read back as written after the rename (sha256 ${rb_sha:-unreadable}, wanted $want)"
+    return 2
+  fi
+}
+
+# Room on the boot partition for $1 bytes and the margin.
+need_space() {
+  local avail
+  avail=$(df --output=avail -B1 "$ESP" | tail -1 | tr -dc 0-9)
+  [[ -n $avail ]] || die "couldn't read the free space on $ESP; nothing written"
+  ((avail >= $1 + MARGIN)) ||
+    die "the boot partition has $((avail / 1048576)) MiB free; this needs $(( ($1 + MARGIN + 1048575) / 1048576 )) MiB (the files written and a margin of $((MARGIN / 1048576))). Nothing written"
+}
+
+# A device tree blob by its own header: the magic, and a total size that is the file's. A file that isn't one would
+# sit in the middle of the bundle, where the loader steps from blob to blob by those sizes.
+check_dtb() {
+  local hex
+  [[ -f $1 && -r $1 ]] || die "not a readable file: $1"
+  hex=$(od -An -tx1 -N8 -- "$1" | tr -d ' \n')
+  [[ ${hex:0:8} == d00dfeed ]] || die "not a device tree blob (it doesn't start with d00dfeed): $1"
+  ((16#${hex:8:8} == $(size_of "$1"))) || die "a device tree blob whose header says $((16#${hex:8:8})) bytes in a file of $(size_of "$1"): $1"
+}
+
+# This Mac's board name, the first string of the running device tree's root "compatible"; empty if that can't be read.
+this_board() {
+  local c=
+  [[ -r $COMPATIBLE ]] || return 0
+  IFS= read -r -d '' c < "$COMPATIBLE" || true
+  [[ $c != *[!A-Za-z0-9,._-]* ]] || c=
+  echo "$c"
+}
+
+cmd_build() {
+  (($# == 3)) || usage
+  local m1n1=$1 from=$2 out=$3 l
+  local -a dtbs=()
+  [[ -f $m1n1 && -s $m1n1 && -r $m1n1 ]] || die "no m1n1.bin to read at $m1n1"
+  if [[ -d $from ]]; then
+    compgen -G "$from/*.dtb" > /dev/null || die "no *.dtb in $from"
+    mapfile -d '' dtbs < <(printf '%s\0' "$from"/*.dtb | LC_ALL=C sort -z)
+  elif [[ -f $from ]]; then
+    while IFS= read -r l || [[ -n $l ]]; do
+      [[ -z $l ]] || dtbs+=("$l")
+    done < "$from"
+    ((${#dtbs[@]})) || die "no path in the list $from"
+  else
+    die "neither a directory of *.dtb nor a list of paths: $from"
+  fi
+  for l in "${dtbs[@]}"; do check_dtb "$l"; done
+  # One of them has to be this Mac's, or the loader has no device tree to hand on.
+  local board found=0
+  board=$(this_board)
+  if [[ -n $board ]]; then
+    for l in "${dtbs[@]}"; do
+      ! LC_ALL=C grep -q -a -F -- "$board" "$l" || found=1
+    done
+    ((found)) || die "none of the ${#dtbs[@]} device trees names this Mac ($board): a bundle without its device tree doesn't start it. Nothing built"
+  else
+    say "note: this system's own board name isn't readable at $COMPATIBLE, so whether one of the device trees is this Mac's was not checked"
+  fi
+  [[ ! -d $out ]] || die "$out is a directory"
+  [[ ! $(dirname -- "$out") -ef $BOOT/m1n1 ]] || die "not into $BOOT/m1n1: build the bundle elsewhere; install puts it there"
+  stock_inputs
+  new_tmp=$out.ref-loader.new
+  assemble "$m1n1" "$s_uboot" "$s_conf" "$new_tmp" "${dtbs[@]}"
+  mv -f -- "$new_tmp" "$out"
+  new_tmp=
+  echo "built $out: $m1n1 ($(size_of "$m1n1") bytes), ${#dtbs[@]} device trees (${dtbs[0]##*/} first, ${dtbs[-1]##*/} last), $s_uboot gzip'd ($(gz_uboot "$s_uboot" | wc -c) bytes), $(wc -l < "$s_conf") configuration lines"
+  echo "sha256 $(sha_of "$out") ($(size_of "$out") bytes)"
+  [[ -z $board ]] || echo "one of the device trees names this Mac ($board)"
+}
+
+cmd_verify_recipe() {
+  (($# == 0)) || usage
+  ! is_safe || die "this is a safe boot: /boot isn't mounted, so there is no live boot.bin to compare with here"
+  esp_regular
+  verify_recipe
+}
+
+# The device the boot partition is on: the one mounted at $BOOT, or in a safe boot the one the disk's fstab names.
+boot_device() {
+  local src
+  if is_safe; then
+    src=$(awk '$1 !~ /^#/ && $2 == "/boot" { print $1; exit }' "$RUN/lower/root/etc/fstab" 2> /dev/null) || true
+    [[ -n $src ]] || die "this is a safe boot, and the disk's fstab names no /boot"
+    [[ $src == /dev/* ]] || src=$(findfs "$src" 2> /dev/null) || die "couldn't find the device of the fstab's /boot"
+  else
+    src=$(findmnt -n -o SOURCE --mountpoint "$BOOT" 2> /dev/null) || die "$BOOT isn't a mount point: the boot partition isn't mounted there"
+  fi
+  [[ $src == /dev/* ]] || die "the boot partition's device isn't one under /dev: $src"
+  echo "$src"
+}
+
+# What install without --recovery-checked says, and recovery-notes says again: what the flag stands for.
+flag_means() {
+  cat <<EOF
+--recovery-checked is the owner's word that, from macOS, before this swap:
+  1. I mounted this Mac's Linux boot partition (ref-loader recovery-notes says which one) and saw m1n1/boot.bin on it;
+  2. I made a scratch file in that same m1n1/ directory and removed it again, never touching boot.bin. Seeing boot.bin
+     only shows the partition can be read, and a read-only mount shows it too; the copy back has to write there;
+  3. I have the restore steps (ref-loader recovery-notes) somewhere outside this Mac.
+It is the owner's word, not a proof: nothing in this tool can check any of it from Linux.
+EOF
+}
+
+cmd_recovery_notes() {
+  (($# == 0)) || usage
+  local dev col partn disk rec live
+  local -A v=()
+  dev=$(boot_device) || exit 1
+  for col in PARTUUID UUID LABEL SIZE FSTYPE PKNAME; do
+    v[$col]=$(lsblk -dno "$col" "$dev" 2> /dev/null | head -n 1 | sed 's/^ *//; s/ *$//') || true
+  done
+  partn=$(cat "$SYS_BLOCK/${dev##*/}/partition" 2> /dev/null) || partn=
+  disk=${v[PKNAME]:-}
+  [[ -n ${v[PARTUUID]} && -n $partn ]] ||
+    die "couldn't read $dev's GPT partition UUID and its number (lsblk, $SYS_BLOCK/${dev##*/}/partition): no notes worth keeping"
+  cat <<EOF
+ref-loader recovery notes: how to put the stock loader back from macOS, without starting Linux.
+Keep a copy of this OUTSIDE this Mac (paper, a phone, another computer) BEFORE the swap.
+
+The partition, as Linux sees it now:
+  device               $dev: partition number $partn${disk:+ of the disk $disk ($(lsblk -dno SIZE "/dev/$disk" 2> /dev/null | sed 's/^ *//' || true))}
+  size                 ${v[SIZE]:-not read}
+  filesystem           ${v[FSTYPE]:-not read} (FAT), label "${v[LABEL]:-}", volume id ${v[UUID]:-not read}
+  GPT partition UUID   ${v[PARTUUID]}
+macOS should show the same partition number in the disk's table, the same size, the label as the volume's name, and
+the partition UUID (in capitals). None of that was looked at from macOS here.
+
+The two files on it:
+  $LOADER         the loader that is started
+  $STOCK   the stock loader, kept by "ref-loader install" (it isn't there before the first install)
+EOF
+  if ! is_safe && [[ -r $BOOT/$LOADER ]]; then
+    live=$(sha_of "$BOOT/$LOADER")
+    echo "  $LOADER is now $(size_of "$BOOT/$LOADER") bytes, sha256 $live"
+  fi
+  if rec=$(read_record "$STATE/stock.sha256"); then
+    echo "  the stock loader's recorded sha256: $rec"
+  else
+    echo "  no stock loader is recorded yet: install keeps the boot.bin it finds, after showing it is the stock one"
+  fi
+  cat <<EOF
+
+Before the swap, from macOS (this is what "ref-loader install --recovery-checked" stands for):
+  1. Start macOS and mount that partition (partition $partn of the internal disk, ${v[SIZE]:-its size above}, "${v[LABEL]:-}").
+  2. Look for m1n1/boot.bin on it.
+  3. In that same m1n1/ directory, create a scratch file under a new name and remove it again. Do not touch boot.bin.
+     Seeing boot.bin only shows the partition can be read: a read-only mount shows it too. The copy back writes there.
+  4. Eject the partition.
+  5. Put these notes somewhere outside this Mac.
+
+To restore from macOS, if Linux doesn't start after the swap:
+  1. Start macOS (the startup options appear when the power button is held at power-on).
+  2. Mount that partition.
+  3. Copy m1n1/boot.bin.stock over m1n1/boot.bin, replacing it. If you can, compare the copy's sha256 with the
+     stock loader's above.
+  4. Eject the partition and restart.
+
+THE macOS STEPS WERE NOT TRIED FROM HERE: this tool runs in Linux and can't check any of them. They are kept
+generic on purpose. (In macOS's Terminal, "diskutil list" usually shows the partitions, "diskutil mount" mounts one
+and "shasum -a 256" prints a file's sha256; that too is from memory, not from a run.)
+
+From Linux, as long as it starts (a regular boot or a safe boot): pkexec ref-loader restore
+
+EOF
+  flag_means
+}
+
+cmd_install() {
+  local checked=0 bundle= a
+  for a in "$@"; do
+    if [[ $a == --recovery-checked ]] && ((!checked)); then
+      checked=1
+    elif [[ $a != -* && -z $bundle ]]; then
+      bundle=$a
+    else
+      usage
+    fi
+  done
+  [[ -n $bundle ]] || usage
+  if ((!checked)); then
+    say "install is only made with --recovery-checked; nothing written."
+    flag_means >&2
+    echo "The notes to keep, and what to check from macOS: ref-loader recovery-notes" >&2
+    exit 1
+  fi
+  need_root
+  ! is_safe || die "this is a safe boot: the swap is made in a regular boot (restore is the one that works here). Nothing written"
+  [[ -f $bundle && -s $bundle && -r $bundle ]] || die "no bundle to read at $bundle; nothing written"
+  esp_regular
+  local live=$ESP/$LOADER stock=$ESP/$STOCK src_sha rec= ref_old= need tail keep=0 rc
+
+  # The recipe first: without it, neither "the live boot.bin is the stock one" nor "this bundle was built the way
+  # the loader is read" is known.
+  verify_recipe || die "the stock recipe doesn't rebuild the live boot.bin (above), so this tool can't say what the live file is or how a bundle should be made. Nothing written. (If the live file is an installed bundle: ref-loader status, and restore first.)"
+
+  # The bundle: not the stock one, and ending as the stock one ends, with the gzip'd U-Boot and the configuration
+  # lines, which a bare m1n1.bin or a cut-off file doesn't.
+  src_sha=$(sha_of "$bundle")
+  [[ $src_sha != "$v_rebuilt_sha" ]] || die "$bundle is the stock bundle itself; nothing written"
+  tail=$work/tail
+  { gz_uboot "$s_uboot"; cat "$s_conf"; } > "$tail"
+  (($(size_of "$bundle") > $(size_of "$tail"))) && cmp -s <(tail -c "$(size_of "$tail")" -- "$bundle") "$tail" ||
+    die "$bundle doesn't end with the gzip'd U-Boot and the configuration lines the stock bundle ends with: it isn't a bundle ref-loader build made on this system as it is now. Nothing written"
+
+  # This Mac's name somewhere before that tail: a bundle with no device tree for it can't have one. (Necessary, not
+  # sufficient: build is where each device tree is looked at.)
+  local board
+  board=$(this_board)
+  # (Counted, not -q: a grep that stops at the first match breaks the pipe under head, and that reads as a failure.)
+  [[ -z $board ]] || (($(head -c "$(($(size_of "$bundle") - $(size_of "$tail")))" -- "$bundle" | LC_ALL=C grep -c -a -F -- "$board" || true) > 0)) ||
+    die "$bundle has no device tree that names this Mac ($board) in it: it wouldn't start it. Nothing written"
+
+  # The stock file: kept once, with its record, and only ever the recorded stock.
+  if [[ -e $STATE/stock.sha256 ]]; then
+    rec=$(read_record "$STATE/stock.sha256") || die "$STATE/stock.sha256 isn't a sha256; nothing written"
+  fi
+  if [[ -e $stock ]]; then
+    [[ -n $rec ]] || die "$stock exists and no sha256 is recorded for it in $STATE/stock.sha256: what it is isn't known. Nothing written"
+    read_back "$stock" || die "couldn't read $stock; nothing written"
+    [[ $rb_sha == "$rec" ]] ||
+      die "$stock isn't the recorded stock (it reads sha256 $rb_sha, the record says $rec). Nothing written"
+    [[ $rec == "$v_live_sha" ]] ||
+      die "$stock is an older stock bundle than the one update-m1n1 builds now (sha256 $rec, now $v_live_sha): the packages changed since it was kept, and putting it back would bring older pieces with it. If the live boot.bin is the one to keep, remove $stock and $STATE/stock.sha256 by hand and install again. Nothing written"
+  else
+    [[ -z $rec || $rec == "$v_live_sha" ]] ||
+      die "$STATE/stock.sha256 records another stock bundle (sha256 $rec) than the live one ($v_live_sha), and there is no $stock: remove the record by hand if the live boot.bin is the one to keep, and install again. Nothing written"
+    keep=1
+  fi
+  need=$(size_of "$bundle")
+  ((!keep)) || need=$((need + $(size_of "$live")))
+  need_space "$need"
+
+  if ((keep)); then
+    write_record "$STATE/stock.sha256" "$v_live_sha" || die "couldn't record the stock's sha256 in $STATE/stock.sha256; nothing written to the boot partition"
+    rc=0
+    write_verified "$live" "$stock" "$v_live_sha" || rc=$?
+    if ((rc)); then
+      ((rc != 2)) || rm -f -- "${stock:?}"
+      die "couldn't keep the stock file as $stock; boot.bin is untouched, the bundle not installed"
+    fi
+    echo "kept the stock loader as $stock (sha256 $v_live_sha, $rb_how)"
+  else
+    echo "the stock loader is kept already: $stock is the recorded stock (sha256 $rec)"
+  fi
+
+  # The record of what is installed goes first: if the rename below is the last thing this run does, status still
+  # knows the file.
+  ref_old=$(read_record "$STATE/ref.sha256") || ref_old=
+  write_record "$STATE/ref.sha256" "$src_sha" || die "couldn't record the bundle's sha256 in $STATE/ref.sha256; boot.bin is untouched"
+  rc=0
+  write_verified "$bundle" "$live" "$src_sha" || rc=$?
+  if ((rc == 1)); then
+    if [[ -n $ref_old ]]; then write_record "$STATE/ref.sha256" "$ref_old" || true; else rm -f -- "$STATE/ref.sha256"; fi
+    die "the bundle is not installed: boot.bin is as it was, the stock one"
+  elif ((rc)); then
+    # boot.bin was replaced and isn't known to be right: the stock goes back, by the same steps.
+    say "boot.bin was replaced and doesn't verify: putting the stock back"
+    rc=0
+    write_verified "$stock" "$live" "$v_live_sha" || rc=$?
+    if ((rc == 0)); then
+      if [[ -n $ref_old ]]; then write_record "$STATE/ref.sha256" "$ref_old" || true; else rm -f -- "$STATE/ref.sha256"; fi
+      die "the bundle is not installed. boot.bin is the stock one again (sha256 $v_live_sha, $rb_how)"
+    fi
+    die "BOOT.BIN IS NOT VERIFIED and the stock could not be put back over it. DO NOT RESTART. $stock is the stock loader: try 'pkexec ref-loader restore' now, and failing that copy it over $live by hand; from macOS, the recovery notes"
+  fi
+  cat <<EOF
+installed: $live is now the bundle (sha256 $src_sha, $(size_of "$live") bytes, $rb_how)
+the stock loader is $stock (sha256 $v_live_sha)
+Until the stock is put back, every start of Linux on this Mac goes through this loader and gets its device trees:
+the regular kernel too, not only a test kernel.
+To go back:
+  from Linux, in a regular boot or a safe boot:   pkexec ref-loader restore
+  from macOS, if Linux doesn't start: mount the EFI partition (ref-loader recovery-notes says which one), copy
+    m1n1/boot.bin.stock over m1n1/boot.bin, eject, restart
+A package update that runs update-m1n1 also writes a stock loader over it (and keeps this bundle as boot.bin.old).
+EOF
+}
+
+cmd_restore() {
+  (($# == 0)) || usage
+  need_root
+  if is_safe; then esp_safe rw; else esp_regular; fi
+  local live=$ESP/$LOADER stock=$ESP/$STOCK rec rc=0
+  rec=$(read_record "$STATE/stock.sha256") ||
+    die "no sha256 of the stock loader is recorded in $STATE/stock.sha256, so nothing here is known to be the stock. Nothing written"
+  [[ -f $stock ]] || die "there is no $STOCK on the boot partition to put back. Nothing written"
+  read_back "$stock" || die "couldn't read $STOCK; nothing written"
+  [[ $rb_sha == "$rec" ]] ||
+    die "$STOCK isn't the recorded stock (it reads sha256 $rb_sha, the record says $rec). Nothing written"
+  read_back "$live" || die "couldn't read $LOADER; nothing written"
+  if [[ $rb_sha == "$rec" ]]; then
+    echo "boot.bin already is the stock loader (sha256 $rec, $rb_how): nothing written"
+    return 0
+  fi
+  need_space "$(size_of "$stock")"
+  write_verified "$stock" "$live" "$rec" || rc=$?
+  ((rc != 1)) || die "the stock is NOT restored: boot.bin is as it was, not the stock (sha256 $(sha_of "$live" || echo unreadable))"
+  ((rc == 0)) || die "BOOT.BIN IS NOT VERIFIED after the write. DO NOT RESTART. Run this again; failing that, copy $STOCK over $LOADER by hand on the boot partition; from macOS, the recovery notes"
+  echo "restored: boot.bin is the stock loader again (sha256 $rec, $rb_how); $STOCK stays where it is"
+  # The stock that was kept, against what the packages build now. A note only: the restore is done, and nothing here
+  # may turn its success into a failure, so it is worked out in a subshell whose own failures say nothing.
+  if ! is_safe; then
+    [[ -n $work ]] || work=$(mktemp -d)
+    (
+      stock_inputs
+      assemble "$s_m1n1" "$s_uboot" "$s_conf" "$work/now" "${s_dtbs[@]}"
+      [[ $(sha_of "$work/now") == "$rec" ]] ||
+        echo "note: the packages changed since this stock was kept: update-m1n1 would build another bundle now (ref-loader verify-recipe)"
+    ) 2> /dev/null || true
+  fi
+}
+
+cmd_status() {
+  (($# == 0)) || usage
+  if is_safe; then
+    [[ $EUID -eq 0 ]] || die "this is a safe boot: /boot isn't mounted, and only root can mount it to look (pkexec ref-loader status)"
+    esp_safe ro
+  else
+    esp_regular
+  fi
+  local live=$ESP/$LOADER stock=$ESP/$STOCK live_sha rec= ref= what
+  live_sha=$(sha_of "$live")
+  rec=$(read_record "$STATE/stock.sha256") || rec=
+  ref=$(read_record "$STATE/ref.sha256") || ref=
+  if [[ -n $rec && $live_sha == "$rec" ]]; then
+    what="the stock loader (the sha256 recorded in $STATE/stock.sha256)"
+  elif [[ -n $ref && $live_sha == "$ref" ]]; then
+    what="the bundle ref-loader installed (the sha256 recorded in $STATE/ref.sha256)"
+  else
+    what="neither the recorded stock nor the recorded bundle${rec:+ (stock $rec)}${ref:+ (bundle $ref)}"
+    [[ -n $rec || -n $ref ]] || what="not held against a record: none is kept yet"
+  fi
+  echo "$LOADER: sha256 $live_sha ($(size_of "$live") bytes): $what"
+  if [[ -e $stock ]]; then
+    if [[ -z $rec ]]; then
+      echo "$STOCK: present, sha256 $(sha_of "$stock"), and NO record to hold it against"
+    elif [[ $(sha_of "$stock") == "$rec" ]]; then
+      echo "$STOCK: present and intact (the recorded sha256 $rec)"
+    else
+      echo "$STOCK: present and NOT the recorded stock (sha256 $(sha_of "$stock"), recorded $rec)"
+    fi
+  else
+    echo "$STOCK: not there${rec:+ (a stock is recorded: $rec)}"
+  fi
+  # What update-m1n1 would build now, where its inputs can be read.
+  stock_inputs
+  assemble "$s_m1n1" "$s_uboot" "$s_conf" "$work/now" "${s_dtbs[@]}"
+  what=$(sha_of "$work/now")
+  if [[ $what == "$live_sha" ]]; then
+    echo "update-m1n1's recipe builds exactly the live boot.bin now (sha256 $what)"
+  else
+    echo "update-m1n1's recipe builds another bundle now (sha256 $what)$([[ $what != "$rec" ]] || echo ": the recorded stock")"
+  fi
+}
+
+case "${1:-}" in
+  build) shift; cmd_build "$@" ;;
+  verify-recipe) shift; cmd_verify_recipe "$@" ;;
+  recovery-notes) shift; cmd_recovery_notes "$@" ;;
+  install) shift; cmd_install "$@" ;;
+  restore) shift; cmd_restore "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  *) usage ;;
+esac
