@@ -80,9 +80,11 @@ this section where they differ.
      macOS is bootable on this Mac. Claude writes and changes no m1n1 code).
      **A way back that doesn't boot through the new loader comes first** (Pullfrog on #135): the
      regular kernel boots through that same file, so a loader that fails before GRUB leaves no Linux
-     to restore from. Before the swap Corey confirms from macOS that the boot partition mounts and
-     shows `m1n1/boot.bin`, and has the restore steps (copy the kept file back) written down outside
-     this Mac; the swap tool refuses without that word.
+     to restore from. Before the swap Corey confirms from macOS that the boot partition mounts
+     **writable**: it shows `m1n1/boot.bin`, and a scratch file can be made and removed in `m1n1/`
+     beside it (a read-only mount shows the file too, and the copy back would fail); and has the
+     restore steps (copy the kept file back) written down outside this Mac. The swap tool refuses
+     without that word.
      What their notes say the working setup is, all of it part of that decision
      (`S2R-T600X-NOTES.md`, "Building and booting"):
      - **Stage 2** from their m1n1 branch, **with the device trees of their kernel branch appended**.
