@@ -106,8 +106,18 @@ this section where they differ.
      command line (no plain entry is written for it, so no boot of it binds the driver any other
      way, a boot made only to look for the mailbox included), with the hook's read-only root; and
      the bound driver's `diag/xart` reading "disabled" stays a separate check of what the binding
-     did, before any suspend. Being built 2026-11-26 (`test-kernel --safe-only`, `ref-loader`,
-     `ref-sleep`).
+     did, before any suspend. Built 2026-11-26 (`test-kernel install --safe-only`, `ref-loader`,
+     `ref-sleep`; none run as root yet). Outside the repo, in
+     `~/.local/share/sleep-drain/ref-20261126/`: their m1n1 at 4143b8e built unchanged
+     (`m1n1/build/m1n1.bin`), their kernel at 3acb8cf built from the running kernel's
+     configuration with `CONFIG_APPLE_S2R=y` (release `7.3.0-s2rref`,
+     `linux-s2rref-7.3.0-s2rref.pkg.tar.zst`), and its 137 device trees (`dtbs/`).
+     `ref-loader verify-recipe` rebuilt the live stock `boot.bin` byte for byte on this Mac.
+     **The order of the first try:** Corey's check from macOS; `install.sh`; the bundle built and
+     installed (`ref-loader install --recovery-checked`); the test kernel installed safe-only;
+     `test-kernel boot s2rref --safe-sepro` and a restart; in that boot `ref-sleep check` (the
+     mailbox line, the store read-only), and only then `ref-sleep go`; afterwards
+     `ref-loader restore` (it works from that boot) before the next regular boot.
    - **One reference-shaped run from here:** every remaining pre-commit difference made at once in
      the replay. A large build with many new writes (the memory controller's among them), and the
      PMP's power word is on the never-write list: a fresh OK. It would not give a wake either way.
