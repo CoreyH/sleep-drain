@@ -96,7 +96,14 @@ used to sit in CLAUDE.md, entry for entry):
   record that isn't a hash, damaged, older than the recipe, or recorded and missing. Each write fault, at the
   stock's copy and at the bundle's (a copy that doesn't read back, an fsync or a rename that fails, a file that
   reads back wrong after its rename: the stock put back, or `BOOT.BIN IS NOT VERIFIED`), and the same for
-  `restore`. A safe boot: `install` refused, `status` and `restore` mounting the boot partition of the disk's own
+  `restore`. The gate (`sync_gate()`, Pullfrog on #136): with every sync of the filesystem failing once boot.bin
+  has been renamed over, the reviewer's fault, `install` ends in `DO NOT RESTART` with the file reading as the
+  stock through the cache, and `verify-recipe`, `status`, `restore` and a second `install` each fail saying the
+  partition's writeback isn't confirmed, with no match and no "the stock" said, until the sync succeeds, when
+  `verify-recipe` gives a fresh match; a filesystem that can't be synced before anything was written; the kind
+  of read said on both lines, and where no direct read is possible (a dd that fails) a match "read through the
+  cache", exit 0, never called confirmed on the partition; `restore` not saying "already the stock" without the
+  sync. A safe boot: `install` refused, `status` and `restore` mounting the boot partition of the disk's own
   fstab and unmounting it on every way out, the mount failing, the unmount failing. `recovery-notes`: the
   partition's identity, the scratch-file check, that the macOS steps weren't tried, what the flag stands for.
   `install.sh` installs it; `uninstall.sh` keeps it while a stock loader is kept.

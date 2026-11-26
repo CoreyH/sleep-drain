@@ -27,7 +27,13 @@
 #   tree must be one by its header, and one of them must name this Mac.
 # verify-recipe: builds the stock bundle from the installed inputs exactly as
 #   update-m1n1 would and compares it with the live boot.bin. That is the proof
-#   that the recipe here is the right one; install refuses without it.
+#   that the recipe here is the right one; install refuses without it. It is
+#   also the gate for "the stock loader is what a restart loads": so it first
+#   syncs the boot partition's filesystem, and a sync that fails fails the
+#   command (what the partition holds isn't known then, whatever the page
+#   cache reads); then it reads boot.bin past the page cache where it can, and
+#   says which kind of read it was. status, and restore before it says "already
+#   the stock", do the same.
 # install: only with --recovery-checked (the owner's word that the way back
 #   from macOS was tried: see recovery-notes), only in a regular boot with
 #   /boot the mounted FAT partition, only if verify-recipe passes in the same
@@ -125,6 +131,22 @@ read_back() {
     return 1
   fi
   rb_sha=${out%% *}
+}
+
+# confirm_live WHAT-WASN'T-DONE: what the boot partition holds as m1n1/boot.bin, as far as Linux can say it. First the
+# filesystem's writeback (syncfs, through the loader's directory): if that fails, a write to the partition is not known
+# to have landed, and nothing read afterwards says what a restart would load, so the command ends there. Then the file,
+# read as read_back() reads. Sets live_sha and live_how ("confirmed on the partition" only for a read from the device).
+confirm_live() {
+  sync -f "$ESP/${LOADER%/*}" ||
+    die "couldn't sync the filesystem that holds $LOADER: the boot partition's writeback isn't confirmed, so nothing read now says what a restart would load. DO NOT RESTART on this; find out why the sync fails (the kernel log) and run this again. $1"
+  read_back "$ESP/$LOADER" || die "couldn't read $ESP/$LOADER after the sync. $1"
+  live_sha=$rb_sha
+  if [[ $rb_how == "read from the device" ]]; then
+    live_how="confirmed on the partition (synced, then read from the device)"
+  else
+    live_how="after a successful sync, read through the cache (a direct read of the partition isn't possible here)"
+  fi
 }
 
 # The inputs of the stock bundle, resolved as update-m1n1 resolves them: its defaults file sourced by sh, then its own
@@ -231,23 +253,25 @@ write_record() {
   mkdir -p "$STATE" && printf '%s\n' "$2" > "$1.new" && sync "$1.new" && mv -f -- "$1.new" "$1"
 }
 
-# verify_recipe: rebuilds the stock bundle and compares it with the live loader on $ESP. Prints what it found; sets
-# v_rebuilt (the file), v_rebuilt_sha and v_live_sha. Returns 0 only on a match.
+# verify_recipe WHAT-WASN'T-DONE: rebuilds the stock bundle and compares it with the live loader on $ESP, read by
+# confirm_live() (which ends the command if the partition can't be synced). Prints what it found; sets v_rebuilt (the
+# file), v_rebuilt_sha and v_live_sha. Returns 0 only on a match.
 verify_recipe() {
   local live=$ESP/$LOADER gz conf
+  confirm_live "${1:-}"
   stock_inputs
   v_rebuilt=$work/stock.rebuilt
   assemble "$s_m1n1" "$s_uboot" "$s_conf" "$v_rebuilt" "${s_dtbs[@]}"
   v_rebuilt_sha=$(sha_of "$v_rebuilt")
-  v_live_sha=$(sha_of "$live")
+  v_live_sha=$live_sha
   gz=$(gz_uboot "$s_uboot" | wc -c)
   conf=$(wc -l < "$s_conf")
   echo "the stock recipe (update-m1n1's, from $DEFAULTS): $s_m1n1 ($(size_of "$s_m1n1") bytes), ${#s_dtbs[@]} device trees, $s_uboot gzip'd ($gz bytes), $conf configuration lines"
   echo "rebuilt from the installed inputs: sha256 $v_rebuilt_sha ($(size_of "$v_rebuilt") bytes)"
-  echo "$BOOT/$LOADER as it is: sha256 $v_live_sha ($(size_of "$live") bytes)"
+  echo "$BOOT/$LOADER as it is: sha256 $v_live_sha ($(size_of "$live") bytes), $live_how"
   [[ -z $s_disabled ]] || echo "note: $DEFAULTS sets M1N1_UPDATE_DISABLED, so update-m1n1 itself writes nothing on this system"
   if [[ $v_rebuilt_sha == "$v_live_sha" ]]; then
-    echo "match: the live boot.bin is exactly what the recipe builds"
+    echo "match: the live boot.bin is exactly what the recipe builds, $live_how"
     return 0
   fi
   # Where the first difference is, by the pieces' sizes: which input to look at.
@@ -378,7 +402,7 @@ cmd_verify_recipe() {
   (($# == 0)) || usage
   ! is_safe || die "this is a safe boot: /boot isn't mounted, so there is no live boot.bin to compare with here"
   esp_regular
-  verify_recipe
+  verify_recipe "No match is said."
 }
 
 # The device the boot partition is on: the one mounted at $BOOT, or in a safe boot the one the disk's fstab names.
@@ -497,7 +521,7 @@ cmd_install() {
 
   # The recipe first: without it, neither "the live boot.bin is the stock one" nor "this bundle was built the way
   # the loader is read" is known.
-  verify_recipe || die "the stock recipe doesn't rebuild the live boot.bin (above), so this tool can't say what the live file is or how a bundle should be made. Nothing written. (If the live file is an installed bundle: ref-loader status, and restore first.)"
+  verify_recipe "Nothing written" || die "the stock recipe doesn't rebuild the live boot.bin (above), so this tool can't say what the live file is or how a bundle should be made. Nothing written. (If the live file is an installed bundle: ref-loader status, and restore first.)"
 
   # The bundle: not the stock one, and ending as the stock one ends, with the gzip'd U-Boot and the configuration
   # lines, which a bare m1n1.bin or a cut-off file doesn't.
@@ -593,9 +617,11 @@ cmd_restore() {
   read_back "$stock" || die "couldn't read $STOCK; nothing written"
   [[ $rb_sha == "$rec" ]] ||
     die "$STOCK isn't the recorded stock (it reads sha256 $rb_sha, the record says $rec). Nothing written"
-  read_back "$live" || die "couldn't read $LOADER; nothing written"
-  if [[ $rb_sha == "$rec" ]]; then
-    echo "boot.bin already is the stock loader (sha256 $rec, $rb_how): nothing written"
+  # What is there now, with the partition's writeback confirmed first: "already the stock" is a statement about what
+  # a restart loads, and after a write whose sync failed the page cache alone would say it too.
+  confirm_live "Nothing written"
+  if [[ $live_sha == "$rec" ]]; then
+    echo "boot.bin already is the stock loader (sha256 $rec, $live_how): nothing written"
     return 0
   fi
   need_space "$(size_of "$stock")"
@@ -624,8 +650,8 @@ cmd_status() {
   else
     esp_regular
   fi
-  local live=$ESP/$LOADER stock=$ESP/$STOCK live_sha rec= ref= what
-  live_sha=$(sha_of "$live")
+  local live=$ESP/$LOADER stock=$ESP/$STOCK rec= ref= what
+  confirm_live "Nothing is said about boot.bin."
   rec=$(read_record "$STATE/stock.sha256") || rec=
   ref=$(read_record "$STATE/ref.sha256") || ref=
   if [[ -n $rec && $live_sha == "$rec" ]]; then
@@ -637,6 +663,7 @@ cmd_status() {
     [[ -n $rec || -n $ref ]] || what="not held against a record: none is kept yet"
   fi
   echo "$LOADER: sha256 $live_sha ($(size_of "$live") bytes): $what"
+  echo "  that reading: $live_how"
   if [[ -e $stock ]]; then
     if [[ -z $rec ]]; then
       echo "$STOCK: present, sha256 $(sha_of "$stock"), and NO record to hold it against"

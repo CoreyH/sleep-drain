@@ -132,11 +132,22 @@ echo "{{name}} ${{dst##*/}}" >> {c}/log
     stub(t, "cp", hit.replace("{name}", "cp") + f'/usr/bin/cp "$@" || exit\nif hit bad-cp; then echo damage >> "$dst"; fi\n')
     stub(t, "mv", hit.replace("{name}", "mv") + f'''hit fail-mv && exit 1
 /usr/bin/mv "$@" || exit
+touch {c}/moved-${{dst##*/}}
 if hit bad-mv; then echo damage >> "$dst"; fi
 if hit bad-mv-once; then echo damage >> "$dst"; rm {c}/bad-mv-once; fi
 exit 0
 ''')
-    stub(t, "sync", hit.replace("{name}", 'sync$([[ $1 == -f ]] && echo " -f")') + 'hit fail-sync && exit 1\nexec /usr/bin/sync "$@"\n')
+    # sync: a fault file names one call by its last argument, as above; calls/fail-syncfs fails every sync of the
+    # filesystem (sync -f), and calls/fail-syncfs-after-mv every one made once boot.bin has been renamed over.
+    stub(t, "sync", hit.replace("{name}", 'sync$([[ $1 == -f ]] && echo " -f")') + f'''hit fail-sync && exit 1
+if [[ $1 == -f ]]; then
+  [[ ! -e {c}/fail-syncfs ]] || exit 1
+  [[ ! -e {c}/fail-syncfs-after-mv || ! -e {c}/moved-boot.bin ]] || exit 1
+fi
+exec /usr/bin/sync "$@"
+''')
+    # dd: calls/no-direct makes a direct read impossible, as on a filesystem without O_DIRECT.
+    stub(t, "dd", f'[[ ! -e {c}/no-direct ]] || exit 1\nexec /usr/bin/dd "$@"\n')
     if safe:
         write(os.path.join(t, "run/active"), "/dev/mapper/root\n")
         write(os.path.join(t, "run/lower/root/etc/fstab"), "UUID=725346d2 / btrfs rw,subvol=@ 0 0\n# UUID=dead /boot vfat rw 0 2\nUUID=553C-45DC /boot vfat rw,relatime 0 2\n")
@@ -173,9 +184,14 @@ def run(t, *args, root=True, env=None):
     return subprocess.run(cmd, capture_output=True, text=True, env=e)
 
 
-def log(t):
+CONFIRM = "sync -f m1n1"
+
+
+def log(t, confirm=False):
+    """The wrappers' and stubs' calls. The sync of the filesystem that precedes every reading of the live boot.bin (through
+    the loader's directory, so it shows as CONFIRM) writes nothing, and is left out unless asked for."""
     p = os.path.join(t, "calls/log")
-    return open(p).read().splitlines() if os.path.exists(p) else []
+    return [l for l in (open(p).read().splitlines() if os.path.exists(p) else []) if confirm or l != CONFIRM]
 
 
 def clear_log(t):
@@ -409,6 +425,7 @@ def install_and_restore():
         check(esp(t) == before, "    (the boot partition is as it was after all of those)")
         # The install, with exactly the room it needs.
         flag(t, "avail", str(len(bundle) + len(stock) + MARGIN))
+        clear_log(t)
         p = run(t, "install", FLAG, ref)
         check(p.returncode == 0 and read(live) == bundle and read(live + ".stock") == stock and sorted(os.listdir(f"{t}/boot/m1n1")) == ["boot.bin", "boot.bin.stock"]
               and records(t) == {"ref.sha256": r_sha + "\n", "stock.sha256": s_sha + "\n"},
@@ -417,10 +434,10 @@ def install_and_restore():
               and f"is now the bundle (sha256 {r_sha}" in p.stdout and f"kept the stock loader as {live}.stock (sha256 {s_sha}" in p.stdout
               and "the regular kernel too" in p.stdout and "match: the live boot.bin is exactly what the recipe builds" in p.stdout,
               "    it shows the recipe's match, says what was written, and prints how to go back: pkexec ref-loader restore, and the copy from macOS", p.stdout)
-        want = ["sync stock.sha256.new", "mv stock.sha256", "cp boot.bin.stock.ref-loader.new", "sync boot.bin.stock.ref-loader.new", "mv boot.bin.stock", "sync -f boot.bin.stock",
+        want = [CONFIRM, "sync stock.sha256.new", "mv stock.sha256", "cp boot.bin.stock.ref-loader.new", "sync boot.bin.stock.ref-loader.new", "mv boot.bin.stock", "sync -f boot.bin.stock",
                 "sync ref.sha256.new", "mv ref.sha256", "cp boot.bin.ref-loader.new", "sync boot.bin.ref-loader.new", "mv boot.bin", "sync -f boot.bin"]
-        check(log(t) == want, "    the writes in order: the stock's record, the stock file (written beside, fsync'd, renamed, the filesystem synced), the bundle's record,"
-              " the bundle the same way; boot.bin is touched last, by one rename", "\n".join(log(t)))
+        check(log(t, confirm=True) == want, "    the steps in order: the filesystem synced before the live file is read for the recipe; then the stock's record, the stock file (written beside, fsync'd, renamed, the filesystem synced), the bundle's record,"
+              " the bundle the same way; boot.bin is touched last, by one rename", "\n".join(log(t, confirm=True)))
         p = run(t, "status", root=False)
         check(p.returncode == 0 and f"m1n1/boot.bin: sha256 {r_sha} ({len(bundle)} bytes): the bundle ref-loader installed" in p.stdout
               and f"m1n1/boot.bin.stock: present and intact (the recorded sha256 {s_sha})" in p.stdout and "builds another bundle now" in p.stdout and "the recorded stock" in p.stdout,
@@ -442,12 +459,14 @@ def install_and_restore():
         p = run(t, "restore")
         check(p.returncode == 0 and read(live) == stock and read(live + ".stock") == stock and sorted(os.listdir(f"{t}/boot/m1n1")) == ["boot.bin", "boot.bin.stock"]
               and f"restored: boot.bin is the stock loader again (sha256 {s_sha}" in p.stdout
-              and log(t) == ["cp boot.bin.ref-loader.new", "sync boot.bin.ref-loader.new", "mv boot.bin", "sync -f boot.bin"] and "note:" not in p.stdout,
-              "restore: boot.bin is the stock file again, byte for byte, by the same steps; boot.bin.stock stays", p.stdout + p.stderr + str(log(t)))
+              and log(t, confirm=True) == [CONFIRM, "cp boot.bin.ref-loader.new", "sync boot.bin.ref-loader.new", "mv boot.bin", "sync -f boot.bin"] and "note:" not in p.stdout,
+              "restore: the filesystem synced and the live file read first; then boot.bin is the stock file again, byte for byte, by the same steps; boot.bin.stock stays",
+              p.stdout + p.stderr + str(log(t, confirm=True)))
         clear_log(t)
         p = run(t, "restore")
-        check(p.returncode == 0 and "boot.bin already is the stock loader" in p.stdout and "nothing written" in p.stdout and log(t) == [] and read(live) == stock,
-              "restore a second time: it says boot.bin already is the stock, and writes nothing", p.stdout + p.stderr)
+        check(p.returncode == 0 and "boot.bin already is the stock loader" in p.stdout and "nothing written" in p.stdout and log(t, confirm=True) == [CONFIRM] and read(live) == stock
+              and ("confirmed on the partition (synced, then read from the device)" in p.stdout or "after a successful sync, read through the cache" in p.stdout),
+              "restore a second time: after a sync of the filesystem it says boot.bin already is the stock, with the kind of read it was, and writes nothing", p.stdout + p.stderr)
         p = run(t, "status", root=False)
         check(f"m1n1/boot.bin: sha256 {s_sha} ({len(stock)} bytes): the stock loader" in p.stdout and "present and intact" in p.stdout
               and "builds exactly the live boot.bin now" in p.stdout, "status after it: boot.bin is the stock loader", p.stdout + p.stderr)
@@ -592,6 +611,72 @@ def write_faults():
               "restore where boot.bin doesn't read back as the stock after the rename: BOOT.BIN IS NOT VERIFIED, DO NOT RESTART; not called restored; boot.bin.stock intact", p.stdout + p.stderr)
 
 
+def sync_gate():
+    """Pullfrog on #136: verify-recipe is the gate for "the stock loader is live, a restart is allowed", so it has to
+    mean the partition, not the page cache: a filesystem that can't be synced fails it, whatever reads back."""
+    SAYS = "the boot partition's writeback isn't confirmed"
+    DEVICE, CACHE = "confirmed on the partition (synced, then read from the device)", "after a successful sync, read through the cache (a direct read of the partition isn't possible here)"
+    # The reviewer's fault: both syncs of the filesystem after a rename over boot.bin fail, the bundle's and the rollback's.
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        ref = make_ref(t)
+        stock, live = stock_bundle(t), os.path.join(t, "boot/m1n1/boot.bin")
+        flag(t, "fail-syncfs-after-mv")
+        p = run(t, "install", FLAG, ref)
+        check(p.returncode != 0 and "BOOT.BIN IS NOT VERIFIED and the stock could not be put back" in p.stderr and "DO NOT RESTART" in p.stderr
+              and p.stderr.count("couldn't sync the filesystem after renaming") == 2 and read(live) == stock and "installed:" not in p.stdout,
+              "install where every sync of the filesystem fails once boot.bin has been renamed over (the bundle's, then the rollback's): DO NOT RESTART;"
+              " the file reads as the stock through the cache all the same", p.stdout + p.stderr)
+        for cmd, root in ((["verify-recipe"], False), (["status"], False), (["restore"], True), (["install", FLAG, ref], True)):
+            clear_log(t)
+            before = esp(t)
+            p = run(t, *cmd, root=root)
+            check(p.returncode != 0 and SAYS in p.stderr and "DO NOT RESTART" in p.stderr and "match" not in p.stdout and "already is the stock" not in p.stdout
+                  and "the stock loader" not in p.stdout and "restored" not in p.stdout and esp(t) == before and log(t) == [],
+                  f"{cmd[0]} after it, while the sync still fails: it fails saying the partition's writeback isn't confirmed; no match, no \"the stock\", nothing written,"
+                  " though the bytes read back are the stock's", p.stdout + p.stderr)
+        unflag(t, "fail-syncfs-after-mv")
+        p = run(t, "verify-recipe", root=False)
+        check(p.returncode == 0 and "match: the live boot.bin is exactly what the recipe builds, " in p.stdout and (DEVICE in p.stdout or CACHE in p.stdout),
+              "verify-recipe once the filesystem syncs: a fresh match, exit 0, with the kind of read said", p.stdout + p.stderr)
+        p = run(t, "restore")
+        check(p.returncode == 0 and "boot.bin already is the stock loader" in p.stdout, "    and restore then says boot.bin already is the stock", p.stdout + p.stderr)
+    # The plain cases: a filesystem that doesn't sync, before anything was written.
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        ref = make_ref(t)
+        flag(t, "fail-syncfs")
+        before = esp(t)
+        for cmd, root in ((["verify-recipe"], False), (["status"], False), (["install", FLAG, ref], True)):
+            p = run(t, *cmd, root=root)
+            check(p.returncode != 0 and SAYS in p.stderr and "match" not in p.stdout and esp(t) == before and records(t) == {} and log(t) == [] and "installed:" not in p.stdout,
+                  f"{cmd[0]} on a boot partition whose filesystem can't be synced: it fails saying so, with no match said and nothing written", p.stdout + p.stderr)
+        unflag(t, "fail-syncfs")
+        # The kind of read: from the device where a direct read works, and said to be through the cache where it doesn't.
+        p = run(t, "verify-recipe", root=False)
+        check(p.returncode == 0 and p.stdout.count(DEVICE) + p.stdout.count(CACHE) == 2 and (p.stdout.count(DEVICE) == 2 or p.stdout.count(CACHE) == 2),
+              "verify-recipe: the live file's line and the match's line both say which kind of read it was", p.stdout + p.stderr)
+        flag(t, "no-direct")
+        p = run(t, "verify-recipe", root=False)
+        check(p.returncode == 0 and p.stdout.count(CACHE) == 2 and DEVICE not in p.stdout and "confirmed on the partition" not in p.stdout,
+              "verify-recipe where no direct read is possible: a match after a successful sync, said in plain words to be read through the cache, exit 0;"
+              " never called confirmed on the partition", p.stdout + p.stderr)
+        p = run(t, "status", root=False)
+        check(p.returncode == 0 and "  that reading: " + CACHE in p.stdout, "    status says the same of its reading", p.stdout + p.stderr)
+        flag(t, "fail-syncfs")
+        p = run(t, "verify-recipe", root=False)
+        check(p.returncode != 0 and SAYS in p.stderr and "match" not in p.stdout, "    and with the sync failing as well: it fails, as with a direct read", p.stdout + p.stderr)
+        unflag(t, "fail-syncfs")
+        unflag(t, "no-direct")
+        # restore's "already the stock" needs the sync too.
+        assert run(t, "install", FLAG, ref).returncode == 0 and run(t, "restore").returncode == 0
+        flag(t, "fail-syncfs")
+        clear_log(t)
+        p = run(t, "restore")
+        check(p.returncode != 0 and SAYS in p.stderr and "Nothing written" in p.stderr and "already is the stock" not in p.stdout and log(t) == [],
+              "restore with boot.bin reading as the stock and a filesystem that can't be synced: it doesn't say \"already the stock\"; it fails, nothing written", p.stdout + p.stderr)
+
+
 def safe_boot():
     with tempfile.TemporaryDirectory() as t:
         setup(t)
@@ -611,14 +696,14 @@ def safe_boot():
         p = run(t, "status", root=False)
         check(p.returncode != 0 and "only root can mount it to look" in p.stderr and log(t) == [], "status in a safe boot without root: it says why it can't look; nothing mounted", p.stdout + p.stderr)
         p = run(t, "status")
-        check(p.returncode == 0 and "the bundle ref-loader installed" in p.stdout and log(t) == [f"mount -t vfat -o ro,flush UUID=553C-45DC {mnt}", f"umount {mnt}"],
+        check(p.returncode == 0 and "the bundle ref-loader installed" in p.stdout and log(t, confirm=True) == [f"mount -t vfat -o ro,flush UUID=553C-45DC {mnt}", CONFIRM, f"umount {mnt}"],
               "status in a safe boot as root: the boot partition of the disk's own fstab mounted read-only, looked at, and unmounted", p.stdout + p.stderr + str(log(t)))
         clear_log(t)
         p = run(t, "restore")
-        calls = log(t)
+        calls = log(t, confirm=True)
         check(p.returncode == 0 and read(live) == stock and "restored: boot.bin is the stock loader again" in p.stdout
               and calls[0] == f"mount -t vfat -o rw,flush UUID=553C-45DC {mnt}" and calls[-1] == f"umount {mnt}"
-              and calls[1:-1] == ["cp boot.bin.ref-loader.new", "sync boot.bin.ref-loader.new", "mv boot.bin", "sync -f boot.bin"] and not os.path.lexists(mnt),
+              and calls[1:-1] == [CONFIRM, "cp boot.bin.ref-loader.new", "sync boot.bin.ref-loader.new", "mv boot.bin", "sync -f boot.bin"] and not os.path.lexists(mnt),
               "restore in a safe boot: it mounts the boot partition itself, read-write, as sleep-drain-safe save does, puts the stock back by the same steps, and unmounts",
               p.stdout + p.stderr + str(calls))
         clear_log(t)
@@ -725,6 +810,7 @@ def main():
     recipe()
     install_and_restore()
     write_faults()
+    sync_gate()
     safe_boot()
     notes()
     print("all ok" if not fails else f"{fails} failed")
