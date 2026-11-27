@@ -65,8 +65,9 @@ The stock loader is back. The same day olivergreg reported the same working on a
 upstream's `sleep.c` with stock aura (aurora-silicon/linux#2198). So the entry's question (E2) is answered
 by other people's code, and **no further one-way replay run is planned**; `e1-hook/` stays as it is. What
 is next, in this order, replacing item 1 below (kept as the record of how it was reached):
-- **Tell the thread** (Corey's OK each time): a second J314s, the same firmware, their stage 2 with the
-  stock stage 1, the GPU driver's name as the one thing that had to change for this distribution's Mesa.
+- **Told the thread** 2026-11-27 with Corey's OK (aurora-silicon/linux#2198, comment 7218151913): a
+  second J314s, the same firmware, their stage 2 with the stock stage 1, the GPU driver's name as the one
+  thing that had to change for this distribution's Mesa, and an offer to olivergreg of a second machine.
 - **Measure it here.** What the project set out to fix is the drain: a deep sleep's power on this Mac
   against s2idle's 1.97 W (Ante042: 130 to 170 mW over a night, from battery voltage, since the gauge stops
   counting at those currents). First a second and third sleep in one boot and a 15-minute one
@@ -77,10 +78,15 @@ is next, in this order, replacing item 1 below (kept as the record of how it was
   back), a kernel outside the package manager rebuilt at each update, the enclave's store read-only (no
   Touch ID), and deep sleeps outside a safe boot. Or waiting for the upstream form.
 - **The upstream form** is olivergreg's: `sleep-t6000.h` for `sleep.c`, the loader's mailbox from aura.
-  This Mac boots through m1n1-aurora, whose stock second stage publishes no mailbox, so on Omarchy it needs
-  either aura or a mailbox in that m1n1: a question for omacom (omacom/linux-aurora#290 is the open ask
-  there), not something Claude writes. Trying olivergreg's branch here would mean aura as the loader: a
-  bigger boot-chain change than the one file of 11-27, not asked and not OK'd.
+  This Mac boots through m1n1-aurora, whose stock second stage publishes no mailbox. **Omarchy's own
+  repository packages both loaders as alternatives** (`pacman -Si`, from this Mac's package list of
+  2026-11-09): `m1n1-aurora` (1.6.1.aurora22 there; 1.6.1.aurora3 installed here) and `aura` ("Aurora
+  Silicon bootloader for Apple Silicon", 0.1.0.r20261023, which provides and conflicts with
+  `m1n1-aurora`; olivergreg ran 1.0.0b17). So the road to Omarchy is the kernel half merged upstream and
+  taken into `linux-aurora`, and the aura package as the loader; which loader Omarchy installs by default
+  isn't known here. Trying olivergreg's branch on this Mac needs aura as the second stage: Corey's
+  decision (asked 2026-11-27), by the same one-file swap with the stock kept, aura's binary handled as an
+  opaque file like m1n1's.
 
 **Next, in this order (as of 2026-11-26):**
 1. **Decide how to converge on the reference** (RESEARCH.md, "The `sep_ro=1` run", 2026-11-26). The
