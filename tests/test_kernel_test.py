@@ -113,6 +113,14 @@ exit 0
     stub(t, "sync", "exit 0\n")
     stub(t, "df", f'echo Avail; echo "$(cat {t}/calls/avail)M"\n')
     stub(t, "pacman", "exit 1\n")
+    # mktemp: calls/fail-mktemp says how it fails: by its exit, with no name, or with the name of nothing.
+    stub(t, "mktemp", f'''case $(cat {t}/calls/fail-mktemp 2> /dev/null) in
+  fail) exit 1 ;;
+  empty) exit 0 ;;
+  nodir) echo {t}/nothere/tmp.x; exit 0 ;;
+esac
+exec /usr/bin/mktemp "$@"
+''')
     stub(t, "uname", "echo 7.2.11-test\n")
     write(os.path.join(t, "calls/avail"), f"{avail}\n")
     write(os.path.join(t, "regular"), regular_section(regular))
@@ -607,6 +615,20 @@ def not_ours():
         check(p.returncode == 0 and state(t) is None and images(t) is None and script_of(t) is None, "    and remove takes it away", p.stdout + p.stderr)
 
 
+def scratch_dir():
+    """The scratch directory the package is unpacked in is the first part of paths: checked by hand (Pullfrog on #136)."""
+    for how, what in (("fail", "fails"), ("empty", "returns 0 and names nothing"), ("nodir", "names a directory that is not there")):
+        for mode in ((), ("--safe-only",)):
+            with tempfile.TemporaryDirectory() as t:
+                setup(t)
+                write(os.path.join(t, "calls/fail-mktemp"), how + "\n")
+                before = written(t)
+                p = install(t, *mode)
+                check(p.returncode != 0 and "couldn't make a scratch directory (mktemp -d); nothing installed" in p.stderr and written(t) == before
+                      and calls(t, "depmod") == [] and calls(t, "mkinitcpio") == [] and "installed" not in p.stdout and "taken back:" not in p.stderr,
+                      f"install {' '.join(mode)} with a mktemp -d that {what}: it ends there; nothing unpacked, created or taken back", p.stdout + p.stderr)
+
+
 def unselect():
     with tempfile.TemporaryDirectory() as t:
         setup(t)
@@ -647,6 +669,7 @@ def unselect():
 
 def main():
     not_ours()
+    scratch_dir()
     unselect()
     both_entries()
     plain_only()

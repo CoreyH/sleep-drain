@@ -666,7 +666,7 @@ cmd_collect() {
   for tar in "$IMAGE_DIR"/saved/*.tar; do
     [[ -f $tar ]] || continue
     t=$(basename "$tar" .tar)
-    tmp=$(mktemp -d)
+    tmp=$(mktemp -d) && [[ -n $tmp && -d $tmp ]] || die "couldn't make a scratch directory (mktemp -d); $tar kept"
     tar -C "$tmp" -xf "$tar" || { rm -rf -- "${tmp:?}"; die "couldn't read $tar"; }
     if [[ -s $tmp/log/sleep-drain.log.new ]]; then
       touch /var/log/sleep-drain.log

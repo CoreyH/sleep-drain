@@ -54,6 +54,8 @@ def stubs(tmp):
         "journalctl": 'echo line >> /calls/journal; cat /calls/journal',
         "date": 'if [ -e /calls/same-second ]; then echo 20261108T195626; else exec /usr/bin/date "$@"; fi',
         "grep": 'if [ -e /calls/fail-grep ]; then exit 2; fi; exec /usr/bin/grep "$@"',
+        # calls/fail-mktemp: mktemp returns 0 and names nothing.
+        "mktemp": 'if [ -e /calls/fail-mktemp ]; then exit 0; fi; exec /usr/bin/mktemp "$@"',
     }.items():
         write(os.path.join(d, name), "#!/bin/sh\n" + body + "\n")
         os.chmod(os.path.join(d, name), 0o755)
@@ -244,6 +246,25 @@ def main():
         rc, out = run_collect(tmp, OLD_LOG, fail_grep=True)
         left = os.listdir(os.path.join(tmp, "boot/sleep-drain-safe/saved"))
         check(rc != 0 and "kept" in out and len(left) == 1, "fails and keeps the tar", f"exit {rc}\n{out}")
+    finally:
+        shutil.rmtree(tmp)
+
+    print("== collect when no scratch directory can be made")
+    tmp = tempfile.mkdtemp()
+    try:
+        run_save(tmp, [])
+        write(os.path.join(tmp, "calls/fail-mktemp"), "")
+        disk_before = OLD_LOG
+        rc, out = run_collect(tmp, disk_before)
+        left = os.listdir(os.path.join(tmp, "boot/sleep-drain-safe/saved"))
+        log_now = open(os.path.join(tmp, "disklog/sleep-drain.log")).read()
+        check(rc != 0 and "couldn't make a scratch directory" in out and "kept" in out and len(left) == 1 and log_now == disk_before
+              and not os.path.exists(os.path.join(tmp, "disklog/sleep-drain/2")) and "collected" not in out,
+              "a mktemp -d that names nothing: collect ends there, the tar kept, nothing added to the log or the snapshots", f"exit {rc}\n{out}")
+        os.remove(os.path.join(tmp, "calls/fail-mktemp"))
+        rc, out = run_collect(tmp, disk_before)
+        check(rc == 0 and "collected" in out and os.listdir(os.path.join(tmp, "boot/sleep-drain-safe/saved")) == [],
+              "and once it can: collected", f"exit {rc}\n{out}")
     finally:
         shutil.rmtree(tmp)
 

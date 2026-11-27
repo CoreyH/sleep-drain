@@ -287,7 +287,8 @@ install_kernel() {
   undo_name=$name undo_only=$( ((!safe_only)) || echo 1) undo_script= undo_state= undo_dir= undo_tree= undo_stage= undo_parents=
   trap undo_install EXIT
 
-  stage=$(mktemp -d)
+  # Checked by hand, and before it is a path's first part: with $stage empty, "$stage/usr/..." would be "/usr/...".
+  stage=$(mktemp -d) && [[ -n $stage && -d $stage ]] || die "couldn't make a scratch directory (mktemp -d); nothing installed"
   undo_stage=$stage
   tar --zstd -xf "$pkg" -C "$stage" "usr/lib/modules/$release"
   rm -f "$stage/usr/lib/modules/$release/pkgbase"

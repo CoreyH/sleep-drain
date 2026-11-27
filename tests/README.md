@@ -63,7 +63,9 @@ used to sit in CLAUDE.md, entry for entry):
   entry, no plain entry or plain initramfs anywhere, `boot` without `--safe-sepro` refused; its failures on
   GRUB's side (three), again with nothing left. The space check with one and with two images counted (one MiB
   short and exactly enough, six cases), names ending in `-safe`, an existing module tree, a state file from
-  before the safe entry, and every command without root. What isn't the install's own (`not_ours()`, Pullfrog on
+  before the safe entry, and every command without root. The scratch directory the package is unpacked in
+  (`scratch_dir()`): a `mktemp -d` that fails, names nothing or names what isn't there ends `install` in both
+  modes with nothing unpacked or created. What isn't the install's own (`not_ours()`, Pullfrog on
   #136): a file in the image directory of that name with no record and a `grub-mkconfig` that fails, the
   reviewer's case, refused before anything is written, in both modes; one case per thing found beforehand (an
   image directory, an empty one, a file or a dangling link in its place, a GRUB script, a dangling link in its
@@ -110,8 +112,19 @@ used to sit in CLAUDE.md, entry for entry):
   with boot.bin unreadable from the device once renamed over, `install` ends in `BOOT.BIN IS NOT VERIFIED`
   though the cache reads the stock, and `verify-recipe`, `status`, `restore` and `install` after it each fail
   until the device reads again; and the same for `restore`'s own read-backs (boot.bin.stock, its copy, boot.bin
-  after the rename). The scratch directory has to take O_DIRECT reads; where it doesn't the test says so and
-  runs nothing. A safe boot: `install` refused, `status` and `restore` mounting the boot partition of the disk's own
+  after the rename). A read error confined to the boot.bin that is there (`old_inode()`; the dd wrapper fails
+  one inode): with boot.bin.stock verified from the device, `restore` stages it and replaces the file whether
+  the cache read the stock or the bundle there, the new file reads from the device, and only then is it
+  "restored" and, the next time, "already the stock"; with an error that stays after the replacement the same
+  cached match ends in `BOOT.BIN IS NOT VERIFIED`; with the stock unreadable too nothing is staged. The scratch
+  directory (`scratch_dir()`): a `mktemp -d` that fails, that returns 0 and names nothing, or that names what
+  isn't there ends every command, `restore` first, before anything is read, synced or written. A piece that
+  fails (`a_piece_fails()`, a gzip that fails): no bundle is built, and `verify-recipe` and `install` say the
+  stock bundle couldn't be rebuilt, not that it matches or doesn't. Which dd (`which_dd()`): with one that
+  answers "Invalid input" to `iflag=direct`, the messages carry its words and name GNU coreutils' dd.
+  **This test needs GNU coreutils' dd and a scratch directory (TMPDIR) on a filesystem that takes O_DIRECT
+  reads**, because the tool does: it first makes that read once, and if it fails prints dd's own error and
+  `dd --version`'s first line, ends with `NOT RUN`, and makes none of its checks. A safe boot: `install` refused, `status` and `restore` mounting the boot partition of the disk's own
   fstab and unmounting it on every way out, the mount failing, the unmount failing. `recovery-notes`: the
   partition's identity, the scratch-file check, that the macOS steps weren't tried, what the flag stands for.
   `install.sh` installs it; `uninstall.sh` keeps it while a stock loader is kept.
@@ -134,7 +147,7 @@ used to sit in CLAUDE.md, entry for entry):
   and switched off once and mem_sleep back to s2idle. The write of mem
   returns at once there: no suspend is made, and what the reference kernel does with it isn't modelled.
 - `tests/safe_boot_save_test.py` runs `sleep-drain-safe save` in a fake safe boot and `collect` in a fake next
-  boot.
+  boot (a `mktemp -d` that names nothing among its cases: `collect` ends there with the tar kept).
 - `tests/m1_crumbs_test.py` runs `e1-hook/m1-crumbs` on a fake PMU nvmem file, position=1's samples made by
   compiling `e1-hook/m1_position.h` itself, cluster_ack=1's three values and its waits by compiling
   `e1_hook.c`'s own table and wait functions, and fabric_up=1's and wd1_mark=1's writes by compiling the
