@@ -1,0 +1,44 @@
+13:07:13.605566 Linux version 7.3.0-s2rref (...) (clang version 23.1.4, LLD 23.1.4) #1 SMP PREEMPT_DYNAMIC Thu Nov 26 11:53:07 CET 2026
+13:07:13.606297 Kernel command line: BOOT_IMAGE=/aurora-test/s2rref/vmlinuz root=UUID=... rw rootflags=subvol=@ cryptdevice=UUID=...:root:allow-discards loglevel=3 quiet splash appledrm.show_notch=1 apple_sep.xart_writes=0 apple_sep.provision_keybag=0 sleepdrain.safe
+13:07:13.606645 apple-s2r: m1n1 mailbox at 0x10004cfca40, 8 CPUs, CPU hotplug through m1n1
+13:08:38.924678 apple_sep 396400000.sep: xART: APFS-resolved .gl extent (...); writes disabled
+13:11:03.821046 pkexec[4688]: Executing command [COMMAND=ref-sleep check]
+13:11:26.079723 pkexec[4852]: Executing command [COMMAND=ref-sleep go 60]
+13:11:26.101713 apple-s2r: deep sleep available, select it in /sys/power/mem_sleep
+13:11:26.407805 ref-sleep: attempt 4852-1795781486: mem_sleep deep, wake armed 60 s from now
+13:11:26.410701 PM: suspend entry (deep)
+13:12:30.370906 Freezing user space processes
+13:12:30.371346 Freezing user space processes completed (elapsed 0.001 seconds)
+13:12:30.371375 Freezing remaining freezable tasks
+13:12:30.371386 Freezing remaining freezable tasks completed (elapsed 0.001 seconds)
+13:12:30.373912 Disabling non-boot CPUs ...
+13:12:30.373918 IRQ133: set affinity failed(-38).
+13:12:30.373924 IRQ135: set affinity failed(-38).
+13:12:30.373942 IRQ147: set affinity failed(-38).
+13:12:30.373947 IRQ148: set affinity failed(-38).
+13:12:30.373953 IRQ133: set affinity failed(-38).
+13:12:30.373958 IRQ135: set affinity failed(-38).
+13:12:30.373965 IRQ147: set affinity failed(-38).
+13:12:30.374121 IRQ148: set affinity failed(-38).
+13:12:30.374138 IRQ133: set affinity failed(-38).
+13:12:30.374143 IRQ135: set affinity failed(-38).
+13:12:30.374148 Enabling non-boot CPUs ...
+13:12:30.374165 CPU1 is up
+13:12:30.374182 CPU2 is up
+13:12:30.374215 CPU3 is up
+13:12:30.374232 CPU4 is up
+13:12:30.374389 CPU5 is up
+13:12:30.374482 CPU6 is up
+13:12:30.374516 CPU7 is up
+13:12:30.374521 apple-s2r: ps_all: afnc1_lw0 stays off (0x1000030f, was 0x1f0003ff)
+13:12:30.374527 apple-s2r: ps_all: afnc1_lw1 stays off (0x1000030f, was 0x1f0000ff)
+13:12:30.374533 apple-s2r: ps_all: pcpu1_0 stays off (0x100, was 0x1f0)
+13:12:30.374538 apple-s2r: ps_all: pcpu1_0 stays off (0x100, was 0x1f0)
+13:12:30.375496 apple-s2r: full wake: wakeup event
+13:12:30.380022 Restarting tasks: Starting
+13:12:30.380028 Restarting tasks: Done
+13:12:30.380050 apple_sep 396400000.sep: hwrng: read produced nothing (ENODEV); further failures will not be logged
+13:12:30.654935 Bluetooth: hci0: Opcode 0x0c01 failed: -19
+13:12:32.679302 Bluetooth: hci0: Opcode 0x0c1a failed: -110
+13:12:32.680523 PM: suspend exit
+(43 more apple-s2r ps_all lines of the same two kinds left out)

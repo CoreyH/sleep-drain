@@ -1,10 +1,10 @@
 # Plan
 
-Last updated 2026-11-26. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-27. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
-## Pick up here (2026-11-26)
+## Pick up here (2026-11-27)
 
 Read this first. "Where things stand" below is the long record and its order of work is superseded by
 this section where they differ.
@@ -58,7 +58,31 @@ this section where they differ.
   that state, read under the m1n1 hypervisor in both systems, showed 54 words differing (Naeem Malik,
   2026-11-16).
 
-**Next, in this order:**
+**2026-11-27: the reference sleeps and wakes this Mac** (RESEARCH.md, "The reference on this Mac").
+Ante042's kernel branch with their second stage and the *stock* first stage: the mailbox found, one deep
+sleep of about 64 s, an RTC wake back into the session, in a safe boot with the enclave's store read-only.
+The stock loader is back. The same day olivergreg reported the same working on a J314s as a profile for
+upstream's `sleep.c` with stock aura (aurora-silicon/linux#2198). So the entry's question (E2) is answered
+by other people's code, and **no further one-way replay run is planned**; `e1-hook/` stays as it is. What
+is next, in this order, replacing item 1 below (kept as the record of how it was reached):
+- **Tell the thread** (Corey's OK each time): a second J314s, the same firmware, their stage 2 with the
+  stock stage 1, the GPU driver's name as the one thing that had to change for this distribution's Mesa.
+- **Measure it here.** What the project set out to fix is the drain: a deep sleep's power on this Mac
+  against s2idle's 1.97 W (Ante042: 130 to 170 mW over a night, from battery voltage, since the gauge stops
+  counting at those currents). First a second and third sleep in one boot and a 15-minute one
+  (`ref-sleep go 900`), then how to measure a night: the safe boot keeps everything in RAM and the nights'
+  power-off hook does nothing there, so a night needs its own steps.
+- **What daily use would take on this Mac**, to put to Corey before any of it is built: the reference
+  loader installed for good (every boot through it; a package update's `update-m1n1` writes the stock one
+  back), a kernel outside the package manager rebuilt at each update, the enclave's store read-only (no
+  Touch ID), and deep sleeps outside a safe boot. Or waiting for the upstream form.
+- **The upstream form** is olivergreg's: `sleep-t6000.h` for `sleep.c`, the loader's mailbox from aura.
+  This Mac boots through m1n1-aurora, whose stock second stage publishes no mailbox, so on Omarchy it needs
+  either aura or a mailbox in that m1n1: a question for omacom (omacom/linux-aurora#290 is the open ask
+  there), not something Claude writes. Trying olivergreg's branch here would mean aura as the loader: a
+  bigger boot-chain change than the one file of 11-27, not asked and not OK'd.
+
+**Next, in this order (as of 2026-11-26):**
 1. **Decide how to converge on the reference** (RESEARCH.md, "The `sep_ro=1` run", 2026-11-26). The
    tenth run, the last of the strategy review's ten, had the enclave gated, the SEP's wait bit cleared
    and read back clear, no `a2_pre=1` and no late reads of the four fabric-group words, and ended as
@@ -208,7 +232,7 @@ this section where they differ.
 5. The nights on the charger (installed 2026-11-19) haven't been seen on the Mac: the log will show
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
 
-**As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
+**As things are left:** the stock loader live and `boot.bin.stock` kept beside it; the test kernel `s2rref` (7.3.0-s2rref, the GPU driver's DRM name patched to "asahi") installed safe-only and not selected; the reference bundle and the builds in `~/.local/share/sleep-drain/ref-20261126/`; the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
 `--m1-sep-ro` the latest launcher option (run 2026-11-26; `--m1-ll-retn` and `--m1-sep-pg` built, neither run); the PMU's record bytes all zero; scratch that must outlast
 a restart in `~/.local/share/sleep-drain/`.
 

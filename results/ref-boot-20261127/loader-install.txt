@@ -1,0 +1,14 @@
+the stock recipe (update-m1n1's, from /etc/default/update-m1n1): /usr/lib/asahi-boot//m1n1.bin (3866624 bytes), 115 device trees, /usr/lib/asahi-boot//u-boot-nodtb.bin gzip'd (312383 bytes), 0 configuration lines
+rebuilt from the installed inputs: sha256 1f1640d71cd50c3252f48fbee26e0eaaefcd7f9a3840517d2c107e2edcc856ed (9804783 bytes)
+/boot/m1n1/boot.bin as it is: sha256 1f1640d71cd50c3252f48fbee26e0eaaefcd7f9a3840517d2c107e2edcc856ed (9804783 bytes), confirmed on the partition (synced, then read from the device)
+match: the live boot.bin is exactly what the recipe builds, confirmed on the partition (synced, then read from the device)
+kept the stock loader as /boot/m1n1/boot.bin.stock (sha256 1f1640d71cd50c3252f48fbee26e0eaaefcd7f9a3840517d2c107e2edcc856ed, read from the device)
+installed: /boot/m1n1/boot.bin is now the bundle (sha256 96f6e465d30baab1dbfe99efa11529df63bf710155f0cedf4435a4a091d0bbfd, 5475525 bytes, read from the device)
+the stock loader is /boot/m1n1/boot.bin.stock (sha256 1f1640d71cd50c3252f48fbee26e0eaaefcd7f9a3840517d2c107e2edcc856ed)
+Until the stock is put back, every start of Linux on this Mac goes through this loader and gets its device trees:
+the regular kernel too, not only a test kernel.
+To go back:
+  from Linux, in a regular boot or a safe boot:   pkexec ref-loader restore
+  from macOS, if Linux doesn't start: mount the EFI partition (ref-loader recovery-notes says which one), copy
+    m1n1/boot.bin.stock over m1n1/boot.bin, eject, restart
+A package update that runs update-m1n1 also writes a stock loader over it (and keeps this bundle as boot.bin.old).

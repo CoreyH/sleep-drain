@@ -1,0 +1,13 @@
+diff --git i/drivers/gpu/drm/asahi/driver.rs w/drivers/gpu/drm/asahi/driver.rs
+index ba6301fa1..f9244660e 100644
+--- i/drivers/gpu/drm/asahi/driver.rs
++++ w/drivers/gpu/drm/asahi/driver.rs
+@@ -95,7 +95,7 @@ pub(crate) struct AsahiDrmRegistrationData<'drm> {
+     major: 1,
+     minor: 0,
+     patchlevel: 0,
+-    name: c"aurora",
++    name: c"asahi",
+     desc: c"Aurora GPU for Apple AGX",
+ };
+ 
