@@ -103,9 +103,20 @@ is next, in this order, replacing item 1 below (kept as the record of how it was
   Silicon bootloader for Apple Silicon", 0.1.0.r20261023, which provides and conflicts with
   `m1n1-aurora`; olivergreg ran 1.0.0b17). So the road to Omarchy is the kernel half merged upstream and
   taken into `linux-aurora`, and the aura package as the loader; which loader Omarchy installs by default
-  isn't known here. Trying olivergreg's branch on this Mac needs aura as the second stage: Corey's
-  decision (asked 2026-11-27), by the same one-file swap with the stock kept, aura's binary handled as an
-  opaque file like m1n1's.
+  isn't known here. **A mailbox-capable aura is a prerequisite**, for Omarchy's path and for a trial here:
+  the packaged one of that list predates aura's T6000 mailbox (merged 2026-11-13, by Pullfrog's reading
+  of aura's history on #137), and with a second stage that lacks it the kernel says "no
+  aurora,s2r-mailbox from the boot object: no deep sleep" and offers none. **Corey moved the testing
+  there on 2026-11-27** ("if aura has already been selected as the next gen bootloader then we should
+  move our testing there... this machine is a test bench mostly"): olivergreg's branch on this Mac, with
+  aura's own release 1.0.0b17 of 11-24 as the second stage (the version olivergreg ran; its prebuilt
+  `aura.bin`, checksum verified, handled as an opaque file; the release's notes say that exact build
+  wasn't boot-tested by them), by the same one-file swap with the stock kept. Before any suspend
+  counts there: the kernel's log has to show the mailbox found. In hand, in
+  `~/.local/share/sleep-drain/aura-20261127/`: the release, and olivergreg's branch at 5cad606 being
+  built from the running configuration with `CONFIG_APPLE_SOC_SLEEP=y` (release `7.3.0-s2rup`). Open with
+  Corey: that kernel's `apple_sep` has no `xart_writes` parameter, so the store would be writable in
+  those boots as in every regular one (asked 11-27; no boot of it before the answer).
 
 **Next, in this order (as of 2026-11-26):**
 1. **Decide how to converge on the reference** (RESEARCH.md, "The `sep_ro=1` run", 2026-11-26). The
