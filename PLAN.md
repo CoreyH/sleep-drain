@@ -85,10 +85,12 @@ is next, in this order, replacing item 1 below (kept as the record of how it was
     1.97 W (Ante042: 130 to 170 mW over a night, from battery voltage, since the gauge stops counting at
     those currents). The coulomb counter the nights are compared by can't be assumed to work down there,
     so a method that does comes first. Corey's USB-C power monitor (the Power-Z, OK'd for charger runs on
-    2026-11-16) is the candidate: the battery full, the charger through the meter, the same Mac in deep
-    sleep and in s2idle, read at the wall. To settle before it counts: that a charger left in doesn't wake
-    or dark-wake the reference's sleep, what the meter's floor and the charger's own share are, and how
-    the two sleeps are made comparable. A night also needs its own steps: the safe boot keeps everything
+    2026-11-16) is the candidate: the battery full, the meter in line on the USB-C cable into the Mac, the
+    same Mac in deep sleep and in s2idle. What it reads is the charger's DC output into the Mac, for both
+    modes; the charger's own draw from the wall isn't in it, and no AC meter is planned. To settle before
+    it counts: that a charger left in doesn't wake or dark-wake the reference's sleep, what the meter's
+    floor is and what the Mac's own charging circuit takes with the battery full, and how the two sleeps
+    are made comparable. A night also needs its own steps: the safe boot keeps everything
     in RAM, and the nights' power-off hook does nothing there.
 - **What daily use would take on this Mac**, to put to Corey before any of it is built: the reference
   loader installed for good (every boot through it; a package update's `update-m1n1` writes the stock one
