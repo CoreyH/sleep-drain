@@ -20,6 +20,13 @@
 # m1n1.bin is handled as an opaque file: this tool doesn't look into it, and
 # nothing here is m1n1's code.
 #
+# It needs GNU coreutils' dd: every reading that confirms something is
+# "dd iflag=direct" (O_DIRECT, past the page cache), on a filesystem that takes
+# such reads, as the FAT boot partition does. With another dd (uutils' has
+# refused the flag) or another filesystem that read fails every time, and the
+# tool then confirms nothing and installs nothing; its messages carry dd's own
+# error, which says which of the two it is.
+#
 # build: the bundle as update-m1n1 makes it, with another m1n1.bin and other
 #   device trees: every *.dtb of a directory, sorted in the C locale, or the
 #   paths of a list file, one a line, in its order. U-Boot and the
@@ -103,6 +110,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The scratch directory: made once, here, and checked. No function makes one: most of them are called in conditions,
+# where set -e doesn't stop at a mktemp that failed, and with $work empty "$work/x" is "/x".
+work=$(mktemp -d) && [[ -n $work && -d $work ]] || {
+  work=
+  die "couldn't make a scratch directory (mktemp -d): nothing done"
+}
+# What the read from the device is made with, for the messages that say it failed.
+DD_NEEDS="That read is GNU coreutils' dd with iflag=direct, on a filesystem that takes O_DIRECT reads: with another dd, or another filesystem, it fails every time, and the error says which"
+
 # Whether this is a safe boot: sleep-drain-safe's marker, or the hook's flag on the kernel's command line.
 is_safe() {
   local a
@@ -130,7 +146,8 @@ size_of() { stat -c %s -- "$1"; }
 read_back() {
   local out
   rb_sha= rb_direct=0 rb_err= rb_how=
-  [[ -n $work ]] || work=$(mktemp -d)
+  # dd's words go to a file in the scratch directory: never to a path made from an empty name.
+  [[ -n $work && -d $work ]] || return 1
   if out=$(dd if="$1" iflag=direct bs=1M status=none 2> "$work/dd.err" | sha256sum); then
     rb_direct=1 rb_how="read from the device"
   else
@@ -145,7 +162,7 @@ read_back() {
 
 # What a cache-only reading of FILE ($1) is worth, for the messages that refuse on one.
 cache_only() {
-  echo "$1 reads sha256 $rb_sha through the page cache, but the read from the device failed ($rb_err): that doesn't confirm what the partition holds, or what a restart would load"
+  echo "$1 reads sha256 $rb_sha through the page cache, but the read from the device failed ($rb_err): that doesn't confirm what the partition holds, or what a restart would load. $DD_NEEDS"
 }
 
 # confirm_live WHAT-WASN'T-DONE: what the boot partition holds as m1n1/boot.bin, as far as Linux can say it. First the
@@ -206,7 +223,7 @@ printf "%s\0" "${M1N1_UPDATE_DISABLED:+disabled}" "$M1N1" "$U_BOOT" $DTBS
 stock_inputs() {
   local -a f
   local p
-  [[ -n $work ]] || work=$(mktemp -d)
+  [[ -n $work && -d $work ]] || die "the scratch directory is gone"
   s_conf=$work/m1n1.conf
   env -i PATH="$PATH" sh -c "$STOCK_SH" sh "$DEFAULTS" "$s_conf" > "$work/inputs" ||
     die "couldn't work out the stock bundle's inputs from $DEFAULTS as update-m1n1 does"
@@ -227,9 +244,8 @@ gz_uboot() { env -u GZIP gzip -c "$1"; }
 assemble() {
   local m1n1=$1 uboot=$2 conf=$3 out=$4
   shift 4
-  cat "$m1n1" "$@" > "$out"
-  gz_uboot "$uboot" >> "$out"
-  cat "$conf" >> "$out"
+  # One status for the three: callers in conditions get no help from set -e.
+  cat "$m1n1" "$@" > "$out" && gz_uboot "$uboot" >> "$out" && cat "$conf" >> "$out"
 }
 
 # The boot partition in a regular boot: $BOOT itself must be a mounted FAT filesystem with the loader on it.
@@ -278,8 +294,10 @@ verify_recipe() {
   confirm_live "${1:-}"
   stock_inputs
   v_rebuilt=$work/stock.rebuilt
-  assemble "$s_m1n1" "$s_uboot" "$s_conf" "$v_rebuilt" "${s_dtbs[@]}"
-  v_rebuilt_sha=$(sha_of "$v_rebuilt")
+  # Every step checked by hand: install calls this in a condition, where set -e stops nothing.
+  assemble "$s_m1n1" "$s_uboot" "$s_conf" "$v_rebuilt" "${s_dtbs[@]}" || die "couldn't rebuild the stock bundle from its inputs. ${1:-}"
+  v_rebuilt_sha=$(sha_of "$v_rebuilt") || die "couldn't hash the rebuilt stock bundle. ${1:-}"
+  [[ $v_rebuilt_sha =~ ^[0-9a-f]{64}$ && $live_sha =~ ^[0-9a-f]{64}$ ]] || die "a sha256 came out empty or malformed; nothing is compared. ${1:-}"
   v_live_sha=$live_sha
   gz=$(gz_uboot "$s_uboot" | wc -c)
   conf=$(wc -l < "$s_conf")
@@ -289,7 +307,7 @@ verify_recipe() {
   [[ -z $s_disabled ]] || echo "note: $DEFAULTS sets M1N1_UPDATE_DISABLED, so update-m1n1 itself writes nothing on this system"
   if [[ $v_rebuilt_sha == "$v_live_sha" ]]; then
     if ((!live_direct)); then
-      echo "NOT CONFIRMED: the bytes are what the recipe builds as read through the page cache, but the read from the device failed ($live_err). That doesn't confirm what the partition holds or what a restart would load: DO NOT RESTART on this"
+      echo "NOT CONFIRMED: the bytes are what the recipe builds as read through the page cache, but the read from the device failed ($live_err). That doesn't confirm what the partition holds or what a restart would load: DO NOT RESTART on this. $DD_NEEDS"
       return 3
     fi
     echo "match: the live boot.bin is exactly what the recipe builds, $live_how"
@@ -391,6 +409,7 @@ this_board() {
 cmd_build() {
   (($# == 3)) || usage
   local m1n1=$1 from=$2 out=$3 l
+  [[ -n $out ]] || die "no output path given"
   local -a dtbs=()
   [[ -f $m1n1 && -s $m1n1 && -r $m1n1 ]] || die "no m1n1.bin to read at $m1n1"
   if [[ -d $from ]]; then
@@ -420,7 +439,7 @@ cmd_build() {
   [[ ! $(dirname -- "$out") -ef $BOOT/m1n1 ]] || die "not into $BOOT/m1n1: build the bundle elsewhere; install puts it there"
   stock_inputs
   new_tmp=$out.ref-loader.new
-  assemble "$m1n1" "$s_uboot" "$s_conf" "$new_tmp" "${dtbs[@]}"
+  assemble "$m1n1" "$s_uboot" "$s_conf" "$new_tmp" "${dtbs[@]}" || die "couldn't write $new_tmp; nothing built"
   mv -f -- "$new_tmp" "$out"
   new_tmp=
   echo "built $out: $m1n1 ($(size_of "$m1n1") bytes), ${#dtbs[@]} device trees (${dtbs[0]##*/} first, ${dtbs[-1]##*/} last), $s_uboot gzip'd ($(gz_uboot "$s_uboot" | wc -c) bytes), $(wc -l < "$s_conf") configuration lines"
@@ -553,7 +572,7 @@ cmd_install() {
   # the loader is read" is known.
   rc=0
   verify_recipe "Nothing written" || rc=$?
-  ((rc != 3)) || die "the live boot.bin couldn't be read from the device (above), so that it is the stock one isn't confirmed, and neither would any write here be. Nothing written"
+  ((rc != 3)) || die "the live boot.bin couldn't be read from the device (above), so that it is the stock one isn't confirmed, and neither would any write here be. Nothing written. $DD_NEEDS"
   ((rc == 0)) || die "the stock recipe doesn't rebuild the live boot.bin (above), so this tool can't say what the live file is or how a bundle should be made. Nothing written. (If the live file is an installed bundle: ref-loader status, and restore first.)"
 
   # The bundle: not the stock one, and ending as the stock one ends, with the gzip'd U-Boot and the configuration
@@ -655,21 +674,25 @@ cmd_restore() {
   # What is there now, with the partition's writeback confirmed first: "already the stock" is a statement about what
   # a restart loads, and after a write whose sync failed the page cache alone would say it too.
   confirm_live "Nothing written"
-  if [[ $live_sha == "$rec" ]]; then
-    ((live_direct)) ||
-      die "boot.bin's bytes are the stock loader's as read through the page cache (sha256 $live_sha), but the read from the device failed ($live_err). That doesn't confirm what the partition holds or what a restart would load: DO NOT RESTART on this. Nothing written"
+  # "Already the stock" only for a match read from the device. A match the page cache alone gives isn't one: the stock
+  # file was read from the device just now, so it goes over boot.bin again by the staged write, which takes nothing but
+  # a read from the device before and after its rename. (A read error that sits in the old boot.bin goes with it; one
+  # that stays ends in NOT VERIFIED below.)
+  if [[ $live_sha == "$rec" ]] && ((live_direct)); then
     echo "boot.bin already is the stock loader (sha256 $rec, $live_how): nothing written"
     return 0
   fi
+  if [[ $live_sha == "$rec" ]]; then
+    say "boot.bin's bytes are the stock loader's as the page cache has them (sha256 $live_sha), but the read from the device failed ($live_err): that is not taken for the stock being on the partition. $STOCK was read from the device and is the recorded stock: it is written over boot.bin again, and read back from the device before and after the rename"
+  fi
   need_space "$(size_of "$stock")"
   write_verified "$stock" "$live" "$rec" || rc=$?
-  ((rc != 1)) || die "the stock is NOT restored: boot.bin is as it was, not the stock (sha256 $(sha_of "$live" || echo unreadable))"
+  ((rc != 1)) || die "the stock is NOT restored: boot.bin is as it was (the page cache reads sha256 $(sha_of "$live" || echo unreadable) there; the recorded stock is $rec)$( ((live_direct)) || echo ", and it could not be read from the device. DO NOT RESTART on this")"
   ((rc == 0)) || die "BOOT.BIN IS NOT VERIFIED after the write. DO NOT RESTART. Run this again; failing that, copy $STOCK over $LOADER by hand on the boot partition; from macOS, the recovery notes"
   echo "restored: boot.bin is the stock loader again (sha256 $rec, $rb_how); $STOCK stays where it is"
   # The stock that was kept, against what the packages build now. A note only: the restore is done, and nothing here
   # may turn its success into a failure, so it is worked out in a subshell whose own failures say nothing.
   if ! is_safe; then
-    [[ -n $work ]] || work=$(mktemp -d)
     (
       stock_inputs
       assemble "$s_m1n1" "$s_uboot" "$s_conf" "$work/now" "${s_dtbs[@]}"
@@ -728,7 +751,7 @@ cmd_status() {
     echo "update-m1n1's recipe builds another bundle now (sha256 $what)$([[ $what != "$rec" ]] || echo ": the recorded stock")"
   fi
   [[ -z $unconfirmed ]] ||
-    die "NOT CONFIRMED: what is said above of $unconfirmed is the page cache's reading; the read from the device failed. It doesn't confirm what the partition holds or what a restart would load: DO NOT RESTART on this"
+    die "NOT CONFIRMED: what is said above of $unconfirmed is the page cache's reading; the read from the device failed. It doesn't confirm what the partition holds or what a restart would load: DO NOT RESTART on this. $DD_NEEDS"
 }
 
 case "${1:-}" in

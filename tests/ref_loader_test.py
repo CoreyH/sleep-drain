@@ -6,9 +6,14 @@ directory stands in for the boot partition, made-up files for m1n1.bin, U-Boot a
 /etc/default/update-m1n1 names them. Commands that need root run as uid 0 in a bubblewrap user namespace. findmnt, df,
 mount, umount, mountpoint, lsblk and findfs are stubs on PATH; cp, mv and sync are wrappers that log their call, run
 the real one, and can be told to fail or to damage what they wrote, for the cases where a write doesn't read back.
-dd is a wrapper too: the real one, unless told that the read from the device fails. gzip, sha256sum and the rest are
-the real ones. The scratch directory has to take O_DIRECT reads, as the boot partition does: the tool confirms
-nothing without one, so where it can't (the test says so first) nothing here could pass, and nothing is run.
+dd is a wrapper too: the real one, unless told that the read from the device fails; and mktemp, which can be told to
+fail. gzip, sha256sum and the rest are the real ones.
+
+Two things this needs of the machine it runs on, because ref-loader needs them: GNU coreutils' dd (the read from the
+device is "dd iflag=direct bs=1M status=none"; another dd may not take the flag: uutils' has answered "Invalid input"),
+and a scratch directory (TMPDIR) on a filesystem that takes O_DIRECT reads. The tool confirms nothing without that
+read, so where it fails nothing here could pass: the test makes the read once first, and if it fails prints dd's own
+error and its version, and runs nothing.
 
 The recipe is held against two things: the bundle's bytes worked out here piece by piece, and, where
 /usr/bin/update-m1n1 is installed, that script itself run on the same made-up inputs in a sandbox.
@@ -148,16 +153,30 @@ if [[ $1 == -f ]]; then
 fi
 exec /usr/bin/sync "$@"
 ''')
-    # dd, the read from the device. calls/no-direct: no direct read at all, as on a filesystem without O_DIRECT.
+    # dd, the read from the device. calls/no-direct: no direct read at all, as on a filesystem without O_DIRECT, or
+    # with a dd that doesn't take the flag: the file's text, if it has one, is what dd then says.
+    # calls/direct-eio-inode names an inode whose read fails: an error that sits in one file and goes with it.
     # calls/direct-eio names a file (a glob, by its base name) whose read delivers every byte and then fails, as a
     # device error at the end would; calls/direct-eio-after-mv fails boot.bin's once it has been renamed over.
     stub(t, "dd", f'''src=
 for a in "$@"; do [[ $a != if=* ]] || src=${{a#if=}}; done
 eio() {{ echo "dd: error reading '$src': Input/output error" >&2; exit 1; }}
+if [[ -s {c}/no-direct ]]; then /usr/bin/cat {c}/no-direct >&2; exit 1; fi
 [[ ! -e {c}/no-direct ]] || {{ echo "dd: failed to open '$src': Invalid argument" >&2; exit 1; }}
+if [[ -f {c}/direct-eio-inode && $(stat -c %i "$src") == $(cat {c}/direct-eio-inode) ]]; then eio; fi
 if [[ -f {c}/direct-eio && ${{src##*/}} == $(cat {c}/direct-eio) ]]; then /usr/bin/dd "$@"; eio; fi
 if [[ -e {c}/direct-eio-after-mv && -e {c}/moved-boot.bin && ${{src##*/}} == boot.bin ]]; then eio; fi
 exec /usr/bin/dd "$@"
+''')
+    # gzip: calls/fail-gzip fails it, for a bundle whose middle piece can't be made.
+    stub(t, "gzip", f'[[ ! -e {c}/fail-gzip ]] || {{ echo "gzip: stdout: No space left on device" >&2; exit 1; }}\nexec /usr/bin/gzip "$@"\n')
+    # mktemp: calls/fail-mktemp says how it fails: by its exit, with no name, or with the name of nothing.
+    stub(t, "mktemp", f'''case $(cat {c}/fail-mktemp 2> /dev/null) in
+  fail) echo "mktemp: failed to create directory via template" >&2; exit 1 ;;
+  empty) exit 0 ;;
+  nodir) echo {t}/nothere/tmp.x; exit 0 ;;
+esac
+exec /usr/bin/mktemp "$@"
 ''')
     if safe:
         write(os.path.join(t, "run/active"), "/dev/mapper/root\n")
@@ -611,7 +630,7 @@ def write_faults():
             ref, stock, bundle, live = fresh(t, installed=True)
             flag(t, name, pat)
             p = run(t, "restore")
-            check(p.returncode != 0 and "the stock is NOT restored: boot.bin is as it was, not the stock" in p.stderr and read(live) == bundle and read(live + ".stock") == stock
+            check(p.returncode != 0 and "the stock is NOT restored: boot.bin is as it was (the page cache reads sha256 " + sha(bundle) in p.stderr and read(live) == bundle and read(live + ".stock") == stock
                   and sorted(os.listdir(f"{t}/boot/m1n1")) == ["boot.bin", "boot.bin.stock"] and "restored:" not in p.stdout,
                   f"restore where {what}: it says the stock is NOT restored; boot.bin is the bundle still, whole; nothing half-written is left", p.stdout + p.stderr)
     with tempfile.TemporaryDirectory() as t:
@@ -737,7 +756,6 @@ def device_read():
         # The recovery paths, while the device read still fails: none of them lifts the prohibition on the cache's word.
         for cmd, root, said in ((["verify-recipe"], False, "NOT CONFIRMED: the bytes are what the recipe builds as read through the page cache"),
                                 (["status"], False, "by the page cache's bytes only, the stock loader"),
-                                (["restore"], True, "boot.bin's bytes are the stock loader's as read through the page cache"),
                                 (["install", FLAG, ref], True, "couldn't be read from the device")):
             clear_log(t)
             now = esp(t)
@@ -747,6 +765,16 @@ def device_read():
                   and esp(t) == now and log(t) == [],
                   f"{cmd[0]} after it, while the device read still fails: non-zero, the cache's reading said for what it is, with the error; nothing confirmed, nothing written",
                   p.stdout + p.stderr)
+        # restore there: the stock file reads from the device and is the recorded one, and boot.bin matches it only in the
+        # cache. No "already the stock"; the stock is written again by the staged write, and since the error stays with
+        # boot.bin after the replacement, that ends unverified.
+        clear_log(t)
+        p = run(t, "restore")
+        check(p.returncode != 0 and "is not taken for the stock being on the partition" in p.stderr and "Input/output error" in p.stderr
+              and "BOOT.BIN IS NOT VERIFIED after the write" in p.stderr and "DO NOT RESTART" in p.stderr and "already is the stock" not in p.stdout and "restored" not in p.stdout
+              and log(t) == ["cp boot.bin.ref-loader.new", "sync boot.bin.ref-loader.new", "mv boot.bin", "sync -f boot.bin"] and read(live) == stock,
+              "restore after it, with a device error that stays with boot.bin after the replacement: no \"already the stock\" on the cache's match; the verified stock is written"
+              " again by the staged write, and it ends BOOT.BIN IS NOT VERIFIED, DO NOT RESTART", p.stdout + p.stderr + str(log(t)))
         unflag(t, "direct-eio-after-mv")
         p = run(t, "verify-recipe", root=False)
         check(p.returncode == 0 and p.stdout.count(DEVICE) == 2, "verify-recipe once the device reads again: the match, confirmed on the partition, exit 0", p.stdout + p.stderr)
@@ -791,11 +819,146 @@ def device_read():
         unflag(t, "direct-eio")
 
 
-def direct_reads_work():
-    """Whether the scratch directory takes O_DIRECT reads, as ref-loader's read-backs need."""
+def old_inode():
+    """Pullfrog on #136: a device error confined to the boot.bin that is there now. With the stock file verified from the
+    device, restore replaces it, whether the cache reads it as the stock or not, and the new file reads from the device."""
+    DEVICE = "confirmed on the partition (synced, then read from the device)"
+    STEPS = ["cp boot.bin.ref-loader.new", "sync boot.bin.ref-loader.new", "mv boot.bin", "sync -f boot.bin"]
+    for what, restored_first in (("the cache reads it as the stock", True), ("the cache reads it as the bundle", False)):
+        with tempfile.TemporaryDirectory() as t:
+            setup(t)
+            ref = make_ref(t)
+            stock, bundle, live = stock_bundle(t), ref_bundle(t), os.path.join(t, "boot/m1n1/boot.bin")
+            assert run(t, "install", FLAG, ref).returncode == 0
+            if restored_first:
+                assert run(t, "restore").returncode == 0
+            was = os.stat(live).st_ino
+            flag(t, "direct-eio-inode", str(was))
+            p = run(t, "verify-recipe", root=False)
+            check(p.returncode != 0 and "match:" not in p.stdout and (("NOT CONFIRMED" in p.stdout) if restored_first else ("MISMATCH" in p.stdout)),
+                  f"verify-recipe with a read error in the boot.bin that is there, where {what}: no match said", p.stdout + p.stderr)
+            clear_log(t)
+            p = run(t, "restore")
+            check(p.returncode == 0 and "restored: boot.bin is the stock loader again" in p.stdout and "read from the device" in p.stdout and "already is the stock" not in p.stdout
+                  and read(live) == stock and os.stat(live).st_ino != was and log(t) == STEPS
+                  and (("is not taken for the stock being on the partition" in p.stderr and "Input/output error" in p.stderr) if restored_first else True),
+                  f"restore with a read error confined to the boot.bin that is there, where {what}: boot.bin.stock, verified from the device, is staged, read from the"
+                  " device, renamed over it, and read from the device again: restored" + (", and it says the cache's match wasn't taken" if restored_first else ""),
+                  p.stdout + p.stderr + str(log(t)))
+            p = run(t, "verify-recipe", root=False)
+            check(p.returncode == 0 and p.stdout.count(DEVICE) == 2, "    verify-recipe after it: the match, confirmed on the partition (the error went with the old file)", p.stdout + p.stderr)
+            clear_log(t)
+            p = run(t, "restore")
+            check(p.returncode == 0 and "boot.bin already is the stock loader" in p.stdout and DEVICE in p.stdout and log(t) == [],
+                  "    and restore again: already the stock, on a match read from the device, nothing written", p.stdout + p.stderr)
+    # The same cached match with an error that stays with the name: the replacement can't be read from the device either.
     with tempfile.TemporaryDirectory() as t:
-        write(os.path.join(t, "f"), b"x" * 5000)
-        return subprocess.run(["dd", f"if={t}/f", "iflag=direct", "bs=1M", "status=none"], capture_output=True).returncode == 0
+        setup(t)
+        ref = make_ref(t)
+        stock, live = stock_bundle(t), os.path.join(t, "boot/m1n1/boot.bin")
+        assert run(t, "install", FLAG, ref).returncode == 0 and run(t, "restore").returncode == 0
+        flag(t, "direct-eio", "boot.bin")
+        clear_log(t)
+        p = run(t, "restore")
+        check(p.returncode != 0 and "is not taken for the stock being on the partition" in p.stderr and "BOOT.BIN IS NOT VERIFIED after the write" in p.stderr
+              and "DO NOT RESTART" in p.stderr and "already is the stock" not in p.stdout and "restored" not in p.stdout and log(t) == STEPS and read(live) == stock,
+              "restore with a cached match and a read error that persists after the replacement: the staged write is made, and it ends BOOT.BIN IS NOT VERIFIED, DO NOT RESTART;"
+              " never \"already the stock\", never \"restored\"", p.stdout + p.stderr)
+        # And with the stock file itself unreadable from the device: nothing is staged.
+        flag(t, "direct-eio", "boot.bin*")
+        clear_log(t)
+        p = run(t, "restore")
+        check(p.returncode != 0 and "so that it is the recorded stock isn't confirmed" in p.stderr and "Nothing written" in p.stderr and log(t) == [],
+              "restore with the stock file unreadable from the device too: nothing is verified to write, nothing written", p.stdout + p.stderr)
+
+
+def scratch_dir():
+    """Pullfrog on #136: read_back is called in conditions, where set -e didn't stop a failed mktemp -d, and with no
+    scratch directory dd's error file was "/dd.err". The directory is made once now, checked, before anything else."""
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        ref = make_ref(t)
+        live = os.path.join(t, "boot/m1n1/boot.bin")
+        assert run(t, "install", FLAG, ref).returncode == 0
+        now, recs = esp(t), records(t)
+        out = os.path.join(t, "built.bin")
+        for how in ("fail", "empty", "nodir"):
+            flag(t, "fail-mktemp", how + "\n")
+            for cmd, root in ((["restore"], True), (["verify-recipe"], False), (["status"], False), (["install", FLAG, ref], True),
+                              (["build", f"{t}/ref/m1n1.bin", f"{t}/ref/dtbs", out], False), (["recovery-notes"], False)):
+                clear_log(t)
+                p = run(t, *cmd, root=root)
+                check(p.returncode != 0 and "couldn't make a scratch directory (mktemp -d): nothing done" in p.stderr and esp(t) == now and records(t) == recs
+                      and log(t, confirm=True) == [] and p.stdout == "" and not os.path.exists(out),
+                      f"{cmd[0]} with a mktemp -d that {dict(fail='fails', empty='returns 0 and names nothing', nodir='names a directory that is not there')[how]}:"
+                      " it ends there, non-zero, before anything is read, synced or written", p.stdout + p.stderr)
+        unflag(t, "fail-mktemp")
+        p = run(t, "restore")
+        check(p.returncode == 0 and "restored: boot.bin is the stock loader again" in p.stdout, "    restore once mktemp works: restored", p.stdout + p.stderr)
+    src = open(TOOL).read()
+    code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+    check(code.count("mktemp") == 2 and "work=$(mktemp -d) && [[ -n $work && -d $work ]] || {" in code and '[[ -n $work && -d $work ]] || return 1' in code
+          and code.index("work=$(mktemp -d)") < code.index("read_back() {"),
+          "ref-loader makes its scratch directory in one place, checked, before any function is defined that uses it; read_back refuses to run without it")
+
+
+def a_piece_fails():
+    """A bundle is three pieces written one after the other; one that fails must fail the whole, also where the caller
+    is in a condition and set -e stops nothing."""
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        ref = make_ref(t)
+        out = os.path.join(t, "out.bin")
+        before = esp(t)
+        flag(t, "fail-gzip")
+        p = run(t, "build", f"{t}/ref/m1n1.bin", f"{t}/ref/dtbs", out, root=False)
+        check(p.returncode != 0 and "nothing built" in p.stderr and not os.path.exists(out) and not os.path.exists(out + ".ref-loader.new") and "built " not in p.stdout,
+              "build when gzip fails: no bundle without its U-Boot is left or called built", p.stdout + p.stderr)
+        p = run(t, "verify-recipe", root=False)
+        check(p.returncode != 0 and "couldn't rebuild the stock bundle" in p.stderr and "match" not in p.stdout and "MISMATCH" not in p.stdout,
+              "verify-recipe when gzip fails: it says the stock bundle couldn't be rebuilt; neither a match nor a mismatch is said of a half-made file", p.stdout + p.stderr)
+        clear_log(t)
+        p = run(t, "install", FLAG, ref)
+        check(p.returncode != 0 and "couldn't rebuild the stock bundle" in p.stderr and "Nothing written" in p.stderr and esp(t) == before and log(t) == [],
+              "install when gzip fails: refused at its own check, nothing written", p.stdout + p.stderr)
+
+
+def which_dd():
+    """A dd that doesn't take iflag=direct: the tool's messages carry its error and name the dd it needs."""
+    with tempfile.TemporaryDirectory() as t:
+        setup(t)
+        ref = make_ref(t)
+        flag(t, "no-direct", "dd: Invalid input\n")
+        NEEDS = "That read is GNU coreutils' dd with iflag=direct, on a filesystem that takes O_DIRECT reads"
+        p = run(t, "verify-recipe", root=False)
+        check(p.returncode != 0 and "the read from the device failed (dd: Invalid input)" in p.stdout and NEEDS in p.stdout and "match:" not in p.stdout,
+              "verify-recipe with a dd that answers \"Invalid input\" to iflag=direct: NOT CONFIRMED, with dd's own words and the dd the read needs", p.stdout + p.stderr)
+        p = run(t, "status", root=False)
+        check(p.returncode != 0 and "(dd: Invalid input)" in p.stdout + p.stderr and NEEDS in p.stderr, "    status: the same", p.stdout + p.stderr)
+        p = run(t, "install", FLAG, ref)
+        check(p.returncode != 0 and NEEDS in p.stderr and "Nothing written" in p.stderr, "    install: refused, naming the dd it needs", p.stdout + p.stderr)
+    src = open(TOOL).read()
+    head = src[:src.index("set -euo pipefail")]
+    check("GNU coreutils' dd" in head and "iflag=direct" in head and "O_DIRECT" in head, "ref-loader's header says which dd and which kind of filesystem it needs")
+
+
+def direct_read_probe():
+    """None if the read ref-loader confirms things by works here: dd iflag=direct of a scratch file, giving its bytes.
+    Otherwise what dd said, and which dd it is."""
+    with tempfile.TemporaryDirectory() as t:
+        data = b"x" * 5000
+        write(os.path.join(t, "f"), data)
+        try:
+            r = subprocess.run(["dd", f"if={t}/f", "iflag=direct", "bs=1M", "status=none"], capture_output=True)
+        except OSError as e:
+            return f"dd couldn't be run: {e}"
+        if r.returncode == 0 and r.stdout == data:
+            return None
+        v = subprocess.run(["dd", "--version"], capture_output=True, text=True)
+        version = (v.stdout or v.stderr).splitlines()[0] if (v.stdout or v.stderr).strip() else "nothing (exit %d)" % v.returncode
+        said = r.stderr.decode(errors="replace").strip() or ("no message" if r.returncode else "no error, but other bytes than the file's")
+        return (f"`dd if=<a file in {tempfile.gettempdir()}> iflag=direct bs=1M status=none` exited {r.returncode} and said: {said}\n"
+                f"     dd --version says: {version}")
 
 
 def safe_boot():
@@ -927,9 +1090,11 @@ def installer():
 
 
 def main():
-    if not direct_reads_work():
-        print(f"skip the scratch directory ({tempfile.gettempdir()}) takes no O_DIRECT read, and ref-loader confirms nothing without one: nothing run here."
-              " Set TMPDIR to a filesystem that does")
+    why = direct_read_probe()
+    if why:
+        print("skip the read from the device, which ref-loader confirms everything by, doesn't work here:\n     " + why + "\n"
+              "     It needs GNU coreutils' dd (iflag=direct) and a scratch directory on a filesystem that takes O_DIRECT reads; the error above says which is missing."
+              " For the second, set TMPDIR to such a filesystem.\nNOT RUN: none of this test's checks was made")
         return 0
     installer()
     recipe()
@@ -937,6 +1102,10 @@ def main():
     write_faults()
     sync_gate()
     device_read()
+    old_inode()
+    scratch_dir()
+    a_piece_fails()
+    which_dd()
     safe_boot()
     notes()
     print("all ok" if not fails else f"{fails} failed")
