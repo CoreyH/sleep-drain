@@ -37,11 +37,12 @@ this section where they differ.
   for its own timer; the restart comes at the marker's time all the same.
 - CPU0's RVBAR reads 0x00100100059e4001 under m1n1-aurora: bit 0 set, the address 0x100059e4000. The
   other seven have the same address with bit 0 clear (`results/rvbar-20261119/`).
-- Nobody has macOS's commit state for a T600x. `sleep.c` has no T6000 entry and nothing has completed
-  one on this Mac or with it (aurora-silicon/linux#2198, answered 2026-11-19). Since 2026-11-22 there
-  is a report of a J314s that completes the entry and wakes, on Ante042's own reference branch with
-  an m1n1 of their own: their result, not reproduced here. T6000 data is welcome there; the
-  entry's data went up as a comment on 2026-11-19.
+- Nobody has macOS's commit state for a T600x. Upstream's `sleep.c` has no T6000 entry (as of
+  2026-11-27: olivergreg has one working on a branch, not yet a PR). Ante042's reference branch, with an
+  m1n1 of their own, completes the entry and wakes a J314s: reported 2026-11-22, **and reproduced on this
+  Mac on 2026-11-27** with their second stage and the stock first stage (one sleep). That is the
+  reference setup's result here, not support in upstream's `sleep.c`. The entry's data went up as a
+  comment on 2026-11-19.
 - A record's bytes: 0x6008-0x600c have carried across the restart every time; 0x600d and 0x600e were
   lost in both runs that wrote them, though awake they take a write. Use the first five.
 - The SMC's keys across a one-way run say nothing: after four runs and after a plain restart they
@@ -60,7 +61,9 @@ this section where they differ.
 
 **2026-11-27: the reference sleeps and wakes this Mac** (RESEARCH.md, "The reference on this Mac").
 Ante042's kernel branch with their second stage and the *stock* first stage: the mailbox found, one deep
-sleep of about 64 s, an RTC wake back into the session, in a safe boot with the enclave's store read-only.
+suspend and resume back into the session with the RTC alarm armed for 60 s (about 64 s from the entry's
+log line to the wake's; the alarm is the likely wake, the log names no source), in a safe boot with the
+enclave's store read-only.
 The stock loader is back. The same day olivergreg reported the same working on a J314s as a profile for
 upstream's `sleep.c` with stock aura (aurora-silicon/linux#2198). So the entry's question (E2) is answered
 by other people's code, and **no further one-way replay run is planned**; `e1-hook/` stays as it is. What
@@ -68,11 +71,25 @@ is next, in this order, replacing item 1 below (kept as the record of how it was
 - **Told the thread** 2026-11-27 with Corey's OK (aurora-silicon/linux#2198, comment 7218151913): a
   second J314s, the same firmware, their stage 2 with the stock stage 1, the GPU driver's name as the one
   thing that had to change for this distribution's Mesa, and an offer to olivergreg of a second machine.
-- **Measure it here.** What the project set out to fix is the drain: a deep sleep's power on this Mac
-  against s2idle's 1.97 W (Ante042: 130 to 170 mW over a night, from battery voltage, since the gauge stops
-  counting at those currents). First a second and third sleep in one boot and a 15-minute one
-  (`ref-sleep go 900`), then how to measure a night: the safe boot keeps everything in RAM and the nights'
-  power-off hook does nothing there, so a night needs its own steps.
+- **Reliability first, then the measurement; they are two things.**
+  - *Reliability checks:* a second and third sleep in one boot and a 15-minute one (`ref-sleep go 900`).
+    They give no power figure: `ref-sleep` writes `/sys/power/state` itself, so the systemd hook that
+    takes the battery's readings before and after never runs.
+  - *The guard for every such boot, from the first `go` until the boot is left, failed attempts and the
+    gaps between trials included:* the lid stays open and nothing else may suspend (the idle timer's
+    suspend switched off for the session). Enabling the reference driver selects `deep` by itself, before
+    `ref-sleep` reads the mode to put back, so its clean-up leaves `deep` selected and the alarm off: a lid
+    close or an idle suspend then would be a deep sleep with no timed wake. To fix in `ref-sleep` before
+    the series: the previous mode read before the enable. The guard doesn't rest on that fix.
+  - *The measurement,* what the project set out to fix: a deep sleep's power on this Mac against s2idle's
+    1.97 W (Ante042: 130 to 170 mW over a night, from battery voltage, since the gauge stops counting at
+    those currents). The coulomb counter the nights are compared by can't be assumed to work down there,
+    so a method that does comes first. Corey's USB-C power monitor (the Power-Z, OK'd for charger runs on
+    2026-11-16) is the candidate: the battery full, the charger through the meter, the same Mac in deep
+    sleep and in s2idle, read at the wall. To settle before it counts: that a charger left in doesn't wake
+    or dark-wake the reference's sleep, what the meter's floor and the charger's own share are, and how
+    the two sleeps are made comparable. A night also needs its own steps: the safe boot keeps everything
+    in RAM, and the nights' power-off hook does nothing there.
 - **What daily use would take on this Mac**, to put to Corey before any of it is built: the reference
   loader installed for good (every boot through it; a package update's `update-m1n1` writes the stock one
   back), a kernel outside the package manager rebuilt at each update, the enclave's store read-only (no

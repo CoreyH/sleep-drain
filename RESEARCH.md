@@ -5428,8 +5428,10 @@ power-off keeps the PMU's RTC, which only a flat battery loses. The setting is b
 
 ### The reference on this Mac: Ante042's kernel and second stage sleep and wake it, with the stock first stage (2026-11-27)
 
-One deep sleep of about 64 s, woken by the PMU's RTC alarm, back into the running session
-(`results/ref-boot-20261127/`). The first sleep on this Mac that isn't s2idle.
+One deep suspend and resume, back into the running session, with the PMU's RTC alarm armed for 60 s and
+about 64 s between the entry's log line and the wake's (`results/ref-boot-20261127/`). The first sleep on
+this Mac that isn't s2idle. The alarm is the likely wake: the driver's line names no source, and the 64 s
+is between two log lines, not a measured time in the low-power state.
 
 - **What ran.** Ante042/linux `t600x-s2r-reference` at 3acb8cf, built here from the running kernel's
   configuration with `CONFIG_APPLE_S2R=y` (release `7.3.0-s2rref`), installed safe-only with `test-kernel`;
