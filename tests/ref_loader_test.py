@@ -949,16 +949,17 @@ def direct_read_probe():
         data = b"x" * 5000
         write(os.path.join(t, "f"), data)
         try:
-            r = subprocess.run(["dd", f"if={t}/f", "iflag=direct", "bs=1M", "status=none"], capture_output=True)
+            # The fixture's dd wrapper runs /usr/bin/dd, so the probe asks the same one, not whatever PATH has first.
+            r = subprocess.run(["/usr/bin/dd", f"if={t}/f", "iflag=direct", "bs=1M", "status=none"], capture_output=True)
         except OSError as e:
             return f"dd couldn't be run: {e}"
         if r.returncode == 0 and r.stdout == data:
             return None
-        v = subprocess.run(["dd", "--version"], capture_output=True, text=True)
+        v = subprocess.run(["/usr/bin/dd", "--version"], capture_output=True, text=True)
         version = (v.stdout or v.stderr).splitlines()[0] if (v.stdout or v.stderr).strip() else "nothing (exit %d)" % v.returncode
         said = r.stderr.decode(errors="replace").strip() or ("no message" if r.returncode else "no error, but other bytes than the file's")
-        return (f"`dd if=<a file in {tempfile.gettempdir()}> iflag=direct bs=1M status=none` exited {r.returncode} and said: {said}\n"
-                f"     dd --version says: {version}")
+        return (f"`/usr/bin/dd if=<a file in {tempfile.gettempdir()}> iflag=direct bs=1M status=none` exited {r.returncode} and said: {said}\n"
+                f"     /usr/bin/dd --version says: {version}")
 
 
 def safe_boot():
