@@ -110,16 +110,26 @@ is next, in this order, replacing item 1 below (kept as the record of how it was
   there on 2026-11-27** ("if aura has already been selected as the next gen bootloader then we should
   move our testing there... this machine is a test bench mostly"): olivergreg's branch on this Mac, with
   aura's own release 1.0.0b17 of 11-24 as the second stage (the version olivergreg ran; its prebuilt
-  `aura.bin`, checksum verified, handled as an opaque file; the release's notes say that exact build
-  wasn't boot-tested by them), by the same one-file swap with the stock kept. Before any suspend
+  `aura.bin`, checksum verified, handled as an opaque file), by the same one-file swap with the stock
+  kept. The archive's own readme says that exact build wasn't boot-tested; the release's published notes
+  now record boots of the tagged second stage on a J316s and a J413 (Pullfrog on #137). Unverified is
+  what is new here: this J314s, with the stock first stage, and the deep-sleep trial kernel.
+  **The bundle is a complete one for that kernel:** `aura.bin`, then the J314s device tree built from the
+  trial kernel's own source at 5cad606 (it is the tree that enables the sleep controller node; the
+  installed kernel's doesn't, and `test-kernel` drops a package's device trees), with the other M1 Pro
+  and Max trees of that build, then U-Boot as `update-m1n1` adds it. `ref-loader build` checks that one
+  of the trees names this Mac. Before any suspend
   is asked for there: the test boot has to expose `/chosen/aurora,s2r-mailbox` in its device tree, and
   the kernel's log has to show the driver took it.
   **The suspend guard starts with that boot, not with the first attempt:** this kernel's sleep driver
   makes `deep` the default as it probes, so a lid close or the idle timer could start a deep sleep before
   the mailbox was checked or a wake armed. So the entry for that kernel masks systemd's sleep targets on
   its command line (`systemd.mask=` for `sleep.target`, `suspend.target` and the hibernate ones), which
-  leaves only a direct write to `/sys/power/state`, the trial's own, and the lid stays open besides. To
-  build with the trial's tool (the mailbox node and the log line, the PMU RTC's alarm armed, then `mem`),
+  leaves only a direct write to `/sys/power/state`, the trial's own, and the lid stays open besides.
+  **And it is a safe boot all the same:** the `sleepdrain-safe` hook's read-only root under RAM overlays,
+  whatever is decided about the enclave's store. The two are separate protections: the upstream port has
+  a reported reset on a wake, and the old sep words protect nothing on that kernel, which ignores them.
+  To build with the trial's tool (the mailbox node and the log line, the PMU RTC's alarm armed, then `mem`),
   before any boot of that kernel. In hand, in
   `~/.local/share/sleep-drain/aura-20261127/`: the release, and olivergreg's branch at 5cad606 being
   built from the running configuration with `CONFIG_APPLE_SOC_SLEEP=y` (release `7.3.0-s2rup`). Open with
