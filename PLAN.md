@@ -94,6 +94,21 @@ this section where they differ.
        "I never retested with a full stage 1". Replacing stage 1 is a bigger step than a file on the
        boot partition; a first try keeps the stock one, and a failure then is not a failure of their
        setup.
+     - **Ante042's answer of 2026-11-26** (aurora-silicon/linux#2198, comment 7194852258, to the
+       follow-up posted that day with the tenth run): nothing has changed, every sleep there still
+       runs with the thin stage 1, and whether the stock stage 1 works with their stage 2 they
+       can't say; they would start with the thin one (`t600x-s2r-thin-stage1` on their m1n1 fork),
+       "so there is only one difference". With the thin stage 1 a 12 MB `boot.bin` hung at boot;
+       theirs is about 5.5 MB. Their Mac: iBoot2 iBoot-8422.141.2, stub OS firmware 13.5, **the
+       same as this Mac's** (`/proc/device-tree/chosen`, 11-27; this Mac's system firmware 26.6.2,
+       stage 1 m1n1 v1.6.1). Their stage 2 is "the branch plus noise" (local edits not kept
+       apart). And: no s2idle on that kernel once deep sleep is on (an external display
+       coprocessor can die after s2idle, and the entry then refuses). So the bundle here stays
+       small (5.5 MB, the six M1 Pro and Max device trees; the one with all 137 was 13.9 MB), and
+       in the test boot the lid stays open and nothing else suspends. The first try keeps the
+       stock stage 1 all the same: one file, reversible, and a pass would be a pass; a failure
+       says nothing against their setup, and the thin stage 1 (installed from macOS recovery, not
+       OK'd) would be the next question for Corey.
      - `CONFIG_APPLE_S2R=y`; at boot the driver has to log "apple-s2r: m1n1 mailbox at ..."; then 1
        written to `/sys/module/apple_s2r/parameters/enable` and `deep` to `/sys/power/mem_sleep`.
        **No suspend counts unless the mailbox line and `deep` were seen first.**
