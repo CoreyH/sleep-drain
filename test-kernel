@@ -2,8 +2,9 @@
 # Install an omacom/linux-aurora kernel package beside the regular linux-aurora,
 # such as the CI build of an upstream PR, and boot it exactly once.
 #
-#   test-kernel install <linux-aurora-*.pkg.tar.zst> <name>
-#   test-kernel boot <name>      boot it at the next restart only (grub-reboot)
+#   test-kernel install [--safe-only] <linux-aurora-*.pkg.tar.zst> <name>
+#   test-kernel boot <name> [--safe-sepro]  boot it at the next restart only (grub-reboot)
+#   test-kernel unselect                    take back a "boot": no test kernel at the next restart
 #   test-kernel remove <name>
 #   test-kernel list
 #
@@ -18,22 +19,66 @@
 #   unused. Compare them with cmp if a test depends on them;
 # - the kernel and initramfs in /boot/aurora-test/<name>/, outside the
 #   /boot/vmlinuz-* (and vmlinux-*, kernel-*, Image) names GRUB's 10_linux
-#   scans, so the only menu entry is the one from
-#   /etc/grub.d/43_aurora_test_<name>, which is never the default.
+#   scans, so the only menu entries are the ones from
+#   /etc/grub.d/43_aurora_test_<name>, which are never the default.
+#
+# The safe entry. If sleep-drain's safe boot is installed (the sleepdrain-safe
+# mkinitcpio hook, and a sleep-drain-safe that has "sepro-cmdline"), install
+# also builds /boot/aurora-test/<name>/initramfs-safe.img with that hook and
+# writes a second entry, id aurora-test-<name>-safe, whose command line is what
+# "sleep-drain-safe boot --sep-ro" gives its own entry: the regular line with
+# apple_sep.xart_writes=0 apple_sep.provision_keybag=0, then sleepdrain.safe.
+# "boot <name> --safe-sepro" selects that one: this kernel with the disk
+# read-only under RAM overlays, and its Secure Enclave driver asked to open the
+# enclave's store read-only. The two words are a request; what the driver took
+# is its own to say in that boot (sleep-drain-safe status). If the hook isn't
+# there or sepro-cmdline fails, the plain entry alone is installed, and install
+# says so.
+#
+# "install --safe-only" is for a kernel whose Secure Enclave driver must never
+# bind with a writable store: it writes the safe entry and its initramfs and
+# nothing else, no plain entry and no plain initramfs, and if it can't (no
+# hook, sepro-cmdline fails, the image doesn't build or has no hook, grub.cfg
+# isn't taken) it installs nothing and leaves nothing behind. "boot <name>"
+# without --safe-sepro then refuses.
+#
+# What an install may write over or take back is only what that same run
+# created. It refuses, before anything is written, if the image directory or
+# the GRUB script of that name is there with no record of such a kernel, and it
+# creates each of its four things (the module tree, the record, the image
+# directory, the script) so that the creation fails if the thing exists. A run
+# that fails takes back the ones it created, and no other: until all four
+# exist in any mode, and to the end with --safe-only.
+#
+# "unselect" clears GRUB's one-shot selection if it is one of this tool's
+# entries (aurora-test-*), reads the environment back, and says what the next
+# restart is. Another tool's selection is left as it is.
 #
 # grub.cfg is replaced only when the regenerated one differs from the current
-# one by the test entry alone. Otherwise it is left as it is and the
-# difference shown. The new config is staged beside grub.cfg and renamed into
-# place once complete, so a failed write leaves the live one intact.
+# one by this kernel's section alone, both entries of it. Otherwise it is left
+# as it is and the difference shown. The new config is staged beside grub.cfg
+# and renamed into place once complete, so a failed write leaves the live one
+# intact.
+#
+# The paths are fixed; the TK_* variables point them elsewhere for
+# tests/test_kernel_test.py (pkexec passes no such variable on).
 set -euo pipefail
 
-STATE=/var/lib/sleep-drain/test-kernels
-GRUB_CFG=/boot/grub/grub.cfg
-IMAGES=/boot/aurora-test
+BOOT=${TK_BOOT:-/boot}
+STATE=${TK_STATE:-/var/lib/sleep-drain/test-kernels}
+GRUB_CFG=${TK_GRUB_CFG:-$BOOT/grub/grub.cfg}
+IMAGES=${TK_IMAGES:-$BOOT/aurora-test}
+GRUB_D=${TK_GRUB_D:-/etc/grub.d}
+MODULES=${TK_MODULES:-/usr/lib/modules}
+INITCPIO=${TK_INITCPIO:-/etc/initcpio}
+SAFE=${TK_SAFE:-/usr/local/bin/sleep-drain-safe}
+# What the safe entry's line must ask of the Secure Enclave's driver, and the flag the initramfs hook looks for.
+SEPRO_WORDS="apple_sep.xart_writes=0 apple_sep.provision_keybag=0"
+SAFE_FLAG_WORD=sleepdrain.safe
 
 die() { echo "test-kernel: $*" >&2; exit 1; }
 usage() {
-  echo "usage: test-kernel install <pkg.tar.zst> <name> | boot <name> | remove <name> | list" >&2
+  echo "usage: test-kernel install [--safe-only] <pkg.tar.zst> <name> | boot <name> [--safe-sepro] | unselect | remove <name> | list" >&2
   exit 2
 }
 
@@ -41,7 +86,16 @@ check_name() {
   [[ ${1:-} =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]] || die "a name is lowercase letters, digits and dashes"
 }
 
-script_of() { echo "/etc/grub.d/43_aurora_test_$1"; }
+script_of() { echo "$GRUB_D/43_aurora_test_$1"; }
+
+# The state file: the release on its first line, and on its second which entries the install wrote ("entries=plain",
+# "entries=plain,safe" or "entries=safe"). A file from before the safe entry has the release alone: a plain entry.
+release_of() { sed -n 1p "$STATE/$1"; }
+entries_of() {
+  local e
+  e=$(sed -n 's/^entries=//p' "$STATE/$1")
+  echo "${e:-plain}"
+}
 
 # grub.cfg without the section grub-mkconfig wrote for one /etc/grub.d script.
 # grub-mkconfig puts an empty line before every section's BEGIN marker, so that
@@ -54,11 +108,52 @@ without_section() {
     END { if (held) print prev }' "$1"
 }
 
+# entry_line CFG ID WORD: the line that starts with WORD (linux, initrd) in CFG's menu entry ID, without its
+# indentation; fails if the entry or the line isn't there.
+entry_line() {
+  TK_ID="--id $2 " TK_WORD=$3 awk '
+    BEGIN { id = ENVIRON["TK_ID"]; word = ENVIRON["TK_WORD"] }
+    index($0, id) { inside = 1; next }
+    inside && $1 == word { sub(/^[ \t]+/, ""); print; found = 1; inside = 0 }
+    inside && $0 ~ /^}/ { inside = 0 }
+    END { exit !found }' "$1"
+}
+
+# Whether a command line is one a safe sep-ro entry may have, by this script's own reading of it, whatever
+# sleep-drain-safe said: one line of plain characters (those sleep-drain-safe's followable() takes: GRUB hands such a
+# line on as written), no "--" word (what follows one goes to init), exactly one word that sets each of apple_sep's two
+# parameters, in any spelling of - and _, and that word is the one with =0, and the hook's flag as the last word.
+# Sets safe_why when it isn't.
+safe_args_ok() {
+  local LC_ALL=C a key n count exact
+  local -a w
+  safe_why=
+  [[ -n $1 && $1 != *[!A-Za-z0-9\ _=.,:/@%+-]* ]] ||
+    { safe_why="it is empty or has a character GRUB may read another way"; return 1; }
+  read -ra w <<< "$1"
+  ((${#w[@]})) || { safe_why="it has no word"; return 1; }
+  [[ ${w[-1]} == "$SAFE_FLAG_WORD" ]] || { safe_why="its last word isn't $SAFE_FLAG_WORD"; return 1; }
+  for a in "${w[@]}"; do
+    [[ $a != -- ]] || { safe_why="it has a -- in it"; return 1; }
+  done
+  for n in $SEPRO_WORDS; do
+    count=0 exact=0
+    for a in "${w[@]}"; do
+      key=${a%%=*}
+      [[ ${key//-/_} == "${n%%=*}" ]] || continue
+      count=$((count + 1))
+      [[ $a != "$n" ]] || exact=1
+    done
+    ((count == 1 && exact)) || { safe_why="it doesn't have $n as its one setting of ${n%%=*}"; return 1; }
+  done
+}
+
 # Regenerate grub.cfg, and take it only if it differs from the current one in
 # the given script's section alone. Callers use this in a conditional, where
 # set -e doesn't apply, so every step is checked here: the new config is
 # staged beside grub.cfg (grub-mkconfig itself checks it), the current one
 # backed up, and only then renamed over it.
+# regen_grub SCRIPT [CHECK]: CHECK is called with the candidate and must pass before it replaces the live grub.cfg.
 regen_grub() {
   local script=$1 new=$GRUB_CFG.test-kernel.new
   rm -f "$new"
@@ -70,6 +165,11 @@ regen_grub() {
   if ! cmp -s <(without_section "$new" "$script") <(without_section "$GRUB_CFG" "$script"); then
     echo "test-kernel: grub-mkconfig would change more than the test entry; grub.cfg left as it is:" >&2
     diff <(without_section "$GRUB_CFG" "$script") <(without_section "$new" "$script") >&2 || true
+    rm -f "$new"
+    return 1
+  fi
+  if [[ -n ${2:-} ]] && ! "$2" "$new"; then
+    echo "test-kernel: the regenerated grub.cfg doesn't have the test kernel's entries as written; grub.cfg left as it is" >&2
     rm -f "$new"
     return 1
   fi
@@ -85,111 +185,324 @@ regen_grub() {
   fi
 }
 
+# One menu entry of the script install writes: TITLE ID UUID KERNEL-PATH COMMAND-LINE INITRD-PATH.
+menu_entry() {
+  cat <<EOF
+menuentry '$1' --class omarchy --class gnu-linux --id $2 {
+    load_video
+    set gfxpayload=keep
+    insmod part_gpt
+    insmod fat
+    insmod btrfs
+    search --no-floppy --fs-uuid --set=root $3
+    linux $4 $5
+    initrd $6
+}
+EOF
+}
+
+# What an install that doesn't finish takes back: the things this run created, each named here only once its creation
+# has succeeded, and nothing else. (Globals: when set -e ends the script inside install_kernel, its locals are gone by
+# the time the EXIT trap runs.)
+undo_name= undo_only= undo_script= undo_state= undo_dir= undo_tree= undo_stage= undo_parents=
+undo_install() {
+  local took=
+  [[ -z $undo_stage ]] || rm -rf -- "${undo_stage:?}"
+  [[ -z $undo_script ]] || { rm -f -- "${undo_script:?}"; took+=" $undo_script"; }
+  [[ -z $undo_dir ]] || { rm -rf -- "${undo_dir:?}"; took+=" $undo_dir"; }
+  [[ -z $undo_state ]] || { rm -f -- "${undo_state:?}"; took+=" $undo_state"; }
+  [[ -z $undo_tree ]] || { rm -rf -- "${undo_tree:?}"; took+=" $undo_tree"; }
+  # The two directories those live in, if this run made them and they are empty again.
+  [[ -z $undo_parents ]] || rmdir -- $undo_parents 2> /dev/null || true
+  if [[ -n $undo_only ]]; then
+    echo "test-kernel: --safe-only: the install didn't finish; nothing of $undo_name is left behind${took:+ (taken back:$took)}" >&2
+  elif [[ -n $took ]]; then
+    echo "test-kernel: the install didn't finish; what it had created for $undo_name is taken back:$took" >&2
+  fi
+}
+
 install_kernel() {
-  local pkg=${1:-} name=${2:-} release stage script cmdline boot_uuid
+  local safe_only=0
+  if [[ ${1:-} == --safe-only ]]; then
+    safe_only=1
+    shift
+  fi
+  (($# == 2)) || usage
+  local pkg=$1 name=$2 release stage script cmdline= boot_uuid
   check_name "$name"
+  # aurora-test-<name>-safe is the id of <name>'s safe entry: no kernel may have it as its plain one.
+  [[ $name != *-safe ]] || die "a name can't end in -safe: aurora-test-<name>-safe is the id of a kernel's safe entry"
+  [[ ! -e $STATE/$name-safe ]] || die "$name-safe is installed, and its entry has the id $name's safe entry would get: remove it first"
   [[ -f $pkg ]] || die "no package at $pkg"
   [[ ! -e $STATE/$name ]] || die "$name is installed already"
   # No head here: under pipefail an early-closed pipe would end the script.
   release=$(tar --zstd -tf "$pkg" | sed -n 's|^usr/lib/modules/\([^/]*\)/vmlinuz$|\1|p')
   [[ -n $release ]] || die "no usr/lib/modules/<release>/vmlinuz in $pkg"
   [[ $release != *$'\n'* ]] || die "more than one kernel in $pkg"
-  [[ ! -e /usr/lib/modules/$release ]] || die "/usr/lib/modules/$release exists; refusing to touch it"
+  [[ ! -e $MODULES/$release ]] || die "$MODULES/$release exists; refusing to touch it"
   script=$(script_of "$name")
+  local kernel=/aurora-test/$name/vmlinuz dir=$IMAGES/$name
+  # With no record of a kernel of this name, an image directory or a GRUB script of this name is somebody else's, or
+  # what an older run left: not this run's to write into, or to remove if it fails.
+  local -a found=()
+  [[ ! -e $dir && ! -L $dir ]] || found+=("$dir ($([[ -d $dir && ! -L $dir ]] && echo "a directory holding: $(ls -A "$dir" | tr '\n' ' ')" || echo "not a directory"))")
+  [[ ! -e $script && ! -L $script ]] || found+=("$script")
+  ((${#found[@]} == 0)) ||
+    die "there is no record of a kernel named $name, and yet this is there: ${found[*]}. It isn't this install's to write over, or to remove if it failed: look at what it is and move it away first. Nothing installed"
 
   # The regular entry's kernel command line, so the test kernel boots the same
   # root the same way.
-  cmdline=$(awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }' "$GRUB_CFG")
-  [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"
-  boot_uuid=$(grub-probe --target=fs_uuid /boot)
+  if ((!safe_only)); then
+    cmdline=$(awk '$1 == "linux" && $2 == "/vmlinuz-linux-aurora" { $1 = $2 = ""; sub(/^ +/, ""); print; exit }' "$GRUB_CFG")
+    [[ -n $cmdline ]] || die "no /vmlinuz-linux-aurora entry in $GRUB_CFG to copy the command line from"
+  fi
+  boot_uuid=$(grub-probe --target=fs_uuid "$BOOT")
+
+  # The safe entry: only with the hook installed and a command line from sleep-drain-safe, which makes its own checks
+  # on the regular line (and on the length with this kernel's path); safe_args_ok() is this script's reading of it.
+  local safe=0 safe_args= safe_why=
+  if [[ ! -f $INITCPIO/hooks/sleepdrain-safe || ! -f $INITCPIO/install/sleepdrain-safe ]]; then
+    safe_why="the sleepdrain-safe mkinitcpio hook isn't installed (sleep-drain's install.sh installs it)"
+  elif ! safe_args=$("$SAFE" sepro-cmdline "$kernel" 2>&1); then
+    safe_why="$SAFE sepro-cmdline failed: ${safe_args:-no output}"
+  elif ! safe_args_ok "$safe_args"; then
+    safe_why="$SAFE sepro-cmdline gave a line that can't be a safe entry's ($safe_why): $(printf '%q' "$safe_args")"
+  else
+    safe=1
+  fi
+  ((safe || !safe_only)) || die "--safe-only, and there can be no safe entry: $safe_why. Nothing installed"
 
   # /boot is a small vfat partition: room for the kernel, an initramfs as big
-  # as the regular one, and a margin, before anything is written.
-  local need avail
+  # as the regular one for each image built, and a margin, before anything is
+  # written.
+  local need avail images=$((safe + !safe_only))
   need=$(( ( $(tar --zstd -xOf "$pkg" "usr/lib/modules/$release/vmlinuz" | wc -c) \
-           + $(stat -c %s /boot/initramfs-linux-aurora.img) ) / 1048576 + 32 ))
-  avail=$(df --output=avail -BM /boot | tail -1 | tr -dc 0-9)
+           + images * $(stat -c %s "$BOOT/initramfs-linux-aurora.img") ) / 1048576 + 32 ))
+  avail=$(df --output=avail -BM "$BOOT" | tail -1 | tr -dc 0-9)
   (( avail >= need )) || die "/boot has ${avail} MiB free; $name needs about ${need} MiB"
 
-  stage=$(mktemp -d)
+  # From here on, any way out before the four things exist takes back the ones this run created; with --safe-only,
+  # which is all or nothing, any way out but the last line does. Each is created so that the creation fails if it is
+  # there already (mkdir without -p, a file under noclobber), and is named for the trap only after that.
+  undo_name=$name undo_only=$( ((!safe_only)) || echo 1) undo_script= undo_state= undo_dir= undo_tree= undo_stage= undo_parents=
+  trap undo_install EXIT
+
+  # Checked by hand, and before it is a path's first part: with $stage empty, "$stage/usr/..." would be "/usr/...".
+  stage=$(mktemp -d) && [[ -n $stage && -d $stage ]] || die "couldn't make a scratch directory (mktemp -d); nothing installed"
+  undo_stage=$stage
   tar --zstd -xf "$pkg" -C "$stage" "usr/lib/modules/$release"
   rm -f "$stage/usr/lib/modules/$release/pkgbase"
   rm -rf -- "${stage:?}/usr/lib/modules/$release/dtbs"
-  mv "$stage/usr/lib/modules/$release" "/usr/lib/modules/$release"
+  mkdir "$MODULES/$release" || die "couldn't create $MODULES/$release (it wasn't there a moment ago); refusing to touch it"
+  undo_tree=$MODULES/$release
+  cp -a "$stage/usr/lib/modules/$release/." "$MODULES/$release/"
   rm -rf -- "${stage:?}"
-  mkdir -p "$STATE"
-  echo "$release" > "$STATE/$name"
+  undo_stage=
+  local d
+  for d in "$IMAGES" "$STATE"; do
+    [[ -d $d ]] || { mkdir -p "$d"; undo_parents+=" $d"; }
+  done
+  write_state() { printf '%s\nentries=%s\n' "$release" "$1" > "$STATE/$name"; }
+  (set -o noclobber; : > "$STATE/$name") 2> /dev/null || die "couldn't create the record $STATE/$name (it wasn't there a moment ago); not written over"
+  undo_state=$STATE/$name
+  write_state "$( ((safe_only)) && echo safe || echo plain)"
+  mkdir "$dir" || die "couldn't create $dir (it wasn't there a moment ago); not written into"
+  undo_dir=$dir
+  # The script's place is taken now, empty and not executable (grub-mkconfig runs only executable ones); it gets its
+  # entries and its mode once the images are built.
+  (set -o noclobber; : > "$script") 2> /dev/null || die "couldn't create $script (it wasn't there a moment ago); not written over"
+  undo_script=$script
+  # All four are this run's. Without --safe-only a failure from here on leaves an install that "remove" takes away,
+  # as it always has.
+  ((safe_only)) || trap - EXIT
 
   depmod "$release"
-  mkdir -p "$IMAGES/$name"
-  cp "/usr/lib/modules/$release/vmlinuz" "$IMAGES/$name/vmlinuz"
-  mkinitcpio -k "$release" -g "$IMAGES/$name/initramfs.img"
+  cp "$MODULES/$release/vmlinuz" "$dir/vmlinuz"
+  ((safe_only)) || mkinitcpio -k "$release" -g "$dir/initramfs.img"
 
-  cat > "$script" <<EOF
-#!/bin/sh
-# Written by test-kernel for $release; remove with: test-kernel remove $name
-cat <<'MENU'
-menuentry 'Test kernel $name ($release)' --class omarchy --class gnu-linux --id aurora-test-$name {
-    load_video
-    set gfxpayload=keep
-    insmod part_gpt
-    insmod fat
-    insmod btrfs
-    search --no-floppy --fs-uuid --set=root $boot_uuid
-    linux /aurora-test/$name/vmlinuz $cmdline
-    initrd /aurora-test/$name/initramfs.img
-}
-MENU
-EOF
+  # The safe image: this kernel's initramfs with the sleepdrain-safe hook added, shown to have it. Then the command
+  # line again: the builds take a while, and the entry must be made from the line the regular entry has now.
+  if ((safe)); then
+    local img=$dir/initramfs-safe.img again
+    if ! mkinitcpio -k "$release" -A sleepdrain-safe -g "$img.new" > "$dir/mkinitcpio-safe.log" 2>&1; then
+      safe=0 safe_why="mkinitcpio failed for the safe image; see $dir/mkinitcpio-safe.log"
+      # Its last lines here too: with --safe-only the log goes with everything else.
+      echo "test-kernel: mkinitcpio -k $release -A sleepdrain-safe failed; its last lines:" >&2
+      tail -n 20 "$dir/mkinitcpio-safe.log" >&2 || true
+    elif ! lsinitcpio -a "$img.new" 2> /dev/null | grep 'sleepdrain-safe' > /dev/null; then
+      safe=0 safe_why="the safe image as built has no sleepdrain-safe hook"
+    elif ! again=$("$SAFE" sepro-cmdline "$kernel" 2>&1) || [[ $again != "$safe_args" ]]; then
+      safe=0 safe_why="the regular entry's command line changed while the images were built"
+    elif ! mv -f "$img.new" "$img"; then
+      safe=0 safe_why="couldn't put the safe image in place"
+    fi
+    if ((!safe)); then
+      rm -f -- "${img:?}.new" "${img:?}"
+      ((!safe_only)) || die "--safe-only, and there can be no safe entry: $safe_why"
+    fi
+  fi
+  ((safe_only)) || write_state "$( ((safe)) && echo plain,safe || echo plain)"
+
+  {
+    echo '#!/bin/sh'
+    echo "# Written by test-kernel for $release; remove with: test-kernel remove $name"
+    echo "cat <<'MENU'"
+    ((safe_only)) ||
+      menu_entry "Test kernel $name ($release)" "aurora-test-$name" "$boot_uuid" "$kernel" "$cmdline" "/aurora-test/$name/initramfs.img"
+    ((!safe)) ||
+      menu_entry "Test kernel $name ($release), safe boot (disk read-only, Secure Enclave driver asked for a read-only store)" \
+        "aurora-test-$name-safe" "$boot_uuid" "$kernel" "$safe_args" "/aurora-test/$name/initramfs-safe.img"
+    echo MENU
+  } > "$script"
   chmod 755 "$script"
-  if regen_grub "$script"; then
-    echo "installed $name ($release). Boot it once with: test-kernel boot $name, then restart"
+  # The candidate grub.cfg must have the safe entry exactly as written, and with --safe-only no plain entry.
+  entries_ok() {
+    if ((safe)); then
+      [[ $(entry_line "$1" "aurora-test-$name-safe" linux) == "linux $kernel $safe_args" &&
+        $(entry_line "$1" "aurora-test-$name-safe" initrd) == "initrd /aurora-test/$name/initramfs-safe.img" ]] || return 1
+    fi
+    ((!safe_only)) || ! grep -q -- "--id aurora-test-$name " "$1"
+  }
+  if regen_grub "$script" entries_ok; then
+    trap - EXIT
+    if ((safe_only)); then
+      echo "installed $name ($release) with the safe entry alone: no plain entry and no plain initramfs. Boot it once with: test-kernel boot $name --safe-sepro, then restart"
+    elif ((safe)); then
+      echo "installed $name ($release), with a safe entry. Boot it once with: test-kernel boot $name, or in a safe boot with the Secure Enclave's store asked read-only: test-kernel boot $name --safe-sepro; then restart"
+    else
+      echo "test-kernel: no safe entry for $name, the plain entry only: $safe_why" >&2
+      echo "installed $name ($release). Boot it once with: test-kernel boot $name, then restart"
+    fi
+  elif ((safe_only)); then
+    die "--safe-only, and grub.cfg wasn't taken (see above)"
   else
     echo "installed $name ($release), but not in grub.cfg yet (see above)" >&2
     exit 1
   fi
 }
 
+# Select an entry for the next restart only, and read the selection back: grub-reboot can return 0 without having
+# written it.
+select_once() {
+  local id=$1 env
+  grub-reboot "$id" || die "grub-reboot failed; nothing new selected"
+  env=$(grub-editenv - list 2> /dev/null) ||
+    die "grub-reboot returned 0, but GRUB's environment block couldn't be read back: whether $id is selected isn't known. Check with: test-kernel list"
+  grep -x -F "next_entry=$id" <<< "$env" > /dev/null ||
+    die "grub-reboot returned 0, but the next entry isn't $id: $(grep '^next_entry=' <<< "$env" || echo 'none is set'). Not selected"
+}
+
 boot_kernel() {
-  local name=${1:-}
+  local name= safe=0 a release entries
+  for a in "$@"; do
+    if [[ $a == --safe-sepro ]] && ((!safe)); then
+      safe=1
+    elif [[ $a != -* && -z $name ]]; then
+      name=$a
+    else
+      usage
+    fi
+  done
   check_name "$name"
   [[ -e $STATE/$name ]] || die "$name isn't installed"
-  grep -q -- "--id aurora-test-$name " "$GRUB_CFG" || die "$name has no entry in $GRUB_CFG"
-  grub-reboot "aurora-test-$name"
-  echo "the next restart boots $name once; every restart after that, the regular kernel"
+  release=$(release_of "$name")
+  entries=$(entries_of "$name")
+  if ((!safe)); then
+    [[ ,$entries, == *,plain,* ]] ||
+      die "$name has only the safe entry (installed with --safe-only): test-kernel boot $name --safe-sepro. Nothing selected"
+    grep -q -- "--id aurora-test-$name " "$GRUB_CFG" || die "$name has no entry in $GRUB_CFG"
+    select_once "aurora-test-$name"
+    echo "the next restart boots $name once; every restart after that, the regular kernel"
+    return
+  fi
+  # The safe entry, as grub.cfg has it now: its line read by this script, and held against what sleep-drain-safe gives
+  # for the regular line as it is today. An entry made from an older line isn't selected.
+  local id=aurora-test-$name-safe kernel=/aurora-test/$name/vmlinuz line args now safe_why
+  line=$(entry_line "$GRUB_CFG" "$id" linux) || die "$name has no safe entry in $GRUB_CFG; nothing selected"
+  [[ $line == "linux $kernel "* ]] || die "$name's safe entry doesn't boot $kernel; nothing selected: $line"
+  args=${line#"linux $kernel "}
+  safe_args_ok "$args" || die "$name's safe entry has a command line that isn't a safe sep-ro one ($safe_why); nothing selected: $line"
+  [[ $(entry_line "$GRUB_CFG" "$id" initrd || true) == "initrd /aurora-test/$name/initramfs-safe.img" ]] ||
+    die "$name's safe entry doesn't load /aurora-test/$name/initramfs-safe.img; nothing selected"
+  [[ -f $IMAGES/$name/vmlinuz && -f $IMAGES/$name/initramfs-safe.img ]] ||
+    die "$name's kernel or its safe image isn't in $IMAGES/$name; nothing selected"
+  lsinitcpio -a "$IMAGES/$name/initramfs-safe.img" 2> /dev/null | grep 'sleepdrain-safe' > /dev/null ||
+    die "$name's safe image has no sleepdrain-safe hook; nothing selected"
+  now=$("$SAFE" sepro-cmdline "$kernel" 2>&1) ||
+    die "$SAFE sepro-cmdline fails now, so the entry can't be held against it: $now. Nothing selected"
+  [[ $now == "$args" ]] ||
+    die "$name's safe entry was made from another command line than the regular entry has now: remove $name and install it again. Nothing selected"
+  select_once "$id"
+  echo "the next restart boots $name ($release) once, as a safe boot (its image has the sleepdrain-safe hook and its line $SAFE_FLAG_WORD: the disk read-only under RAM overlays) with the Secure Enclave's driver asked to open its store read-only ($SEPRO_WORDS); whether it did is the driver's to say, in that boot: sleep-drain-safe status; every restart after that, the regular kernel"
+}
+
+# unselect: take back a "boot". Only a selection of one of this tool's entries is cleared; the environment is read
+# back, and what the next restart is, is said either way.
+unselect() {
+  (($# == 0)) || usage
+  local env next after default
+  env=$(grub-editenv - list 2> /dev/null) ||
+    die "GRUB's environment block couldn't be read: what the next restart is isn't known, and nothing was changed"
+  next=$(sed -n 's/^next_entry=//p' <<< "$env")
+  default=$(sed -n 's/^saved_entry=//p' <<< "$env")
+  default="GRUB's default entry${default:+ ($default)}, the regular kernel unless that default was changed"
+  if [[ -z $next ]]; then
+    echo "nothing is selected for the next restart: it is $default. Nothing changed"
+    return
+  fi
+  if [[ $next != aurora-test-* ]]; then
+    echo "the next restart is the entry $next, once: not one of test-kernel's (aurora-test-*), so it is left as it is. No test kernel is selected"
+    return
+  fi
+  grub-editenv - unset next_entry || die "couldn't clear the selection: the next restart STILL boots $next"
+  env=$(grub-editenv - list 2> /dev/null) ||
+    die "the selection of $next was cleared by grub-editenv's word, but the environment block couldn't be read back: whether it still boots next isn't known"
+  after=$(sed -n 's/^next_entry=//p' <<< "$env")
+  [[ -z $after ]] || die "grub-editenv returned 0, but the next entry still reads $after: NOT cleared"
+  echo "cleared the selection of $next: the next restart is $default"
 }
 
 remove_kernel() {
   local name=${1:-} release script
   check_name "$name"
   [[ -e $STATE/$name ]] || die "$name isn't installed"
-  release=$(cat "$STATE/$name")
+  release=$(release_of "$name")
   script=$(script_of "$name")
   [[ $release != "$(uname -r)" ]] || die "$name is the running kernel; restart into the regular one first"
 
-  rm -f "$script"
+  rm -f -- "${script:?}"
   regen_grub "$script" || die "grub.cfg not regenerated; $name's files are still in place"
-  if grub-editenv - list | grep -x "next_entry=aurora-test-$name" > /dev/null; then
+  if grub-editenv - list | grep -x -e "next_entry=aurora-test-$name" -e "next_entry=aurora-test-$name-safe" > /dev/null; then
     grub-editenv - unset next_entry
   fi
   rm -rf -- "${IMAGES:?}/${name:?}"
   # Only a tree no package owns: never the regular kernel's.
-  if [[ -n $release && -d /usr/lib/modules/$release ]] && ! pacman -Qqo "/usr/lib/modules/$release" > /dev/null 2>&1; then
-    rm -rf -- "/usr/lib/modules/${release:?}"
+  if [[ -n $release && -d $MODULES/$release ]] && ! pacman -Qqo "$MODULES/$release" > /dev/null 2>&1; then
+    rm -rf -- "${MODULES:?}/${release:?}"
   fi
-  rm -f "$STATE/$name"
+  rm -f -- "${STATE:?}/${name:?}"
   echo "removed $name ($release)"
 }
 
 list_kernels() {
-  local f name next
+  local f name next entries what
   next=$(grub-editenv - list | sed -n 's/^next_entry=//p')
+  in_cfg() { grep -q -- "--id $1 " "$GRUB_CFG" && echo "in grub.cfg" || echo "NOT in grub.cfg"; }
   for f in "$STATE"/*; do
     [[ -e $f ]] || continue
     name=${f##*/}
-    printf '%s\t%s\t%s%s\n' "$name" "$(cat "$f")" \
-      "$(grep -q -- "--id aurora-test-$name " "$GRUB_CFG" && echo "in grub.cfg" || echo "NOT in grub.cfg")" \
-      "$([[ $next == "aurora-test-$name" ]] && echo ", boots next" || true)"
+    entries=$(entries_of "$name")
+    case $entries in
+      safe) what="safe entry only (--safe-only): $(in_cfg "aurora-test-$name-safe")" ;;
+      plain,safe) what="$(in_cfg "aurora-test-$name"); safe entry: $(in_cfg "aurora-test-$name-safe")" ;;
+      *) what="$(in_cfg "aurora-test-$name"); no safe entry" ;;
+    esac
+    if [[ $next == "aurora-test-$name" ]]; then
+      what+=", boots next"
+    elif [[ $next == "aurora-test-$name-safe" ]]; then
+      what+=", boots next (the safe entry)"
+    fi
+    printf '%s\t%s\t%s\n' "$name" "$(release_of "$name")" "$what"
   done
 }
 
@@ -197,6 +510,7 @@ list_kernels() {
 case "${1:-}" in
   install) shift; install_kernel "$@" ;;
   boot) shift; boot_kernel "$@" ;;
+  unselect) shift; unselect "$@" ;;
   remove) shift; remove_kernel "$@" ;;
   list) list_kernels ;;
   *) usage ;;

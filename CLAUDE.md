@@ -53,7 +53,27 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   a regular boot has the alarm drivers, not the stock ones.
 - `test-kernel`: installs an aurora kernel package (such as an upstream PR's
   CI build) beside the regular linux-aurora, boots it once via grub-reboot,
-  and removes it again, without touching anything pacman owns.
+  and removes it again, without touching anything pacman owns. With the
+  safe-boot hook installed it also writes a second entry for that kernel, a
+  safe boot with the Secure Enclave's store asked read-only
+  (`boot <name> --safe-sepro`; the line is `sleep-drain-safe sepro-cmdline`'s;
+  `unselect` clears a one-shot selection of its own).
+  `install --safe-only` writes that entry alone: for a kernel whose own
+  enclave driver must never bind with a writable store.
+- `ref-loader`: swaps m1n1's second stage (`/boot/m1n1/boot.bin`) for a bundle
+  built from another `m1n1.bin` and device trees, and puts the stock one back
+  (`build`, `verify-recipe`, `recovery-notes`, `install --recovery-checked`,
+  `restore`, `status`). It handles `m1n1.bin` as an opaque file. It installs
+  only if its recipe rebuilds the live stock file byte for byte, keeps the
+  stock as `boot.bin.stock`, and verifies every write by reading it back.
+  While a bundle is installed every Linux boot goes through it, the regular
+  kernel's too; `restore` also works from a safe boot, and the way back
+  without Linux is from macOS (`recovery-notes`).
+- `ref-sleep`: the first deep-sleep attempts with a reference kernel in such a
+  safe boot (`check`, `go [SECONDS]`): it needs the safe boot, the S2R driver's
+  mailbox line in the kernel log and the bound enclave driver's `diag/xart`
+  reading "disabled", then enables the driver, selects `deep`, saves the log,
+  arms the PMU RTC and suspends. Not installed by `install.sh`.
 - `sleep-drain-safe` and `safe-boot/`: the safe boot for risky experiments
   (A5). `pkexec sleep-drain-safe boot` makes the next restart, once, the
   regular kernel with its own initramfs, whose `sleepdrain-safe` hook makes
@@ -211,7 +231,15 @@ PLAN.md is what's next, in order, and how to pick it up: start there.
   bit cleared only while the SEP's power word reads off. Clearing it under a
   powered enclave was the other choice and isn't OK'd. The same day Corey had
   a second model (Gemini, through `agy`) argue the result over: read-only,
-  "you are in charge, it should only advise you".
+  "you are in charge, it should only advise you". On 2026-11-26, after the
+  tenth run, Corey asked why m1n1 was off limits at all ("this other guy is
+  running it just fine, why can't we?") and, asked whether Claude may build
+  Ante042's m1n1 branch unchanged and swap `/boot/m1n1/boot.bin` for a first
+  try with the old file kept, said "go ahead" (macOS is bootable on this Mac).
+  So: running m1n1 and building a fork of it as it is are use, and fine.
+  Claude still doesn't open, write, change or draft m1n1 source, and stops if
+  a build would need a change; replacing the first-stage loader wasn't asked
+  and isn't OK'd.
 
 ## Experiments
 

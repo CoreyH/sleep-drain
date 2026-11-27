@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""sleep-drain-safe boot [--no-sep | --sep-ro], without root, GRUB or a boot partition.
+"""sleep-drain-safe boot [--no-sep | --sep-ro] and sepro-cmdline, without root, GRUB or a boot partition.
 
 The script is copied with its fixed paths pointed into a scratch directory (the SEP driver's directory in sysfs among them, a
 directory the test fills), need_root and regular_release replaced, and
@@ -39,7 +39,7 @@ def stub(d, name, body):
     os.chmod(p, 0o755)
 
 
-def setup(t, regular="root=UUID=aaaa rw quiet splash"):
+def setup(t, regular="root=UUID=aaaa rw quiet splash", keep_need_root=False):
     for sub in ("boot/grub", "etc/grub.d", "etc/initcpio/hooks", "etc/initcpio/install", "bin"):
         os.makedirs(os.path.join(t, sub))
     for f in ("etc/initcpio/hooks/sleepdrain-safe", "etc/initcpio/install/sleepdrain-safe"):
@@ -57,7 +57,8 @@ def setup(t, regular="root=UUID=aaaa rw quiet splash"):
             ('need_root() { [[ $EUID -eq 0 ]] || die "run as root (pkexec)"; }', "need_root() { :; }")]
     for old, new in subs:
         assert src.count(old) == 1, old
-        src = src.replace(old, new)
+        if not (keep_need_root and old.startswith("need_root()")):
+            src = src.replace(old, new)
     src, n = re.subn(r"\nregular_release\(\) \{\n.*?\n\}\n", "\nregular_release() { echo 7.2.11-test; }\n", src, count=1, flags=re.S)
     assert n == 1
     tool = os.path.join(t, "sleep-drain-safe")
@@ -129,6 +130,142 @@ def nxt(t):
 PLAIN, NOSEP, SEPRO = "sleep-drain-safe", "sleep-drain-safe-nosep", "sleep-drain-safe-sepro"
 MODES = (["boot"], ["boot", "--no-sep"], ["boot", "--sep-ro"])
 REG = "root=UUID=aaaa rw quiet splash"
+
+
+def tree(t):
+    """Every file under the scratch boot partition and grub.d with its contents, and what is selected: what
+    sepro-cmdline must leave exactly as it was."""
+    out = {"next": nxt(t)}
+    for sub in ("boot", "etc"):
+        for d, _, files in os.walk(os.path.join(t, sub)):
+            for f in files:
+                with open(os.path.join(d, f), newline="") as fh:
+                    out[os.path.join(d, f)] = fh.read()
+    return out
+
+
+def sepro_cmdline_tests():
+    """sepro-cmdline: the line boot --sep-ro gives its entry, printed after that command's checks, with nothing written
+    and no root. Held against the third entry boot writes, over the cases above that have a sep-ro line, and refused
+    with boot --sep-ro's own messages over the ones it refuses."""
+    MSG_CHARS, MSG_SEP, MSG_OUT = "GRUB may read another way", "has a -- in it", "the driver wouldn't load in a --sep-ro boot"
+    MSG_VAR, MSG_LONG = "has a GRUB variable in it", "lose its end, where the read-only flag is"
+    # need_root as it stands: this runs without root, so a need_root call would end it.
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t, keep_need_root=True)
+        before = tree(t)
+        p = run(t, tool, "sepro-cmdline")
+        check(p.returncode == 0 and p.stdout == f"{REG} {SEP_RO} sleepdrain.safe\n" and p.stderr == "" and tree(t) == before and image(t) == (None, 0),
+              "sepro-cmdline, without root: the regular line, the driver's two words and the flag, on one line; no script, no image, no grub.cfg change, nothing selected",
+              p.stdout + p.stderr)
+        q = run(t, tool, "boot", "--sep-ro")
+        check(q.returncode != 0 and "run as root" in q.stderr, "(boot --sep-ro in that copy does ask for root)", q.stdout + q.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t)
+        p = run(t, tool, "sepro-cmdline")
+        q = run(t, tool, "boot", "--sep-ro")
+        cfg = cfg_of(t)
+        r = run(t, tool, "sepro-cmdline")
+        check(p.returncode == 0 and q.returncode == 0 and entry_line(cfg, SEPRO) == "linux /vmlinuz-linux-aurora " + p.stdout.rstrip("\n")
+              and r.stdout == p.stdout and r.returncode == 0 and cfg_of(t) == cfg and nxt(t) == SEPRO,
+              "sepro-cmdline before and after boot --sep-ro: the same line both times, the one the third entry has; with the safe entries in grub.cfg it still copies the regular one, and what is queued stays",
+              p.stdout + r.stdout + r.stderr + cfg)
+        for args in (["sepro-cmdline", "/a", "/b"], ["sepro-cmdline", "/vmlinuz-linux-aurora", "x"]):
+            p = run(t, tool, *args)
+            check(p.returncode != 0 and "usage: sleep-drain-safe sepro-cmdline [KERNEL]" in p.stderr and p.stdout == "", f"{' '.join(args)}: the usage, nothing printed", p.stdout + p.stderr)
+        for k in ("vmlinuz", "/aurora test/vmlinuz", '/aurora-test/"x"/vmlinuz', "/aurora-test/$x/vmlinuz", "/aurora-test/x;y"):
+            p = run(t, tool, "sepro-cmdline", k)
+            check(p.returncode != 0 and "a kernel's path starts with /" in p.stderr and p.stdout == "",
+                  f"sepro-cmdline with the kernel path {k!r}: refused, nothing printed", p.stdout + p.stderr)
+        p = run(t, tool)
+        check(p.returncode == 2 and "| sepro-cmdline [KERNEL] |" in p.stderr, "no command: the usage names sepro-cmdline", p.stderr)
+    # The lines the third entry is made from differently: a regular line that sets either parameter already.
+    words = ("apple_sep.xart_writes=1", "apple-sep.xart-writes=0", "apple_sep.provision-keybag=1", "apple_sep.xart_writes", "apple_sep.xart_writes=",
+             "apple_sep.xart_writes=1 apple-sep.xart-writes=0 apple_sep.provision_keybag=1 x=1 apple_sep.xart_writes=1",
+             "apple_sep.xart_guard=1 xapple_sep.xart_writes=1 apple_sep.xart_writes_x=1 foo=apple_sep.xart_writes=1 apple_sepxart_writes=1",
+             "module_blacklist=apple_sep module_blacklist=foo", "foo=--bar --baz x=a--b a_b=c.d,e:f/g@h%i+j")
+    for word in words:
+        for tail in (" quiet", ""):
+            with tempfile.TemporaryDirectory() as t:
+                reg = f"root=UUID=aaaa rw {word}{tail}"
+                tool = setup(t, regular=reg)
+                before = tree(t)
+                p = run(t, tool, "sepro-cmdline")
+                untouched = tree(t) == before
+                q = run(t, tool, "boot", "--sep-ro")
+                third = entry_line(cfg_of(t), SEPRO) or ""
+                out = p.stdout.rstrip("\n")
+                check(p.returncode == 0 and q.returncode == 0 and untouched and third == "linux /vmlinuz-linux-aurora " + out and out.endswith(f" {SEP_RO} sleepdrain.safe")
+                      and sum(w.split("=")[0].replace("-", "_") == "apple_sep.xart_writes" for w in out.split()) == 1
+                      and sum(w.split("=")[0].replace("-", "_") == "apple_sep.provision_keybag" for w in out.split()) == 1,
+                      f"sepro-cmdline with the regular line {reg[18:]!r}: the third entry's line as boot --sep-ro then writes it, one setting of each parameter, the script's",
+                      p.stdout + p.stderr + third)
+    # What boot --sep-ro refuses, refused with the same words, and nothing printed.
+    refused = [(r, MSG_OUT) for r in ("root=UUID=aaaa rw module_blacklist=apple_sep quiet", "root=UUID=aaaa rw module_blacklist=foo module-blacklist=bar,apple_sep quiet")]
+    refused += [(r, MSG_CHARS) for r in ('root=UUID=aaaa rw module-blacklist=apple_sep "module_blacklist=apple_pmp" quiet', r"root=UUID=aaaa rw systemd.mask=var-lib-sleep\x2ddrain.mount quiet",
+                                         'root=UUID=aaaa rw "foo=a b" quiet', "root=UUID=aaaa rw 'foo=a b' quiet", "root=UUID=aaaa rw foo=a\\ b quiet",
+                                         'root=UUID=aaaa quiet "--" single', "root=UUID=aaaa quiet \\-\\- single", "root=UUID=aaaa quiet #", "root=UUID=aaaa quiet; true",
+                                         "root=UUID=aaaa quiet | x", "root=UUID=aaaa quiet {", "root=UUID=aaaa quiet\x01", "root=UUID=aaaa quiet\x7f", "root=UUID=aaaa quiet café",
+                                         "root=UUID=aaaa quiet a*b", "root=UUID=aaaa quiet ~", "root=UUID=aaaa quiet\r", 'root=UUID=aaaa quiet "--"\r',
+                                         "root=UUID=aaaa rw \\\n    quiet splash", "root=UUID=aaaa rw \\", 'root=UUID=aaaa rw "quiet\n    splash"', "root=UUID=aaaa rw 'quiet")]
+    refused += [(r, MSG_VAR) for r in ("root=UUID=aaaa rw $extra_args quiet", "root=UUID=aaaa rw ${more} quiet")]
+    refused += [(r, MSG_SEP) for r in ("root=UUID=aaaa rw quiet -- single", "root=UUID=aaaa rw quiet --", "-- root=UUID=aaaa", "root=UUID=aaaa quiet\t--\tsingle")]
+    for reg, why in refused:
+        with tempfile.TemporaryDirectory() as t:
+            tool = setup(t)
+            # Written raw, as the cases above write theirs: a carriage return or a second line stays what it is.
+            for f in ("regular", "boot/grub/grub.cfg"):
+                with open(os.path.join(t, f), newline="") as fh:
+                    body = fh.read()
+                with open(os.path.join(t, f), "w", newline="") as fh:
+                    fh.write(body.replace(f"linux /vmlinuz-linux-aurora {REG}\n", f"linux /vmlinuz-linux-aurora {reg}\n"))
+            before = tree(t)
+            p = run(t, tool, "sepro-cmdline")
+            q = run(t, tool, "boot", "--sep-ro")
+            check(p.returncode != 0 and p.stdout == "" and why in p.stderr and tree(t) == before and q.returncode != 0 and why in q.stderr
+                  and p.stderr.strip() == q.stderr.strip(),
+                  f"sepro-cmdline with the regular line {reg!r}: refused in boot --sep-ro's own words, nothing printed, nothing written", p.stdout + p.stderr + q.stderr)
+
+    # The length, with the kernel's own path counted: GRUB puts BOOT_IMAGE= and that path first.
+    def near(n, kernel="/vmlinuz-linux-aurora"):
+        """A regular line that makes the sep-ro entry's kernel line exactly n bytes long for that kernel path."""
+        base = "root=UUID=aaaa rw pad="
+        fixed = len(f"BOOT_IMAGE={kernel} ") + len(base) + len(f" {SEP_RO} sleepdrain.safe")
+        return base + "x" * (n - fixed)
+
+    for kernel in (None, "/aurora-test/s2r/vmlinuz", "/aurora-test/a-name-as-long-as-a-name-gets/vmlinuz"):
+        for n, ok in ((2047, True), (2048, False)):
+            with tempfile.TemporaryDirectory() as t:
+                reg = near(n, kernel or "/vmlinuz-linux-aurora")
+                tool = setup(t, regular=reg)
+                before = tree(t)
+                p = run(t, tool, "sepro-cmdline", *([kernel] if kernel else []))
+                if ok:
+                    check(p.returncode == 0 and p.stdout == f"{reg} {SEP_RO} sleepdrain.safe\n" and tree(t) == before,
+                          f"sepro-cmdline {kernel or ''}: a line that lands on the last byte that fits with that kernel's path ({n}): printed", p.stdout[-200:] + p.stderr)
+                else:
+                    check(p.returncode != 0 and p.stdout == "" and MSG_LONG in p.stderr and tree(t) == before,
+                          f"sepro-cmdline {kernel or ''}: one byte over with that kernel's path: refused, nothing printed", p.stdout[-200:] + p.stderr)
+    with tempfile.TemporaryDirectory() as t:
+        # A line that fits the regular kernel's entry and not a longer path's.
+        tool = setup(t, regular=near(2047))
+        p, q = run(t, tool, "sepro-cmdline"), run(t, tool, "sepro-cmdline", "/aurora-test/s2r/vmlinuz")
+        check(p.returncode == 0 and q.returncode != 0 and MSG_LONG in q.stderr and q.stdout == "",
+              "a line that just fits the regular kernel's entry: printed for it, refused for a test kernel's longer path", p.stderr + q.stderr)
+    # No regular entry to copy; no grub.cfg (a safe boot doesn't mount /boot).
+    with tempfile.TemporaryDirectory() as t:
+        tool = setup(t)
+        run(t, tool, "boot", "--sep-ro")
+        with open(os.path.join(t, "boot/grub/grub.cfg")) as f:
+            cfg = f.read()
+        with open(os.path.join(t, "boot/grub/grub.cfg"), "w") as f:
+            f.write(cfg.replace(f"    linux /vmlinuz-linux-aurora {REG}\n", ""))
+        p = run(t, tool, "sepro-cmdline")
+        check(p.returncode != 0 and "no /vmlinuz-linux-aurora entry" in p.stderr and p.stdout == "",
+              "sepro-cmdline with only the safe entries' lines in grub.cfg: refused; a safe entry isn't the line to copy", p.stdout + p.stderr)
+        os.remove(os.path.join(t, "boot/grub/grub.cfg"))
+        p = run(t, tool, "sepro-cmdline")
+        check(p.returncode != 0 and "can't read" in p.stderr and "grub.cfg" in p.stderr and p.stdout == "", "sepro-cmdline with no grub.cfg to read: refused, nothing printed", p.stdout + p.stderr)
 
 
 def main():
@@ -738,6 +875,7 @@ def main():
         fill(t, {DEV: b"disabled\n"})
         p = run(t, tool, "status")
         check("this boot is a regular boot" in p.stdout and "Secure Enclave" not in p.stdout, "status in a regular boot: no line about the driver or the store", p.stdout + p.stderr)
+    sepro_cmdline_tests()
     print("all ok" if not fails else f"{fails} failed")
     return 1 if fails else 0
 

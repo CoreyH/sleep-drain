@@ -18,5 +18,11 @@ rm -f /etc/systemd/system/sleep-guard.service /usr/local/bin/sleep-guard \
   /usr/local/bin/sleep-drain-pmp /usr/local/bin/pmp-request /usr/local/bin/test-kernel \
   /usr/local/bin/pmu-alarm /usr/local/bin/sleep-drain-safe
 rm -rf /etc/sleep-drain
+# ref-loader stays while a stock loader is kept or recorded: it is the way back from Linux to the stock boot.bin.
+if [[ -e /boot/m1n1/boot.bin.stock || -e /var/lib/sleep-drain/ref-loader/stock.sha256 ]]; then
+  echo "kept /usr/local/bin/ref-loader: a stock loader is kept for it (ref-loader status). Remove it by hand once boot.bin is the stock one"
+else
+  rm -f /usr/local/bin/ref-loader
+fi
 systemctl daemon-reload
 echo "removed (log kept at /var/log/sleep-drain.log, snapshots in /var/log/sleep-drain/)"

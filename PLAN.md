@@ -94,6 +94,21 @@ this section where they differ.
        "I never retested with a full stage 1". Replacing stage 1 is a bigger step than a file on the
        boot partition; a first try keeps the stock one, and a failure then is not a failure of their
        setup.
+     - **Ante042's answer of 2026-11-26** (aurora-silicon/linux#2198, comment 7194852258, to the
+       follow-up posted that day with the tenth run): nothing has changed, every sleep there still
+       runs with the thin stage 1, and whether the stock stage 1 works with their stage 2 they
+       can't say; they would start with the thin one (`t600x-s2r-thin-stage1` on their m1n1 fork),
+       "so there is only one difference". With the thin stage 1 a 12 MB `boot.bin` hung at boot;
+       theirs is about 5.5 MB. Their Mac: iBoot2 iBoot-8422.141.2, stub OS firmware 13.5, **the
+       same as this Mac's** (`/proc/device-tree/chosen`, 11-27; this Mac's system firmware 26.6.2,
+       stage 1 m1n1 v1.6.1). Their stage 2 is "the branch plus noise" (local edits not kept
+       apart). And: no s2idle on that kernel once deep sleep is on (an external display
+       coprocessor can die after s2idle, and the entry then refuses). So the bundle here stays
+       small (5.5 MB, the six M1 Pro and Max device trees; the one with all 137 was 13.9 MB), and
+       in the test boot the lid stays open and nothing else suspends. The first try keeps the
+       stock stage 1 all the same: one file, reversible, and a pass would be a pass; a failure
+       says nothing against their setup, and the thin stage 1 (installed from macOS recovery, not
+       OK'd) would be the next question for Corey.
      - `CONFIG_APPLE_S2R=y`; at boot the driver has to log "apple-s2r: m1n1 mailbox at ..."; then 1
        written to `/sys/module/apple_s2r/parameters/enable` and `deep` to `/sys/power/mem_sleep`.
        **No suspend counts unless the mailbox line and `deep` were seen first.**
@@ -106,8 +121,45 @@ this section where they differ.
      command line (no plain entry is written for it, so no boot of it binds the driver any other
      way, a boot made only to look for the mailbox included), with the hook's read-only root; and
      the bound driver's `diag/xart` reading "disabled" stays a separate check of what the binding
-     did, before any suspend. Being built 2026-11-26 (`test-kernel --safe-only`, `ref-loader`,
-     `ref-sleep`).
+     did, before any suspend. Built 2026-11-26 (`test-kernel install --safe-only`, `ref-loader`,
+     `ref-sleep`; none run as root yet). Outside the repo, in
+     `~/.local/share/sleep-drain/ref-20261126/`: their m1n1 at 4143b8e built unchanged
+     (`m1n1/build/m1n1.bin`), their kernel at 3acb8cf built from the running kernel's
+     configuration with `CONFIG_APPLE_S2R=y` (release `7.3.0-s2rref`,
+     `linux-s2rref-7.3.0-s2rref.pkg.tar.zst`), and its 137 device trees (`dtbs/`).
+     `ref-loader verify-recipe` rebuilt the live stock `boot.bin` byte for byte on this Mac.
+     **The order of the first try** (the loader is swapped last, when everything that boots through
+     it is in place; Pullfrog on #136): Corey's check from macOS; `install.sh`; the test kernel
+     installed safe-only and its entry selected (`test-kernel install --safe-only`, then
+     `test-kernel boot s2rref --safe-sepro`); only then the bundle installed
+     (`ref-loader install --recovery-checked`), and a restart. If the kernel's install or the
+     selection fails, the loader isn't touched. **After any `ref-loader install` that didn't end
+     with its "installed:" lines (a refusal, an error, an interruption, no message at all): no
+     restart until the live loader is positively known.** What the tool printed doesn't decide
+     that; a check does:
+     - `ref-loader verify-recipe` passing means the live `boot.bin` is byte for byte what
+       `update-m1n1` builds from the installed packages, **as written to the partition**: it syncs
+       the boot partition first and fails if the sync does (a match read from memory after a
+       failed writeback says nothing about what a restart loads), then reads the file from the
+       device, and a match that only the page cache gives is "NOT CONFIRMED" and fails too. So
+       only its "confirmed on the partition" match says the stock loader is live, here and after
+       each of the recovery steps below. That works even if the install stopped before it
+       recorded anything. Then `test-kernel unselect` clears the
+       one-shot selection (with it still set, a restart would be the test kernel in its safe boot
+       under the stock loader, where its S2R driver finds no mailbox and does nothing).
+     - Otherwise the stock goes back first: `pkexec ref-loader restore`, which writes only a
+       `boot.bin.stock` that matches the recorded sha256, and then `verify-recipe` has to pass.
+       If `restore` refuses (no kept file, no record, or a mismatch), nothing is copied by hand
+       from a file that hasn't been checked: the kept file's sha256 is compared first with the one
+       `verify-recipe` prints for its rebuilt bundle, and only a match is copied, and the
+       destination compared again. With no verified source at all, the distribution's own
+       `update-m1n1` (as root, in a regular boot) rebuilds the stock `boot.bin` from the packages,
+       and `verify-recipe` is run after it. The prohibition stands until `verify-recipe` passes;
+       the copy from macOS (the recovery notes) is for a Mac that was restarted all the same and
+       doesn't start Linux.
+     In the test boot: `ref-sleep check` (the mailbox line, the store
+     read-only), and only then `ref-sleep go`; afterwards `ref-loader restore` (it works from that
+     boot) before the next regular boot.
    - **One reference-shaped run from here:** every remaining pre-commit difference made at once in
      the replay. A large build with many new writes (the memory controller's among them), and the
      PMP's power word is on the never-write list: a fresh OK. It would not give a wake either way.

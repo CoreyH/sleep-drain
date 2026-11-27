@@ -19,6 +19,8 @@ install -m 755 sleep-drain-wake /usr/local/bin/sleep-drain-wake
 install -m 755 sleep-drain-pcie /usr/local/bin/sleep-drain-pcie
 install -m 755 sleep-drain-pmp /usr/local/bin/sleep-drain-pmp
 install -m 755 test-kernel /usr/local/bin/test-kernel
+# The loader swap for a reference build, and the way back from it (pkexec ref-loader restore).
+install -m 755 ref-loader /usr/local/bin/ref-loader
 install -m 755 sleep-drain-safe /usr/local/bin/sleep-drain-safe
 install -m 755 sleep-drain-reading /usr/local/bin/sleep-drain-reading
 # The safe boot's initramfs hook. Only sleep-drain-safe's own image has it
