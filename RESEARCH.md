@@ -5426,6 +5426,57 @@ alarm_at=1795002065 try=1`, `12:41:11 finish power-off-asked`. The alarm ended t
 the drivers six seconds in (`done: rtc0, wakealarm present, wakeup enabled`), and the clock was right: a
 power-off keeps the PMU's RTC, which only a flat battery loses. The setting is back at 25.
 
+### The reference on this Mac: Ante042's kernel and second stage sleep and wake it, with the stock first stage (2026-11-27)
+
+One deep suspend and resume, back into the running session, with the PMU's RTC alarm armed for 60 s and
+about 64 s between the entry's log line and the wake's (`results/ref-boot-20261127/`). The first sleep on
+this Mac that isn't s2idle. The alarm is the likely wake: the driver's line names no source, and the 64 s
+is between two log lines, not a measured time in the low-power state.
+
+- **What ran.** Ante042/linux `t600x-s2r-reference` at 3acb8cf, built here from the running kernel's
+  configuration with `CONFIG_APPLE_S2R=y` (release `7.3.0-s2rref`), installed safe-only with `test-kernel`;
+  Ante042/m1n1 `t600x-s2r-reference` at 4143b8e, built unchanged, as the second stage in a 5.5 MB `boot.bin`
+  with the kernel branch's six M1 Pro and Max device trees (`ref-loader`; the stock file kept). **The first
+  stage stayed the stock m1n1 v1.6.1**: every sleep in Ante042's notes ran with a thin first stage of their
+  own, and whether the stock one works they couldn't say (their answer of 11-26). It does here.
+- **The boot.** A safe boot (read-only root under RAM overlays) with `apple_sep.xart_writes=0
+  apple_sep.provision_keybag=0`; the driver's log says "writes disabled". At boot: `apple-s2r: m1n1 mailbox
+  at 0x10004cfca40, 8 CPUs, CPU hotplug through m1n1`.
+- **The sleep.** `ref-sleep check` passed its five findings; `ref-sleep go 60` enabled the driver ("deep
+  sleep available"), selected `deep`, armed rtc1 and wrote `mem`: `PM: suspend entry (deep)` at 13:11:26,
+  `apple-s2r: full wake: wakeup event` at 13:12:30, `PM: suspend exit` at 13:12:32. Corey: "the 60 second
+  sleep worked."
+- **After the wake**, in the log: `apple_sep ... hwrng: read produced nothing (ENODEV)`, two Bluetooth
+  `hci0` command failures, "set affinity failed(-38)" for four IRQs as the cores went down, and the driver's
+  own notes that two fabric words and the P cores' words "stay off" as it restores the PMGR. None looked
+  at further.
+- **The same firmware** as Ante042's Mac: iBoot2 iBoot-8422.141.2, OS firmware 13.5.
+- **One thing had to change to get a desktop.** The first boot of that kernel stopped at the splash after
+  the disk's password (it kept no log: a safe boot). In the branch the GPU's DRM driver calls itself
+  "aurora", and this system's Mesa looks for "asahi", as the regular kernel's driver is called; Ante042's
+  notes say they made the same rename locally. One line (`results/ref-boot-20261127/local-drm-name.patch`),
+  a rebuild, and the second boot came up. That the name was the cause is inferred from that.
+- **The stock loader is back** (`ref-loader restore` from the test boot; verified from the partition in the
+  next regular boot). In between, the regular kernel booted once through the reference loader, after the
+  first test boot hung, and ran normally.
+
+**What it means.**
+- The entry completes on this Mac, and the wake works, with code that someone else wrote and with no change
+  to the first stage. So nothing about this Mac or its firmware was in the way: the ten one-way runs stalled
+  on what the replay didn't do, not on the hardware. Which of the untried differences it was isn't known
+  from this, and doesn't need to be.
+- Measured here: one sleep of a minute. Not measured: its power, a longer sleep, a second sleep in one
+  boot, a wake by key or lid, anything with the store writable or outside a safe boot.
+
+**The same day, upstream** (aurora-silicon/linux#2198): olivergreg reports S2R working on a J314s as a
+`sleep-t6000.h` profile for upstream's `drivers/soc/apple/sleep.c`, with stock aura (1.0.0b17) as the loader
+and nothing changed in the boot chain, crediting Ante042's branch as the reference: 26 RTC wakes in one
+boot on one build, 30 s and 1 h sleeps on the current tree; NVMe, Wi-Fi, Bluetooth, GPU, panel, keyboard,
+trackpad and Touch ID working after a wake. Open before a draft PR: one SoC reset on a wake from a 1 h
+sleep on battery, the ANS RTKit buffer issue (#3379), and "event-log source 19" after every wake. Branch:
+olivergreg/linux `t6000-suspend-to-ram`. Their report, not reproduced here: this Mac boots through
+m1n1-aurora, not aura, and its stock second stage publishes no mailbox.
+
 ### The `sep_ro=1` run: the enclave gated, the wait bit cleared, and the same stall (2026-11-26)
 
 `run-floor --no-reading --m1-sep-ro` in a safe boot started with `sleep-drain-safe boot --sep-ro`, on battery

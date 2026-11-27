@@ -1,10 +1,10 @@
 # Plan
 
-Last updated 2026-11-26. RESEARCH.md is the lab notebook: what we found. This
+Last updated 2026-11-27. RESEARCH.md is the lab notebook: what we found. This
 file is what we do next, in order. Update it at the end of every session, in
 the PR with that session's work.
 
-## Pick up here (2026-11-26)
+## Pick up here (2026-11-27)
 
 Read this first. "Where things stand" below is the long record and its order of work is superseded by
 this section where they differ.
@@ -37,11 +37,12 @@ this section where they differ.
   for its own timer; the restart comes at the marker's time all the same.
 - CPU0's RVBAR reads 0x00100100059e4001 under m1n1-aurora: bit 0 set, the address 0x100059e4000. The
   other seven have the same address with bit 0 clear (`results/rvbar-20261119/`).
-- Nobody has macOS's commit state for a T600x. `sleep.c` has no T6000 entry and nothing has completed
-  one on this Mac or with it (aurora-silicon/linux#2198, answered 2026-11-19). Since 2026-11-22 there
-  is a report of a J314s that completes the entry and wakes, on Ante042's own reference branch with
-  an m1n1 of their own: their result, not reproduced here. T6000 data is welcome there; the
-  entry's data went up as a comment on 2026-11-19.
+- Nobody has macOS's commit state for a T600x. Upstream's `sleep.c` has no T6000 entry (as of
+  2026-11-27: olivergreg has one working on a branch, not yet a PR). Ante042's reference branch, with an
+  m1n1 of their own, completes the entry and wakes a J314s: reported 2026-11-22, **and reproduced on this
+  Mac on 2026-11-27** with their second stage and the stock first stage (one sleep). That is the
+  reference setup's result here, not support in upstream's `sleep.c`. The entry's data went up as a
+  comment on 2026-11-19.
 - A record's bytes: 0x6008-0x600c have carried across the restart every time; 0x600d and 0x600e were
   lost in both runs that wrote them, though awake they take a write. Use the first five.
 - The SMC's keys across a one-way run say nothing: after four runs and after a plain restart they
@@ -58,7 +59,84 @@ this section where they differ.
   that state, read under the m1n1 hypervisor in both systems, showed 54 words differing (Naeem Malik,
   2026-11-16).
 
-**Next, in this order:**
+**2026-11-27: the reference sleeps and wakes this Mac** (RESEARCH.md, "The reference on this Mac").
+Ante042's kernel branch with their second stage and the *stock* first stage: the mailbox found, one deep
+suspend and resume back into the session with the RTC alarm armed for 60 s (about 64 s from the entry's
+log line to the wake's; the alarm is the likely wake, the log names no source), in a safe boot with the
+enclave's store read-only.
+The stock loader is back. The same day olivergreg reported the same working on a J314s as a profile for
+upstream's `sleep.c` with stock aura (aurora-silicon/linux#2198). So the entry's question (E2) is answered
+by other people's code, and **no further one-way replay run is planned**; `e1-hook/` stays as it is. What
+is next, in this order, replacing item 1 below (kept as the record of how it was reached):
+- **Told the thread** 2026-11-27 with Corey's OK (aurora-silicon/linux#2198, comment 7218151913): a
+  second J314s, the same firmware, their stage 2 with the stock stage 1, the GPU driver's name as the one
+  thing that had to change for this distribution's Mesa, and an offer to olivergreg of a second machine.
+- **Reliability first, then the measurement; they are two things.**
+  - *Reliability checks:* a second and third sleep in one boot and a 15-minute one (`ref-sleep go 900`).
+    They give no power figure: `ref-sleep` writes `/sys/power/state` itself, so the systemd hook that
+    takes the battery's readings before and after never runs.
+  - *The guard for every such boot, from the first `go` until the boot is left, failed attempts and the
+    gaps between trials included:* the lid stays open and nothing else may suspend (the idle timer's
+    suspend switched off for the session). Enabling the reference driver selects `deep` by itself, before
+    `ref-sleep` reads the mode to put back, so its clean-up leaves `deep` selected and the alarm off: a lid
+    close or an idle suspend then would be a deep sleep with no timed wake. To fix in `ref-sleep` before
+    the series: the previous mode read before the enable. The guard doesn't rest on that fix.
+  - *The measurement,* what the project set out to fix: a deep sleep's power on this Mac against s2idle's
+    1.97 W (Ante042: 130 to 170 mW over a night, from battery voltage, since the gauge stops counting at
+    those currents). The coulomb counter the nights are compared by can't be assumed to work down there,
+    so a method that does comes first. Corey's USB-C power monitor (the Power-Z, OK'd for charger runs on
+    2026-11-16) is the candidate: the battery full, the meter in line on the USB-C cable into the Mac, the
+    same Mac in deep sleep and in s2idle. What it reads is the charger's DC output into the Mac, for both
+    modes; the charger's own draw from the wall isn't in it, and no AC meter is planned. To settle before
+    it counts: that a charger left in doesn't wake or dark-wake the reference's sleep, what the meter's
+    floor is and what the Mac's own charging circuit takes with the battery full, and how the two sleeps
+    are made comparable. A night also needs its own steps: the safe boot keeps everything
+    in RAM, and the nights' power-off hook does nothing there.
+- **What daily use would take on this Mac**, to put to Corey before any of it is built: the reference
+  loader installed for good (every boot through it; a package update's `update-m1n1` writes the stock one
+  back), a kernel outside the package manager rebuilt at each update, the enclave's store read-only (no
+  Touch ID), and deep sleeps outside a safe boot. Or waiting for the upstream form.
+- **The upstream form** is olivergreg's: `sleep-t6000.h` for `sleep.c`, the loader's mailbox from aura.
+  This Mac boots through m1n1-aurora, whose stock second stage publishes no mailbox. **Omarchy's own
+  repository packages both loaders as alternatives** (`pacman -Si`, from this Mac's package list of
+  2026-11-09): `m1n1-aurora` (1.6.1.aurora22 there; 1.6.1.aurora3 installed here) and `aura` ("Aurora
+  Silicon bootloader for Apple Silicon", 0.1.0.r20261023, which provides and conflicts with
+  `m1n1-aurora`; olivergreg ran 1.0.0b17). So the road to Omarchy is the kernel half merged upstream and
+  taken into `linux-aurora`, and the aura package as the loader; which loader Omarchy installs by default
+  isn't known here. **A mailbox-capable aura is a prerequisite**, for Omarchy's path and for a trial here:
+  the packaged one of that list predates aura's T6000 mailbox (merged 2026-11-13, by Pullfrog's reading
+  of aura's history on #137), and with a second stage that lacks it the kernel says "no
+  aurora,s2r-mailbox from the boot object: no deep sleep" and offers none. **Corey moved the testing
+  there on 2026-11-27** ("if aura has already been selected as the next gen bootloader then we should
+  move our testing there... this machine is a test bench mostly"): olivergreg's branch on this Mac, with
+  aura's own release 1.0.0b17 of 11-24 as the second stage (the version olivergreg ran; its prebuilt
+  `aura.bin`, checksum verified, handled as an opaque file), by the same one-file swap with the stock
+  kept. The archive's own readme says that exact build wasn't boot-tested; the release's published notes
+  now record boots of the tagged second stage on a J316s and a J413 (Pullfrog on #137). Unverified is
+  what is new here: this J314s, with the stock first stage, and the deep-sleep trial kernel.
+  **The bundle is a complete one for that kernel:** `aura.bin`, then the J314s device tree built from the
+  trial kernel's own source at 5cad606 (it is the tree that enables the sleep controller node; the
+  installed kernel's doesn't, and `test-kernel` drops a package's device trees), with the other M1 Pro
+  and Max trees of that build, then U-Boot as `update-m1n1` adds it. `ref-loader build` checks that one
+  of the trees names this Mac. Before any suspend
+  is asked for there: the test boot has to expose `/chosen/aurora,s2r-mailbox` in its device tree, and
+  the kernel's log has to show the driver took it.
+  **The suspend guard starts with that boot, not with the first attempt:** this kernel's sleep driver
+  makes `deep` the default as it probes, so a lid close or the idle timer could start a deep sleep before
+  the mailbox was checked or a wake armed. So the entry for that kernel masks systemd's sleep targets on
+  its command line (`systemd.mask=` for `sleep.target`, `suspend.target` and the hibernate ones), which
+  leaves only a direct write to `/sys/power/state`, the trial's own, and the lid stays open besides.
+  **And it is a safe boot all the same:** the `sleepdrain-safe` hook's read-only root under RAM overlays,
+  whatever is decided about the enclave's store. The two are separate protections: the upstream port has
+  a reported reset on a wake, and the old sep words protect nothing on that kernel, which ignores them.
+  To build with the trial's tool (the mailbox node and the log line, the PMU RTC's alarm armed, then `mem`),
+  before any boot of that kernel. In hand, in
+  `~/.local/share/sleep-drain/aura-20261127/`: the release, and olivergreg's branch at 5cad606 being
+  built from the running configuration with `CONFIG_APPLE_SOC_SLEEP=y` (release `7.3.0-s2rup`). Open with
+  Corey: that kernel's `apple_sep` has no `xart_writes` parameter, so the store would be writable in
+  those boots as in every regular one (asked 11-27; no boot of it before the answer).
+
+**Next, in this order (as of 2026-11-26):**
 1. **Decide how to converge on the reference** (RESEARCH.md, "The `sep_ro=1` run", 2026-11-26). The
    tenth run, the last of the strategy review's ten, had the enclave gated, the SEP's wait bit cleared
    and read back clear, no `a2_pre=1` and no late reads of the four fabric-group words, and ended as
@@ -208,7 +286,7 @@ this section where they differ.
 5. The nights on the charger (installed 2026-11-19) haven't been seen on the Mac: the log will show
    `pre armed ... ac_online=1` and `post cleared why=on-charger` every 25 minutes of a closed lid.
 
-**As things are left:** the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
+**As things are left:** the stock loader live and `boot.bin.stock` kept beside it; the test kernel `s2rref` (7.3.0-s2rref, the GPU driver's DRM name patched to "asahi") installed safe-only and not selected; the reference bundle and the builds in `~/.local/share/sleep-drain/ref-20261126/`; the nights on at 25 minutes; `e1_hook.ko` built for 7.2.11-15 from `main`;
 `--m1-sep-ro` the latest launcher option (run 2026-11-26; `--m1-ll-retn` and `--m1-sep-pg` built, neither run); the PMU's record bytes all zero; scratch that must outlast
 a restart in `~/.local/share/sleep-drain/`.
 
